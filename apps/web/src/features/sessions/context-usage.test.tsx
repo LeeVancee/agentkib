@@ -33,6 +33,98 @@ beforeEach(() => {
 afterEach(cleanup);
 const gauge = () =>
   screen.getByRole("button", { name: codexCopy[state.locale].contextUsage, hidden: true });
+const unmanagedClaude = () => {
+  state.current = { id: "s", agent: "claude-code" } as typeof state.current;
+  state.live = { ...state.live!, reason: "handoff-required", usage: undefined };
+};
+
+describe("Claude context usage before handoff", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as Locale[])(
+    "explains the missing CLI report in %s without inventing usage",
+    (locale) => {
+      unmanagedClaude();
+      state.locale = locale;
+      render(<ContextUsageGauge />);
+      expect(gauge()).toHaveTextContent(contextUsageCopy[locale].awaitingCliReport);
+      expect(gauge()).not.toHaveTextContent("0%");
+      fireEvent.click(gauge());
+      expect(screen.getByRole("dialog")).toHaveTextContent(
+        contextUsageCopy[locale].awaitingCliReportDetail,
+      );
+      expect(screen.getByRole("dialog")).not.toHaveTextContent("%");
+    },
+  );
+
+  it("preserves native reports and pending/stale states even if handoff is required", () => {
+    unmanagedClaude();
+    state.live = { ...state.live!, usage: report(0) };
+    const view = render(<ContextUsageGauge />);
+    expect(gauge()).toHaveTextContent("0%");
+    for (const nextState of ["pending", "stale"] as const) {
+      state.live = {
+        ...state.live!,
+        usage: { available: false, state: nextState },
+      };
+      view.rerender(<ContextUsageGauge />);
+      expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"][nextState]);
+      expect(gauge()).not.toHaveTextContent(contextUsageCopy["zh-CN"].awaitingCliReport);
+    }
+  });
+
+  it("prioritizes disconnect and revoked authorization over the handoff explanation", () => {
+    unmanagedClaude();
+    const view = render(<ContextUsageGauge />);
+    fireEvent.click(gauge());
+    state.online = false;
+    view.rerender(<ContextUsageGauge />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].stale);
+    expect(screen.getByRole("dialog")).toHaveTextContent(contextUsageCopy["zh-CN"].offline);
+    state.access = {
+      ...state.access!,
+      device: { ...state.access!.device!, advancedControl: false },
+    };
+    view.rerender(<ContextUsageGauge />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
+    expect(screen.getByRole("dialog")).toHaveTextContent(contextUsageCopy["zh-CN"].permission);
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(
+      contextUsageCopy["zh-CN"].awaitingCliReportDetail,
+    );
+  });
+
+  it("keeps an explicit native usage error visible", () => {
+    unmanagedClaude();
+    state.live = {
+      ...state.live!,
+      usage: { available: false, state: "unavailable", reason: "invalid-usage" },
+    };
+    render(<ContextUsageGauge />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
+    fireEvent.click(gauge());
+    expect(screen.getByRole("dialog")).toHaveTextContent(contextUsageCopy["zh-CN"].invalid);
+  });
+
+  it("does not carry the Claude explanation to another selected session or stale live identity", () => {
+    unmanagedClaude();
+    const view = render(<ContextUsageGauge />);
+    state.selected = "other";
+    view.rerender(<ContextUsageGauge />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
+    state.current = { ...state.current!, id: "other" };
+    view.rerender(<ContextUsageGauge />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
+  });
+
+  it("leaves managed Claude and other agents unchanged", () => {
+    unmanagedClaude();
+    state.current = { ...state.current!, agent: "codex" };
+    const view = render(<ContextUsageGauge />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
+    state.current = { ...state.current!, agent: "claude-code" };
+    state.live = { ...state.live!, reason: undefined };
+    view.rerender(<ContextUsageGauge />);
+    expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
+  });
+});
 
 describe("native context usage", () => {
   it("renders valid zero without settings and opens the reported numerator and window", () => {

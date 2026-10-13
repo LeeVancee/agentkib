@@ -1713,7 +1713,7 @@ export function useSessionController({
       ? t.controlUnconfirmed
       : live?.activity === "compacting"
         ? contextUsageCopy[locale].compacting
-        : live?.status === "idle"
+        : live?.status === "idle" && live.reason !== "handoff-required"
           ? t.idle
           : live?.questions?.length
             ? interactionCopy[locale].title

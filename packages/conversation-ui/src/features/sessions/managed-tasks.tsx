@@ -13,6 +13,7 @@ import {
 import { Button } from "../../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../../components/ui/dialog";
 import { useSession } from "./session-context";
+import { canConfirmClaudeHandoff } from "./claude-handoff";
 import { catalogCopy } from "../catalog/catalog-copy";
 import { sessionAgentCopy } from "./session-agent-copy";
 import {
@@ -42,7 +43,8 @@ export function ManagedTasks({
   initialOpen?: boolean;
   showTrigger?: boolean;
 }) {
-  const { client, origin, access, current, live, selected, refresh, locale } = useSession();
+  const session = useSession();
+  const { client, origin, access, current, live, selected, refresh, locale } = session;
   const [localOpen, setLocalOpen] = useState(initialOpen);
   const open = renderContent ? !!active : localOpen;
   function setOpen(value: boolean) {
@@ -266,6 +268,7 @@ export function ManagedTasks({
   async function run(operation: "create" | "adopt" | "release" | "reconcile") {
     if (
       flight.current ||
+      (operation === "adopt" && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
       (live?.activity === "compacting" && (operation === "adopt" || operation === "release")) ||
       (uncertain && operation !== "reconcile") ||
       (operation === "adopt" && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
@@ -555,6 +558,7 @@ export function ManagedTasks({
                   uncertain ||
                   live?.activity === "compacting" ||
                   !options.available ||
+                  (!managed && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
                   (!managed && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
                 }
                 onClick={() => void run(managed ? "release" : "adopt")}

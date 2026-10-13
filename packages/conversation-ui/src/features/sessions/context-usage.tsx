@@ -50,11 +50,11 @@ function acceptsReport(native: ContextUsage, current?: ContextUsage) {
 
 /** Settings are a compatibility fallback; a native report always has priority. */
 export function useContextUsage(fallback?: ContextUsage) {
-  const { selected, client, access, live, online, usageEpoch } = useSession();
+  const { selected, current, client, access, live, online, usageEpoch } = useSession();
   const authorized =
     access?.device?.accessMode === "full" && access.device.advancedControl === true;
   const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${authorized}\0${usageEpoch ?? ""}`;
-  return useObservedContextUsage({
+  const view = useObservedContextUsage({
     selected,
     scope,
     identity: client,
@@ -63,6 +63,20 @@ export function useContextUsage(fallback?: ContextUsage) {
     authorized,
     fallback,
   });
+  return {
+    ...view,
+    awaitingCliReport:
+      current?.id === selected &&
+      current.agent === "claude-code" &&
+      live?.sessionId === selected &&
+      live.reason === "handoff-required" &&
+      authorized &&
+      online &&
+      view.state === "unavailable" &&
+      !view.usage?.available &&
+      !view.usage?.reason &&
+      view.percent === undefined,
+  };
 }
 
 export function useObservedContextUsage({
@@ -164,25 +178,32 @@ export function useObservedContextUsage({
   return { usage, percent, state, compacting };
 }
 
+type ContextUsageView = ReturnType<typeof useObservedContextUsage> & {
+  awaitingCliReport?: boolean;
+};
+
 export function ContextUsageDetails({
   usage,
   percent,
   state,
   compacting,
+  awaitingCliReport,
   locale,
   online,
-}: ReturnType<typeof useContextUsage> & { locale: Locale; online: boolean }) {
+}: ContextUsageView & { locale: Locale; online: boolean }) {
   const copy = contextUsageCopy[locale];
   const message = compacting
     ? copy.compactingDetail
     : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
       ? copy.offline
-      : (contextUsageReason(locale, usage?.reason) ??
-        (state === "pending"
-          ? copy.pendingDetail
-          : state === "stale"
-            ? copy.staleDetail
-            : codexCopy[locale].contextUnknown));
+      : awaitingCliReport
+        ? copy.awaitingCliReportDetail
+        : (contextUsageReason(locale, usage?.reason) ??
+          (state === "pending"
+            ? copy.pendingDetail
+            : state === "stale"
+              ? copy.staleDetail
+              : codexCopy[locale].contextUnknown));
   return (
     <div className="space-y-2 text-sm">
       {state !== "ready" && <p role="status">{message}</p>}
@@ -218,16 +239,18 @@ export function ContextUsageIndicator({
   scope: string;
   locale: Locale;
   online: boolean;
-  view: ReturnType<typeof useObservedContextUsage>;
+  view: ContextUsageView;
 }) {
   const copy = contextUsageCopy[locale];
   const [opened, setOpened] = useState<string>();
   const title = codexCopy[locale].contextUsage;
   const label = view.compacting
     ? copy.compacting
-    : view.state === "ready" && view.percent !== undefined
-      ? `${Math.round(view.percent)}%`
-      : copy[view.state === "ready" ? "unavailable" : view.state];
+    : view.awaitingCliReport
+      ? copy.awaitingCliReport
+      : view.state === "ready" && view.percent !== undefined
+        ? `${Math.round(view.percent)}%`
+        : copy[view.state === "ready" ? "unavailable" : view.state];
   return (
     <>
       <Button

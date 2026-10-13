@@ -22,7 +22,7 @@ import {
 } from "./session-native-import-owner";
 import { SessionReaders } from "./session-readers";
 import { sessionIdentity, type NativeSession, type SessionStore } from "./session-store";
-import type { SessionDocument } from "./session-model";
+import type { DocumentOptions, SessionDocument } from "./session-model";
 
 type Profile = CursorBridgeContext["profile"];
 type Source = {
@@ -32,6 +32,7 @@ type Source = {
   profiles: Profile[];
   environment: NodeJS.ProcessEnv;
   identitySalt: string;
+  options?: DocumentOptions;
 };
 type CursorRead = {
   profiles: Profile[];
@@ -169,7 +170,7 @@ export async function executeHandoffRead<K extends HandoffReadKind>(
         cursorReader(source.profiles, source.workspace).bridge,
       );
       try {
-        value = await reader.document(source.sessionId);
+        value = await reader.document(source.sessionId, source.options);
       } finally {
         reader.close();
       }

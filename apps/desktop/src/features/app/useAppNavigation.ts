@@ -268,6 +268,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
           handoffTarget: _target,
           handoffBudget: _budget,
           handoffFormat: _format,
+          handoffPreCompaction: _preCompaction,
           handoffResume: _resume,
           ...restoredSearch
         } = saved.search;

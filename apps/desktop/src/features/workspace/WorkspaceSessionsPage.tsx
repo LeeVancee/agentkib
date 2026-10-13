@@ -967,4 +967,6 @@ export interface SessionContinuationResume {
   format: import("@/core/types").HandoffFormat;
   targetSurface?: "cursor-ide";
   bindingId?: string;
+  /** Claude Code sources: keep the choice to hand over history that a compaction replaced. */
+  includePreCompactionHistory?: boolean;
 }

@@ -25,7 +25,7 @@ import {
   serializeHandoff,
 } from "./handoff-work";
 import { isReparseOrSymlink } from "./native-files";
-import type { SessionDocument } from "./session-model";
+import type { DocumentOptions, SessionDocument } from "./session-model";
 import {
   prepareNativeImportPayload,
   type NativeTargetModel,
@@ -296,6 +296,7 @@ export async function buildNativeImportPlan(
   target: ImportTarget,
   document: SessionDocument,
   snapshot: ImportTargetSnapshot,
+  includePreCompactionHistory = false,
 ): Promise<{ change_set: ChangeSet; launch_request: Record<string, unknown> }> {
   if (target !== snapshot.target) throw new Error("Native import target changed after preview");
   const operationId = randomUUID();
@@ -329,6 +330,9 @@ export async function buildNativeImportPlan(
     document,
     expected: prepared.expected,
     payload: prepared.payload,
+    // Only written when chosen, so plans made without it are unchanged. Reading the source again
+    // when the plan continues must use the same choice or its fingerprint would no longer match.
+    ...(includePreCompactionHistory ? { include_pre_compaction_history: true } : {}),
   };
   const content = `${JSON.stringify(plan, null, 2)}\n`;
   const root = path.resolve(dataDir);
@@ -390,6 +394,7 @@ export interface NativeImportPlan extends Record<string, unknown> {
   document: SessionDocument;
   expected: SessionDocument;
   payload: string;
+  include_pre_compaction_history?: true;
 }
 
 interface NativeImportRequest {
@@ -898,7 +903,7 @@ export async function verifyHermesImport(
 
 export async function continueNativeImport(
   value: unknown,
-  sessions: { document(id: string): Promise<SessionDocument> },
+  sessions: { document(id: string, options?: DocumentOptions): Promise<SessionDocument> },
   sessionStore: SessionStore,
   store: BackendStore,
   dataDir: string,
@@ -944,7 +949,12 @@ export async function continueNativeImport(
     effectiveWorkspaceId !== request.workspace_id
   )
     throw new Error("Import source workspace changed");
-  const source = await sessions.document(plan.source_session_id);
+  const source = await sessions.document(
+    plan.source_session_id,
+    plan.include_pre_compaction_history === true
+      ? { includePreCompactionHistory: true }
+      : undefined,
+  );
   validateOwnership();
   source.source.workspace_id = request.workspace_id;
   const sourceFingerprint = await fingerprintHandoff(source);

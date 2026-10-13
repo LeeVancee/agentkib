@@ -28,11 +28,18 @@ export const sessionBlock = z.discriminatedUnion("type", [
     inline_base64: optionalString,
   }),
 ]);
+/**
+ * Marks turns that AgentKib adds around a Claude Code compaction. Both use the `user` role so
+ * every target keeps accepting the document; the kind (and a fixed text annotation) is what tells a
+ * reader they are not messages the user wrote. Ordinary turns carry no kind.
+ */
+export const sessionTurnKind = z.enum(["context-summary", "compaction-boundary"]);
 export const sessionTurn = z.object({
   id: z.string(),
   role: sessionRole,
   timestamp: optionalTime,
   blocks: z.array(sessionBlock),
+  kind: sessionTurnKind.optional(),
 });
 export const sessionLoss = z.object({
   code: z.enum([
@@ -42,6 +49,8 @@ export const sessionLoss = z.object({
     "external-attachment",
     "reasoning-excluded",
     "source-content-truncated",
+    "compacted-history",
+    "compaction-link-unavailable",
     "target-tool-summary",
     "target-attachment-omitted",
   ]),
@@ -83,3 +92,8 @@ export const archiveChunk = z.object({
   content: z.string(),
 });
 export type SessionDocument = z.infer<typeof sessionDocument>;
+/** Reader options. Only the Claude Code provider reads them; every other source ignores them. */
+export interface DocumentOptions {
+  /** Follow `compact_boundary` records back through the history that was compacted away. */
+  includePreCompactionHistory?: boolean;
+}

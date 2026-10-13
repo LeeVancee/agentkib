@@ -36,6 +36,9 @@ export function requireBoolean(value: unknown, name: string): boolean {
   return value;
 }
 
+export function optionalBoolean(value: unknown, name: string): boolean | undefined {
+  return value === undefined || value === null ? undefined : requireBoolean(value, name);
+}
 export function requireObject(value: unknown, name: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${name} must be an object`);

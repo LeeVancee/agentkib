@@ -15,7 +15,7 @@ import * as resolution from "../../../packages/backend/src/command-resolution";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { canonicalize } from "../../../packages/backend/src/paths";
 import { fingerprintSessionDocument } from "../../../packages/backend/src/session-handoff";
-import type { SessionDocument } from "../../../packages/backend/src/session-model";
+import type { DocumentOptions, SessionDocument } from "../../../packages/backend/src/session-model";
 import type { NativeSession } from "../../../packages/backend/src/session-store";
 import { HandoffWork } from "../../../packages/backend/src/handoff-work";
 import {
@@ -39,7 +39,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   for (const action of cleanup.splice(0).reverse()) action();
 });
-async function fixture() {
+async function fixture(includePreCompactionHistory = false) {
   const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "native-recovery-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const project = path.join(root, "project"),
@@ -87,11 +87,26 @@ async function fixture() {
     losses: [],
     redaction_count: 0,
   };
+  // A compacted source reads differently with and without the earlier history.
+  const withHistory: SessionDocument = {
+    ...document,
+    turns: [
+      {
+        id: "old",
+        role: "user",
+        blocks: [{ type: "text", text: "Earlier history marker 5b1c9e" }],
+      },
+      ...document.turns,
+    ],
+  };
+  const reviewed = includePreCompactionHistory ? withHistory : document;
+  const requested: Array<DocumentOptions | undefined> = [];
   let beforeSourceRead: (() => void) | undefined;
   const sessions = {
-    document: async () => {
+    document: async (_id: string, options?: DocumentOptions) => {
+      requested.push(options);
       beforeSourceRead?.();
-      return structuredClone(document);
+      return structuredClone(options?.includePreCompactionHistory ? withHistory : document);
     },
   };
   const executable = path.join(root, "opencode");
@@ -116,16 +131,17 @@ async function fixture() {
     else throw new Error("Unexpected command: " + args.join(" "));
     return { bytes: Buffer.from(text), success: true, truncated: false, error: "", exitCode: 0 };
   });
-  const snapshot = await inspectNativeImportTarget("opencode", document, project, commands, env);
+  const snapshot = await inspectNativeImportTarget("opencode", reviewed, project, commands, env);
   const plan = await planNativeImport(
     data,
     project,
     "legacy",
     store.sessions.id("claude-code", "source"),
-    fingerprintSessionDocument(document),
+    fingerprintSessionDocument(reviewed),
     "opencode",
-    document,
+    reviewed,
     snapshot,
+    includePreCompactionHistory,
   );
   const envelope = {
     changeSet: plan.change_set,
@@ -142,6 +158,7 @@ async function fixture() {
     exported,
     plan,
     receipt,
+    requested,
     proceed,
     recover,
     reindexSource: () => store.sessions.sync("replacement", "claude-code", [nativeSource]),
@@ -334,4 +351,19 @@ describe("native import durable reconciliation", () => {
     expect(f.attempts()).toBe(1);
     expect(() => readFileSync(f.receipt)).toThrow();
   });
+  it.each([false, true])(
+    "re-reads the source with the pre-compaction history choice frozen in the plan (%s)",
+    async (include) => {
+      const f = await fixture(include);
+      // The reviewed plan records the choice only when it was made, so default plans stay unchanged.
+      const stored = JSON.parse(f.plan.change_set.changes[0]!.after);
+      expect(Object.hasOwn(stored, "include_pre_compaction_history")).toBe(include);
+      expect(JSON.stringify(stored.document).includes("Earlier history marker 5b1c9e")).toBe(
+        include,
+      );
+      await f.proceed();
+      expect(f.requested).toEqual([include ? { includePreCompactionHistory: true } : undefined]);
+      expect(f.attempts()).toBe(1);
+    },
+  );
 });

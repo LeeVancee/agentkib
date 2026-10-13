@@ -90,6 +90,12 @@ export function SessionHandoffDialog({
   const [historyBudget, setHistoryBudget] = useState(
     initialRequest?.historyBudgetTokens ?? 120_000,
   );
+  // Only Claude Code transcripts have compaction boundaries; other sources never carry the option.
+  const compactionApplies = session.agent === "claude-code";
+  const [includePreCompaction, setIncludePreCompaction] = useState(
+    initialRequest?.includePreCompactionHistory === true,
+  );
+  const includePreCompactionHistory = compactionApplies && includePreCompaction;
   const [draft, setDraft] = useState<SessionHandoffDraft>();
   const [content, setContent] = useState("");
   const [acceptLosses, setAcceptLosses] = useState(false);
@@ -132,6 +138,7 @@ export function SessionHandoffDialog({
     target_agent: targetAgent,
     format,
     history_budget_tokens: historyBudget,
+    ...(includePreCompactionHistory ? { include_pre_compaction_history: true } : {}),
     ...(cursorIde ? { target_surface: "cursor-ide" as const, binding_id: bindingId } : {}),
   });
 
@@ -216,6 +223,8 @@ export function SessionHandoffDialog({
             planArgs[12] = "cursor-ide";
             planArgs[13] = bindingId;
           }
+          // Planning repeats the choice the reviewed preview was prepared with.
+          if (draft.include_pre_compaction_history) planArgs[14] = true;
           const planned = await api.planSessionHandoff(...planArgs);
           if (isCurrent(identity)) onPlanned(planned);
         } catch (reason) {
@@ -253,6 +262,7 @@ export function SessionHandoffDialog({
             targetAgent,
             historyBudgetTokens: historyBudget,
             format,
+            ...(includePreCompactionHistory ? { includePreCompactionHistory: true } : {}),
             ...(cursorIde ? { targetSurface: "cursor-ide" as const, bindingId } : {}),
           });
         } catch (reason) {
@@ -654,7 +664,26 @@ export function SessionHandoffDialog({
                 <CollapsibleTrigger className="w-fit cursor-pointer bg-transparent text-xs text-muted-foreground">
                   {tr("handoff.advanced")}
                 </CollapsibleTrigger>
-                <CollapsibleContent className="pt-2.5">
+                <CollapsibleContent className="grid gap-3 pt-2.5">
+                  {compactionApplies && (
+                    <Label className="flex items-start gap-2.5 text-xs leading-normal font-normal text-muted-foreground">
+                      <Checkbox
+                        className="mt-0.5"
+                        checked={includePreCompaction}
+                        disabled={busy}
+                        onCheckedChange={(checked) => {
+                          reset();
+                          setIncludePreCompaction(checked === true);
+                        }}
+                      />
+                      <span className="grid gap-0.5">
+                        <span className="text-sm font-medium text-foreground">
+                          {tr("handoff.includePreCompaction")}
+                        </span>
+                        <span>{tr("handoff.includePreCompactionDetail")}</span>
+                      </span>
+                    </Label>
+                  )}
                   <Label className="grid max-w-[280px] gap-1.5 text-xs text-muted-foreground">
                     {tr("handoff.format")}
                     <Select

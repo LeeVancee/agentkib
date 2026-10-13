@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  optionalBoolean,
   requireAccentThemePreference,
   requireAgentKind,
   requireSidebarWidthPreference,
@@ -33,6 +34,17 @@ describe("agent IPC validation", () => {
   });
 });
 
+describe("optional boolean IPC validation", () => {
+  it.each([true, false])("accepts %s", (value) => {
+    expect(optionalBoolean(value, "flag")).toBe(value);
+  });
+  it.each([undefined, null])("treats %s as absent", (value) => {
+    expect(optionalBoolean(value, "flag")).toBeUndefined();
+  });
+  it.each(["true", 1, 0, {}, []])("rejects the non-boolean %s", (value) => {
+    expect(() => optionalBoolean(value, "flag")).toThrow("flag must be a boolean");
+  });
+});
 describe("sidebar width IPC validation", () => {
   it.each([250, 325, 400])("accepts integer %s", (width) => {
     expect(requireSidebarWidthPreference(width)).toBe(width);

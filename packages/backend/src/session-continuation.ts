@@ -21,7 +21,7 @@ import { resolveCommand } from "./command-resolution";
 import { isReparseOrSymlink } from "./native-files";
 import { userHome } from "./mcp-config-read";
 import { planSessionWindow, renderHandoff, sessionImportStats } from "./session-handoff";
-import type { SessionDocument } from "./session-model";
+import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import { Commands } from "./commands";
 import {
@@ -341,7 +341,7 @@ function windowedNotice(archiveId: string, active: number, deferred: number): st
 
 export async function prepareSessionHandoff(
   value: unknown,
-  sessions: { document(id: string): Promise<SessionDocument> },
+  sessions: { document(id: string, options?: DocumentOptions): Promise<SessionDocument> },
   sessionStore: SessionStore,
   store: BackendStore,
   commands: Commands,
@@ -357,13 +357,18 @@ export async function prepareSessionHandoff(
         history_budget_tokens: z.number().int().positive(),
         target_surface: z.enum(["cursor-ide"]).optional(),
         binding_id: z.string().uuid().optional(),
+        include_pre_compaction_history: z.boolean().optional(),
       }),
       mcpHubStatus: hubSchema,
     })
     .parse(value);
   const source = sessionStore.get(request.session_id);
   if (!source) throw new Error("Conversation metadata is no longer available");
-  let document = await sessions.document(request.session_id);
+  const includePreCompactionHistory = request.include_pre_compaction_history === true;
+  let document = await sessions.document(
+    request.session_id,
+    includePreCompactionHistory ? { includePreCompactionHistory } : undefined,
+  );
   const workspace = resolveWorkspaceIdentity(store, source.workspace_id);
   const continuationWorkspaceId = workspace.archiveWorkspaceId;
   document.source.workspace_id = continuationWorkspaceId;
@@ -532,6 +537,7 @@ export async function prepareSessionHandoff(
       capabilities,
       stats: await readHandoff("stats", document, () => sessionImportStats(document)),
       history_budget_tokens: request.history_budget_tokens,
+      include_pre_compaction_history: includePreCompactionHistory,
       window_strategy: window.strategy,
       window_stats: window.stats,
       ...(archiveId ? { archive_id: archiveId } : {}),

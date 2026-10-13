@@ -21,8 +21,12 @@ import {
   type HistorySourceInput,
   type HistorySourceRecord,
 } from "../../../packages/backend/src/history-search-source";
+import * as sourceIdentity from "../../../packages/backend/src/history-search-source-identity";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
-import { readJsonlSearchSource } from "../../../packages/backend/src/history-search-source-jsonl";
+import {
+  claudeLineageFields,
+  readJsonlSearchSource,
+} from "../../../packages/backend/src/history-search-source-jsonl";
 import { HistorySearchStore } from "../../../packages/backend/src/history-search-store";
 import { sessionIdentity, type NativeSession } from "../../../packages/backend/src/session-store";
 import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
@@ -35,6 +39,15 @@ import { prepareCursorIdePayload } from "../../../packages/backend/src/cursor-id
 import { stableNativeRef } from "../../../packages/backend/src/session-history";
 import { canonicalize } from "../../../packages/backend/src/paths";
 import type { SessionDocument } from "../../../packages/backend/src/session-model";
+import {
+  assistant,
+  boundary,
+  duplicateUuidSession,
+  preservedSegmentSession,
+  specificationSession,
+  summary,
+  user,
+} from "./fixtures/claude-compaction-session";
 
 const roots: string[] = [];
 const close: Array<() => void> = [];
@@ -1651,6 +1664,183 @@ describe("complete history search source extraction", () => {
     ]);
     expect(cache.locate(hits.hits[0]!.location, [sessionId]).content).toContain(
       "END_AFTER_256_KIB",
+    );
+  });
+});
+
+describe("Claude compaction in the content search source", () => {
+  const specification = [
+    "alpha-question",
+    "bravo-answer",
+    "charlie-question",
+    "delta-answer",
+    "echo-question",
+  ];
+  const contents = (records: HistorySourceRecord[]) => records.map((record) => record.content);
+
+  it("indexes the whole lineage across a compact_boundary and keeps the summary out", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(specificationSession());
+    const result = await f.read();
+    expect(contents(result.records)).toEqual(specification);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+    expect(JSON.stringify(result.records)).not.toContain("SUMMARY-BODY");
+  });
+
+  it("reaches the earlier history through the preserved-segment head without a limitation", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(preservedSegmentSession());
+    const result = await f.read();
+    expect(contents(result.records)).toEqual([
+      "alpha-question",
+      "bravo-answer",
+      "charlie-question",
+      "tail-answer",
+      "delta-question",
+      "echo-answer",
+    ]);
+    expect(result.status).toBe("ready");
+    expect(result.limitations).not.toContain("compaction-link-unavailable");
+    expect(result.limitations).toEqual([]);
+  });
+
+  it("indexes every segment of a transcript with repeated uuids and several compactions", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(duplicateUuidSession());
+    const result = await f.read();
+    expect(contents(result.records)).toEqual([
+      "zero-a",
+      "zero-b",
+      "one-a",
+      "one-b",
+      "two-a",
+      "two-b",
+      "three-a",
+      "three-b",
+    ]);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+  });
+
+  it("marks coverage partial when a boundary cannot be linked to earlier history", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write([
+      user("a", null, "alpha-question"),
+      boundary("bd", { logicalParentUuid: "gone", head: "gone-too", trigger: "auto" }),
+      summary("sm", "bd", "SUMMARY-BODY"),
+      assistant("d", "sm", "delta-answer"),
+      user("e", "d", "echo-question"),
+    ]);
+    const result = await f.read();
+    expect(contents(result.records)).toEqual(["delta-answer", "echo-question"]);
+    expect(result).toMatchObject({
+      status: "partial",
+      limitations: ["compaction-link-unavailable"],
+    });
+  });
+
+  it("reads uncompacted Claude transcripts exactly as before", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write([user("a", null, "alpha-question"), assistant("b", "a", "bravo-answer")]);
+    const result = await f.read();
+    expect(contents(result.records)).toEqual(["alpha-question", "bravo-answer"]);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+  });
+
+  it("collects boundary pointers in the first pass and nothing else from compactMetadata", () => {
+    const marked = boundary("bd", {
+      logicalParentUuid: "c",
+      head: "h",
+      anchor: "sm",
+      tail: "t",
+      trigger: "auto",
+    });
+    expect(claudeLineageFields(marked)).toEqual({
+      uuid: "bd",
+      parentUuid: null,
+      leafUuid: undefined,
+      type: "system",
+      isSidechain: false,
+      subtype: "compact_boundary",
+      logicalParentUuid: "c",
+      compactMetadata: { preservedSegment: { headUuid: "h" } },
+    });
+    const ordinary = claudeLineageFields({
+      ...user("a", null, "alpha-question"),
+      compactMetadata: { preservedSegment: { headUuid: "h" }, preTokens: 1 },
+    });
+    expect(ordinary).not.toHaveProperty("compactMetadata");
+    expect(ordinary).toMatchObject({ uuid: "a", type: "user", parentUuid: null });
+    // A boundary without a usable head carries no metadata object at all.
+    expect(claudeLineageFields(boundary("bd2", { logicalParentUuid: "c" }))).not.toHaveProperty(
+      "compactMetadata",
+    );
+    expect(
+      claudeLineageFields({
+        ...boundary("bd3"),
+        compactMetadata: { preservedSegment: { headUuid: 7 } },
+      }),
+    ).not.toHaveProperty("compactMetadata");
+  });
+
+  it("changes the cache identity of Claude sources only", async () => {
+    const identity = vi.spyOn(sourceIdentity, "historySourceIdentity");
+    const claude = fixture("claude-code");
+    claude.resolve();
+    claude.write(specificationSession());
+    await claude.read();
+    const codex = fixture("codex");
+    codex.resolve();
+    codex.write([codexText("user_message", "body")]);
+    await codex.read();
+    const [claudeIdentity, codexIdentity] = identity.mock.results.map(
+      (result) => result.value as string,
+    );
+    expect(JSON.parse(claudeIdentity!)).toMatchObject({
+      version: 7,
+      agent: "claude-code",
+      claudeLineage: 1,
+    });
+    expect(codexIdentity).not.toContain("claudeLineage");
+    expect(JSON.parse(codexIdentity!)).toMatchObject({ version: 7, agent: "codex" });
+  });
+
+  it("keeps the identity of other agents byte-identical to the former literal", () => {
+    const resolved = { workspace: "/workspace", native: { native_ref: "native" } };
+    const identity = (agent: string) =>
+      sourceIdentity.historySourceIdentity(
+        {
+          sessionId: "session",
+          summary: {
+            agent,
+            title: "Synthetic",
+            workspace_id: "registered",
+          } as HistorySourceInput["summary"],
+          profiles: [],
+        },
+        "evidence",
+        resolved,
+      );
+    const former = (agent: string) =>
+      JSON.stringify({
+        version: 7,
+        sessionId: "session",
+        agent,
+        title: "Synthetic",
+        nativeEvidence: "evidence",
+        workspaceId: "registered",
+        workspace: "/workspace",
+        native: "native",
+        profiles: [],
+      });
+    for (const agent of ["codex", "hermes", "open-claw", "grok-build", "opencode", "cursor"])
+      expect(identity(agent)).toBe(former(agent));
+    expect(identity("claude-code")).toBe(
+      former("claude-code").replace(/}$/, ',"claudeLineage":1}'),
     );
   });
 });

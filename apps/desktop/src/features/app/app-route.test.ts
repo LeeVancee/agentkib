@@ -43,4 +43,20 @@ describe("workspaceSearchForPage", () => {
     expect(workspaceSearchForPage(current, "changes")).toMatchObject(current);
     expect(workspaceSearchForPage(current, "overview")).toEqual({ gitSubview: undefined });
   });
+
+  it("carries the pre-compaction history choice with the rest of the continuation state", () => {
+    const current: AppSearch = {
+      handoffSession: "session",
+      handoffTarget: "codex",
+      handoffBudget: 120_000,
+      handoffFormat: "markdown",
+      handoffPreCompaction: true,
+      handoffResume: "return",
+    };
+
+    expect(workspaceSearchForPage(current, "sessions")).toMatchObject(current);
+    expect(workspaceSearchForPage(current, "changes")).toMatchObject(current);
+    expect(workspaceSearchForPage(current, "overview")).toEqual({ gitSubview: undefined });
+    expect(workspaceSearchForPage({ handoffPreCompaction: true }, "git")).toEqual({});
+  });
 });

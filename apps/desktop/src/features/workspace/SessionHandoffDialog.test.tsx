@@ -2,9 +2,10 @@
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
-import { initializeI18n } from "@/core/i18n";
+import { changeLocale, initializeI18n } from "@/core/i18n";
 import type {
   ConversationSessionSummary,
   SessionHandoffDraft,
@@ -83,6 +84,7 @@ const draft: SessionHandoffDraft = {
   },
   archive_id: "00000000-0000-4000-8000-000000000000",
   mcp_available: false,
+  include_pre_compaction_history: false,
   losses: [],
 };
 
@@ -546,6 +548,231 @@ describe("SessionHandoffDialog", () => {
       draft.history_budget_tokens,
       undefined,
       "frozen-target",
+    );
+  });
+
+  describe("pre-compaction history", () => {
+    const claudeSession = { ...session, agent: "claude-code" } as ConversationSessionSummary;
+    const optionName = /Include history from before compaction/;
+    const renderDialog = (
+      source: ConversationSessionSummary,
+      props: Partial<ComponentProps<typeof SessionHandoffDialog>> = {},
+    ) =>
+      render(
+        <SessionHandoffDialog
+          workspace={workspace}
+          session={source}
+          targetAgents={["codex"]}
+          onClose={vi.fn()}
+          onPlanned={vi.fn()}
+          onMcpConnectionPlanned={vi.fn()}
+          {...props}
+        />,
+      );
+    const openAdvanced = async () =>
+      fireEvent.click(await screen.findByRole("button", { name: "Advanced options" }));
+
+    it("is offered for Claude sources only and starts unchecked", async () => {
+      renderDialog(claudeSession);
+      await openAdvanced();
+      expect(await screen.findByRole("checkbox", { name: optionName })).not.toBeChecked();
+      expect(screen.getByText(/marks each compaction point/)).toBeVisible();
+      cleanup();
+
+      renderDialog(session);
+      await openAdvanced();
+      expect(screen.queryByRole("checkbox", { name: optionName })).toBeNull();
+    });
+
+    it("leaves the request unchanged by default and sends the choice when it is made", async () => {
+      vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
+        status: "ready",
+        draft: { ...draft, window_strategy: "full", archive_id: undefined },
+      });
+      renderDialog(claudeSession);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+      await waitFor(() => expect(api.prepareSessionHandoff).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(api.prepareSessionHandoff).mock.calls[0]![0]).not.toHaveProperty(
+        "include_pre_compaction_history",
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "Back" }));
+
+      await openAdvanced();
+      fireEvent.click(await screen.findByRole("checkbox", { name: optionName }));
+      expect(screen.getByRole("checkbox", { name: optionName })).toBeChecked();
+      fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+      await waitFor(() => expect(api.prepareSessionHandoff).toHaveBeenCalledTimes(2));
+      expect(api.prepareSessionHandoff).toHaveBeenLastCalledWith(
+        expect.objectContaining({ include_pre_compaction_history: true }),
+      );
+    });
+
+    it("plans with the choice echoed by the reviewed preview", async () => {
+      vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
+        status: "ready",
+        draft: {
+          ...draft,
+          window_strategy: "full",
+          archive_id: undefined,
+          include_pre_compaction_history: true,
+        },
+      });
+      vi.mocked(api.planSessionHandoff)
+        .mockReset()
+        .mockResolvedValue({
+          change_set: {} as import("@/core/types").ChangeSet,
+          launch_request: {
+            mode: "native-session",
+            workspace_id: workspace.id,
+            target_agent: "codex",
+            target_session_id: "target",
+            target_path: "/target",
+          },
+        });
+      renderDialog(claudeSession, {
+        initialRequest: {
+          sessionId: session.id,
+          targetAgent: "codex",
+          historyBudgetTokens: 120000,
+          format: "markdown",
+          includePreCompactionHistory: true,
+          autoPrepare: true,
+        },
+      });
+      await waitFor(() =>
+        expect(api.prepareSessionHandoff).toHaveBeenCalledWith(
+          expect.objectContaining({ include_pre_compaction_history: true }),
+        ),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "Review import changes" }));
+      await waitFor(() => expect(api.planSessionHandoff).toHaveBeenCalledTimes(1));
+      const args = vi.mocked(api.planSessionHandoff).mock.calls[0]!;
+      expect(args).toHaveLength(15);
+      expect(args[14]).toBe(true);
+    });
+
+    it("keeps the choice when the MCP connection step sends the user away and back", async () => {
+      const onMcpConnectionPlanned = vi.fn();
+      vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
+        status: "ready",
+        draft: { ...draft, include_pre_compaction_history: true },
+      });
+      vi.mocked(api.planSessionMcpConnection).mockResolvedValue({
+        id: "change-set",
+        project_root: "/workspace",
+        created_at: "2026-09-02T00:00:00Z",
+        changes: [
+          {
+            target: "/workspace/.codex/config.toml",
+            scope: "project",
+            before: "",
+            after: "[mcp_servers.agentkib]",
+            risk: "medium",
+            validator: "toml",
+          },
+        ],
+        requires_home_approval: false,
+      });
+      renderDialog(claudeSession, {
+        onMcpConnectionPlanned,
+        initialRequest: {
+          sessionId: session.id,
+          targetAgent: "codex",
+          historyBudgetTokens: 120000,
+          format: "markdown",
+          includePreCompactionHistory: true,
+          autoPrepare: true,
+        },
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Connect Codex MCP" }));
+      await waitFor(() =>
+        expect(onMcpConnectionPlanned).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "change-set" }),
+          {
+            sessionId: "session",
+            targetAgent: "codex",
+            historyBudgetTokens: 120000,
+            format: "markdown",
+            includePreCompactionHistory: true,
+          },
+        ),
+      );
+    });
+
+    const wording = {
+      "en-US": {
+        option: "Include history from before compaction",
+        counted:
+          "3 timeline entries from before the last compaction are not included; the context summary stands in for them",
+        unlinked:
+          "Earlier history before a compaction could not be located in the transcript and is not included",
+      },
+      "zh-CN": {
+        option: "包含压缩前的历史",
+        counted: "最近一次压缩之前的 3 个时间线节点未包含，由上下文摘要代替",
+        unlinked: "压缩之前的更早历史在记录中无法定位，未包含",
+      },
+      "zh-TW": {
+        option: "包含壓縮前的歷史",
+        counted: "最近一次壓縮之前的 3 個時間線節點未包含，由上下文摘要代替",
+        unlinked: "壓縮之前的更早歷史在記錄中無法定位，未包含",
+      },
+      "ja-JP": {
+        option: "圧縮前の履歴を含める",
+        counted:
+          "直近の圧縮より前のタイムライン 3 件は含まれず、コンテキスト要約が代わりになります",
+        unlinked: "圧縮より前の履歴は記録内で見つからず、含まれません",
+      },
+    } as const;
+    it.each(Object.keys(wording) as Array<keyof typeof wording>)(
+      "declares the compaction losses and names the option in %s",
+      async (locale) => {
+        await changeLocale(locale);
+        try {
+          vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
+            status: "ready",
+            draft: {
+              ...draft,
+              window_strategy: "full",
+              archive_id: undefined,
+              losses: [
+                { code: "compacted-history", count: 3 },
+                { code: "compaction-link-unavailable", count: 1 },
+              ],
+            },
+          });
+          renderDialog(claudeSession, {
+            initialRequest: {
+              sessionId: session.id,
+              targetAgent: "codex",
+              historyBudgetTokens: 120000,
+              format: "markdown",
+              autoPrepare: true,
+            },
+          });
+          expect(await screen.findByText(wording[locale].counted)).toBeVisible();
+          expect(screen.getByText(wording[locale].unlinked)).toBeVisible();
+          // Both are acknowledgement losses, so the review button waits for the checkbox.
+          expect(screen.getByRole("checkbox")).not.toBeChecked();
+          cleanup();
+
+          vi.mocked(api.prepareSessionHandoff).mockReset();
+          renderDialog(claudeSession);
+          fireEvent.click(
+            await screen.findByRole("button", {
+              name: /Advanced|高级选项|進階選項|詳細オプション/,
+            }),
+          );
+          expect(
+            await screen.findByRole("checkbox", { name: new RegExp(wording[locale].option) }),
+          ).toBeVisible();
+        } finally {
+          await changeLocale("en-US");
+        }
+      },
     );
   });
 });

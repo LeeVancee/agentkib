@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-import { sessionDocument, type SessionDocument } from "./session-model";
+import { sessionDocument, type DocumentOptions, type SessionDocument } from "./session-model";
 import { sanitizeSessionText } from "./session-handoff";
 import { jsonTimestamp } from "./session-history";
 import { messageText, type ConversationEventPage } from "./session-events";
@@ -11,6 +11,7 @@ const MAX_TRANSCRIPT_BYTES = 256 * 1024 * 1024;
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
 type RecordLine = { line: number; value: Record<string, any> };
 type LossCode = SessionDocument["losses"][number]["code"];
+type Turn = SessionDocument["turns"][number];
 export interface DocumentSource {
   workspace_id: string;
   agent: SessionAgent;
@@ -145,40 +146,150 @@ function loss(losses: Map<LossCode, number>, code: LossCode, count = 1): void {
   if (count > 0) losses.set(code, (losses.get(code) ?? 0) + count);
 }
 
+/** Records reachable from one root through `parentUuid`; the root may be a compaction boundary. */
+export interface LineageSegment {
+  /** Always disjoint from every other segment of the same lineage. */
+  uuids: Set<string>;
+  /** The `compact_boundary` record at the root of this segment, or null at the start of the file. */
+  boundary: RecordLine | null;
+}
+export interface Lineage {
+  /** Oldest first; the last one is the segment the leaf belongs to. */
+  segments: LineageSegment[];
+  /** A boundary at the oldest end could not be joined to the history it compacted. */
+  unlinked: boolean;
+}
+const MAX_LINEAGE_SEGMENTS = 1024;
+
+/**
+ * Walk `parentUuid` pointers from `start` to a record without a usable parent. Reaching a record
+ * that is already part of an accepted segment, or this walk's own records again (a cycle), means
+ * the history cannot be separated from the part that is already taken, so the walk fails.
+ */
+function walkFrom(
+  start: string,
+  parents: Map<string, string | null>,
+  visited: Set<string>,
+): { uuids: Set<string>; root: string } | null {
+  const uuids = new Set<string>();
+  let cursor = start;
+  for (;;) {
+    if (visited.has(cursor) || uuids.has(cursor)) return null;
+    uuids.add(cursor);
+    const parent = parents.get(cursor);
+    if (!parent || !parents.has(parent)) return { uuids, root: cursor };
+    cursor = parent;
+  }
+}
+
+/**
+ * A boundary has no `parentUuid`; the history it compacted is reached through
+ * `logicalParentUuid`, or through the head of the segment Claude Code preserved. The first
+ * candidate that joins wins, so a boundary whose logical parent was written after it (a preserved
+ * segment) is still connected through its head.
+ */
+function linkEarlier(
+  boundary: RecordLine,
+  parents: Map<string, string | null>,
+  visited: Set<string>,
+): { uuids: Set<string>; root: string } | null {
+  const candidates = new Set<unknown>([
+    boundary.value.logicalParentUuid,
+    get(boundary.value, "compactMetadata", "preservedSegment", "headUuid"),
+  ]);
+  for (const start of candidates) {
+    if (typeof start !== "string" || !parents.has(start)) continue;
+    const found = walkFrom(start, parents, visited);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * The records of the conversation Claude Code is (or was last) in, split at each compaction.
+ * The newest segment is the chain `parentUuid` alone reaches from the leaf, built from the last
+ * occurrence of each uuid exactly as the single-chain reader always did. Older segments are
+ * reached through boundaries and built from the first occurrence, because a record that was later
+ * rewritten can carry a different parent that no longer belongs to its original segment.
+ * Returns null when there is no leaf, so callers keep treating the file as unfiltered.
+ */
+export function claudeLineage(rows: RecordLine[], includeSidechain: boolean): Lineage | null {
+  const lastParents = new Map<string, string | null>();
+  const firstParents = new Map<string, string | null>();
+  const lastBoundaries = new Map<string, RecordLine>();
+  const firstBoundaries = new Map<string, RecordLine>();
+  const sidechains = new Map<string, boolean>();
+  let lastLeaf: string | undefined;
+  for (const row of rows) {
+    const { value } = row;
+    if (typeof value.uuid !== "string") continue;
+    const sidechain = value.isSidechain === true;
+    const parent = typeof value.parentUuid === "string" ? value.parentUuid : null;
+    const boundary = !parent && value.type === "system" && value.subtype === "compact_boundary";
+    if (!firstParents.has(value.uuid)) {
+      firstParents.set(value.uuid, parent);
+      if (boundary) firstBoundaries.set(value.uuid, row);
+    }
+    lastParents.set(value.uuid, parent);
+    if (boundary) lastBoundaries.set(value.uuid, row);
+    else lastBoundaries.delete(value.uuid);
+    sidechains.set(value.uuid, sidechain);
+    if (["user", "assistant"].includes(value.type) && (includeSidechain || !sidechain))
+      lastLeaf = value.uuid;
+  }
+  let explicitLeaf: string | undefined;
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const leaf = rows[index]!.value.leafUuid;
+    if (
+      typeof leaf === "string" &&
+      lastParents.has(leaf) &&
+      (includeSidechain || !sidechains.get(leaf))
+    ) {
+      explicitLeaf = leaf;
+      break;
+    }
+  }
+  let current = explicitLeaf ?? lastLeaf;
+  if (!current) return null;
+  const newest = new Set<string>();
+  let root: string | null = null;
+  while (!newest.has(current)) {
+    newest.add(current);
+    const parent = lastParents.get(current);
+    if (!parent) {
+      root = current;
+      break;
+    }
+    current = parent;
+  }
+  const segments: LineageSegment[] = [{ uuids: newest, boundary: null }];
+  const visited = new Set(newest);
+  let oldest = { segment: segments[0]!, root, boundaries: lastBoundaries };
+  let unlinked = false;
+  while (oldest.root !== null) {
+    const boundary = oldest.boundaries.get(oldest.root);
+    if (!boundary) break;
+    oldest.segment.boundary = boundary;
+    const earlier =
+      segments.length < MAX_LINEAGE_SEGMENTS ? linkEarlier(boundary, firstParents, visited) : null;
+    if (!earlier) {
+      unlinked = true;
+      break;
+    }
+    for (const id of earlier.uuids) visited.add(id);
+    const segment: LineageSegment = { uuids: earlier.uuids, boundary: null };
+    segments.push(segment);
+    oldest = { segment, root: earlier.root, boundaries: firstBoundaries };
+  }
+  return { segments: segments.reverse(), unlinked };
+}
+
+/** The chain `parentUuid` alone reaches from the leaf: the newest segment of the lineage. */
 export function claudeActiveChain(
   rows: RecordLine[],
   includeSidechain: boolean,
 ): Set<string> | null {
-  const parents = new Map<string, string | null>();
-  const sidechains = new Map<string, boolean>();
-  const leaves: string[] = [];
-  for (const { value } of rows) {
-    if (typeof value.uuid !== "string") continue;
-    const sidechain = value.isSidechain === true;
-    parents.set(value.uuid, typeof value.parentUuid === "string" ? value.parentUuid : null);
-    sidechains.set(value.uuid, sidechain);
-    if (["user", "assistant"].includes(value.type) && (includeSidechain || !sidechain))
-      leaves.push(value.uuid);
-  }
-  const explicitLeaf = [...rows]
-    .reverse()
-    .map(({ value }) => value.leafUuid)
-    .find(
-      (leaf): leaf is string =>
-        typeof leaf === "string" &&
-        parents.has(leaf) &&
-        (includeSidechain || !sidechains.get(leaf)),
-    );
-  let current = explicitLeaf ?? leaves.pop();
-  if (!current) return null;
-  const chain = new Set<string>();
-  while (!chain.has(current)) {
-    chain.add(current);
-    const parent = parents.get(current);
-    if (!parent) break;
-    current = parent;
-  }
-  return chain;
+  return claudeLineage(rows, includeSidechain)?.segments.at(-1)?.uuids ?? null;
 }
 
 export function finishDocument(
@@ -234,6 +345,8 @@ export function finishDocument(
       "external-attachment",
       "reasoning-excluded",
       "source-content-truncated",
+      "compacted-history",
+      "compaction-link-unavailable",
     ].flatMap((code) =>
       losses.get(code as LossCode) ? [{ code, count: losses.get(code as LossCode) }] : [],
     ),
@@ -251,87 +364,228 @@ function textualMediaType(mediaType: string): boolean {
   );
 }
 
+/**
+ * Convert one conversation record into a timeline entry. `knownCalls` is the caller's record of
+ * tool calls seen so far (a result without one is an orphan) and `losses` collects what the
+ * conversion drops; pass scratch copies when only the number of entries matters.
+ */
+export function rowTurn(
+  { line, value }: RecordLine,
+  knownCalls: Set<string>,
+  losses: Map<LossCode, number>,
+): Turn | null {
+  const role = value.type === "assistant" ? "assistant" : "user";
+  const content = get(value, "message", "content");
+  if (content === undefined) return null;
+  const blocks: Turn["blocks"] = [];
+  const values = Array.isArray(content) ? content : [];
+  if (typeof content === "string" && !isClaudeEcho(content) && content.trim())
+    blocks.push({ type: "text", text: content });
+  for (const block of values) {
+    switch (block?.type) {
+      case "text":
+        if (typeof block.text === "string" && !isClaudeEcho(block.text) && block.text.trim())
+          blocks.push({ type: "text", text: block.text });
+        break;
+      case "tool_use": {
+        const callId = typeof block.id === "string" ? block.id : "missing-call-id";
+        knownCalls.add(callId);
+        blocks.push({
+          type: "tool-call",
+          call_id: callId,
+          name: typeof block.name === "string" ? block.name : "tool",
+          input: block.input === undefined ? "" : compactJson(block.input),
+        });
+        break;
+      }
+      case "tool_result": {
+        const callId =
+          typeof block.tool_use_id === "string" ? block.tool_use_id : "missing-call-id";
+        if (!knownCalls.has(callId)) loss(losses, "orphan-tool-result");
+        blocks.push({
+          type: "tool-result",
+          call_id: callId,
+          output: block.content === undefined ? "" : compactJson(block.content),
+          is_error: block.is_error === true,
+        });
+        break;
+      }
+      case "image":
+      case "document": {
+        const base64 = get(block, "source", "type") === "base64";
+        const data = get(block, "source", "data");
+        if (base64 && typeof data === "string" && data.trim())
+          blocks.push({
+            type: "attachment",
+            kind: block.type === "document" ? "document" : "image",
+            media_type:
+              typeof get(block, "source", "media_type") === "string"
+                ? (get(block, "source", "media_type") as string)
+                : "application/octet-stream",
+            filename: typeof block.name === "string" ? block.name : undefined,
+            inline_base64: data,
+          });
+        else loss(losses, "external-attachment");
+        break;
+      }
+      case "thinking":
+      case "redacted_thinking":
+        loss(losses, "reasoning-excluded");
+        break;
+      default:
+        if (block?.type) loss(losses, "unsupported-attachment");
+    }
+  }
+  return blocks.length
+    ? { id: `turn-${line}`, role, timestamp: jsonTimestamp(value.timestamp), blocks }
+    : null;
+}
+
+// Fixed English annotations. Claude Code stores the summary as a user record and every target
+// format only has user/assistant roles, so the text itself must say the user did not write it.
+const SUMMARY_NOTICE =
+  "[AgentKib: context summary generated by Claude Code when it compacted this conversation. It summarizes earlier turns and is not a message written by the user.]";
+
+/** The compaction summary of a segment: the first summary record in it, else a child of the boundary. */
+function findSummary(
+  segmentRows: RecordLine[],
+  boundary: RecordLine,
+  rows: RecordLine[],
+): RecordLine | null {
+  const isSummary = ({ value }: RecordLine) =>
+    value.type === "user" && value.isCompactSummary === true;
+  const inside = segmentRows.find(isSummary);
+  if (inside) return inside;
+  const id = boundary.value.uuid;
+  if (typeof id !== "string") return null;
+  return rows.find((row) => isSummary(row) && row.value.parentUuid === id) ?? null;
+}
+
+function summaryTurn({ line, value }: RecordLine): Turn | null {
+  const content = get(value, "message", "content");
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .flatMap((block) =>
+              block?.type === "text" && typeof block.text === "string" ? [block.text] : [],
+            )
+            .join("\n")
+        : "";
+  if (!text.trim()) return null;
+  return {
+    id: `summary-${line}`,
+    role: "user",
+    kind: "context-summary",
+    timestamp: jsonTimestamp(value.timestamp),
+    blocks: [{ type: "text", text: `${SUMMARY_NOTICE}\n\n${text}` }],
+  };
+}
+
+function boundaryTurn(
+  { line, value }: RecordLine,
+  index: number,
+  total: number,
+  state: "summarized" | "without-summary" | "unlinked",
+): Turn {
+  const trigger = get(value, "compactMetadata", "trigger");
+  const named = trigger === "auto" || trigger === "manual" ? `, trigger: ${trigger}` : "";
+  const text =
+    state === "unlinked"
+      ? `[AgentKib: Claude Code compacted the conversation here (compaction ${index} of ${total}). Earlier history before this point could not be located in the transcript and is not included.]`
+      : `[AgentKib: Claude Code compacted the conversation here (compaction ${index} of ${total}${named}). Messages above are the original earlier history; ${
+          state === "summarized"
+            ? "the context summary below is what Claude carried forward"
+            : "no context summary was found in the transcript"
+        }.]`;
+  return {
+    id: `boundary-${line}`,
+    role: "user",
+    kind: "compaction-boundary",
+    timestamp: jsonTimestamp(value.timestamp),
+    blocks: [{ type: "text", text }],
+  };
+}
+
 export function readClaudeDocument(
   source: DocumentSource,
   file: string,
   includeSidechain: boolean,
+  options: DocumentOptions = {},
 ): SessionDocument {
   const snapshot = records(file);
-  const chain = claudeActiveChain(snapshot.rows, includeSidechain);
-  const turns: SessionDocument["turns"] = [];
+  const lineage = claudeLineage(snapshot.rows, includeSidechain);
+  const turns: Turn[] = [];
   const losses = new Map<LossCode, number>();
-  const knownCalls = new Set<string>();
   loss(losses, "damaged-record", snapshot.damaged);
   loss(losses, "source-content-truncated", snapshot.truncated);
-  for (const { line, value } of snapshot.rows) {
-    if (chain && (typeof value.uuid !== "string" || !chain.has(value.uuid))) continue;
-    if (!includeSidechain && value.isSidechain === true) continue;
-    if (!["user", "assistant"].includes(value.type) || value.isCompactSummary === true) continue;
-    const role = value.type === "assistant" ? "assistant" : "user";
-    const content = get(value, "message", "content");
-    if (content === undefined) continue;
-    const blocks: SessionDocument["turns"][number]["blocks"] = [];
-    const values = Array.isArray(content) ? content : [];
-    if (typeof content === "string" && !isClaudeEcho(content) && content.trim())
-      blocks.push({ type: "text", text: content });
-    for (const block of values) {
-      switch (block?.type) {
-        case "text":
-          if (typeof block.text === "string" && !isClaudeEcho(block.text) && block.text.trim())
-            blocks.push({ type: "text", text: block.text });
-          break;
-        case "tool_use": {
-          const callId = typeof block.id === "string" ? block.id : "missing-call-id";
-          knownCalls.add(callId);
-          blocks.push({
-            type: "tool-call",
-            call_id: callId,
-            name: typeof block.name === "string" ? block.name : "tool",
-            input: block.input === undefined ? "" : compactJson(block.input),
-          });
-          break;
-        }
-        case "tool_result": {
-          const callId =
-            typeof block.tool_use_id === "string" ? block.tool_use_id : "missing-call-id";
-          if (!knownCalls.has(callId)) loss(losses, "orphan-tool-result");
-          blocks.push({
-            type: "tool-result",
-            call_id: callId,
-            output: block.content === undefined ? "" : compactJson(block.content),
-            is_error: block.is_error === true,
-          });
-          break;
-        }
-        case "image":
-        case "document": {
-          const base64 = get(block, "source", "type") === "base64";
-          const data = get(block, "source", "data");
-          if (base64 && typeof data === "string" && data.trim())
-            blocks.push({
-              type: "attachment",
-              kind: block.type === "document" ? "document" : "image",
-              media_type:
-                typeof get(block, "source", "media_type") === "string"
-                  ? (get(block, "source", "media_type") as string)
-                  : "application/octet-stream",
-              filename: typeof block.name === "string" ? block.name : undefined,
-              inline_base64: data,
-            });
-          else loss(losses, "external-attachment");
-          break;
-        }
-        case "thinking":
-        case "redacted_thinking":
-          loss(losses, "reasoning-excluded");
-          break;
-        default:
-          if (block?.type) loss(losses, "unsupported-attachment");
-      }
+  const conversational = ({ value }: RecordLine) =>
+    (includeSidechain || value.isSidechain !== true) &&
+    ["user", "assistant"].includes(value.type) &&
+    value.isCompactSummary !== true;
+  const knownCalls = new Set<string>();
+  const emit = (row: RecordLine) => {
+    if (!conversational(row)) return;
+    const turn = rowTurn(row, knownCalls, losses);
+    if (turn) turns.push(turn);
+  };
+  if (!lineage?.segments.some((segment) => segment.boundary)) {
+    // Never compacted, or the active chain does not cross a boundary: the former single chain.
+    const chain = lineage?.segments[0]?.uuids;
+    for (const row of snapshot.rows) {
+      if (chain && (typeof row.value.uuid !== "string" || !chain.has(row.value.uuid))) continue;
+      emit(row);
     }
-    if (blocks.length)
-      turns.push({ id: `turn-${line}`, role, timestamp: jsonTimestamp(value.timestamp), blocks });
+    return finishDocument(source, turns, losses);
   }
+  const owner = new Map<string, number>();
+  for (const [index, segment] of lineage.segments.entries())
+    for (const id of segment.uuids) owner.set(id, index);
+  const buckets: RecordLine[][] = lineage.segments.map(() => []);
+  for (const row of snapshot.rows) {
+    const index = typeof row.value.uuid === "string" ? owner.get(row.value.uuid) : undefined;
+    if (index !== undefined) buckets[index]!.push(row);
+  }
+  const withHistory = options.includePreCompactionHistory === true;
+  const newest = lineage.segments.length - 1;
+  const total = lineage.segments.filter((segment) => segment.boundary).length;
+  let counted = 0;
+  let ordinal = 0;
+  for (const [index, segment] of lineage.segments.entries()) {
+    const rows = buckets[index]!;
+    if (!withHistory && index < newest) {
+      // Not part of the document: count its timeline entries with scratch state so the real
+      // document's tool-call bookkeeping and losses are not touched.
+      const scratchCalls = new Set<string>();
+      const scratchLosses = new Map<LossCode, number>();
+      for (const row of rows)
+        if (conversational(row) && rowTurn(row, scratchCalls, scratchLosses)) counted++;
+      continue;
+    }
+    if (segment.boundary) {
+      ordinal++;
+      const summarized = findSummary(rows, segment.boundary, snapshot.rows);
+      const summary = summarized ? summaryTurn(summarized) : null;
+      if (withHistory)
+        turns.push(
+          boundaryTurn(
+            segment.boundary,
+            ordinal,
+            total,
+            lineage.unlinked && index === 0
+              ? "unlinked"
+              : summary
+                ? "summarized"
+                : "without-summary",
+          ),
+        );
+      if (summary) turns.push(summary);
+    }
+    for (const row of rows) emit(row);
+  }
+  loss(losses, "compacted-history", counted);
+  if (lineage.unlinked) loss(losses, "compaction-link-unavailable");
   return finishDocument(source, turns, losses);
 }
 

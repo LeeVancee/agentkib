@@ -20,7 +20,7 @@ import { SessionStore, type NativeSession } from "./session-store";
 import { Commands } from "./commands";
 import { parameters, optionalString, unsigned } from "./rpc";
 import type { ConversationEventPage } from "./session-events";
-import type { SessionDocument } from "./session-model";
+import type { DocumentOptions, SessionDocument } from "./session-model";
 import {
   readClaudeDocument,
   readCodexDocument,
@@ -326,7 +326,8 @@ export class SessionReaders {
         throw new Error("Conversation provider is unavailable");
     }
   }
-  async document(sessionId: string): Promise<SessionDocument> {
+  /** `options` only change how Claude Code sources are read; every other source ignores them. */
+  async document(sessionId: string, options?: DocumentOptions): Promise<SessionDocument> {
     const summary = this.store.get(sessionId);
     if (!summary) throw new Error("Conversation metadata is no longer available");
     if (handoffActive()) {
@@ -343,6 +344,7 @@ export class SessionReaders {
           profiles,
           environment: this.env,
           identitySalt: this.store.identitySalt(),
+          ...(options ? { options } : {}),
         },
         () => {
           throw new Error("Handoff read worker is unavailable");
@@ -374,6 +376,7 @@ export class SessionReaders {
         summary as Parameters<typeof readClaudeDocument>[0],
         transcript,
         native.sidechain,
+        options,
       );
     }
     if (native.agent === "opencode")

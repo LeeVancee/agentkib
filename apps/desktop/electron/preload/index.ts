@@ -263,6 +263,7 @@ const desktopApi = Object.freeze({
       targetFingerprint?: string,
       targetSurface?: "cursor-ide",
       bindingId?: string,
+      includePreCompactionHistory?: boolean,
     ) =>
       ipcRenderer.invoke(
         "agentkib:session:plan-handoff",
@@ -280,6 +281,7 @@ const desktopApi = Object.freeze({
         targetFingerprint,
         targetSurface,
         bindingId,
+        includePreCompactionHistory,
       ),
     continueHandoff: (changeSet: unknown, launchRequest: unknown, approveHome: boolean) =>
       ipcRenderer.invoke(

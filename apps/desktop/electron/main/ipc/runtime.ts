@@ -26,6 +26,7 @@ import {
   skillVersionListRequest,
 } from "./skill-validation";
 import {
+  optionalBoolean,
   optionalPositiveInteger,
   optionalString,
   requireAgentKind,
@@ -236,6 +237,7 @@ export function registerRuntimeIpc({
         targetFingerprint: unknown,
         targetSurface: unknown,
         bindingId: unknown,
+        includePreCompactionHistory: unknown,
       ) => ({
         sessionId: requireString(sessionId, "sessionId"),
         workspaceId: requireString(workspaceId, "workspaceId"),
@@ -252,6 +254,10 @@ export function registerRuntimeIpc({
         targetFingerprint: optionalString(targetFingerprint, "targetFingerprint"),
         targetSurface: optionalString(targetSurface, "targetSurface"),
         bindingId: optionalString(bindingId, "bindingId"),
+        includePreCompactionHistory: optionalBoolean(
+          includePreCompactionHistory,
+          "includePreCompactionHistory",
+        ),
       }),
     );
     forward(

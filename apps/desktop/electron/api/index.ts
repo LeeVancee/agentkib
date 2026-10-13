@@ -359,6 +359,7 @@ export interface DesktopApi {
       targetFingerprint?: string,
       targetSurface?: "cursor-ide",
       bindingId?: string,
+      includePreCompactionHistory?: boolean,
     ): Promise<PlannedSessionHandoff>;
     continueHandoff(
       changeSet: ChangeSet,

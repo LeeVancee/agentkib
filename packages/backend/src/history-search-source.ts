@@ -24,6 +24,7 @@ import { canonicalize, pathIdentity } from "./paths";
 import { belongsToWorkspace, jsonTimestamp, stableNativeRef } from "./session-history";
 import { userHome } from "./mcp-config-read";
 import type { SessionDocument } from "./session-model";
+import { historySourceIdentity } from "./history-search-source-identity";
 import { readJsonlSearchSource } from "./history-search-source-jsonl";
 import { readHermesSearchSource, readOpenClawSearchSource } from "./history-search-source-sql";
 import { emitMessage, object, readSourceSnapshot } from "./history-search-source-records";
@@ -300,25 +301,7 @@ export async function readHistorySearchSource(
       if (nativeEvidence(value.session) !== originalNative)
         throw new Error("history-source-changed");
     };
-    sink.fingerprint(
-      JSON.stringify({
-        // Parser/redaction changes must rebuild old cache generations and invalidate locators.
-        version: 7,
-        sessionId: input.sessionId,
-        agent: input.summary.agent,
-        // Labels are part of the reviewed send text, even when native message bytes are unchanged.
-        title:
-          input.summary.title === null
-            ? null
-            : sanitizeSessionText(input.summary.title, { value: 0 }),
-        // The directory summary may lag behind independent native metadata/WAL updates.
-        nativeEvidence: originalNative,
-        workspaceId: input.summary.workspace_id,
-        workspace: resolved.workspace,
-        native: resolved.native.native_ref,
-        profiles: input.profiles,
-      }),
-    );
+    sink.fingerprint(historySourceIdentity(input, originalNative, resolved));
     const { native, workspace, transcript } = resolved;
     switch (native.agent) {
       case "codex":

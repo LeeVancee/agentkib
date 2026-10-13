@@ -9,7 +9,7 @@ import { userHome } from "./mcp-config-read";
 import { claudeProjectKey } from "./claude-project-path";
 import { buildSessionArchive } from "./session-archive";
 import { planSessionWindow, renderHandoff, sanitizeHandoffExport } from "./session-handoff";
-import type { SessionDocument } from "./session-model";
+import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import type { BackendStore } from "./store";
 import { Commands } from "./commands";
@@ -35,6 +35,7 @@ const requestSchema = z.object({
   acceptLosses: z.boolean(),
   historyBudgetTokens: z.number().int().positive(),
   archiveId: z.string().nullable().optional(),
+  includePreCompactionHistory: z.boolean().optional(),
 });
 const planEnvelopeSchema = requestSchema.extend({
   mcpHubStatus: z.object({ running: z.boolean(), port: z.number().int().min(1).max(65535) }),
@@ -238,7 +239,7 @@ export function renderNative(
 
 export async function planSessionHandoff(
   value: unknown,
-  sessions: { document(id: string): Promise<SessionDocument> },
+  sessions: { document(id: string, options?: DocumentOptions): Promise<SessionDocument> },
   sessionStore: SessionStore,
   store: BackendStore,
   dataDir: string,
@@ -250,7 +251,13 @@ export async function planSessionHandoff(
   const source = sessionStore.get(request.sessionId);
   if (!source || source.workspace_id !== request.workspaceId)
     throw new Error("Conversation metadata is no longer available");
-  const original = await sessions.document(request.sessionId);
+  // The choice made at preview time: the source is read again here and again when a persisted
+  // plan continues, and all three reads must see the same document.
+  const includePreCompactionHistory = request.includePreCompactionHistory === true;
+  const original = await sessions.document(
+    request.sessionId,
+    includePreCompactionHistory ? { includePreCompactionHistory } : undefined,
+  );
   const workspace = resolveWorkspaceIdentity(store, request.workspaceId);
   const continuationWorkspaceId = workspace.archiveWorkspaceId;
   const document = structuredClone(original);
@@ -304,6 +311,7 @@ export async function planSessionHandoff(
       expected: prepared.expected,
       payload: prepared.payload,
       marker: prepared.marker,
+      ...(includePreCompactionHistory ? { include_pre_compaction_history: true } : {}),
     };
     const { content, hash: planHash } = await serializeHandoff(plan, true, false);
     const directory = path.join(
@@ -395,6 +403,7 @@ export async function planSessionHandoff(
         request.targetAgent,
         document,
         snapshot,
+        includePreCompactionHistory,
       );
     }
     if (request.targetAgent !== "codex" && request.targetAgent !== "claude-code")

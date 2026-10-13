@@ -433,6 +433,7 @@ function WorkspaceChangesRoute() {
           handoffFormat: search.handoffFormat,
           handoffSurface: search.handoffSurface,
           handoffBinding: search.handoffBinding,
+          handoffPreCompaction: search.handoffPreCompaction,
           handoffResume: autoPrepare ? ("recheck" as const) : ("return" as const),
         }),
       });
@@ -443,6 +444,7 @@ function WorkspaceChangesRoute() {
       search.handoffFormat,
       search.handoffSurface,
       search.handoffBinding,
+      search.handoffPreCompaction,
       search.handoffSession,
       search.handoffTarget,
       workspaceId,

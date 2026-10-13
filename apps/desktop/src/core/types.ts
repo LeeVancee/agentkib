@@ -1286,6 +1286,8 @@ export type SessionLossCode =
   | "external-attachment"
   | "reasoning-excluded"
   | "source-content-truncated"
+  | "compacted-history"
+  | "compaction-link-unavailable"
   | "target-tool-summary"
   | "target-attachment-omitted";
 export interface SessionLoss {
@@ -1341,6 +1343,8 @@ export interface SessionHandoffRequest {
   history_budget_tokens: number;
   target_surface?: "cursor-ide";
   binding_id?: string;
+  /** Claude Code sources only: also hand over the history that a compaction replaced. */
+  include_pre_compaction_history?: boolean;
 }
 export type CursorBridgeRequest =
   | { action: "status"; workspaceId: string }
@@ -1377,6 +1381,8 @@ export interface SessionHandoffDraft {
   capabilities: ContinuationCapabilities;
   stats: SessionImportStats;
   history_budget_tokens: number;
+  /** The choice this preview was prepared with; planning must repeat it. */
+  include_pre_compaction_history: boolean;
   window_strategy: SessionWindowStrategy;
   window_stats: SessionWindowStats;
   archive_id?: string;

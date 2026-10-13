@@ -260,6 +260,7 @@ export const api = {
     targetFingerprint?: string,
     targetSurface?: "cursor-ide",
     bindingId?: string,
+    includePreCompactionHistory?: boolean,
   ) =>
     desktopApi().workspace.planHandoff(
       sessionId,
@@ -276,6 +277,7 @@ export const api = {
       targetFingerprint,
       targetSurface,
       bindingId,
+      includePreCompactionHistory,
     ),
   continueSessionHandoff: (
     changeSet: ChangeSet,

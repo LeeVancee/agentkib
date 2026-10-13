@@ -1586,6 +1586,8 @@
   "handoff.capabilityReason.cli-unavailable": "The target Agent CLI is unavailable.",
   "handoff.capabilityReason.unsupported-version-or-schema": "The target version or local session schema has not been verified.",
   "handoff.capabilityReason.agent-home-not-writable": "The target Agent Home cannot be written safely.",
+  "handoff.capabilityReason.session-format-unverified": "AgentKib could not confirm the format of the newest local Claude Code session file, so native session import is turned off.",
+  "handoff.capabilityReason.project-directory-unverified": "AgentKib cannot determine which directory Claude Code uses for this workspace's sessions (the path is too long or the project directory name is overridden), so native session import is turned off.",
   "handoff.stats": "{{turns}} timeline entries · {{tools}} tool calls · {{attachments}} attachments",
   "handoff.fullEstimate": "Full history {{tokens}}",
   "handoff.loss.damaged-record": "{{count}} damaged records cannot be transferred",

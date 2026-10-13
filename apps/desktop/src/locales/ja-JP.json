@@ -1586,6 +1586,8 @@
   "handoff.capabilityReason.cli-unavailable": "対象 Agent の CLI を利用できません。",
   "handoff.capabilityReason.unsupported-version-or-schema": "対象バージョンまたはローカルセッション形式は未検証です。",
   "handoff.capabilityReason.agent-home-not-writable": "対象 Agent Home に安全に書き込めません。",
+  "handoff.capabilityReason.session-format-unverified": "AgentKib はローカルの最新の Claude Code セッションファイルの形式を確認できないため、ネイティブセッションの取り込みを無効にしました。",
+  "handoff.capabilityReason.project-directory-unverified": "AgentKib は、このワークスペースのセッションを Claude Code が保存するディレクトリを特定できないため（パスが長すぎる、またはプロジェクトディレクトリ名が上書きされています）、ネイティブセッションの取り込みを無効にしました。",
   "handoff.stats": "タイムライン {{turns}} 件 · ツール呼び出し {{tools}} 件 · 添付 {{attachments}} 件",
   "handoff.fullEstimate": "全履歴 {{tokens}}",
   "handoff.loss.damaged-record": "破損した {{count}} 件の記録は移行できません",

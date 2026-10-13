@@ -6,6 +6,7 @@ import { z } from "zod";
 import { pushChange, type ChangeSet, type FileChange } from "./change-plan";
 import { hash } from "./doctor-files";
 import { userHome } from "./mcp-config-read";
+import { claudeProjectKey } from "./claude-project-path";
 import { buildSessionArchive } from "./session-archive";
 import { planSessionWindow, renderHandoff, sanitizeHandoffExport } from "./session-handoff";
 import type { SessionDocument } from "./session-model";
@@ -398,7 +399,12 @@ export async function planSessionHandoff(
     }
     if (request.targetAgent !== "codex" && request.targetAgent !== "claude-code")
       throw new Error("Target Agent does not support native sessions");
-    const capability = await nativeImportCapability(request.targetAgent, commands, environment);
+    const capability = await nativeImportCapability(
+      request.targetAgent,
+      commands,
+      environment,
+      project,
+    );
     if (!capability.supported) throw new Error("Native session import is no longer available");
     const sessionId = randomUUID();
     const date = new Date(generated);
@@ -415,11 +421,13 @@ export async function planSessionHandoff(
         `rollout-${filenameStamp}-${sessionId}.jsonl`,
       );
     } else {
-      const projectKey = project.replaceAll("/", "-").replaceAll("\\", "-").replaceAll(":", "-");
+      const projectKey = claudeProjectKey(project, environment);
+      if (!projectKey.ok)
+        throw new Error("Claude Code project directory cannot be determined for this workspace");
       target = path.join(
         environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"),
         "projects",
-        projectKey,
+        projectKey.key,
         `${sessionId}.jsonl`,
       );
     }

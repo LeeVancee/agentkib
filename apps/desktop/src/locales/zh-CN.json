@@ -1586,6 +1586,8 @@
   "handoff.capabilityReason.cli-unavailable": "目标 Agent CLI 当前不可用。",
   "handoff.capabilityReason.unsupported-version-or-schema": "目标版本或本地会话格式尚未验证。",
   "handoff.capabilityReason.agent-home-not-writable": "目标 Agent Home 不可安全写入。",
+  "handoff.capabilityReason.session-format-unverified": "AgentKib 无法确认本地最新 Claude Code 会话文件的格式，已关闭原生会话导入。",
+  "handoff.capabilityReason.project-directory-unverified": "AgentKib 无法确定 Claude Code 为该工作区存放会话的目录（路径过长或已覆盖项目目录名），已关闭原生会话导入。",
   "handoff.stats": "{{turns}} 个时间线节点 · {{tools}} 次工具调用 · {{attachments}} 个附件",
   "handoff.fullEstimate": "完整历史 {{tokens}}",
   "handoff.loss.damaged-record": "{{count}} 条损坏记录无法迁移",

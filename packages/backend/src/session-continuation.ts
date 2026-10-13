@@ -15,6 +15,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { claudeProjectKey } from "./claude-project-path";
+import { probeClaudeSessionFormat } from "./claude-session-probe";
 import { resolveCommand } from "./command-resolution";
 import { isReparseOrSymlink } from "./native-files";
 import { userHome } from "./mcp-config-read";
@@ -130,26 +132,16 @@ function nativeSessionRoot(target: "codex" | "claude-code", env: NodeJS.ProcessE
     : path.join(env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects");
 }
 
-function schemaMatches(value: unknown, target: "codex" | "claude-code"): boolean {
+/** Claude Code is judged by `probeClaudeSessionFormat`; only Codex still checks the first record. */
+function codexSchemaMatches(value: unknown): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  if (target === "codex") {
-    const payload = record.payload;
-    return (
-      record.type === "session_meta" &&
-      payload !== null &&
-      typeof payload === "object" &&
-      typeof (payload as Record<string, unknown>).id === "string"
-    );
-  }
+  const payload = record.payload;
   return (
-    ((record.type === "user" || record.type === "assistant") &&
-      typeof record.sessionId === "string" &&
-      typeof record.uuid === "string") ||
-    (record.type === "queue-operation" &&
-      typeof record.sessionId === "string" &&
-      typeof record.operation === "string" &&
-      !!record.operation)
+    record.type === "session_meta" &&
+    payload !== null &&
+    typeof payload === "object" &&
+    typeof (payload as Record<string, unknown>).id === "string"
   );
 }
 
@@ -193,6 +185,7 @@ export async function nativeImportCapability(
   target: string,
   commands: Commands,
   env: NodeJS.ProcessEnv,
+  project: string,
 ): Promise<Capability> {
   if (target === "antigravity")
     return { supported: false, beta: false, reason: "native-history-import-unsupported" };
@@ -213,19 +206,21 @@ export async function nativeImportCapability(
     });
     versionMatches = result.success && cliVersionMatches(result.bytes.toString("utf8"), expected);
   } catch {}
-  const schemaPath = latestJsonl(nativeSessionRoot(target, env));
-  const validSchema =
-    schemaPath === null ? true : schemaMatches(firstJsonlRecord(schemaPath), target);
-  const formatMatches = versionMatches && validSchema;
-  const writable = safeWritableRoot(nativeSessionRoot(target, env));
-  const supported = formatMatches && writable;
-  return {
-    supported,
-    beta: true,
-    ...(!supported
-      ? { reason: !formatMatches ? "unsupported-version-or-schema" : "agent-home-not-writable" }
-      : {}),
-  };
+  const unsupported = (reason: string): Capability => ({ supported: false, beta: true, reason });
+  if (!versionMatches) return unsupported("unsupported-version-or-schema");
+  const root = nativeSessionRoot(target, env);
+  if (target === "claude-code") {
+    // The session file must land in the directory Claude Code will look in for this workspace.
+    if (!claudeProjectKey(project, env).ok) return unsupported("project-directory-unverified");
+    if (!probeClaudeSessionFormat(root).ok) return unsupported("session-format-unverified");
+  } else {
+    const schemaPath = latestJsonl(root);
+    if (schemaPath !== null && !codexSchemaMatches(firstJsonlRecord(schemaPath)))
+      return unsupported("unsupported-version-or-schema");
+  }
+  return safeWritableRoot(root)
+    ? { supported: true, beta: true }
+    : unsupported("agent-home-not-writable");
 }
 
 export function continuationMcpAvailable(
@@ -419,7 +414,12 @@ export async function prepareSessionHandoff(
       };
     }
   } else {
-    nativeCapability = await nativeImportCapability(request.target_agent, commands, env);
+    nativeCapability = await nativeImportCapability(
+      request.target_agent,
+      commands,
+      env,
+      workspace.project,
+    );
   }
   const window = await readHandoff(
     "window",

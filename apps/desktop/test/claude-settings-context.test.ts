@@ -75,7 +75,60 @@ describe("claudeMdExcludes", () => {
     expect(names(await f.resolve())).toEqual([]);
   });
 
+  // Checked with Claude Code 2.1.299: a rules file whose absolute path matches is not loaded.
+  it("also leaves out project and parent-directory rule files that match, but not the others", async () => {
+    const f = fixture({ ancestorRules: true });
+    f.write(f.outside(".claude", "rules", "parent-skip.md"), "parent skip\n");
+    f.write(f.outside(".claude", "rules", "parent-keep.md"), "parent keep\n");
+    f.write(".claude/rules/skip.md", "skip\n");
+    f.write(".claude/rules/nested/skip-too.md", "skip too\n");
+    f.write(".claude/rules/keep.md", "keep\n");
+    local(f, {
+      claudeMdExcludes: [
+        f.outside(".claude", "rules", "parent-skip.md"),
+        f.at(".claude", "rules", "skip.md"),
+        "**/nested/*.md",
+      ],
+    });
+    const preview = await f.resolve();
+    expect(names(preview)).toEqual(["parent-keep.md:ancestor", "keep.md:.claude/rules"]);
+    expect(notes(preview)).toContain(
+      `Note: Excluded by claudeMdExcludes: ${f.at(".claude", "rules", "skip.md")}`,
+    );
+    expect(notes(preview)).toContain(
+      `Note: Excluded by claudeMdExcludes: ${f.at(".claude", "rules", "nested", "skip-too.md")}`,
+    );
+  });
+  it("leaves out a rule that matches by path, and keeps the user's own rules listed", async () => {
+    const f = fixture();
+    f.user("rules/personal.md", "personal\n");
+    f.write(".claude/rules/skip.md", "skip\n");
+    project(f, {
+      claudeMdExcludes: [f.at(".claude", "rules", "skip.md"), f.inHome(".claude", "rules", "*.md")],
+    });
+    expect(names(await f.resolve())).toEqual(["personal.md:user"]);
+  });
+  it("tells MCP that an excluded rule exists without naming it", async () => {
+    const f = fixture({ ancestorRules: true });
+    f.write(f.outside(".claude", "rules", "parent-skip.md"), "parent skip\n");
+    f.write("CLAUDE.md", "main\n");
+    local(f, { claudeMdExcludes: [f.outside(".claude", "rules", "parent-skip.md")] });
+    const preview = await f.mcp();
+    expect(notes(preview)).toContain(
+      "1 instruction file outside the workspace is excluded by claudeMdExcludes and not listed.",
+    );
+    expect(JSON.stringify(preview)).not.toContain("parent-skip");
+  });
   posix("when only the real path of a link matches", () => {
+    it("leaves out a rule reached through a link, as Claude Code does", async () => {
+      const f = fixture();
+      const target = f.write("shared/common.md", "shared\n");
+      f.link(target, ".claude/rules/linked.md");
+      f.write(".claude/rules/keep.md", "keep\n");
+      expect(names(await f.resolve())).toEqual(["keep.md:.claude/rules", "linked.md:.claude/rules"]);
+      project(f, { claudeMdExcludes: [target] });
+      expect(names(await f.resolve())).toEqual(["keep.md:.claude/rules"]);
+    });
     it("keeps the file and says it may be excluded", async () => {
       const f = fixture();
       const target = f.write(f.outside("shared", "common.md"), "shared\n");

@@ -869,6 +869,17 @@ class Assembly {
         true,
       );
     for (const rule of walk.files) {
+      // claudeMdExcludes also leaves out project and parent-directory rule files, matched against
+      // the path they are written with or the path a link leads to. A pattern on the written path
+      // was checked against Claude Code 2.1.299; the link rule is the documented one. Whether it
+      // reaches the user's own rules is not checked, so those stay listed.
+      if (tier !== "user" && this.excludedBy(rule.written, rule.real) !== null) {
+        if (this.mode === "full" || tier === "workspace") {
+          this.excluded.listed++;
+          this.warn(`Excluded by claudeMdExcludes: ${rule.written}`, true);
+        } else this.excluded.hidden++;
+        continue;
+      }
       const link = rule.link ?? top.link;
       this.entries.push({
         tier,

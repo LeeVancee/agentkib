@@ -54,9 +54,9 @@ Claude Code 原生导入的版本门限要求 `claude --version` 报告 2.1.x，
 - **项目目录名（`project-directory-unverified`）：** 会话文件写入 `projects/<目录名>/`，目录名是工作区路径中字母和数字之外的每个字符（按 UTF-16 码元）替换成 `-`。该规则不在官方文档里，来自对已发布二进制的公开解读，对齐的是当前版本的 CLI；公开 issue 报告较早的版本会保留路径中的空格（只替换路径分隔符），而 2.1.x 版本门限不区分它们。编码后超过 200 个字符时 Claude Code 会截断并追加未公开的哈希，同时设置 `CLAUDE_CONFIG_DIR` 与 `CLAUDE_CODE_PROJECT_DIR_NAME` 时目录名由 CLI 另行决定，AgentKib 都无法确定目录，因此拒绝原生导入。
 - **配置目录（`config-directory-invalid`）：** 会话文件写入 `CLAUDE_CONFIG_DIR` 所指目录下的 `projects/`，未设置时为 `~/.claude/projects/`（官方：该变量覆盖配置目录，`projects/` 在其下）。AgentKib 只认自己进程环境里的该变量，值不经 shell 处理，`~` 与 `$HOME` 不会被展开。空值和全空白按未设置处理；其他不合法的值（相对路径、含 `..`、文件系统根目录、含控制字符或首尾空白、超过 4096 个字符，以及 Windows 上的 UNC、设备路径和不带分隔符的盘符路径）会关闭原生导入，界面状态为“不可用”，改正环境变量后即可恢复。已生成的预览在应用和启动时按同一规则复核，不合法时拒绝写入。
 
-这三项规则的自动化测试只使用手工构造的合成会话，没有用真实 CLI 确认导入后的会话能被 `claude --resume` 找到。
+这三项规则的自动化测试只使用手工构造的合成会话。2026-10-14 用真实 Claude Code 2.1.299（Haiku 5.5，一次调用）另做了验收：用 AgentKib 后端把手工构造的来源会话导入为原生会话，目标工作区目录名同时含 `.`、`_` 和空格；在该目录下 `claude -p --resume <UUID>` 找到了这份会话，并答对了来源会话里的暗号，没有因 `version: 2.1.233` 报错。只验证了这一个 CLI 版本和这一种目录名组合，详见 `qa/claude-live-acceptance-2026-10-14.md`。
 
-写入后、启动 `claude --resume` 前，AgentKib 还会对刚写入的文件做一次结构性往返校验，任何一项不符都会中止启动（不打开终端）：每行是合法 JSON 对象；记录类型只限 `user`、`assistant` 与收尾的 `last-prompt`；`uuid` 不重复，首条消息的 `parentUuid` 为空、其后每条指向前一条，`last-prompt.leafUuid` 指向最后一条消息；每条记录的 `sessionId` 等于文件名与启动请求；消息的 `cwd` 等于目标工作区；文件位于该工作区按上述规则算出的 `projects/<目录名>/` 中；文件开头通过上面的会话格式探针。该校验是结构性的：不启动 Claude，不能证明 `claude --resume` 一定找到这份会话。写入记录的 `version` 字段固定为 `2.1.233`，表示 AgentKib 实际输出的记录结构所对应的 Claude Code 版本，而不是本机检测到的 CLI 版本。
+写入后、启动 `claude --resume` 前，AgentKib 还会对刚写入的文件做一次结构性往返校验，任何一项不符都会中止启动（不打开终端）：每行是合法 JSON 对象；记录类型只限 `user`、`assistant` 与收尾的 `last-prompt`；`uuid` 不重复，首条消息的 `parentUuid` 为空、其后每条指向前一条，`last-prompt.leafUuid` 指向最后一条消息；每条记录的 `sessionId` 等于文件名与启动请求；消息的 `cwd` 等于目标工作区；文件位于该工作区按上述规则算出的 `projects/<目录名>/` 中；文件开头通过上面的会话格式探针。该校验是结构性的：不启动 Claude，本身不能证明 `claude --resume` 一定找到这份会话（上面的真机验收只覆盖 2.1.299）。写入记录的 `version` 字段固定为 `2.1.233`，表示 AgentKib 实际输出的记录结构所对应的 Claude Code 版本，而不是本机检测到的 CLI 版本。
 
 Cursor IDE 本机连接需要在会话页选择“连接 Cursor 窗口”，检查随应用打包的 VSIX 并手动安装到选定 profile，再在目标单文件夹窗口运行 `AgentKib: Connect This Workspace` 并输入限时挑战。AgentKib 不自动安装扩展，也不猜测默认 profile；多个窗口须显式选择。连接恢复沿用原 binding，CLI 与 Agents Window 保持独立能力边界。
 

@@ -124,8 +124,10 @@ export class McpBuiltins {
   ): Promise<unknown> {
     switch (name) {
       case "workspace_get_context":
-        // The connected Agent gets no contents of imports outside the project: Claude Code asks
-        // the user before loading those, and this tool must not be a way around that question.
+        // The connected Agent gets nothing from outside the workspace but sizes and counts, whatever
+        // Agent the connection URL names: no imports outside the project (Claude Code asks the user
+        // before loading those) and no user-level, managed, parent-directory or auto memory text
+        // (personal content that must not reach another Agent), and no paths to them.
         return this.context.request(
           {
             project,

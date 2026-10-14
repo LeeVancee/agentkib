@@ -65,6 +65,19 @@ function shortPath(path: string) {
   const parts = path.split("/").filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
 }
+// 后端 Claude Code 来源的 scope 哨兵（context-files.ts 的保留名）：不是项目目录，徽章显示来源类别。
+// 其余取值是项目内的相对目录，原样显示；空串表示项目根。
+const SCOPE_LABEL_KEYS: Record<string, string> = {
+  managed: "context.scope.managed",
+  user: "context.scope.user",
+  ancestor: "context.scope.ancestor",
+  "auto-memory": "context.scope.auto-memory",
+  conditional: "context.scope.conditional",
+};
+function scopeLabel(scope: string) {
+  const key = Object.hasOwn(SCOPE_LABEL_KEYS, scope) ? SCOPE_LABEL_KEYS[scope] : undefined;
+  return key ? tr(key) : scope || tr("status.scope.project");
+}
 export function ContextPage({
   project,
   onOpenInstructions,
@@ -234,7 +247,7 @@ export function ContextPage({
                       {shortPath(contextSection.source)}
                     </strong>
                     <Badge variant="outline" className="bg-background text-[11px]">
-                      {contextSection.scope || tr("status.scope.project")}
+                      {scopeLabel(contextSection.scope)}
                     </Badge>
                   </header>
                   <Collapsible>
@@ -271,6 +284,19 @@ export function ContextPage({
   );
 }
 
+const CLAUDE_MESSAGE_KEYS: Record<string, string> = {
+  "AGENTS.md may not be loaded: the Claude Code version could not be detected, and Claude Code reads AGENTS.md only from v2.1.277.":
+    "context.claudeAgentsVersionUnknown",
+  "Claude Code settings are not read yet (claudeMdExcludes, the Project instructions choice, the autoMemoryDirectory and autoMemoryEnabled settings, managed claudeMd) and rules in parent directories are not read, so this list can differ from what Claude Code loads.":
+    "context.claudeSettingsNotRead",
+  "CLAUDE_CONFIG_DIR is set but is not a usable absolute path, so AgentKib reads Claude Code's default configuration folder. User-level instructions shown here may belong to a different setup than the one Claude Code uses.":
+    "context.claudeConfigDirInvalid",
+  "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 is set in AgentKib's environment, so auto memory is not shown. Claude Code started in another environment may still load it.":
+    "context.claudeAutoMemoryOff",
+  "An environment variable that turns off CLAUDE.md loading (CLAUDE_CODE_DISABLE_CLAUDE_MDS, CLAUDE_CODE_SAFE_MODE or CLAUDE_CODE_SIMPLE) is set in AgentKib's environment. Claude Code started with it loads fewer instruction files than listed here; AgentKib does not model this.":
+    "context.claudeLoadSwitches",
+};
+
 function contextWarningLabel(warning: string) {
   if (
     warning ===
@@ -282,18 +308,12 @@ function contextWarningLabel(warning: string) {
     "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import"
   )
     return tr("context.deepseekClaudeImport");
-  // 后端静态文案（context-claude.ts）：A1 在去掉 Note: 前缀之后匹配，A2 本身是警告。
-  if (
-    warning ===
-    "Directories above the workspace root were not checked for CLAUDE.md. If one exists there, Claude Code reads CLAUDE.md files only and ignores AGENTS.md."
-  )
-    return tr("context.claudeAgentsAboveRoot");
-  if (
-    warning ===
-    "AGENTS.md may not be loaded: the Claude Code version could not be detected, and Claude Code reads AGENTS.md only from v2.1.277."
-  )
-    return tr("context.claudeAgentsVersionUnknown");
-  return warning;
+  // 后端静态文案（context-claude.ts）：带 Note: 前缀的在去掉前缀之后匹配，其余本身是警告。
+  // 带路径或数量的动态文案保持英文原文。
+  const claudeMessage = Object.hasOwn(CLAUDE_MESSAGE_KEYS, warning)
+    ? CLAUDE_MESSAGE_KEYS[warning]
+    : undefined;
+  return claudeMessage ? tr(claudeMessage) : warning;
 }
 
 function WorkspaceContextRoute() {

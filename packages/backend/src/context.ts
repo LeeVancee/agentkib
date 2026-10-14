@@ -8,9 +8,10 @@ import { Catalog } from "./catalog";
 import { Commands } from "./commands";
 import { sources } from "./context-sources";
 import { antigravitySources } from "./context-antigravity";
-import { claudeSections } from "./context-claude";
+import { claudeSections, stripBlockComments } from "./context-claude";
 import { readClaudeVersion } from "./claude-version";
-import { budgetWarning, loadImports, TOTAL_CHARS } from "./context-files";
+import { budgetWarning, isProjectScope, loadImports, TOTAL_CHARS } from "./context-files";
+import type { ClaudeIo } from "./context-claude-sources";
 import {
   deepseekRoot,
   deepseekSections,
@@ -21,11 +22,26 @@ import {
 import { visibleMcpNames } from "./mcp-config-read";
 export interface ContextOptions {
   /**
-   * Whether the contents of Claude Code imports outside the project are returned. In-process
-   * only, never part of an RPC payload: the MCP tool turns it off so that a connected Agent
-   * cannot read through the preview what Claude Code itself would ask the user about.
+   * Whether the contents of Claude Code sources outside the workspace are returned: imports
+   * outside the project, and the user-level, managed, parent-directory and auto memory files.
+   * In-process only, never part of an RPC payload: the MCP tool turns it off, so a connected
+   * Agent gets sizes and counts but no text and no paths, and cannot read through the preview
+   * what Claude Code itself would ask the user about or what is private to the user.
    */
   externalBodies?: boolean;
+  /**
+   * Whether Claude Code sources outside the workspace are looked at at all. In-process only.
+   * The Doctor turns it off, so that files it does not manage can never become a finding.
+   */
+  includeOutsideSources?: boolean;
+}
+/** Test seams for the Claude Code sources; the application never sets them. */
+export interface ClaudeContextInternals {
+  /** Where organization policy files live; `null` for none. */
+  managedDir?: string | null;
+  platform?: NodeJS.Platform;
+  io?: ClaudeIo;
+  ancestorRules?: boolean;
 }
 export class Context {
   #version?: { at: number; value: string | null };
@@ -34,6 +50,7 @@ export class Context {
     readonly catalog: Catalog,
     readonly commands: Commands,
     readonly environment: NodeJS.ProcessEnv,
+    readonly claude: ClaudeContextInternals = {},
   ) {}
   /** `claude --version`, cached for 30 seconds; concurrent callers share one probe. */
   #claudeVersion(): Promise<string | null> {
@@ -111,7 +128,15 @@ export class Context {
         budget: { remaining: TOTAL_CHARS },
         warnings,
         externalBodies: options.externalBodies !== false,
+        // Both off means the stricter one: the Doctor never touches the outside.
+        outside:
+          options.includeOutsideSources === false
+            ? "none"
+            : options.externalBodies === false
+              ? "metadata"
+              : "full",
         version: () => this.#claudeVersion(),
+        ...this.claude,
       });
     else {
       const files =
@@ -145,13 +170,22 @@ export class Context {
           for (let i = start; i < warnings.length; i++) warnings[i] = `Agent home: ${warnings[i]}`;
       }
     }
-    const hasProject = sections.some((section) => section.scope !== "agent-home");
+    const hasProject = sections.some((section) => isProjectScope(agent, section.scope));
     if (!hasProject) warnings.push("No project instruction file was found for this Agent");
     const override =
       manifest?.instructions.platform_overrides[agent as z.infer<typeof agentSchema>];
+    // Claude Code drops block-level HTML comments from CLAUDE.md files, so the preview text may
+    // lack a comment the override has; both sides are compared without them.
+    const plain = agent === "claude-code" ? stripBlockComments : (text: string) => text;
+    // For Claude Code only the project's own sources can carry the override; what is outside the
+    // workspace is not there in every mode, and must not change the answer.
+    const counts = (section: Section) =>
+      agent !== "claude-code" || isProjectScope(agent, section.scope);
     if (
       override?.trim() &&
-      !sections.some((section) => section.content.includes(override.trim()))
+      !sections.some(
+        (section) => counts(section) && plain(section.content).includes(plain(override.trim())),
+      )
     ) {
       if (hasProject)
         warnings.push(

@@ -325,68 +325,198 @@ describe("the MCP tool", () => {
 });
 
 describe("top-level sources that lead outside the project", () => {
+  // A CLAUDE.md, AGENTS.md or rule file that is a link to a file elsewhere (dotfiles, a shared
+  // folder), or that sits in a `.claude` folder which is such a link. The app reads it as an
+  // outside source (filtered, redacted, noted), the MCP tool only counts it, and the Doctor
+  // refuses it without opening it, as it always did.
   const outsideRule = (source: string) =>
     `Instruction source skipped (outside the project): ${source}`;
-  const call = (f: ContextFixture) =>
-    new McpBuiltins({} as BackendStore, f.context, f.root).call(
-      f.project,
-      "workspace",
-      "claude-code",
-      "workspace_get_context",
-      { cwd: f.project },
-    ) as Promise<Awaited<ReturnType<ContextFixture["resolve"]>>>;
+  const SETTINGS_NOT_READ =
+    "Note: Claude Code settings are not read yet (claudeMdExcludes, the Project instructions choice, the autoMemoryDirectory and autoMemoryEnabled settings, managed claudeMd) and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
+  const linkedSource = (source: string, link = source) =>
+    `Note: External instruction source (outside the working directory): ${source} (link: ${link}). Claude Code may ask for approval before loading it, so this content may not be in effect.`;
+  const linkedRule = (source: string, link = source) =>
+    `Note: External rule file (outside the working directory): ${source} (link: ${link}). Claude Code asks for approval before loading it and then loads it only when it has no paths field, so this content may not be in effect.`;
+  const OUTSIDE_BODY = "OUTSIDE-BODY\n";
+  const problems = (result: { warnings: string[] }) =>
+    result.warnings.filter((warning) => !warning.startsWith("Note: "));
 
-  symlinks("refuses a CLAUDE.md that links outside, and keeps the other sources", async () => {
+  symlinks("reads a CLAUDE.md that links outside and keeps the other sources", async () => {
     const f = fixture();
-    f.link(f.write(f.outside("shared", "CLAUDE.md"), "OUTSIDE-BODY\n"), "CLAUDE.md");
+    f.link(f.write(f.outside("shared", "CLAUDE.md"), OUTSIDE_BODY), "CLAUDE.md");
     f.write(".claude/rules/style.md", "rule\n");
-    // A refused CLAUDE.md still counts: Claude Code reads it, so AGENTS.md is not the fallback.
+    // The linked file still counts as a CLAUDE.md, so AGENTS.md is not the fallback.
     f.write("AGENTS.md", "agents\n");
     const result = await f.resolve();
-    expect(result.sections.map((section) => section.content)).toEqual(["rule\n"]);
-    expect(result.warnings).toEqual([outsideRule(f.at("CLAUDE.md"))]);
-    expect(result.warnings[0]!.startsWith("Note: ")).toBe(false);
+    expect(result.sections.map((section) => [section.scope, section.content])).toEqual([
+      ["", OUTSIDE_BODY],
+      [".claude/rules", "rule\n"],
+    ]);
+    expect(result.warnings).toEqual([linkedSource(f.at("CLAUDE.md")), SETTINGS_NOT_READ]);
+    expect(result.warnings[0]!.startsWith("Note: ")).toBe(true);
   });
 
-  symlinks("gives the app and the MCP tool the same refusal and no outside contents", async () => {
+  symlinks("redacts what it reads through such a link", async () => {
     const f = fixture();
-    f.link(f.write(f.outside("shared", "CLAUDE.md"), "OUTSIDE-BODY\n"), "CLAUDE.md");
-    f.write(".claude/rules/style.md", "rule\n");
-    const viaApp = await f.context.request({
-      project: f.project,
-      cwd: f.project,
-      agent: "claude-code",
-    });
-    const viaMcp = await call(f);
-    for (const result of [viaApp, viaMcp]) {
-      expect(JSON.stringify(result)).not.toContain("OUTSIDE-BODY");
-      expect(result.warnings).toEqual([outsideRule(f.at("CLAUDE.md"))]);
-      expect(result.sections.map((section) => section.content)).toEqual(["rule\n"]);
-    }
-  });
-
-  symlinks("refuses an AGENTS.md that links outside", async () => {
-    const f = fixture();
-    f.link(f.write(f.outside("shared", "AGENTS.md"), "OUTSIDE-BODY\n"), "AGENTS.md");
+    f.link(f.write(f.outside("shared", "CLAUDE.md"), "keep\npassword=hunter2\n"), "CLAUDE.md");
     const result = await f.resolve();
-    expect(JSON.stringify(result)).not.toContain("OUTSIDE-BODY");
-    expect(result.warnings).toContain(outsideRule(f.at("AGENTS.md")));
-    expect(result.sections).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("hunter2");
+    expect(result.sections[0]!.content).toBe("keep\npassword=[REDACTED]\n");
   });
 
-  symlinks("refuses a rule file that links outside and keeps the next one", async () => {
+  symlinks("refuses a link whose real path is sensitive, and the file still counts", async () => {
+    const f = fixture();
+    f.link(f.write(f.inHome(".ssh", "notes.md"), "SECRET-BODY\n"), "CLAUDE.md");
+    f.write("AGENTS.md", "agents\n");
+    const result = await f.resolve();
+    expect(JSON.stringify(result)).not.toContain("SECRET-BODY");
+    expect(result.sections).toEqual([]);
+    expect(result.warnings).toContain(
+      `Note: Instruction source skipped (sensitive path): ${f.at("CLAUDE.md")}`,
+    );
+    // Claude Code reads that CLAUDE.md, so AGENTS.md is not read in its place.
+    expect(result.warnings.some((warning) => warning.includes("AGENTS.md may not"))).toBe(false);
+  });
+
+  symlinks("gives the MCP tool a count and neither the contents nor the location", async () => {
+    const f = fixture();
+    f.link(f.write(f.outside("shared", "CLAUDE.md"), OUTSIDE_BODY), "CLAUDE.md");
+    f.write(".claude/rules/style.md", "rule\n");
+    const viaMcp = await f.mcp();
+    expect(JSON.stringify(viaMcp)).not.toContain("OUTSIDE-BODY");
+    expect(JSON.stringify(viaMcp)).not.toContain(f.outside("shared"));
+    expect(viaMcp.sections.map((section) => section.content)).toEqual(["rule\n"]);
+    expect(viaMcp.warnings).toEqual([
+      "Note: External instruction sources exist (1 file, 13 bytes); its content is not included in this result.",
+      SETTINGS_NOT_READ,
+    ]);
+    // The app gets the same files with their contents.
+    const viaApp = await f.request();
+    expect(viaApp.sections.map((section) => section.content)).toEqual([OUTSIDE_BODY, "rule\n"]);
+  });
+
+  symlinks("makes the Doctor refuse the link without opening it", async () => {
+    const f = fixture();
+    f.link(f.write(f.outside("shared", "CLAUDE.md"), OUTSIDE_BODY), "CLAUDE.md");
+    f.write(".claude/rules/style.md", "rule\n");
+    const result = await f.resolve(f.project, { includeOutsideSources: false });
+    expect(JSON.stringify(result)).not.toContain("OUTSIDE-BODY");
+    expect(result.sections.map((section) => section.content)).toEqual(["rule\n"]);
+    // The refusal is a warning, not a note; the Doctor ignores the notes next to it.
+    expect(problems(result)).toEqual([outsideRule(f.at("CLAUDE.md"))]);
+  });
+
+  symlinks("reads an AGENTS.md that links outside when it is the fallback", async () => {
+    const f = fixture();
+    f.link(f.write(f.outside("shared", "AGENTS.md"), OUTSIDE_BODY), "AGENTS.md");
+    const full = await f.resolve();
+    expect(full.sections.map((section) => section.content)).toEqual([OUTSIDE_BODY]);
+    expect(full.warnings).toContain(linkedSource(f.at("AGENTS.md")));
+    const none = await f.resolve(f.project, { includeOutsideSources: false });
+    expect(JSON.stringify(none)).not.toContain("OUTSIDE-BODY");
+    expect(none.warnings).toContain(outsideRule(f.at("AGENTS.md")));
+  });
+
+  symlinks("treats a rule file that links outside like any outside rule", async () => {
     const f = fixture();
     f.write("CLAUDE.md", "main\n");
-    f.link(f.write(f.outside("shared", "a.md"), "OUTSIDE-BODY\n"), ".claude/rules/a.md");
+    const link = f.link(f.write(f.outside("shared", "a.md"), OUTSIDE_BODY), ".claude/rules/a.md");
     f.write(".claude/rules/b.md", "rule b\n");
+    const full = await f.resolve();
+    expect(full.sections.map((section) => section.content)).toEqual([
+      "main\n",
+      OUTSIDE_BODY,
+      "rule b\n",
+    ]);
+    expect(full.warnings).toContain(linkedRule(link));
+    const none = await f.resolve(f.project, { includeOutsideSources: false });
+    expect(none.sections.map((section) => section.content)).toEqual(["main\n", "rule b\n"]);
+    expect(problems(none)).toEqual([outsideRule(link)]);
+  });
+
+  symlinks("lists no rule that links outside when it only loads on matching files", async () => {
+    // Claude Code loads an approved rule link only without a `paths` field, so it never loads.
+    const f = fixture();
+    f.write("CLAUDE.md", "main\n");
+    f.link(
+      f.write(f.outside("shared", "scoped.md"), "---\npaths: src/**\n---\nOUTSIDE-BODY\n"),
+      ".claude/rules/scoped.md",
+    );
     const result = await f.resolve();
-    expect(result.sections.map((section) => section.content)).toEqual(["main\n", "rule b\n"]);
-    expect(result.warnings).toEqual([outsideRule(f.at(".claude", "rules", "a.md"))]);
+    expect(JSON.stringify(result)).not.toContain("OUTSIDE-BODY");
+    expect(result.sections.map((section) => section.scope)).toEqual([""]);
+  });
+
+  symlinks("treats a .claude folder that links outside as outside content", async () => {
+    const f = fixture();
+    f.write(f.outside("dotfiles", "claude", "CLAUDE.md"), "DOTFILES-BODY\n");
+    f.write(f.outside("dotfiles", "claude", "rules", "x.md"), "RULE-BODY\n");
+    f.link(f.outside("dotfiles", "claude"), ".claude");
+    f.write("CLAUDE.md", "main\n");
+    const full = await f.resolve();
+    expect(full.sections.map((section) => [section.scope, section.content])).toEqual([
+      ["", "main\n"],
+      [".claude", "DOTFILES-BODY\n"],
+      [".claude/rules", "RULE-BODY\n"],
+    ]);
+    const viaMcp = await f.mcp();
+    expect(JSON.stringify(viaMcp)).not.toContain("DOTFILES-BODY");
+    expect(JSON.stringify(viaMcp)).not.toContain("RULE-BODY");
+    expect(JSON.stringify(viaMcp)).not.toContain(f.outside("dotfiles"));
+    expect(viaMcp.warnings).toContain(
+      "Note: External instruction sources exist (2 files, 24 bytes); its content is not included in this result.",
+    );
+    const none = await f.resolve(f.project, { includeOutsideSources: false });
+    expect(JSON.stringify(none)).not.toContain("DOTFILES-BODY");
+    expect(JSON.stringify(none)).not.toContain("RULE-BODY");
+    expect(none.sections.map((section) => section.content)).toEqual(["main\n"]);
+  });
+
+  symlinks("refuses a parent's .claude folder that is a link to a credentials folder", async () => {
+    // The check is on the real path, so the harmless name .claude does not hide .ssh.
+    const f = fixture();
+    f.write(f.inHome(".ssh", "CLAUDE.md"), "SSH-BODY\n");
+    f.link(f.inHome(".ssh"), f.outside(".claude"));
+    f.write("CLAUDE.md", "project\n");
+    const full = await f.resolve();
+    expect(JSON.stringify(full)).not.toContain("SSH-BODY");
+    expect(full.warnings).toContain(
+      `Note: Instruction source skipped (sensitive path): ${f.outside(".claude", "CLAUDE.md")}`,
+    );
+    const viaMcp = await f.mcp();
+    expect(JSON.stringify(viaMcp)).not.toContain("SSH-BODY");
+    expect(JSON.stringify(viaMcp)).not.toContain(".ssh");
+    expect(viaMcp.warnings).toContain(
+      "Note: Parent-directory instruction files exist (0 files, 0 bytes, 1 skipped); its content is not included in this result.",
+    );
+  });
+
+  symlinks("refuses the user's own CLAUDE.md when it links to a credentials file", async () => {
+    const f = fixture();
+    const secret = f.write(f.inHome(".aws", "notes.md"), "AWS-BODY\n");
+    f.link(secret, f.inHome(".claude", "CLAUDE.md"));
+    const full = await f.resolve();
+    expect(JSON.stringify(full)).not.toContain("AWS-BODY");
+    expect(full.warnings).toContain(
+      `Note: Instruction source skipped (sensitive path): ${f.inHome(".claude", "CLAUDE.md")}`,
+    );
+  });
+
+  symlinks("treats a .claude folder that links inside the project as project content", async () => {
+    const f = fixture();
+    f.write("config/claude/CLAUDE.md", "INNER-BODY\n");
+    f.link(f.at("config", "claude"), ".claude");
+    const result = await f.resolve();
+    expect(result.sections.map((section) => [section.scope, section.content])).toEqual([
+      [".claude", "INNER-BODY\n"],
+    ]);
+    // It is a project file: no note about leaving the working directory.
+    expect(result.warnings).toEqual([]);
   });
 
   symlinks("makes the Doctor report the refusal as a context warning", async () => {
     const f = fixture();
-    f.link(f.write(f.outside("shared", "CLAUDE.md"), "OUTSIDE-BODY\n"), "CLAUDE.md");
+    f.link(f.write(f.outside("shared", "CLAUDE.md"), OUTSIDE_BODY), "CLAUDE.md");
     f.write(
       ".agentkib/manifest.yaml",
       "schema_version: 2\nworkspace:\n  id: fixture\n  name: Fixture\ninstructions:\n  shared: |\n    Use tabs.\n",

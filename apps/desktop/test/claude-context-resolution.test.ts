@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeSections } from "../../../packages/backend/src/context-claude";
@@ -9,8 +9,10 @@ import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 // Claude Code reads AGENTS.md as a fallback only when no CLAUDE.md-style file exists in the
 // working directory or any parent (v2.1.277 and later):
 // https://code.claude.com/docs/en/memory
-const ABOVE_ROOT =
-  "Note: Directories above the workspace root were not checked for CLAUDE.md. If one exists there, Claude Code reads CLAUDE.md files only and ignores AGENTS.md.";
+// The note that replaced "Directories above the workspace root were not checked": the preview
+// now reads parent directories, and says instead what it still does not read.
+const SETTINGS_NOT_READ =
+  "Note: Claude Code settings are not read yet (claudeMdExcludes, the Project instructions choice, the autoMemoryDirectory and autoMemoryEnabled settings, managed claudeMd) and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
 const VERSION_UNKNOWN =
   "AGENTS.md may not be loaded: the Claude Code version could not be detected, and Claude Code reads AGENTS.md only from v2.1.277.";
 const tooOld = (version: string) =>
@@ -45,7 +47,7 @@ describe("Claude Code instruction sources", () => {
       },
     ]);
     // No "No project instruction file" warning, and the unchecked parent directories are said so.
-    expect(preview.warnings).toEqual([ABOVE_ROOT]);
+    expect(preview.warnings).toEqual([SETTINGS_NOT_READ]);
   });
 
   it.each(["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"])(
@@ -62,7 +64,8 @@ describe("Claude Code instruction sources", () => {
     },
   );
 
-  it("keeps the order of CLAUDE.md, CLAUDE.local.md and .claude/CLAUDE.md", async () => {
+  it("loads CLAUDE.md, .claude/CLAUDE.md and CLAUDE.local.md in that order", async () => {
+    // Claude Code puts CLAUDE.local.md last in a directory, so it wins over the shared files.
     const f = fixture();
     f.write(".claude/CLAUDE.md", "dot claude");
     f.write("CLAUDE.local.md", "local");
@@ -70,8 +73,8 @@ describe("Claude Code instruction sources", () => {
     const preview = await f.resolve();
     expect(summary(preview)).toEqual([
       ["CLAUDE.md", ""],
-      ["CLAUDE.local.md", ""],
       ["CLAUDE.md", ".claude"],
+      ["CLAUDE.local.md", ""],
     ]);
   });
 
@@ -85,7 +88,7 @@ describe("Claude Code instruction sources", () => {
       ["AGENTS.md", ""],
       ["AGENTS.md", ".claude"],
     ]);
-    expect(preview.warnings).toEqual([ABOVE_ROOT]);
+    expect(preview.warnings).toEqual([SETTINGS_NOT_READ]);
   });
 
   it("does not read AGENTS.local.md, AGENTS.override.md or anything under .agents", async () => {
@@ -99,12 +102,12 @@ describe("Claude Code instruction sources", () => {
     expect(preview.warnings).toContain(NO_PROJECT);
   });
 
-  it("reports nothing found together with the note about directories above the root", async () => {
+  it("reports only the missing file when nothing at all was found", async () => {
     const f = fixture();
     const preview = await f.resolve();
     expect(preview.sections).toEqual([]);
-    expect(preview.warnings).toContain(NO_PROJECT);
-    expect(preview.warnings).toContain(ABOVE_ROOT);
+    // Parent directories are read now, so there is nothing left to say about them.
+    expect(preview.warnings).toEqual([NO_PROJECT]);
   });
 
   it("applies the fallback from the workspace root down to the working directory", async () => {
@@ -120,7 +123,7 @@ describe("Claude Code instruction sources", () => {
       ["AGENTS.md", "packages/app"],
       ["AGENTS.md", path.join("packages", "app", ".claude")],
     ]);
-    expect(preview.warnings).toEqual([ABOVE_ROOT]);
+    expect(preview.warnings).toEqual([SETTINGS_NOT_READ]);
   });
 
   it("lets a CLAUDE.md between the root and the working directory suppress every AGENTS.md", async () => {
@@ -138,20 +141,43 @@ describe("Claude Code instruction sources", () => {
     f.claude("2.1.296 (Claude Code)");
     f.write("AGENTS.md", "agents");
     f.write(".claude/rules/style.md", "rule");
-    f.write(f.inHome(".claude", "CLAUDE.md"), "user level");
+    f.user("CLAUDE.md", "user level");
     const preview = await f.resolve();
-    expect(preview.sections.map((section) => section.content)).toEqual(["agents\n", "rule\n"]);
-    expect(preview.warnings).toEqual([ABOVE_ROOT]);
+    // The user-level file is listed first (it is the broadest), and the fallback still applies.
+    expect(summary(preview)).toEqual([
+      ["CLAUDE.md", "user"],
+      ["AGENTS.md", ""],
+      ["style.md", ".claude/rules"],
+    ]);
+    expect(preview.sections.map((section) => section.content)).toEqual([
+      "user level\n",
+      "agents\n",
+      "rule\n",
+    ]);
+    expect(preview.warnings).toEqual([SETTINGS_NOT_READ]);
   });
 
-  it("treats a project with only rules as having instructions, but still notes the fallback", async () => {
+  it("treats a project with only rules as having instructions", async () => {
     const f = fixture();
     f.write(".claude/rules/style.md", "rule");
     const preview = await f.resolve();
     expect(preview.sections.map((section) => section.content)).toEqual(["rule\n"]);
-    expect(preview.warnings).not.toContain(NO_PROJECT);
-    expect(preview.warnings).toContain(ABOVE_ROOT);
+    // No AGENTS.md was read, so there is neither a missing file nor a note about the fallback.
+    expect(preview.warnings).toEqual([]);
   });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "still lets an unreadable CLAUDE.md stop the fallback, because Claude Code reads it",
+    async () => {
+      const f = fixture();
+      f.write("AGENTS.md", "agents");
+      chmodSync(f.write("CLAUDE.md", "claude"), 0o000);
+      const preview = await f.resolve();
+      expect(preview.sections).toEqual([]);
+      expect(preview.warnings).toContain(`Could not read ${f.at("CLAUDE.md")}`);
+      expect(preview.warnings.some((warning) => warning.includes("AGENTS.md may not"))).toBe(false);
+    },
+  );
 
   it("keeps the note prefix the Context page and the Doctor rely on", () => {
     expect(CONTEXT_NOTE_PREFIX).toBe("Note: ");
@@ -169,12 +195,13 @@ describe("Claude Code instruction sources", () => {
       budget: { remaining: 10_000 },
       warnings,
       externalBodies: true,
+      managedDir: null,
       version: async () => {
         throw new Error("lookup failed");
       },
     });
     expect(sections.map((section) => section.content)).toEqual(["agents\n"]);
-    expect(warnings).toEqual([VERSION_UNKNOWN, ABOVE_ROOT]);
+    expect(warnings).toEqual([VERSION_UNKNOWN, SETTINGS_NOT_READ]);
   });
 });
 
@@ -189,7 +216,7 @@ posix("AGENTS.md and the detected Claude Code version", () => {
     f.write("AGENTS.md", "agents");
     const preview = await f.resolve();
     expect(preview.sections).toHaveLength(1);
-    expect(preview.warnings).toEqual([ABOVE_ROOT]);
+    expect(preview.warnings).toEqual([SETTINGS_NOT_READ]);
   });
 
   it("shows AGENTS.md but warns that it may not load on a version before 2.1.277", async () => {
@@ -198,7 +225,7 @@ posix("AGENTS.md and the detected Claude Code version", () => {
     f.write("AGENTS.md", "agents");
     const preview = await f.resolve();
     expect(preview.sections.map((section) => section.content)).toEqual(["agents\n"]);
-    expect(preview.warnings).toEqual([tooOld("2.1.276"), ABOVE_ROOT]);
+    expect(preview.warnings).toEqual([tooOld("2.1.276"), SETTINGS_NOT_READ]);
     expect(preview.warnings).not.toContain(NO_PROJECT);
   });
 
@@ -207,7 +234,7 @@ posix("AGENTS.md and the detected Claude Code version", () => {
     f.write("AGENTS.md", "agents");
     const preview = await f.resolve();
     expect(preview.sections).toHaveLength(1);
-    expect(preview.warnings).toEqual([VERSION_UNKNOWN, ABOVE_ROOT]);
+    expect(preview.warnings).toEqual([VERSION_UNKNOWN, SETTINGS_NOT_READ]);
   });
 
   it.each([
@@ -219,7 +246,7 @@ posix("AGENTS.md and the detected Claude Code version", () => {
     f.claude(output, { exitCode });
     f.write("AGENTS.md", "agents");
     const preview = await f.resolve();
-    expect(preview.warnings).toEqual([VERSION_UNKNOWN, ABOVE_ROOT]);
+    expect(preview.warnings).toEqual([VERSION_UNKNOWN, SETTINGS_NOT_READ]);
   });
 
   it("runs claude only when the AGENTS.md fallback is in play", async () => {
@@ -363,15 +390,15 @@ describe("the managed CLAUDE.md written by AgentKib", () => {
     );
     const preview = await f.resolve();
     expect(preview.sections).toHaveLength(1);
+    // The block markers are HTML comments on their own lines: Claude Code removes them from
+    // CLAUDE.md, so the preview does too. The imported AGENTS.md is expanded as before.
     expect(preview.sections[0]!.content).toBe(
       [
-        "<!-- agentkib:managed:start -->",
         "# Rules",
         "Be kind.",
         "",
         "",
         "Claude Code uses AGENTS.md as the shared project instructions.",
-        "<!-- agentkib:managed:end -->",
         "",
       ].join("\n"),
     );

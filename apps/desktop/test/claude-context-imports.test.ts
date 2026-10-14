@@ -1,5 +1,7 @@
 import { chmodSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { importPath } from "../../../packages/backend/src/context-claude";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 
 // @import rules of CLAUDE.md, as documented at https://code.claude.com/docs/en/memory:
@@ -59,6 +61,43 @@ describe("where an import is resolved", () => {
     f.write("CLAUDE.md", "also see @~/snippet.md here\n");
     expect((await preview(f)).content).toEqual(["also see @~/snippet.md here\nsnippet\n"]);
   });
+});
+
+describe("the home directory shorthand", () => {
+  // `~/` is the home directory everywhere. `~\` is Windows-only: on Linux and macOS it is an
+  // ordinary file name character, and the documentation does not say that it is expanded.
+  const environment = { HOME: "/home/alice" };
+  const containing = path.join(path.sep, "work", "CLAUDE.md");
+
+  it.each(["linux", "darwin", "win32"] as const)("expands ~/ on %s", (platform) => {
+    expect(importPath(containing, "~/notes.md", environment, platform)).toBe(
+      path.join("/home/alice", "notes.md"),
+    );
+  });
+
+  it("expands ~\\ on Windows", () => {
+    expect(importPath(containing, "~\\notes.md", environment, "win32")).toBe(
+      path.join("/home/alice", "notes.md"),
+    );
+  });
+
+  it.each(["linux", "darwin"] as const)("leaves ~\\ alone on %s", (platform) => {
+    expect(importPath(containing, "~\\notes.md", environment, platform)).toBe(
+      path.resolve(path.dirname(containing), "~\\notes.md"),
+    );
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "does not turn ~\\ into the home directory when the preview runs on this platform",
+    async () => {
+      const f = fixture();
+      f.write(f.inHome("notes.md"), "home notes\n");
+      f.write("CLAUDE.md", "@~\\notes.md\n");
+      const result = await preview(f);
+      expect(result.content).toEqual(["@~\\notes.md\n"]);
+      expect(result.warnings).toEqual([missing(f, "~\\notes.md")]);
+    },
+  );
 });
 
 describe("how deep imports nest", () => {
@@ -333,10 +372,10 @@ describe("imports that cannot be used", () => {
   it("keeps every other source when one top-level source cannot be read", async () => {
     const f = fixture();
     f.write("CLAUDE.md", "main\n");
-    f.mkdir(".claude/rules/folder.md");
+    f.write(".claude/rules/a-bad.md", Buffer.from([0xff, 0xfe, 0x00, 0x41]));
     f.write(".claude/rules/ok.md", "rule\n");
     const result = await f.resolve();
     expect(result.sections.map((section) => section.content)).toEqual(["main\n", "rule\n"]);
-    expect(result.warnings).toEqual([`Could not read ${f.at(".claude", "rules", "folder.md")}`]);
+    expect(result.warnings).toEqual([`Could not read ${f.at(".claude", "rules", "a-bad.md")}`]);
   });
 });

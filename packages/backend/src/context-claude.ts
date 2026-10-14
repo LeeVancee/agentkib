@@ -2,12 +2,14 @@ import path from "node:path";
 import { isFile, within } from "./files";
 import { canonicalize } from "./paths";
 import {
+  CLAUDE_CONFIG_DIR_VARIABLE,
   claudeConfigFiles,
   claudeManagedDir,
   resolveClaudeConfig,
   type ClaudeConfig,
 } from "./claude-config";
 import { MEMORY_BYTES, MEMORY_LINES, autoMemoryLocation } from "./claude-memory";
+import { readClaudeSettings, type ClaudeSettings } from "./claude-settings";
 import { supportsClaudeVersion } from "./claude-version";
 import {
   ANCESTOR_LAYERS,
@@ -73,7 +75,7 @@ const MAX_TOKEN_CHARS = 4096;
 const AGENTS_FROM = "2.1.277";
 const note = (text: string) => `${CONTEXT_NOTE_PREFIX}${text}`;
 const SETTINGS_NOT_READ = note(
-  "Claude Code settings are not read yet (claudeMdExcludes, the Project instructions choice, the autoMemoryDirectory and autoMemoryEnabled settings, managed claudeMd) and rules in parent directories are not read, so this list can differ from what Claude Code loads.",
+  "Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.",
 );
 const CONFIG_DIR_INVALID = note(
   "CLAUDE_CONFIG_DIR is set but is not a usable absolute path, so AgentKib reads Claude Code's default configuration folder. User-level instructions shown here may belong to a different setup than the one Claude Code uses.",
@@ -612,6 +614,15 @@ interface Tally {
 const CLAUDE_NAMES = ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"];
 const AGENTS_NAMES = ["AGENTS.md", ".claude/AGENTS.md"];
 const PATH_LIST_ROWS = 8;
+/** Variables that change what is loaded; a settings `env` block can set them, which AgentKib only notes. */
+const ENV_BLOCK_NAMES = [
+  CLAUDE_CONFIG_DIR_VARIABLE,
+  "CLAUDE_CODE_PROJECT_DIR_NAME",
+  "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+  "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
+  "CLAUDE_CODE_SAFE_MODE",
+  "CLAUDE_CODE_SIMPLE",
+];
 const LOAD_SWITCH_NAMES = [
   "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
   "CLAUDE_CODE_SAFE_MODE",
@@ -647,6 +658,9 @@ class Assembly {
   /** Real paths of outside files already listed, so one file is not shown twice. */
   readonly seenOutside = new Set<string>();
   readonly seenAgents = new Set<string>();
+  /** Sections about settings and assets, listed after the instructions. */
+  readonly extras: Section[] = [];
+  readonly settings: ClaudeSettings;
   /** Something outside the workspace (shown, counted or skipped) was met. */
   outsideSeen = false;
   conditionalSeen = false;
@@ -663,6 +677,17 @@ class Assembly {
     this.home = userHome(options.environment);
     this.config =
       options.config ?? resolveClaudeConfig(options.environment, this.home, this.platform);
+    this.settings = readClaudeSettings({
+      root: options.root,
+      cwd: options.cwd,
+      environment: options.environment,
+      mode: this.mode,
+      config: this.config,
+      managedDir: options.managedDir,
+      platform: this.platform,
+      io: this.context.io,
+      sensitive: isSensitiveExternalPath,
+    });
     this.shared = {
       root: options.root,
       cwd: options.cwd,
@@ -1068,6 +1093,59 @@ class Assembly {
 
   // ---- result ----------------------------------------------------------------------------
 
+  /**
+   * What the settings say, as a section in the app and as metadata over MCP. Nothing is read for
+   * the Doctor.
+   */
+  #settingsOutput(): void {
+    const { mode, settings } = this;
+    if (mode === "none") return;
+    if (settings.anyFile) {
+      if (mode === "full") {
+        for (const file of settings.files)
+          if (file.status === "network" || file.status === "unreadable")
+            this.warn(
+              `Settings file skipped (${file.status === "network" ? "network path" : "could not be read"}): ${file.file}`,
+              true,
+            );
+        this.extras.push({
+          source: "Claude Code settings",
+          scope: "settings",
+          content: settings.describe("full"),
+          precedence: 0,
+        });
+        for (const file of settings.files)
+          if (file.status === "unparseable" || file.status === "not-object") {
+            const at = file.position
+              ? ` (line ${file.position.line}, column ${file.position.column})`
+              : "";
+            this.warn(
+              `Settings file cannot be used${at}: ${file.file}. Claude Code reports a Settings Error for a user, project or local file and skips it.`,
+              true,
+            );
+          }
+      } else {
+        const project = settings.files.find((file) => file.layer === "project");
+        const showProject = project?.status === "ok" && !project.outside;
+        if (showProject)
+          this.extras.push({
+            source: "Claude Code settings (project)",
+            scope: "settings",
+            content: settings.describe("project-metadata"),
+            precedence: 0,
+          });
+        for (const line of settings.metadataLines(showProject ? ["project"] : []))
+          this.warn(line, true);
+      }
+    }
+    const names = ENV_BLOCK_NAMES.filter((name) => settings.envSets(name));
+    if (names.length)
+      this.warn(
+        `The env block of a settings file sets ${names.join(", ")}. AgentKib reads these variables from its own environment only, so this list can differ from what Claude Code loads.`,
+        true,
+      );
+  }
+
   async finish(fallback: boolean): Promise<Section[]> {
     const { mode, options } = this;
     for (const [label, entry] of [...this.tallies].sort(
@@ -1090,6 +1168,7 @@ class Assembly {
         `The budget for instruction sources outside the workspace (${OUTSIDE_TOTAL_CHARS / 1024} Ki characters) was used up; later sources were not read.`,
         true,
       );
+    this.#settingsOutput();
     if (fallback && this.agentsSeen) {
       let version: string | null = null;
       try {
@@ -1104,8 +1183,9 @@ class Assembly {
     if (LOAD_SWITCH_NAMES.some((name) => options.environment[name] === "1"))
       this.warn(LOAD_SWITCHES);
     if (mode !== "none" && this.config.invalid) this.warn(CONFIG_DIR_INVALID);
-    if (this.outsideSeen || this.conditionalSeen || this.agentsSeen) this.warn(SETTINGS_NOT_READ);
-    return [...this.sections, ...this.conditional].map((section, precedence) => ({
+    if (this.outsideSeen || this.conditionalSeen || this.agentsSeen || this.settings.anyFile)
+      this.warn(SETTINGS_NOT_READ);
+    return [...this.sections, ...this.conditional, ...this.extras].map((section, precedence) => ({
       ...section,
       precedence,
     }));

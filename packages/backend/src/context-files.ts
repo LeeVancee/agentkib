@@ -32,6 +32,8 @@ const CLAUDE_RESERVED_SCOPES = new Set([
   "conditional",
   "agent-home",
   "platform-override",
+  "settings",
+  "assets",
 ]);
 /** The `scope` of a Claude Code source found in the workspace at `relative` (a directory below the root). */
 export function inWorkspaceScope(relative: string): string {
@@ -39,7 +41,8 @@ export function inWorkspaceScope(relative: string): string {
 }
 /**
  * Whether a section comes from the project. For Claude Code every reserved scope is something
- * else (managed policy, user level, parent directory, auto memory, conditional rule); the other
+ * else (managed policy, user level, parent directory, auto memory, conditional rule, the settings
+ * and asset listings); the other
  * Agents keep their one exception, the Agent Home.
  */
 export function isProjectScope(agent: string, scope: string): boolean {

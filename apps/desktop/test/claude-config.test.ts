@@ -244,6 +244,12 @@ describe("claudeConfigFiles", () => {
       userInstructions: "/srv/claude/CLAUDE.md",
       userRules: "/srv/claude/rules",
       skills: "/srv/claude/skills",
+      settings: "/srv/claude/settings.json",
+      plugins: "/srv/claude/plugins",
+      commands: "/srv/claude/commands",
+      agents: "/srv/claude/agents",
+      outputStyles: "/srv/claude/output-styles",
+      workflows: "/srv/claude/workflows",
     });
     expect(claudeConfigFiles(windows("C:/Data/claude"), "win32")).toEqual({
       projects: "C:\\Data\\claude\\projects",
@@ -252,6 +258,12 @@ describe("claudeConfigFiles", () => {
       userInstructions: "C:\\Data\\claude\\CLAUDE.md",
       userRules: "C:\\Data\\claude\\rules",
       skills: "C:\\Data\\claude\\skills",
+      settings: "C:\\Data\\claude\\settings.json",
+      plugins: "C:\\Data\\claude\\plugins",
+      commands: "C:\\Data\\claude\\commands",
+      agents: "C:\\Data\\claude\\agents",
+      outputStyles: "C:\\Data\\claude\\output-styles",
+      workflows: "C:\\Data\\claude\\workflows",
     });
   });
 

@@ -73,6 +73,8 @@ const SCOPE_LABEL_KEYS: Record<string, string> = {
   ancestor: "context.scope.ancestor",
   "auto-memory": "context.scope.auto-memory",
   conditional: "context.scope.conditional",
+  settings: "context.scope.settings",
+  assets: "context.scope.assets",
 };
 function scopeLabel(scope: string) {
   const key = Object.hasOwn(SCOPE_LABEL_KEYS, scope) ? SCOPE_LABEL_KEYS[scope] : undefined;
@@ -287,7 +289,7 @@ export function ContextPage({
 const CLAUDE_MESSAGE_KEYS: Record<string, string> = {
   "AGENTS.md may not be loaded: the Claude Code version could not be detected, and Claude Code reads AGENTS.md only from v2.1.277.":
     "context.claudeAgentsVersionUnknown",
-  "Claude Code settings are not read yet (claudeMdExcludes, the Project instructions choice, the autoMemoryDirectory and autoMemoryEnabled settings, managed claudeMd) and rules in parent directories are not read, so this list can differ from what Claude Code loads.":
+  "Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.":
     "context.claudeSettingsNotRead",
   "CLAUDE_CONFIG_DIR is set but is not a usable absolute path, so AgentKib reads Claude Code's default configuration folder. User-level instructions shown here may belong to a different setup than the one Claude Code uses.":
     "context.claudeConfigDirInvalid",

@@ -10,7 +10,7 @@ import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 // user's rules in `~/.claude/rules` load before the project's.
 const NO_PROJECT = "No project instruction file was found for this Agent";
 const SETTINGS_NOT_READ =
-  "Note: Claude Code settings are not read yet (claudeMdExcludes, the Project instructions choice, the autoMemoryDirectory and autoMemoryEnabled settings, managed claudeMd) and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
+  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
 const symlinks = process.platform === "win32" ? it.skip : it;
 
 const fixtures: ContextFixture[] = [];

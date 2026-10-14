@@ -43,6 +43,14 @@ export interface ClaudeConfigFiles {
   userInstructions: string;
   userRules: string;
   skills: string;
+  /** `settings.json` of the user layer. */
+  settings: string;
+  /** Plugin records and installed plugins (`CLAUDE_CODE_PLUGIN_CACHE_DIR` can move them). */
+  plugins: string;
+  commands: string;
+  agents: string;
+  outputStyles: string;
+  workflows: string;
 }
 
 export type ClaudeGlobalConfigGate =
@@ -50,6 +58,9 @@ export type ClaudeGlobalConfigGate =
   | { usable: false; why: "invalid" | "legacy-file" };
 
 const MAX_VALUE_LENGTH = 4096;
+
+/** The variable's name, for messages that mention it (the only place that spells it out). */
+export const CLAUDE_CONFIG_DIR_VARIABLE = "CLAUDE_CONFIG_DIR";
 
 export class ClaudeConfigError extends Error {
   readonly reason: ClaudeConfigInvalidReason;
@@ -143,6 +154,12 @@ export function claudeConfigFiles(
     userInstructions: p.join(config.dir, "CLAUDE.md"),
     userRules: p.join(config.dir, "rules"),
     skills: p.join(config.dir, "skills"),
+    settings: p.join(config.dir, "settings.json"),
+    plugins: p.join(config.dir, "plugins"),
+    commands: p.join(config.dir, "commands"),
+    agents: p.join(config.dir, "agents"),
+    outputStyles: p.join(config.dir, "output-styles"),
+    workflows: p.join(config.dir, "workflows"),
   };
 }
 

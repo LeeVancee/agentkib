@@ -202,7 +202,7 @@
   "context.deepseekCustomRules": "检测到 DeepSeek Harness 自定义指令或 Skill 加载规则，当前预览仍按公开默认规则模拟。",
   "context.deepseekClaudeImport": "DeepSeek Harness 会把 CLAUDE.md 中的 @AGENTS.md 当作普通文本，不会按 Claude Code 导入语法处理。",
   "context.claudeAgentsVersionUnknown": "AGENTS.md 可能不会被加载：无法检测到 Claude Code 的版本，而 Claude Code 从 v2.1.277 起才会读取 AGENTS.md。",
-  "context.claudeSettingsNotRead": "命令行传入的设置（--settings、--setting-sources）、通过 MDM、配置描述文件或 Windows 注册表下发的策略，以及服务端托管的设置，AgentKib 都看不到；上级目录里的规则也没有读取，所以这份清单可能与 Claude Code 实际加载的内容不同。",
+  "context.claudeSettingsNotRead": "命令行传入的设置（--settings、--setting-sources）、通过 MDM、配置描述文件或 Windows 注册表下发的策略，以及服务端托管的设置，AgentKib 都看不到，所以这份清单可能与 Claude Code 实际加载的内容不同。",
   "context.claudeConfigDirInvalid": "已设置 CLAUDE_CONFIG_DIR，但它不是可用的绝对路径，所以 AgentKib 读取 Claude Code 的默认配置目录。这里显示的用户级指令可能与 Claude Code 实际使用的配置不是同一份。",
   "context.claudeAutoMemoryOff": "AgentKib 的环境里设置了 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1，所以不显示自动记忆。在其他环境里启动的 Claude Code 仍可能加载它。",
   "context.claudeLoadSwitches": "AgentKib 的环境里设置了会关闭 CLAUDE.md 加载的环境变量（CLAUDE_CODE_DISABLE_CLAUDE_MDS、CLAUDE_CODE_SAFE_MODE 或 CLAUDE_CODE_SIMPLE）。带着它启动的 Claude Code 实际加载的指令文件会比这里列出的少，AgentKib 暂未对此建模。",

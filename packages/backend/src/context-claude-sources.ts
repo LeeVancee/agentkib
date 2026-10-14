@@ -43,12 +43,12 @@ export interface ProbeContext {
 }
 
 /**
- * The rules for parent directories and rule folders. Only the fixed file names of parent
- * directories are read: whether Claude Code also loads their `.claude/rules` at startup is not
- * documented, so that stays off until it has been checked against a real CLI.
+ * The rules for parent directories and rule folders. Claude Code loads the `.claude/rules` of
+ * parent directories at startup too (checked with Claude Code 2.1.299), so they are read like the
+ * fixed file names of those directories.
  */
 export const ANCESTOR_LAYERS = 32;
-export const ANCESTOR_RULES = false;
+export const ANCESTOR_RULES = true;
 export interface RuleLimits {
   files: number;
   depth: number;

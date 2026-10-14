@@ -68,7 +68,7 @@ describe("ContextPage", () => {
 
   // 与后端 context-claude.ts 里的静态文案逐字一致；任一边改动都会让对应测试失败。
   const SETTINGS_NOT_READ =
-    "Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
+    "Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, so this list can differ from what Claude Code loads.";
   const CONFIG_INVALID =
     "CLAUDE_CONFIG_DIR is set but is not a usable absolute path, so AgentKib reads Claude Code's default configuration folder. User-level instructions shown here may belong to a different setup than the one Claude Code uses.";
   const MEMORY_OFF =

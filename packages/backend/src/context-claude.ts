@@ -79,7 +79,7 @@ const MAX_TOKEN_CHARS = 4096;
 const AGENTS_FROM = "2.1.277";
 const note = (text: string) => `${CONTEXT_NOTE_PREFIX}${text}`;
 const SETTINGS_NOT_READ = note(
-  "Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.",
+  "Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, so this list can differ from what Claude Code loads.",
 );
 const CONFIG_DIR_INVALID = note(
   "CLAUDE_CONFIG_DIR is set but is not a usable absolute path, so AgentKib reads Claude Code's default configuration folder. User-level instructions shown here may belong to a different setup than the one Claude Code uses.",

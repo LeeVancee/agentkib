@@ -202,7 +202,7 @@
   "context.deepseekCustomRules": "DeepSeek Harness のカスタム指示または Skill 読み込み規則を検出しました。このプレビューは公開されている既定規則を使用します。",
   "context.deepseekClaudeImport": "DeepSeek Harness は CLAUDE.md 内の @AGENTS.md を Claude Code のインポートではなく通常のテキストとして扱います。",
   "context.claudeAgentsVersionUnknown": "AGENTS.md が読み込まれない可能性があります。Claude Code のバージョンを検出できず、Claude Code が AGENTS.md を読み込むのは v2.1.277 以降のみです。",
-  "context.claudeSettingsNotRead": "コマンドラインで渡す設定（--settings、--setting-sources）、MDM・構成プロファイル・Windows レジストリで配布されるポリシー、サーバー管理の設定は AgentKib からは見えません。親ディレクトリのルールも読み込んでいないため、この一覧は Claude Code が実際に読み込む内容と異なる場合があります。",
+  "context.claudeSettingsNotRead": "コマンドラインで渡す設定（--settings、--setting-sources）、MDM・構成プロファイル・Windows レジストリで配布されるポリシー、サーバー管理の設定は AgentKib からは見えないため、この一覧は Claude Code が実際に読み込む内容と異なる場合があります。",
   "context.claudeConfigDirInvalid": "CLAUDE_CONFIG_DIR が設定されていますが、使用できる絶対パスではないため、AgentKib は Claude Code の既定の設定フォルダーを読み込みます。ここに表示されるユーザーレベルの指示は、Claude Code が実際に使う設定とは別のものかもしれません。",
   "context.claudeAutoMemoryOff": "AgentKib の環境で CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 が設定されているため、自動メモリは表示されません。別の環境で起動した Claude Code は読み込む場合があります。",
   "context.claudeLoadSwitches": "AgentKib の環境に、CLAUDE.md の読み込みを無効にする環境変数（CLAUDE_CODE_DISABLE_CLAUDE_MDS、CLAUDE_CODE_SAFE_MODE、CLAUDE_CODE_SIMPLE）が設定されています。これらを付けて起動した Claude Code は、ここに挙げたよりも少ない指示ファイルを読み込みます。AgentKib はこれをモデル化していません。",

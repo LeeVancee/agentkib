@@ -13,7 +13,7 @@ import { virtualIo } from "./fixtures/claude-virtual-io";
 // directory from the file system root down to the working directory, then auto memory. Rules
 // with a `paths` field load only when a matching file is read, so they are listed apart.
 const SETTINGS_NOT_READ =
-  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
+  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, so this list can differ from what Claude Code loads.";
 const HOME_FILE =
   "Note: ~/.claude/CLAUDE.md is listed as a parent-directory file because CLAUDE_CONFIG_DIR points to another folder. AgentKib does not count it when deciding on the AGENTS.md fallback; whether Claude Code does is not verified.";
 const NO_PROJECT = "No project instruction file was found for this Agent";

@@ -13,7 +13,7 @@ import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 // - the Doctor does not look at them at all, so they can never become a finding.
 const symlinks = process.platform === "win32" ? it.skip : it;
 const SETTINGS_NOT_READ =
-  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
+  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, so this list can differ from what Claude Code loads.";
 
 const fixtures: ContextFixture[] = [];
 function fixture(...args: Parameters<typeof contextFixture>) {

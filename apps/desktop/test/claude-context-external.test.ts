@@ -332,7 +332,7 @@ describe("top-level sources that lead outside the project", () => {
   const outsideRule = (source: string) =>
     `Instruction source skipped (outside the project): ${source}`;
   const SETTINGS_NOT_READ =
-    "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
+    "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, so this list can differ from what Claude Code loads.";
   const linkedSource = (source: string, link = source) =>
     `Note: External instruction source (outside the working directory): ${source} (link: ${link}). Claude Code may ask for approval before loading it, so this content may not be in effect.`;
   const linkedRule = (source: string, link = source) =>

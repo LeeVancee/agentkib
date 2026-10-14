@@ -12,7 +12,7 @@ import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 // The note that replaced "Directories above the workspace root were not checked": the preview
 // now reads parent directories, and says instead what it still does not read.
 const SETTINGS_NOT_READ =
-  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
+  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, so this list can differ from what Claude Code loads.";
 const VERSION_UNKNOWN =
   "AGENTS.md may not be loaded: the Claude Code version could not be detected, and Claude Code reads AGENTS.md only from v2.1.277.";
 const tooOld = (version: string) =>

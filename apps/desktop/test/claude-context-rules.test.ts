@@ -10,7 +10,7 @@ import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 // user's rules in `~/.claude/rules` load before the project's.
 const NO_PROJECT = "No project instruction file was found for this Agent";
 const SETTINGS_NOT_READ =
-  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, and rules in parent directories are not read, so this list can differ from what Claude Code loads.";
+  "Note: Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, so this list can differ from what Claude Code loads.";
 const symlinks = process.platform === "win32" ? it.skip : it;
 
 const fixtures: ContextFixture[] = [];
@@ -65,28 +65,28 @@ describe("the rules folder", () => {
     expect(preview.sections[0]!.content).toBe("before\nshared text\n\nafter\n");
   });
 
-  it("is not read from a parent directory", async () => {
+  // Checked with Claude Code 2.1.299: a parent directory's rules load at startup, between that
+  // directory's CLAUDE.md and the next directory's CLAUDE.md.
+  it("is read from a parent directory, after that directory's CLAUDE.md and before the project's", async () => {
     const f = fixture();
     f.write(f.outside(".claude", "rules", "canary.md"), "PARENT-RULE-BODY\n");
-    f.write("CLAUDE.md", "main\n");
-    for (const result of [await f.resolve(), await f.mcp()])
-      expect(JSON.stringify(result)).not.toContain("PARENT-RULE-BODY");
-  });
-
-  it("is read from a parent directory when that is turned on", async () => {
-    // Whether Claude Code loads these at startup is not documented, so it is off by default.
-    const f = fixture({ ancestorRules: true });
-    f.write(f.outside(".claude", "rules", "canary.md"), "PARENT-RULE-BODY\n");
+    f.write(f.outside("CLAUDE.md"), "parent\n");
     f.write("CLAUDE.md", "main\n");
     const preview = await f.resolve();
     expect(sections(preview)).toEqual([
+      ["ancestor", "parent\n"],
       ["ancestor", "PARENT-RULE-BODY\n"],
       ["", "main\n"],
     ]);
-    // Even then the MCP tool only counts it.
+    // The MCP tool only counts it.
     expect(JSON.stringify(await f.mcp())).not.toContain("PARENT-RULE-BODY");
   });
-
+  it("skips a parent directory's rules when the test seam turns them off", async () => {
+    const f = fixture({ ancestorRules: false });
+    f.write(f.outside(".claude", "rules", "canary.md"), "PARENT-RULE-BODY\n");
+    f.write("CLAUDE.md", "main\n");
+    expect(JSON.stringify(await f.resolve())).not.toContain("PARENT-RULE-BODY");
+  });
   it("puts the user's rules before the project's and the project's in the chain order", async () => {
     const f = fixture();
     f.write(".claude/rules/project.md", "project\n");

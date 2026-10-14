@@ -153,6 +153,9 @@ export function McpImportPanel({
           {tr("mcp.manage.scanNative")}
         </Button>
       </div>
+      {candidates.some((candidate) => candidate.agent === "claude-code") && (
+        <p className="text-sm text-muted-foreground">{tr("mcp.manage.claudeScopesHint")}</p>
+      )}
       {candidates.map((candidate) => (
         <label key={candidate.id} className="flex items-start gap-2">
           <Checkbox

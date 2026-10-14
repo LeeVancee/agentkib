@@ -8,9 +8,13 @@ import { AGENTS } from "./rpc";
 import {
   claudeGlobalConfigFile,
   claudeGlobalConfigGate,
+  claudeManagedDir,
   resolveClaudeConfig,
   type ClaudeGlobalConfigGate,
 } from "./claude-config";
+import { hasClaudeProjects, readClaudeProjectEntry } from "./claude-project-config";
+import { resolveRepoRoot } from "./claude-memory";
+import { defaultIo } from "./context-claude-sources";
 import type { Agent } from "./doctor-files";
 import { canonicalize, pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
@@ -43,6 +47,8 @@ export type NativeMcpSnapshot = ReturnType<typeof parseNativeMcpDocument> & {
 export type NativeMcpImportRead =
   | { candidate: NativeMcpCandidate; snapshot: NativeMcpSnapshot; server: McpServer }
   | { candidate: NativeMcpCandidate; error: unknown };
+/** Test seam: `managedDir` replaces the organization policy folder, `null` means there is none. */
+export type NativeMcpScanOptions = { managedDir?: string | null };
 type CandidateContext = {
   output: Candidate[];
   project?: string;
@@ -50,9 +56,26 @@ type CandidateContext = {
   opencodeHome: string;
   grokHome?: string;
   environment: NodeJS.ProcessEnv;
+  options: NativeMcpScanOptions;
+  /** A readable managed-mcp.json exists: Claude Code then loads no other MCP servers. */
+  claudeManaged: boolean;
+  /** Names this project switched off with `/mcp`, from its local entry only. */
+  claudeDisabled: Set<string>;
 };
 const claudeConfigUnusableWarning =
   "AgentKib cannot tell which Claude configuration file is in use (CLAUDE_CONFIG_DIR is unusable, or a legacy .config.json exists), so what is shown from this file may not match Claude Code, and migration is turned off for it.";
+const nativeConfigUnavailableKey = "mcp.manage.diagnostic.native_config_unavailable";
+const claudeDiagnosticText = {
+  native_overridden_by_local:
+    "Overridden: Claude Code uses the local-scope server with the same name instead.",
+  native_overridden_if_approved:
+    "Overridden if the same-named server in .mcp.json is approved. AgentKib cannot see the approval state (it lives in settings files).",
+  native_inactive_exclusive:
+    "Not loaded: a managed-mcp.json on this machine gives your organization exclusive control over MCP servers.",
+  native_disabled_for_project: "Disabled for this project in Claude Code (/mcp).",
+} as const;
+// Claude Code's own precedence, strongest first (mcp page, "Scope hierarchy and precedence").
+const claudeScopeRank: Record<string, number> = { managed: 0, local: 1, project: 2, home: 3 };
 const workingDirectoryWarning =
   "Native MCP working directory cannot be determined equivalently; review the original configuration";
 class NativeWorkingDirectoryError extends McpDiagnosticError {
@@ -65,6 +88,7 @@ export function scanNativeMcp(
   request: unknown,
   store: BackendStore,
   environment: NodeJS.ProcessEnv,
+  options: NativeMcpScanOptions = {},
 ): Candidate[] {
   const value = request as { project?: unknown } | null;
   const projectValue = value?.project;
@@ -85,12 +109,16 @@ export function scanNativeMcp(
     home,
     opencodeHome,
     environment,
+    options,
+    claudeManaged: false,
+    claudeDisabled: new Set(),
     ...(isDirectory(grokRoot) ? { grokHome: canonicalPath(grokRoot) } : {}),
   };
   if (project) scanProject(context, project);
   scanHome(context);
   scanOpenCodeHome(context);
   scanGrokHome(context);
+  scanClaudeManaged(context);
 
   const seen = new Set<string>();
   const result = context.output.filter((candidate) => {
@@ -100,10 +128,14 @@ export function scanNativeMcp(
   });
   markLayeredOpenCode(result);
   markClaudeConfigUnusable(result, claudeGlobalConfigGate(resolveClaudeConfig(environment, home)));
+  annotateClaudePrecedence(result, context);
   result.sort(
     (left, right) =>
       AGENTS.indexOf(left.agent) - AGENTS.indexOf(right.agent) ||
-      compareUtf8(left.name, right.name),
+      compareUtf8(left.name, right.name) ||
+      (left.agent === "claude-code" && right.agent === "claude-code"
+        ? scopeRank(left.scope) - scopeRank(right.scope)
+        : 0),
   );
   return result;
 }
@@ -147,8 +179,11 @@ function scanHome(context: CandidateContext): void {
   scanSafely(context, "codex", "home", path.join(home, ".codex/config.toml"), () =>
     scanConfig(path.join(home, ".codex/config.toml"), "codex", "home", context),
   );
+  const claudeFile = claudeGlobalConfigFile(resolveClaudeConfig(context.environment, home), home);
+  scanSafely(context, "claude-code", "home", claudeFile, () =>
+    scanClaudeGlobalFile(claudeFile, context),
+  );
   for (const [agent, file] of [
-    ["claude-code", claudeGlobalConfigFile(resolveClaudeConfig(context.environment, home), home)],
     ["cursor", path.join(home, ".cursor/mcp.json")],
     ["antigravity", path.join(home, ".gemini/config/mcp_config.json")],
   ] as const) {
@@ -160,6 +195,50 @@ function scanHome(context: CandidateContext): void {
   scanSafely(context, "hermes", "home", "Hermes selected profile", () =>
     scanConfig(agentMcpHome("hermes", context.environment).config, "hermes", "home", context),
   );
+}
+
+/**
+ * Claude Code's global configuration file holds two scopes: `mcpServers` at the top is "user", and
+ * `projects[<path>].mcpServers` is "local". Both come from one read, so an unreadable file fails
+ * both together, and nothing of any other project's entry is looked at.
+ */
+function scanClaudeGlobalFile(file: string, context: CandidateContext): void {
+  const snapshot = readNativeMcpSnapshot(file, "claude-code");
+  if (!snapshot) return;
+  collectJsonServers(file, "claude-code", "home", snapshot, context);
+  if (!context.project || !hasClaudeProjects(snapshot.root)) return;
+  const entry = readClaudeProjectEntry(
+    snapshot.root,
+    claudeProjectKeys(context.project),
+    process.platform,
+  );
+  if (!entry) return;
+  for (const name of entry.disabledMcpServers) context.claudeDisabled.add(name);
+  collectReadonlyServers(file, "local", entry.mcpServers, context);
+}
+
+/**
+ * The paths Claude Code may have used as this project's key: the repository root (the documented
+ * key for trust; a work tree maps to its main work tree) and the workspace root. Which one holds
+ * the MCP entry is not documented, so both are tried in that order.
+ */
+function claudeProjectKeys(project: string): string[] {
+  const { base } = resolveRepoRoot(project, { io: defaultIo, platform: process.platform });
+  return base === project ? [project] : [base, project];
+}
+
+function scanClaudeManaged(context: CandidateContext): void {
+  const directory =
+    context.options.managedDir === undefined ? claudeManagedDir() : context.options.managedDir;
+  if (!directory) return;
+  const file = path.join(directory, "managed-mcp.json");
+  scanSafely(context, "claude-code", "managed", file, () => {
+    const snapshot = readNativeMcpSnapshot(file, "claude-code");
+    if (!snapshot) return;
+    // Present and parsed, even with no servers: that is how an organization turns them all off.
+    context.claudeManaged = true;
+    collectReadonlyServers(file, "managed", snapshot.servers, context);
+  });
 }
 
 function scanOpenCodeHome(context: CandidateContext): void {
@@ -264,16 +343,7 @@ function collectJsonServers(
   if (!servers) return;
   for (const [name, raw] of Object.entries(servers)) {
     const server = asObject(raw);
-    const endpoint = endpointField(server) ?? "unavailable";
-    const declared = stringField(server, ["transport", "type"]);
-    const transport =
-      declared ??
-      (server && (Object.hasOwn(server, "url") || Object.hasOwn(server, "serverUrl"))
-        ? "http"
-        : "stdio");
-    const hasSecretValues =
-      (!!server && ["env", "environment", "headers"].some((key) => hasValues(server[key]))) ||
-      (!!server && asObject(server.oauth) !== undefined && hasValues(server.oauth));
+    const { endpoint, transport, hasSecretValues } = jsonServerShape(server);
     const result = candidate(
       file,
       agent,
@@ -294,6 +364,67 @@ function collectJsonServers(
         result.warnings.push("Unsupported native MCP fields or transport");
         result.warning_messages!.push(mcpDiagnostic("native_unsupported"));
       }
+    }
+    context.output.push(result);
+  }
+}
+
+function jsonServerShape(server: JsonObject | undefined) {
+  const endpoint = endpointField(server) ?? "unavailable";
+  const declared = stringField(server, ["transport", "type"]);
+  const transport =
+    declared ??
+    (server && (Object.hasOwn(server, "url") || Object.hasOwn(server, "serverUrl"))
+      ? "http"
+      : "stdio");
+  const hasSecretValues =
+    (!!server && ["env", "environment", "headers"].some((key) => hasValues(server[key]))) ||
+    (!!server && asObject(server.oauth) !== undefined && hasValues(server.oauth));
+  return { endpoint, transport, hasSecretValues };
+}
+
+/**
+ * Servers of a Claude scope AgentKib only shows (local, managed). They are never collected or
+ * migrated, so `supported` stays false and the existing guards reject them. The endpoint goes
+ * through the same public view as every other candidate: credentials are never shown, only whether
+ * there are any.
+ */
+function collectReadonlyServers(
+  file: string,
+  scope: "local" | "managed",
+  servers: JsonObject | undefined,
+  context: CandidateContext,
+): void {
+  if (!servers) return;
+  const sourcePath = canonicalPath(file);
+  for (const [name, raw] of Object.entries(servers)) {
+    const server = asObject(raw);
+    const shape = jsonServerShape(server);
+    const text = `Read-only: this ${scope}-scope server is shown for reference. AgentKib does not collect or migrate it.`;
+    const result: Candidate = {
+      // The scope is part of the id: a local and a user server of one name share a file.
+      id: createHash("sha256").update(`${sourcePath}:${scope}:${name}`).digest("hex").slice(0, 24),
+      agent: "claude-code",
+      scope,
+      name,
+      source_path: sourcePath,
+      transport: shape.transport,
+      endpoint: shape.endpoint,
+      has_secret_values: shape.hasSecretValues,
+      supported: false,
+      warnings: [text],
+      warning_messages: [mcpDiagnostic("native_readonly_scope", { scope })],
+    };
+    try {
+      const publicConfig = publicMcpConfig(normalizeMcpImport(name, raw, "claude-code", true));
+      result.endpoint =
+        publicConfig.transport === "stdio" ? publicConfig.command : publicConfig.url;
+    } catch {
+      result.endpoint = "unavailable";
+      result.warnings.push(
+        "Unsupported native MCP fields or inline credentials; review the original configuration",
+      );
+      result.warning_messages!.push(mcpDiagnostic("native_review_configuration"));
     }
     context.output.push(result);
   }
@@ -600,12 +731,57 @@ function markLayeredOpenCode(candidates: Candidate[]): void {
 function markClaudeConfigUnusable(candidates: Candidate[], gate: ClaudeGlobalConfigGate): void {
   if (gate.usable) return;
   for (const candidate of candidates) {
-    if (candidate.agent !== "claude-code" || candidate.scope !== "home") continue;
+    // Local entries come from the same file as user ones.
+    if (candidate.agent !== "claude-code" || !["home", "local"].includes(candidate.scope)) continue;
     candidate.supported = false;
-    if (!candidate.warnings.includes(claudeConfigUnusableWarning)) {
-      candidate.warnings.push(claudeConfigUnusableWarning);
-      candidate.warning_messages!.push(mcpDiagnostic("native_claude_config_unusable"));
-    }
+    addDiagnostic(candidate, claudeConfigUnusableWarning, "native_claude_config_unusable");
+  }
+}
+
+function addDiagnostic(
+  candidate: Candidate,
+  text: string,
+  code: string,
+  params?: McpDiagnosticMessage["params"],
+): void {
+  // Same index in both lists: the panel shows warning_messages[i] and falls back to warnings[i].
+  if (candidate.warnings.includes(text)) return;
+  candidate.warnings.push(text);
+  candidate.warning_messages!.push(mcpDiagnostic(code, params));
+}
+
+const scopeRank = (scope: string) => claudeScopeRank[scope] ?? 4;
+
+/**
+ * Which same-named Claude Code server wins, by Claude Code's own order (managed, local, project,
+ * user). Nothing is hidden: a losing entry stays in the list with the reason. Only the local
+ * scope can take over from an entry we can see, since managed-mcp.json switches off the others
+ * entirely and the stronger `managedMcpServers` and the approval state live in settings files
+ * AgentKib does not read yet.
+ */
+function annotateClaudePrecedence(candidates: Candidate[], context: CandidateContext): void {
+  const claude = candidates.filter(
+    (candidate) =>
+      candidate.agent === "claude-code" &&
+      !candidate.warning_messages?.some((message) => message.key === nativeConfigUnavailableKey),
+  );
+  const scopesByName = new Map<string, Set<string>>();
+  for (const candidate of claude)
+    scopesByName.set(
+      candidate.name,
+      (scopesByName.get(candidate.name) ?? new Set()).add(candidate.scope),
+    );
+  const note = (candidate: Candidate, code: keyof typeof claudeDiagnosticText) =>
+    addDiagnostic(candidate, claudeDiagnosticText[code], code);
+  for (const candidate of claude) {
+    if (candidate.scope === "managed") continue;
+    const scopes = scopesByName.get(candidate.name)!;
+    if (context.claudeManaged) note(candidate, "native_inactive_exclusive");
+    else if (candidate.scope !== "local" && scopes.has("local"))
+      note(candidate, "native_overridden_by_local");
+    else if (candidate.scope === "home" && scopes.has("project"))
+      note(candidate, "native_overridden_if_approved");
+    if (context.claudeDisabled.has(candidate.name)) note(candidate, "native_disabled_for_project");
   }
 }
 

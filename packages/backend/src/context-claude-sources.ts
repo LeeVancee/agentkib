@@ -204,6 +204,16 @@ export function probe(target: string, base: string | null, context: ProbeContext
   return { kind: "unreadable" };
 }
 
+/**
+ * `/net` and `/Network` themselves, the folders under which automounters list remote hosts. Looking
+ * for a file inside them (`/net/CLAUDE.md`, `/net/.git`) can make the automounter try to resolve
+ * the file's name as a host name, so a search that climbs out of a workspace on a network share
+ * steps over them. The hosts below are not skipped: they are where the workspace lives.
+ */
+export function isAutomountRoot(value: string, platform: NodeJS.Platform): boolean {
+  return platform !== "win32" && /^\/(net|network)$/.test(value.replace(/\/+$/, "").toLowerCase());
+}
+
 /** The directories above the workspace root, farthest first. The file system root is not one of them. */
 export function ancestorDirs(
   root: string,
@@ -212,7 +222,7 @@ export function ancestorDirs(
   const p = flavor(platform);
   const nearestFirst: string[] = [];
   for (let current = p.dirname(root); p.dirname(current) !== current; current = p.dirname(current))
-    nearestFirst.push(current);
+    if (!isAutomountRoot(current, platform)) nearestFirst.push(current);
   return {
     dirs: nearestFirst.slice(0, ANCESTOR_LAYERS).reverse(),
     limited: nearestFirst.length > ANCESTOR_LAYERS,

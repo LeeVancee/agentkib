@@ -2,6 +2,7 @@ import { claudeConfigFiles, type ClaudeConfig } from "./claude-config";
 import { claudeProjectKey } from "./claude-project-path";
 import {
   flavor,
+  isAutomountRoot,
   isNetworkOrDevicePath,
   pathKey,
   probe,
@@ -104,7 +105,8 @@ export function resolveRepoRoot(cwd: string, context: ProbeContext): RepoRoot {
     const marker = p.join(directory, ".git");
     let entry: ProbeStat | null = null;
     try {
-      entry = context.io.lstat(marker);
+      // Not inside /net or /Network: an automounter may take the name for a host to look up.
+      if (!isAutomountRoot(directory, context.platform)) entry = context.io.lstat(marker);
     } catch {
       // Absent, or not readable: either way the search goes on upwards.
     }

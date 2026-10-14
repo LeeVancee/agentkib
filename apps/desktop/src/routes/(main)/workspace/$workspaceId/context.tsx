@@ -76,8 +76,13 @@ const SCOPE_LABEL_KEYS: Record<string, string> = {
   settings: "context.scope.settings",
   assets: "context.scope.assets",
 };
-function scopeLabel(scope: string) {
-  const key = Object.hasOwn(SCOPE_LABEL_KEYS, scope) ? SCOPE_LABEL_KEYS[scope] : undefined;
+// 其他 Agent 的 scope 是项目内的目录（例如 Codex 在 user/AGENTS.md 下的 "user"），不能套用上面的保留名，
+// 所以只对 Claude Code 的结果查表。
+function scopeLabel(scope: string, agent: AgentKind) {
+  const key =
+    agent === "claude-code" && Object.hasOwn(SCOPE_LABEL_KEYS, scope)
+      ? SCOPE_LABEL_KEYS[scope]
+      : undefined;
   return key ? tr(key) : scope || tr("status.scope.project");
 }
 export function ContextPage({
@@ -249,7 +254,7 @@ export function ContextPage({
                       {shortPath(contextSection.source)}
                     </strong>
                     <Badge variant="outline" className="bg-background text-[11px]">
-                      {scopeLabel(contextSection.scope)}
+                      {scopeLabel(contextSection.scope, preview.agent)}
                     </Badge>
                   </header>
                   <Collapsible>

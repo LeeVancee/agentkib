@@ -1,6 +1,7 @@
+import { statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { canonicalProject, within } from "./files";
+import { canonicalProject, within, withinLexical } from "./files";
 import { canonicalize } from "./paths";
 import { loadManifest, manifestPath, type Manifest } from "./manifest";
 import { agentSchema, parameters } from "./rpc";
@@ -10,7 +11,13 @@ import { sources } from "./context-sources";
 import { antigravitySources } from "./context-antigravity";
 import { claudeSections, stripBlockComments } from "./context-claude";
 import { readClaudeVersion } from "./claude-version";
-import { budgetWarning, isProjectScope, loadImports, TOTAL_CHARS } from "./context-files";
+import {
+  CONTEXT_NOTE_PREFIX,
+  budgetWarning,
+  isProjectScope,
+  loadImports,
+  TOTAL_CHARS,
+} from "./context-files";
 import type { ClaudeIo } from "./context-claude-sources";
 import {
   deepseekRoot,
@@ -19,7 +26,7 @@ import {
   grokSections,
   type Section,
 } from "./context-special";
-import { visibleMcpNames } from "./mcp-config-read";
+import { userHome, visibleMcpNames } from "./mcp-config-read";
 export interface ContextOptions {
   /**
    * Whether the contents of Claude Code sources outside the workspace are returned: imports
@@ -115,10 +122,20 @@ export class Context {
     }
     const warnings: string[] = [];
     let sections: Section[] = [];
+    // Other Agents read Claude Code's personal folder too (OpenCode reads ~/.claude/CLAUDE.md, Grok
+    // Build its CLAUDE.md and rules). Over MCP those files are personal content of another tool,
+    // so the connected Agent gets their number and size, and neither text nor path.
+    const personal = new PersonalClaudeFiles(
+      agent !== "claude-code" && options.externalBodies === false,
+      this.environment,
+    );
     if (agent === "deepseek-harness")
       sections = deepseekSections(contextRoot, dirs, warnings, this.environment);
     else if (agent === "grok-build")
-      sections = await grokSections(root, dirs, warnings, this.environment, this.commands);
+      sections = personal.filter(
+        await grokSections(root, dirs, warnings, this.environment, this.commands),
+        warnings,
+      );
     else if (agent === "claude-code")
       sections = await claudeSections({
         root,
@@ -149,6 +166,7 @@ export class Context {
           budgetWarning(warnings);
           break;
         }
+        if (personal.skips(source)) continue;
         const external = ["opencode", "antigravity"].includes(agent) && !within(source, root);
         let externalRoot: string | null = null;
         try {
@@ -170,6 +188,7 @@ export class Context {
           for (let i = start; i < warnings.length; i++) warnings[i] = `Agent home: ${warnings[i]}`;
       }
     }
+    personal.report(warnings);
     const hasProject = sections.some((section) => isProjectScope(agent, section.scope));
     if (!hasProject) warnings.push("No project instruction file was found for this Agent");
     const override =
@@ -226,5 +245,60 @@ export class Context {
       approved_memories: agent === "deepseek-harness" ? [] : approvedMemories,
       warnings,
     };
+  }
+}
+
+const FOLDER = ".claude";
+/** Files in `~/.claude` that an Agent other than Claude Code reads, held back from the MCP tool. */
+class PersonalClaudeFiles {
+  readonly #folders: string[];
+  readonly #files = new Map<string, number>();
+  constructor(
+    readonly active: boolean,
+    environment: NodeJS.ProcessEnv,
+  ) {
+    const home = userHome(environment);
+    let real = home;
+    try {
+      real = canonicalize(home);
+    } catch {
+      // The written spelling is all there is.
+    }
+    // The literal folder: these Agents read `~/.claude` themselves and know nothing of
+    // CLAUDE_CONFIG_DIR, so this is deliberately not taken from claude-config.
+    this.#folders = [...new Set([path.join(home, FOLDER), path.join(real, FOLDER)])];
+  }
+  #personal(file: string) {
+    return this.active && this.#folders.some((folder) => withinLexical(file, folder));
+  }
+  /** True for a source that is held back (and counted); nothing of it is read. */
+  skips(file: string): boolean {
+    if (!this.#personal(file)) return false;
+    let size = 0;
+    try {
+      size = statSync(file).size;
+    } catch {
+      // Counted without a size.
+    }
+    this.#files.set(file, size);
+    return true;
+  }
+  filter(sections: Section[], warnings: string[]): Section[] {
+    if (!this.active) return sections;
+    const kept = sections.filter((section) => !this.skips(section.source));
+    // Warnings about a held-back file would name its path.
+    if (kept.length !== sections.length) {
+      const names = [...this.#files.keys()];
+      for (let index = warnings.length - 1; index >= 0; index--)
+        if (names.some((name) => warnings[index]!.includes(name))) warnings.splice(index, 1);
+    }
+    return kept;
+  }
+  report(warnings: string[]): void {
+    if (!this.#files.size) return;
+    const bytes = [...this.#files.values()].reduce((sum, size) => sum + size, 0);
+    warnings.push(
+      `${CONTEXT_NOTE_PREFIX}Claude Code user files that this Agent reads exist (${this.#files.size} ${this.#files.size === 1 ? "file" : "files"}, ${bytes} ${bytes === 1 ? "byte" : "bytes"}); their content is not included in this result.`,
+    );
   }
 }

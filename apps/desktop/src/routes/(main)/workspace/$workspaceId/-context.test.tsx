@@ -160,9 +160,10 @@ describe("ContextPage", () => {
   );
 
   // 工作区外来源的徽章显示来源类别；项目内的相对目录（包括与保留名同名的 ./user）原样显示。
-  async function renderSections(scopes: string[]) {
+  async function renderSections(scopes: string[], agent = "claude-code") {
     vi.mocked(api.context).mockResolvedValue({
       ...preview("any-skill"),
+      agent,
       sections: scopes.map((scope, index) => ({
         source: `/repo/${index}.md`,
         scope,
@@ -206,4 +207,22 @@ describe("ContextPage", () => {
       }
     },
   );
+  // Codex 的工作区里有名为 user、managed 的目录时，scope 恰好等于 Claude 的保留名，必须原样显示。
+  it.each(["codex", "cursor", "opencode"])(
+    "shows the directory of a %s source as it is, even when it has a name Claude Code reserves",
+    async (agent) => {
+      await renderSections(["user", "managed", "settings", "assets", ""], agent);
+      const labels = screen
+        .getAllByRole("article")
+        .map((article) => article.querySelector("header")?.lastElementChild?.textContent);
+      expect(labels).toEqual(["user", "managed", "settings", "assets", tr("status.scope.project")]);
+    },
+  );
+  it("labels the settings and asset listings of Claude Code", async () => {
+    await renderSections(["settings", "assets"]);
+    const labels = screen
+      .getAllByRole("article")
+      .map((article) => article.querySelector("header")?.lastElementChild?.textContent);
+    expect(labels).toEqual([tr("context.scope.settings"), tr("context.scope.assets")]);
+  });
 });

@@ -341,8 +341,8 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
 
     it("names the version only when the CLI is newer than the verified one", async () => {
       for (const [version, newer] of [
-        ["2.1.296 (Claude Code)", true],
-        ["2.1.285 (Claude Code)", false],
+        ["2.1.300 (Claude Code)", true],
+        ["2.1.299 (Claude Code)", false],
         [undefined, false],
       ] as const) {
         const f = fake(backgroundBash(false));
@@ -351,7 +351,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         await settle(runner, "outcome-unknown");
         const reason = runner.snapshot().reason!;
         expect(reason.startsWith("claude-background-task: ")).toBe(true);
-        expect(reason.includes("newer than the 2.1.285 AgentKib verified")).toBe(newer);
+        expect(reason.includes("newer than the 2.1.299 AgentKib verified")).toBe(newer);
         await runner.shutdown().catch(() => undefined);
       }
     }, 60_000);

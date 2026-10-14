@@ -67,11 +67,11 @@ describe("termination reasons", () => {
   it("names the version only when it is newer than the verified one", () => {
     expect(
       formatTermination("claude-unrequested-turn", "late result", {
-        version: "2.1.296",
+        version: "2.1.300",
         verified: CLAUDE_MANAGED_VERIFIED_THROUGH,
       }),
     ).toBe(
-      "claude-unrequested-turn: late result (Claude Code 2.1.296, newer than the 2.1.285 AgentKib verified)",
+      "claude-unrequested-turn: late result (Claude Code 2.1.300, newer than the 2.1.299 AgentKib verified)",
     );
   });
 
@@ -213,17 +213,17 @@ describe("ClaudeProtocolDiagnostics", () => {
 });
 
 describe("the verified-through version", () => {
-  it("is a record for explanations, 2.1.285", () => {
-    expect(CLAUDE_MANAGED_VERIFIED_THROUGH).toBe("2.1.285");
+  it("is a record for explanations, 2.1.299", () => {
+    expect(CLAUDE_MANAGED_VERIFIED_THROUGH).toBe("2.1.299");
   });
 
   it.each([
-    ["2.1.285 (Claude Code)", false],
-    ["2.1.284 (Claude Code)", false],
-    ["2.1.286 (Claude Code)", true],
-    ["2.1.296 (Claude Code)", true],
+    ["2.1.299 (Claude Code)", false],
+    ["2.1.298 (Claude Code)", false],
+    ["2.1.300 (Claude Code)", true],
+    ["2.1.301 (Claude Code)", true],
     ["3.0.0 (Claude Code)", true],
-    ["2.1.296", false],
+    ["2.1.300", false],
     ["not a version", false],
     [null, false],
     [undefined, false],

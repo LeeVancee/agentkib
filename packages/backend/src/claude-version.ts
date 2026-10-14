@@ -11,9 +11,9 @@ export function supportsClaudeVersion(value: string, minimum = "2.1.263"): boole
 /**
  * The highest Claude Code version managed sessions were checked against (QA recording). It is
  * only used to explain a failure and to log once; it never gates anything. The gates above stay
- * lower bounds.
+ * lower bounds. 2.1.299: checked with the real CLI on 2026-10-14 (qa/claude-live-acceptance-2026-10-14.md).
  */
-export const CLAUDE_MANAGED_VERIFIED_THROUGH = "2.1.285";
+export const CLAUDE_MANAGED_VERIFIED_THROUGH = "2.1.299";
 
 /** True for a Claude Code version line that is newer than the version managed sessions were verified through. */
 export function isNewerThanVerified(value: string | null | undefined): boolean {

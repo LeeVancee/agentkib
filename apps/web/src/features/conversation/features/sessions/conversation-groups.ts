@@ -75,8 +75,9 @@ function isProcessEvent(event: ConversationEventWithTurn, complete: boolean) {
 }
 
 function segmentKey(groupKey: string, events: ConversationEventWithTurn[], index: number) {
-  const firstId = events[0]?.id || `index-${index}`;
-  return `${groupKey}:segment:${firstId}`;
+  const anchor = events.find((event) => event.kind === "tool-summary") ?? events[0];
+  const anchorId = anchor?.id || `index-${index}`;
+  return `${groupKey}:segment:${anchorId}`;
 }
 
 function createSegment(
@@ -141,8 +142,9 @@ function createGroup(
     hasExplicitFinal(events);
   // The first event is the stable anchor for live appends. Duplicate turn ids
   // in separate runs still get distinct anchors and are never merged.
-  const firstId = events[0]?.id || `index-${index}`;
-  const key = turnId ? `turn:${turnId}:start:${firstId}` : `event:${firstId}`;
+  const anchor = events.find((event) => event.kind === "user-message") ?? events[0];
+  const anchorId = anchor?.id || `index-${index}`;
+  const key = turnId ? `turn:${turnId}:start:${anchorId}` : `event:${anchorId}`;
 
   return {
     key,

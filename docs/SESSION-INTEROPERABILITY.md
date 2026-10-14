@@ -56,6 +56,8 @@ Claude Code 原生导入的版本门限要求 `claude --version` 报告 2.1.x，
 
 这三项规则的自动化测试只使用手工构造的合成会话，没有用真实 CLI 确认导入后的会话能被 `claude --resume` 找到。
 
+写入后、启动 `claude --resume` 前，AgentKib 还会对刚写入的文件做一次结构性往返校验，任何一项不符都会中止启动（不打开终端）：每行是合法 JSON 对象；记录类型只限 `user`、`assistant` 与收尾的 `last-prompt`；`uuid` 不重复，首条消息的 `parentUuid` 为空、其后每条指向前一条，`last-prompt.leafUuid` 指向最后一条消息；每条记录的 `sessionId` 等于文件名与启动请求；消息的 `cwd` 等于目标工作区；文件位于该工作区按上述规则算出的 `projects/<目录名>/` 中；文件开头通过上面的会话格式探针。该校验是结构性的：不启动 Claude，不能证明 `claude --resume` 一定找到这份会话。写入记录的 `version` 字段固定为 `2.1.233`，表示 AgentKib 实际输出的记录结构所对应的 Claude Code 版本，而不是本机检测到的 CLI 版本。
+
 Cursor IDE 本机连接需要在会话页选择“连接 Cursor 窗口”，检查随应用打包的 VSIX 并手动安装到选定 profile，再在目标单文件夹窗口运行 `AgentKib: Connect This Workspace` 并输入限时挑战。AgentKib 不自动安装扩展，也不猜测默认 profile；多个窗口须显式选择。连接恢复沿用原 binding，CLI 与 Agents Window 保持独立能力边界。
 
 因此，来源与目标表面必须分别验收；代表性解析、离线导入、原生 UI、Runtime 重启及真实回复不能互相替代。缺少已配置模型、授权或运行环境时保留未验收状态，不自动登录或迁移凭据。Windows/Linux 自动化不代替实机验收。

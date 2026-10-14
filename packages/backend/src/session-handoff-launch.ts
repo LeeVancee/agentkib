@@ -21,6 +21,8 @@ import {
   claudeConfigFiles,
   resolveClaudeConfig,
 } from "./claude-config";
+import { claudeProjectKey } from "./claude-project-path";
+import { verifyClaudeTranscript, type ClaudeNativeExpectation } from "./claude-native-verify";
 import { resolveCommand } from "./command-resolution";
 import { Commands } from "./commands";
 import { isReparseOrSymlink } from "./native-files";
@@ -111,8 +113,19 @@ function readRegularFile(file: string, maxBytes: number): string {
   }
 }
 
-export function verifyNativeSession(file: string, agent: string): void {
-  const records = readRegularFile(file, 256 * 1024 * 1024)
+export function verifyNativeSession(
+  file: string,
+  agent: string,
+  expected?: ClaudeNativeExpectation,
+): void {
+  const content = readRegularFile(file, 256 * 1024 * 1024);
+  if (agent === "claude-code") {
+    // Fails closed: without the launch's expectation the round trip cannot be judged.
+    if (!expected) throw new Error("Claude session read-back failed: expectation is missing");
+    verifyClaudeTranscript(file, content, expected);
+    return;
+  }
+  const records = content
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -126,13 +139,6 @@ export function verifyNativeSession(file: string, agent: string): void {
       typeof (payload as Record<string, unknown>).id !== "string"
     )
       throw new Error("Codex session metadata is invalid");
-  } else if (
-    records.some(
-      (record) =>
-        ["user", "assistant"].includes(String(record.type)) && typeof record.sessionId !== "string",
-    )
-  ) {
-    throw new Error("Claude session metadata is invalid");
   }
 }
 
@@ -402,8 +408,21 @@ export async function launchPreparedHandoff(
     validateNativePath(request.target_path, root);
     if (!path.basename(request.target_path).includes(request.target_session_id))
       throw new Error("Native session ID does not match its file");
-    await readHandoff("validate-native-session", [request.target_path, request.target_agent], () =>
-      verifyNativeSession(request.target_path, request.target_agent),
+    let expected: ClaudeNativeExpectation | undefined;
+    if (request.target_agent === "claude-code") {
+      const key = claudeProjectKey(workspace, env);
+      if (!key.ok)
+        throw new Error("Claude session read-back failed: project directory cannot be determined");
+      expected = {
+        sessionId: request.target_session_id,
+        workspace,
+        directory: path.join(root, key.key),
+      };
+    }
+    await readHandoff(
+      "validate-native-session",
+      [request.target_path, request.target_agent, expected],
+      () => verifyNativeSession(request.target_path, request.target_agent, expected),
     );
   }
   await validateArchive(request, dataDir);

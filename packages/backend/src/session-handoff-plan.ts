@@ -108,6 +108,15 @@ function codexCompletedText(role: string, text: string, timestamp: string) {
   };
 }
 
+/**
+ * Value of the `version` field in written Claude records. It names the Claude Code release whose
+ * record structure `renderNative` reproduces, not the installed CLI: stamping a newer version on
+ * records shaped like this one would claim fields and semantics AgentKib does not write. It is
+ * below the supported-version gate on purpose; keep it unless the record structure is re-verified
+ * against a newer release.
+ */
+export const CLAUDE_RECORD_SCHEMA_VERSION = "2.1.233";
+
 export function renderNative(
   document: SessionDocument,
   target: "codex" | "claude-code",
@@ -197,7 +206,7 @@ export function renderNative(
       sessionId,
       timestamp,
       cwd: project,
-      version: "2.1.233",
+      version: CLAUDE_RECORD_SCHEMA_VERSION,
       isSidechain: false,
       userType: "external",
       message: { role, content },

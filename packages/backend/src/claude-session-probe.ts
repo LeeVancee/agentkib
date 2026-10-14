@@ -54,6 +54,11 @@ export function probeClaudeSessionFormat(projectsRoot: string): ClaudeSessionPro
   return reason === null ? { ok: true, file } : { ok: false, file, reason };
 }
 
+/** Judge the opening of one specific transcript with the same rules as the directory probe. */
+export function probeClaudeSessionFile(file: string): ClaudeSessionProbeFailure | null {
+  return inspectOpening(file);
+}
+
 /** Only `projects/<project>/<uuid>.jsonl`: never `<uuid>/subagents/*.jsonl` or `agent-*.jsonl`. */
 function latestMainSession(root: string): string | null {
   let latest: { file: string; modified: number } | null = null;

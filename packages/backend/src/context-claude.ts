@@ -10,6 +10,7 @@ import {
 } from "./claude-config";
 import { MEMORY_BYTES, MEMORY_LINES, autoMemoryLocation } from "./claude-memory";
 import { readClaudeSettings, type ClaudeSettings } from "./claude-settings";
+import { globMatches } from "./context-glob";
 import { supportsClaudeVersion } from "./claude-version";
 import {
   ANCESTOR_LAYERS,
@@ -56,7 +57,9 @@ import { sanitizeSessionText } from "./session-handoff";
 // - AGENTS.md and .claude/AGENTS.md are read only when no CLAUDE.md, .claude/CLAUDE.md or
 //   CLAUDE.local.md exists in the working directory or any parent, from Claude Code 2.1.277.
 //   Neither the user-level CLAUDE.md nor managed policy or rules count. The "Project
-//   instructions" choice in /config is not read; the default behavior is assumed.
+//   instructions" choice (settings, see claude-settings.ts) can read AGENTS.md always, never, or
+//   leave out every file but the managed ones. claudeMdExcludes leaves out user, project and
+//   local files, never the managed ones; the managed `claudeMd` key loads like the managed file.
 // - An import is `@path` at the start of a line or after whitespace, anywhere in the line.
 //   Relative paths resolve against the file that contains the import; absolute paths and `~/`
 //   are allowed. Spaces are escaped with a backslash and a quoted path is not an import. Code
@@ -589,6 +592,8 @@ interface Entry {
   rule: boolean;
   /** CLAUDE.md-family files lose their block-level HTML comments. */
   strip: boolean;
+  /** Text that comes from a settings key (managed `claudeMd`) instead of a file. */
+  text?: string;
 }
 interface Hit {
   name: string;
@@ -661,6 +666,12 @@ class Assembly {
   /** Sections about settings and assets, listed after the instructions. */
   readonly extras: Section[] = [];
   readonly settings: ClaudeSettings;
+  readonly choice: ReturnType<ClaudeSettings["instructionFiles"]>;
+  readonly excludes: string[];
+  /** Instruction files left out by `claudeMdExcludes`, and links whose real path alone matches. */
+  excluded = { listed: 0, hidden: 0, maybe: 0 };
+  /** "Project instructions" is claude-md-and-agents-md: AGENTS.md is read next to CLAUDE.md. */
+  always = false;
   /** Something outside the workspace (shown, counted or skipped) was met. */
   outsideSeen = false;
   conditionalSeen = false;
@@ -688,6 +699,8 @@ class Assembly {
       io: this.context.io,
       sensitive: isSensitiveExternalPath,
     });
+    this.choice = this.settings.instructionFiles();
+    this.excludes = this.settings.claudeMdExcludes();
     this.shared = {
       root: options.root,
       cwd: options.cwd,
@@ -702,6 +715,22 @@ class Assembly {
   }
 
   key = (value: string) => pathKey(value, this.platform);
+  /**
+   * Whether `claudeMdExcludes` leaves out a file (settings page: patterns match absolute file
+   * paths, glob syntax). The written path decides; a pattern that only matches the real path of a
+   * link is reported as "maybe" and the file stays, because the preview must not assume Claude
+   * Code loads less than it does.
+   */
+  excludedBy(file: string, real: string): "written" | "real" | null {
+    if (!this.excludes.length) return null;
+    const windows = this.platform === "win32";
+    const norm = (value: string) => (windows ? value.replaceAll("\\", "/").toLowerCase() : value);
+    const matches = (target: string) =>
+      this.excludes.some((pattern) => globMatches(norm(pattern), target));
+    const written = norm(file);
+    if (matches(written)) return "written";
+    return norm(real) !== written && matches(norm(real)) ? "real" : null;
+  }
   warn = (text: string, asNote = false) => warn(this.shared, text, asNote);
   probeIn = (directory: string, name: string) =>
     probe(this.p.join(directory, name), directory, this.context);
@@ -768,12 +797,26 @@ class Assembly {
       return;
     }
     const id = this.key(result.real);
+    if (tier !== "managed") {
+      const hit = this.excludedBy(file, result.real);
+      if (hit === "written") {
+        // Shown by name only where the path may be shown: in the app, and for project files.
+        if (this.mode === "full" || tier === "workspace") {
+          this.excluded.listed++;
+          this.warn(`Excluded by claudeMdExcludes: ${file}`, true);
+        } else this.excluded.hidden++;
+        return;
+      }
+      if (hit === "real") this.excluded.maybe++;
+    }
     if (tier !== "workspace") {
       if (this.seenOutside.has(id)) return;
       this.seenOutside.add(id);
     }
     if (kind === "agents") {
       if (this.seenAgents.has(id)) return;
+      // A symbolic link that makes CLAUDE.md and AGENTS.md one file is read once.
+      if (this.always && this.entries.some((entry) => this.key(entry.real) === id)) return;
       this.seenAgents.add(id);
       this.agentsSeen = true;
     }
@@ -840,10 +883,14 @@ class Assembly {
     }
   }
 
-  /** Finds every source in load order. Returns whether the AGENTS.md fallback applies. */
+  /** Finds every source in load order. Returns whether AGENTS.md is read at all. */
   discover(): boolean {
     const { mode, platform, p, context, options, config } = this;
     const files = claudeConfigFiles(config, platform);
+    // "Project instructions" (memory page): the default reads AGENTS.md only when no CLAUDE.md
+    // exists; the other values read it always, never, or leave out every file but the managed ones.
+    const managedOnly = this.choice.value === "managed-only";
+    this.always = this.choice.value === "claude-md-and-agents-md";
     if (mode !== "none") {
       const user = probe(config.dir, null, context);
       if (user.kind === "dir") this.#userDir = user.real;
@@ -853,20 +900,31 @@ class Assembly {
       if (rules.kind === "dir") this.#userRulesDir = rules.real;
     }
     const above =
-      mode === "none"
+      mode === "none" || managedOnly
         ? { dirs: [] as string[], limited: false }
         : ancestorDirs(options.root, platform);
     if (above.limited) this.warn(LAYERS_NOTE);
-    const links: Link[] = [
-      ...above.dirs.map((dir) => ({ dir, tier: "ancestor" as const })),
-      ...options.dirs.map((dir) => ({ dir, tier: "workspace" as const })),
-    ].map((link) => ({ ...link, hits: CLAUDE_NAMES.map((name) => this.#hit(link.dir, name)) }));
+    const links: Link[] = managedOnly
+      ? []
+      : [
+          ...above.dirs.map((dir) => ({ dir, tier: "ancestor" as const })),
+          ...options.dirs.map((dir) => ({ dir, tier: "workspace" as const })),
+        ].map((link) => ({ ...link, hits: CLAUDE_NAMES.map((name) => this.#hit(link.dir, name)) }));
     // Only an existing CLAUDE.md-style file stops the fallback. The user's CLAUDE.md and
     // ~/.claude/CLAUDE.md, managed policy files and rules do not count, and neither does a file
-    // that is later refused.
-    const fallback = !links.some((link) =>
-      link.hits.some((hit) => isFound(hit.result) && !hit.isUser && !hit.isHome),
+    // that is later refused. A file left out by claudeMdExcludes is not loaded; whether Claude
+    // Code still counts it for the fallback is not documented, and not counting it is the
+    // direction that shows more.
+    const base = !links.some((link) =>
+      link.hits.some(
+        (hit) =>
+          isFound(hit.result) &&
+          !hit.isUser &&
+          !hit.isHome &&
+          this.excludedBy(hit.file, hit.result.real) !== "written",
+      ),
     );
+    const fallback = this.choice.value === "claude-md-or-agents-md" && base;
 
     if (mode !== "none") {
       const managed =
@@ -875,6 +933,22 @@ class Assembly {
         const file = p.join(managed, "CLAUDE.md");
         this.#add("managed", file, probe(file, null, context), "managed", "claude", true);
       }
+      // The `claudeMd` key of managed settings loads like a managed CLAUDE.md, ahead of the user's.
+      const inline = this.settings.managedClaudeMd();
+      if (inline)
+        this.entries.push({
+          tier: "managed",
+          file: inline.file,
+          kind: "claude",
+          real: inline.file,
+          size: Buffer.byteLength(inline.text),
+          label: "managed",
+          rule: false,
+          strip: true,
+          text: inline.text,
+        });
+    }
+    if (mode !== "none" && !managedOnly) {
       const user = files.userInstructions;
       this.#add("user", user, probe(user, null, context), "user", "claude", true);
       this.#addRules(
@@ -895,11 +969,7 @@ class Assembly {
         if (hit.isHome && isFound(hit.result)) this.warn(HOME_FILE_NOTE);
         this.#add(link.tier, hit.file, hit.result, label, "claude", true);
       }
-      if (fallback)
-        for (const name of AGENTS_NAMES) {
-          const file = p.join(link.dir, name);
-          this.#add(link.tier, file, probe(file, link.dir, context), label, "agents", false);
-        }
+      if (fallback) this.#addAgents(link, label);
       if (workspace || ancestorRules) {
         const directory = p.join(link.dir, ".claude", "rules");
         const top = probe(directory, link.dir, context);
@@ -918,8 +988,16 @@ class Assembly {
       }
       const local = link.hits[2]!;
       this.#add(link.tier, local.file, local.result, label, "claude", true);
+      // Read with CLAUDE.md: "each directory's CLAUDE.md files first and its AGENTS.md after them".
+      if (this.always) this.#addAgents(link, label);
     }
-    return fallback;
+    return fallback || this.always;
+  }
+  #addAgents(link: Link, label: Label): void {
+    for (const name of AGENTS_NAMES) {
+      const file = this.p.join(link.dir, name);
+      this.#add(link.tier, file, probe(file, link.dir, this.context), label, "agents", false);
+    }
   }
 
   // ---- loading ---------------------------------------------------------------------------
@@ -966,6 +1044,9 @@ class Assembly {
   }
 
   load(entry: Entry): void {
+    if (entry.text !== undefined) return this.#loadText(entry);
+    // "Claude Code skips an AGENTS.md it has already loaded", for example one a CLAUDE.md imports.
+    if (entry.kind === "agents" && this.always && this.shared.reads.has(entry.real)) return;
     if (entry.tier === "workspace" && isInside(entry.real, this.options.root, this.platform))
       this.#loadInside(entry);
     else this.#loadOutside(entry);
@@ -985,6 +1066,22 @@ class Assembly {
     } catch {
       this.warn(`Could not read ${entry.file}`);
     }
+  }
+  /** The `claudeMd` key of managed settings: outside the workspace, so the same modes apply. */
+  #loadText(entry: Entry): void {
+    this.outsideSeen = true;
+    if (this.mode === "none") return;
+    if (this.mode === "metadata") return this.tally(entry.label, entry.size);
+    if (!this.outsideBudget.remaining) return budgetWarning(this.outsideSink);
+    const text = sanitizeSessionText(stripBlockComments(entry.text!).slice(0, FILE_CHARS), {
+      value: 0,
+    });
+    this.sections.push({
+      source: `${entry.file} (claudeMd)`,
+      scope: "managed",
+      content: append(text, this.outsideBudget, this.outsideSink),
+      precedence: 0,
+    });
   }
   #loadOutside(entry: Entry): void {
     const { mode } = this;
@@ -1028,11 +1125,35 @@ class Assembly {
   memory(): void {
     if (this.mode === "none") return;
     const { options } = this;
+    const setting = this.settings.autoMemory();
+    if (!setting.enabled) {
+      this.warn(
+        `Auto memory is switched off by autoMemoryEnabled=false in the ${setting.enabledLayer} settings, so it is not shown.`,
+        true,
+      );
+      return;
+    }
+    if (setting.directoryIgnoredIn.length)
+      this.warn(
+        `autoMemoryDirectory in the ${[...new Set(setting.directoryIgnoredIn)].join(" and ")} settings is not applied: Claude Code honors it only in a trusted folder, which AgentKib cannot see, and a repository file must not choose which folder the preview reads.`,
+        true,
+      );
+    if (setting.directoryInvalid)
+      this.warn(
+        "autoMemoryDirectory must be an absolute path or start with ~/ and contain no ..; the default location is assumed.",
+        true,
+      );
+    const directory = setting.directory
+      ? setting.directory.value.startsWith("~/")
+        ? this.p.join(this.home, setting.directory.value.slice(2))
+        : setting.directory.value
+      : undefined;
     const location = autoMemoryLocation(
       options.cwd,
       this.config,
       options.environment,
       this.context,
+      directory,
     );
     if (!location.ok) {
       if (location.reason === "disabled") this.warn(AUTO_MEMORY_OFF);
@@ -1094,11 +1215,11 @@ class Assembly {
   // ---- result ----------------------------------------------------------------------------
 
   /**
-   * What the settings say, as a section in the app and as metadata over MCP. Nothing is read for
-   * the Doctor.
+   * What the settings say, as a section in the app and as metadata over MCP, plus the notes about
+   * how settings changed what is listed above. Nothing is read for the Doctor.
    */
   #settingsOutput(): void {
-    const { mode, settings } = this;
+    const { mode, settings, choice } = this;
     if (mode === "none") return;
     if (settings.anyFile) {
       if (mode === "full") {
@@ -1138,6 +1259,35 @@ class Assembly {
           this.warn(line, true);
       }
     }
+    if (choice.value !== "claude-md-or-agents-md")
+      this.warn(
+        choice.value === "claude-md-and-agents-md"
+          ? `Project instructions is set to claude-md-and-agents-md in the ${choice.layer} settings: AGENTS.md is read after the CLAUDE.md files of each directory (the exact position inside a directory is not verified).`
+          : choice.value === "claude-md"
+            ? `Project instructions is set to claude-md in the ${choice.layer} settings: AGENTS.md is not read.`
+            : `Project instructions is set to managed-only in the ${choice.layer} settings: only managed instructions and auto memory load at startup. Rules that load on demand and files in subdirectories are not modeled.`,
+        true,
+      );
+    if (choice.invalid)
+      this.warn(
+        "The Project instructions value in the settings is not one of claude-md-or-agents-md, claude-md-and-agents-md, claude-md, managed-only; the default is assumed.",
+        true,
+      );
+    if (choice.ignoredIn.length)
+      this.warn(
+        `The Project instructions setting in the ${choice.ignoredIn.join(" and ")} settings is ignored: Claude Code reads it from user settings, managed settings and --settings only.`,
+        true,
+      );
+    if (this.excluded.hidden)
+      this.warn(
+        `${plural(this.excluded.hidden, "instruction file")} outside the workspace ${this.excluded.hidden === 1 ? "is" : "are"} excluded by claudeMdExcludes and not listed.`,
+        true,
+      );
+    if (this.excluded.maybe)
+      this.warn(
+        `${plural(this.excluded.maybe, "instruction file")} may be excluded by claudeMdExcludes: a pattern matches where a link leads but not the path it is written with. ${this.excluded.maybe === 1 ? "It is" : "They are"} still listed.`,
+        true,
+      );
     const names = ENV_BLOCK_NAMES.filter((name) => settings.envSets(name));
     if (names.length)
       this.warn(

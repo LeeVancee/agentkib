@@ -14,6 +14,8 @@ import {
 } from "./claude-config";
 import { hasClaudeProjects, readClaudeProjectEntry } from "./claude-project-config";
 import { resolveRepoRoot } from "./claude-memory";
+import { readClaudeSettings, type ClaudeSettings, type McpPolicyEntry } from "./claude-settings";
+import { isSensitiveExternalPath } from "./context-claude";
 import { defaultIo } from "./context-claude-sources";
 import type { Agent } from "./doctor-files";
 import { canonicalize, pathIdentity } from "./paths";
@@ -61,6 +63,12 @@ type CandidateContext = {
   claudeManaged: boolean;
   /** Names this project switched off with `/mcp`, from its local entry only. */
   claudeDisabled: Set<string>;
+  /** The settings files, read once per scan: approvals and policy come from them. */
+  claudeSettings?: ClaudeSettings;
+  /** The raw definition behind each Claude candidate, kept in memory for the policy match only. */
+  raw: Map<string, JsonObject | undefined>;
+  /** Names of servers the organization provides through `managedMcpServers`. */
+  claudeProvided: Set<string>;
 };
 const claudeConfigUnusableWarning =
   "AgentKib cannot tell which Claude configuration file is in use (CLAUDE_CONFIG_DIR is unusable, or a legacy .config.json exists), so what is shown from this file may not match Claude Code, and migration is turned off for it.";
@@ -69,10 +77,26 @@ const claudeDiagnosticText = {
   native_overridden_by_local:
     "Overridden: Claude Code uses the local-scope server with the same name instead.",
   native_overridden_if_approved:
-    "Overridden if the same-named server in .mcp.json is approved. AgentKib cannot see the approval state (it lives in settings files).",
+    "Overridden if the same-named server in .mcp.json is approved, which it is not yet, or only in a way that depends on trusting the folder.",
   native_inactive_exclusive:
     "Not loaded: a managed-mcp.json on this machine gives your organization exclusive control over MCP servers.",
   native_disabled_for_project: "Disabled for this project in Claude Code (/mcp).",
+  native_project_approved:
+    "Approved in your Claude Code settings; Claude Code loads this .mcp.json server.",
+  native_project_approved_if_trusted:
+    "Approved in a project or local settings file, which Claude Code applies only once you trust the folder. AgentKib cannot see that decision.",
+  native_project_pending:
+    "Pending approval: no Claude Code settings file approves this .mcp.json server yet, so Claude Code asks before it loads it.",
+  native_project_rejected:
+    "Rejected by disabledMcpjsonServers in a Claude Code settings file; Claude Code does not load this server.",
+  native_overridden_by_project:
+    "Overridden: the approved same-named server in .mcp.json is used instead.",
+  native_overridden_by_managed_setting:
+    "Overridden: your organization provides a server with this name through managedMcpServers.",
+  native_policy_denied:
+    "Blocked by a deniedMcpServers entry in Claude Code settings; Claude Code does not load it.",
+  native_policy_not_allowed:
+    "Not on the allowedMcpServers list in Claude Code settings; Claude Code does not load it.",
 } as const;
 // Claude Code's own precedence, strongest first (mcp page, "Scope hierarchy and precedence").
 const claudeScopeRank: Record<string, number> = { managed: 0, local: 1, project: 2, home: 3 };
@@ -112,6 +136,8 @@ export function scanNativeMcp(
     options,
     claudeManaged: false,
     claudeDisabled: new Set(),
+    raw: new Map(),
+    claudeProvided: new Set(),
     ...(isDirectory(grokRoot) ? { grokHome: canonicalPath(grokRoot) } : {}),
   };
   if (project) scanProject(context, project);
@@ -119,6 +145,7 @@ export function scanNativeMcp(
   scanOpenCodeHome(context);
   scanGrokHome(context);
   scanClaudeManaged(context);
+  scanClaudeSettings(context, environment);
 
   const seen = new Set<string>();
   const result = context.output.filter((candidate) => {
@@ -225,6 +252,32 @@ function scanClaudeGlobalFile(file: string, context: CandidateContext): void {
 function claudeProjectKeys(project: string): string[] {
   const { base } = resolveRepoRoot(project, { io: defaultIo, platform: process.platform });
   return base === project ? [project] : [base, project];
+}
+
+/**
+ * Settings files hold three things the MCP view needs: the `managedMcpServers` an organization
+ * provides, and (read in `annotateClaudePrecedence`) the approval state of `.mcp.json` servers and
+ * the allow and deny lists. Nothing is written back.
+ */
+function scanClaudeSettings(context: CandidateContext, environment: NodeJS.ProcessEnv): void {
+  const root = context.project ?? context.home;
+  const settings = readClaudeSettings({
+    root,
+    cwd: root,
+    environment,
+    mode: "full",
+    managedDir: context.options.managedDir,
+    sensitive: isSensitiveExternalPath,
+    withoutProject: !context.project,
+  });
+  context.claudeSettings = settings;
+  const file = settings.managedServersFile();
+  const servers = settings.mcpPolicy().managedServers;
+  if (!file || !Object.keys(servers).length) return;
+  for (const name of Object.keys(servers)) context.claudeProvided.add(name);
+  scanSafely(context, "claude-code", "managed", file, () =>
+    collectReadonlyServers(file, "managed", servers as JsonObject, context),
+  );
 }
 
 function scanClaudeManaged(context: CandidateContext): void {
@@ -365,6 +418,7 @@ function collectJsonServers(
         result.warning_messages!.push(mcpDiagnostic("native_unsupported"));
       }
     }
+    if (agent === "claude-code") context.raw.set(result.id, server);
     context.output.push(result);
   }
 }
@@ -426,6 +480,7 @@ function collectReadonlyServers(
       );
       result.warning_messages!.push(mcpDiagnostic("native_review_configuration"));
     }
+    context.raw.set(result.id, server);
     context.output.push(result);
   }
 }
@@ -752,12 +807,72 @@ function addDiagnostic(
 
 const scopeRank = (scope: string) => claudeScopeRank[scope] ?? 4;
 
+type ProjectApproval = "approved" | "approved_if_trusted" | "pending" | "rejected";
+
 /**
- * Which same-named Claude Code server wins, by Claude Code's own order (managed, local, project,
- * user). Nothing is hidden: a losing entry stays in the list with the reason. Only the local
- * scope can take over from an entry we can see, since managed-mcp.json switches off the others
- * entirely and the stronger `managedMcpServers` and the approval state live in settings files
- * AgentKib does not read yet.
+ * Whether Claude Code loads a `.mcp.json` server (mcp page, "Project server approvals"). An
+ * approval is `enableAllProjectMcpServers` or an `enabledMcpjsonServers` entry; a
+ * `disabledMcpjsonServers` entry in any file rejects. Approvals in user and managed settings count
+ * at once; those in the project's or the local file wait for the workspace trust decision, which
+ * AgentKib cannot see.
+ */
+function projectApproval(settings: ClaudeSettings | undefined, name: string): ProjectApproval {
+  if (!settings) return "pending";
+  const approvals = settings.mcpApprovals();
+  if (approvals.disabled.has(name)) return "rejected";
+  const layers = [
+    ...(approvals.enableAll?.value ? [approvals.enableAll.layer] : []),
+    ...(approvals.enabled.get(name) ?? []),
+  ];
+  if (!layers.length) return "pending";
+  return layers.some((layer) => layer === "user" || layer === "managed")
+    ? "approved"
+    : "approved_if_trusted";
+}
+
+const wildcardMatches = (pattern: string, text: string) =>
+  new RegExp(
+    `^${pattern
+      .split("*")
+      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+      .join(".*")}$`,
+  ).test(text);
+
+/** One allow or deny entry against one server: by label, by URL (with `*`), or by exact command. */
+function policyMatches(
+  entry: McpPolicyEntry,
+  name: string,
+  server: JsonObject | undefined,
+): boolean {
+  if (entry.serverName !== undefined) return entry.serverName === name;
+  if (entry.serverUrl !== undefined) {
+    const url = stringField(server, ["url", "serverUrl"]);
+    return url !== undefined && wildcardMatches(entry.serverUrl, url);
+  }
+  if (entry.serverCommand) {
+    const command = server?.command;
+    const args = Array.isArray(server?.args) ? (server!.args as unknown[]) : [];
+    const line =
+      typeof command === "string"
+        ? [command, ...args]
+        : Array.isArray(command)
+          ? [...command, ...args]
+          : undefined;
+    return (
+      line !== undefined &&
+      line.length === entry.serverCommand.length &&
+      line.every((part, index) => part === entry.serverCommand![index])
+    );
+  }
+  return false;
+}
+
+/**
+ * Which same-named Claude Code server wins, by Claude Code's own order: a server of the
+ * organization's `managedMcpServers`, then local, project, user. Nothing is hidden: a losing entry
+ * stays in the list with the reason. Approval of `.mcp.json` servers and the allow and deny lists
+ * come from the settings files. managed-mcp.json switches the other servers off entirely, and a
+ * server from plugins or claude.ai connectors never beats one of these.
  */
 function annotateClaudePrecedence(candidates: Candidate[], context: CandidateContext): void {
   const claude = candidates.filter(
@@ -773,15 +888,38 @@ function annotateClaudePrecedence(candidates: Candidate[], context: CandidateCon
     );
   const note = (candidate: Candidate, code: keyof typeof claudeDiagnosticText) =>
     addDiagnostic(candidate, claudeDiagnosticText[code], code);
+  const policy = context.claudeSettings?.mcpPolicy();
   for (const candidate of claude) {
-    if (candidate.scope === "managed") continue;
-    const scopes = scopesByName.get(candidate.name)!;
-    if (context.claudeManaged) note(candidate, "native_inactive_exclusive");
-    else if (candidate.scope !== "local" && scopes.has("local"))
-      note(candidate, "native_overridden_by_local");
-    else if (candidate.scope === "home" && scopes.has("project"))
-      note(candidate, "native_overridden_if_approved");
-    if (context.claudeDisabled.has(candidate.name)) note(candidate, "native_disabled_for_project");
+    if (candidate.scope === "project") {
+      const state = projectApproval(context.claudeSettings, candidate.name);
+      note(candidate, `native_project_${state}` as keyof typeof claudeDiagnosticText);
+    }
+    if (candidate.scope !== "managed") {
+      const scopes = scopesByName.get(candidate.name)!;
+      if (context.claudeProvided.has(candidate.name))
+        note(candidate, "native_overridden_by_managed_setting");
+      else if (context.claudeManaged) note(candidate, "native_inactive_exclusive");
+      else if (candidate.scope !== "local" && scopes.has("local"))
+        note(candidate, "native_overridden_by_local");
+      else if (candidate.scope === "home" && scopes.has("project")) {
+        const state = projectApproval(context.claudeSettings, candidate.name);
+        if (state === "approved") note(candidate, "native_overridden_by_project");
+        else if (state !== "rejected") note(candidate, "native_overridden_if_approved");
+      }
+      if (context.claudeDisabled.has(candidate.name))
+        note(candidate, "native_disabled_for_project");
+    }
+    if (!policy) continue;
+    const server = context.raw.get(candidate.id);
+    if (policy.denied.some((entry) => policyMatches(entry, candidate.name, server)))
+      note(candidate, "native_policy_denied");
+    // managed-mcp.json and managedMcpServers need no allowlist entry; the deny list still applies.
+    else if (
+      candidate.scope !== "managed" &&
+      policy.allowed &&
+      !policy.allowed.some((entry) => policyMatches(entry, candidate.name, server))
+    )
+      note(candidate, "native_policy_not_allowed");
   }
 }
 

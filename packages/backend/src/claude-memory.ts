@@ -129,14 +129,21 @@ export type MemoryLocation =
       reason: "disabled" | "path-too-long" | "directory-name-overridden" | "empty-path";
     };
 
-/** Where Claude Code keeps the auto memory index for `cwd` (canonical); nothing is read from there. */
+/**
+ * Where Claude Code keeps the auto memory index for `cwd` (canonical); nothing is read from there.
+ * `directory` is the absolute folder the `autoMemoryDirectory` setting names, which replaces the
+ * per-project default (https://code.claude.com/docs/en/memory, "Storage location").
+ */
 export function autoMemoryLocation(
   cwd: string,
   config: ClaudeConfig,
   env: NodeJS.ProcessEnv,
   context: ProbeContext,
+  directory?: string,
 ): MemoryLocation {
   if (env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === "1") return { ok: false, reason: "disabled" };
+  if (directory !== undefined)
+    return { ok: true, file: flavor(context.platform).join(directory, "MEMORY.md") };
   const key = claudeProjectKey(resolveRepoRoot(cwd, context).base, env);
   if (!key.ok) return { ok: false, reason: key.reason };
   const projects = claudeConfigFiles(config, context.platform).projects;

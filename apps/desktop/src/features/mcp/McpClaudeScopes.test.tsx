@@ -58,7 +58,7 @@ describe("Claude Code scopes in the MCP import panel", () => {
     await scan();
     expect(
       await screen.findByText(
-        "Claude Code: local and managed servers are shown read-only. Plugin servers, claude.ai connectors, settings-based approvals and policies are not visible here.",
+        "Claude Code: local and managed servers are shown read-only. Plugin servers, claude.ai connectors, and policy delivered by MDM, the Windows registry or the claude.ai console are not visible here.",
       ),
     ).toBeVisible();
     expect(

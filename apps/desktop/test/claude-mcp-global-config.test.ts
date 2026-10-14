@@ -149,7 +149,13 @@ describe("Claude global config file in the native MCP scan", () => {
       ["claude-code", "project", true],
       ["cursor", "home", true],
     ]);
-    for (const item of others) expect(item.warning_messages).toEqual([]);
+    // The project's .mcp.json server is only waiting for approval; the gate changes nothing else.
+    for (const item of others)
+      expect(item.warning_messages).toEqual(
+        item.agent === "claude-code"
+          ? [{ key: "mcp.manage.diagnostic.native_project_pending" }]
+          : [],
+      );
   });
 
   it("adds the diagnostic exactly once to the placeholder of an unreadable file", () => {

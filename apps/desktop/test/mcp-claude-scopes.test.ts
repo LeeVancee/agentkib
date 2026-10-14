@@ -242,7 +242,7 @@ describe("Claude Code local scope in the native MCP scan", () => {
     );
     const claude = f.claude(f.scan());
     expect(claude.map((item) => [item.scope, item.name, item.supported, codes(item)])).toEqual([
-      ["project", "project-only", true, []],
+      ["project", "project-only", true, ["native_project_pending"]],
       ["home", "user-only", true, []],
     ]);
   });
@@ -271,12 +271,10 @@ describe("Claude Code scope precedence", () => {
     const items = f.claude(f.scan());
     expect(by(items, "shared")).toEqual([
       ["local", ["native_readonly_scope"]],
-      ["project", ["native_overridden_by_local"]],
+      ["project", ["native_project_pending", "native_overridden_by_local"]],
       ["home", ["native_overridden_by_local"]],
     ]);
-    const overriddenText = items.find(
-      (item) => item.name === "shared" && item.scope === "project",
-    )!;
+    const overriddenText = items.find((item) => item.name === "shared" && item.scope === "home")!;
     expect(overriddenText.warnings).toEqual([
       "Overridden: Claude Code uses the local-scope server with the same name instead.",
     ]);
@@ -286,7 +284,7 @@ describe("Claude Code scope precedence", () => {
     const f = layered();
     const items = f.claude(f.scan());
     expect(by(items, "user-vs-project")).toEqual([
-      ["project", []],
+      ["project", ["native_project_pending"]],
       ["home", ["native_overridden_if_approved"]],
     ]);
     const text = items.find((item) => item.name === "user-vs-project" && item.scope === "home")!;
@@ -484,8 +482,8 @@ describe("unchanged outside the new scopes", () => {
         scope: "project",
         name: "project-one",
         supported: true,
-        warnings: [],
-        warning_messages: [],
+        // Nothing approves the server yet: the one addition, from the settings files.
+        warning_messages: [{ key: key("native_project_pending") }],
       }),
       expect.objectContaining({
         scope: "home",

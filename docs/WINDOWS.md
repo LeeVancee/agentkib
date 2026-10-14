@@ -30,7 +30,7 @@ AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、
 | Hermes           | 支持       | 支持             | —              |
 | DeepSeek Harness | Beta，只读 | 仅诊断，不写入   | —              |
 
-Claude Code 的“上下文诊断与同步”为部分支持：managed 与用户级指令、上级目录和项目里的 `CLAUDE.md`、`AGENTS.md` 回退、递归的 `.claude/rules`（含只列出匹配模式的按路径生效规则）、自动记忆和 `@import` 已覆盖，settings 层级等其余部分尚未建模，覆盖范围详见 [功能说明](FEATURES.md)。
+Claude Code 的“上下文诊断与同步”为部分支持：managed 与用户级指令、上级目录和项目里的 `CLAUDE.md`、`AGENTS.md` 回退、递归的 `.claude/rules`（含只列出匹配模式的按路径生效规则）、自动记忆、`@import` 和 settings 文件（只读，含 `claudeMdExcludes`、managed 的 `claudeMd`、“Project instructions”、自动记忆设置）已覆盖，命令行 `--settings`、MDM 与注册表下发的策略等 AgentKib 看不到的部分除外，覆盖范围详见 [功能说明](FEATURES.md)。
 
 ## 一、安装编译环境
 

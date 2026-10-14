@@ -16,6 +16,7 @@ import {
   ContextUsageIndicator,
   useObservedContextUsage,
 } from "@agentkib/conversation-ui/features/sessions/context-usage";
+import { codexReason } from "@agentkib/conversation-ui/features/sessions/codex-copy";
 import { contextUsageCopy } from "@agentkib/conversation-ui/features/sessions/context-usage-copy";
 import { PermissionModeNotice } from "@agentkib/conversation-ui/features/sessions/permission-mode-notice";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
@@ -98,6 +99,13 @@ export function ClaudeSessionPanel({
   const [catalog, setCatalog] = useState<ConversationCatalog>();
   const [options, setOptions] = useState<ManagedOptions>();
   const [live, setLive] = useState<Live>();
+  // A session AgentKib stopped for a stated reason shows the explanation; any other reason is
+  // shown as before.
+  const stoppedReason =
+    live?.reason &&
+    /^claude-(background-task|unrequested-turn|protocol-violation)(: |$)/.test(live.reason)
+      ? codexReason(locale, live.reason)
+      : undefined;
   const [capabilities, setCapabilities] = useState<SessionCapabilities>();
   const [history, setHistory] = useState<ConversationEventPage>();
   const [inspection, setInspection] = useState<ManagedInspection>();
@@ -619,7 +627,10 @@ export function ClaudeSessionPanel({
                 : live?.status
                   ? statusLabels[live.status] || text("状态待核对", "State unavailable")
                   : text("正在读取", "Loading")}
-              {live?.reason ? ` · ${live.reason}` : ""}
+              {live?.reason ? ` · ${stoppedReason?.text ?? live.reason}` : ""}
+              {stoppedReason?.technical && (
+                <span className="block text-xs opacity-70">{stoppedReason.technical}</span>
+              )}
             </p>
             {filesAvailable && (
               <div className="space-y-2">

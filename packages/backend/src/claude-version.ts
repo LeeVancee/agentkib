@@ -9,6 +9,23 @@ export function supportsClaudeVersion(value: string, minimum = "2.1.263"): boole
 }
 
 /**
+ * The highest Claude Code version managed sessions were checked against (QA recording). It is
+ * only used to explain a failure and to log once; it never gates anything. The gates above stay
+ * lower bounds.
+ */
+export const CLAUDE_MANAGED_VERIFIED_THROUGH = "2.1.285";
+
+/** True for a Claude Code version line that is newer than the version managed sessions were verified through. */
+export function isNewerThanVerified(value: string | null | undefined): boolean {
+  const match = /^(\d+\.\d+\.\d+) \(Claude Code\)$/.exec(value ?? "");
+  return (
+    match !== null &&
+    match[1] !== CLAUDE_MANAGED_VERIFIED_THROUGH &&
+    versionAtLeast(match[1]!, CLAUDE_MANAGED_VERIFIED_THROUGH)
+  );
+}
+
+/**
  * Run `claude --version` and return its output (`X.Y.Z (Claude Code)`), or null when the CLI is
  * missing, fails, times out, prints too much, or prints something that is not a Claude Code
  * version. No minimum version is applied here: callers decide what a version allows.

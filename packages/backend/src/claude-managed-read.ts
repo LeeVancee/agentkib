@@ -29,6 +29,7 @@ import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
+import { terminationCodeOf } from "./claude-frame-policy";
 import { assertClaudeConfigWritable, resolveClaudeConfig } from "./claude-config";
 import {
   ClaudeHostStateStore,
@@ -741,6 +742,7 @@ export class ClaudeManagedReadOwner {
           ? { forkSourceNativeId: record.forkSourceNativeId, forkCutoff: record.forkCutoff }
           : {}),
         ...options,
+        ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
         onResult: (result) => {
           this.#hostState.complete(id, result.turnId, {
             success: result.success,
@@ -2657,6 +2659,13 @@ export class ClaudeManagedReadOwner {
       (!runner && record.snapshot.status !== "idle") ||
       managedSessionHasUnknownCommands(this.dataDir, id)
     ) {
+      // A session AgentKib stopped for a stated reason keeps that reason across a restart, unless a
+      // command is also unresolved: then the generic "outcome unconfirmed" matters more.
+      const stopped =
+        !runner &&
+        record.snapshot.status === "outcome-unknown" &&
+        terminationCodeOf(record.snapshot.reason) !== null &&
+        !managedSessionHasUnknownCommands(this.dataDir, id);
       live = {
         ...record.snapshot,
         status: "outcome-unknown",
@@ -2665,7 +2674,7 @@ export class ClaudeManagedReadOwner {
         approvals: [],
         questions: [],
         streamText: "",
-        reason: "control-outcome-unconfirmed",
+        reason: stopped ? record.snapshot.reason : "control-outcome-unconfirmed",
       };
     } else {
       live = { ...record.snapshot };

@@ -372,7 +372,14 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const f = fixture();
       f.setPlan({
         beforeInitialize: [init("auto")],
-        onUser: [{ type: "synthetic-unsupported-frame" }, { type: "__exit" }],
+        // A frame the runner cannot follow (an unknown frame type is only ignored).
+        onUser: [
+          {
+            type: "stream_event",
+            event: { type: "content_block_delta", delta: { type: "text_delta", text: 5 } },
+          },
+          { type: "__exit" },
+        ],
       });
       const runner = runnerFor(f);
       await runner.prepare(f.executable);

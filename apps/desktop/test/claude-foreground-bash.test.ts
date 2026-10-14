@@ -113,7 +113,6 @@ describe("foreground Bash contract on the main thread (behavior that must not ch
 
   it.each<[string, Record<string, unknown>]>([
     ["another tool ID", { tool_use_id: "other" }],
-    ["another task type", { task_type: "local_agent" }],
     ["a background start", { is_backgrounded: true }],
     ["an unknown background flag", { is_backgrounded: null }],
     ["a sub-agent owner flag on a main-thread call", { owned_by_subagent: true }],
@@ -122,6 +121,26 @@ describe("foreground Bash contract on the main thread (behavior that must not ch
     state.frame(assistantWith([bashUse("bash-1")]));
     expect(() => state.frame(taskStarted("task-1", "bash-1", extra))).toThrow(unverifiedStart);
     expect(state.foregroundTasks.size).toBe(0);
+  });
+
+  // A task of a kind this version cannot supervise ends the session, with or without the
+  // foreground contract; only the sub-agent task type is observed (see claude-frame-drift.test.ts).
+  it.each<[string, Record<string, unknown>]>([
+    ["remote_agent", { task_type: "remote_agent" }],
+    ["mcp_task", { task_type: "mcp_task" }],
+    ["monitor_mcp", { task_type: "monitor_mcp" }],
+    ["a missing type", { task_type: undefined }],
+    ["a numeric type", { task_type: 7 }],
+  ])("refuses a task start of %s", (_label, extra) => {
+    for (const [contract, message] of [
+      [true, unverifiedStart],
+      [false, backgroundRefused],
+    ] as const) {
+      const state = turn(contract);
+      state.frame(assistantWith([bashUse("bash-1")]));
+      expect(() => state.frame(taskStarted("task-1", "bash-1", extra))).toThrow(message);
+      expect(state.foregroundTasks.size).toBe(0);
+    }
   });
 
   it.each(["task_id", "tool_use_id", "task_type", "is_backgrounded"])(
@@ -139,7 +158,11 @@ describe("foreground Bash contract on the main thread (behavior that must not ch
     expect(() => turn().frame(taskStarted("task-1", "bash-1"))).toThrow(unverifiedStart);
     const old = turn(false);
     expect(() => old.frame(taskStarted("task-1", "bash-1"))).toThrow(backgroundRefused);
-    expect(() => old.frame(noBackgroundTasks)).toThrow(backgroundRefused);
+    // An empty background set says nothing runs, which holds for any version.
+    expect(() => old.frame(noBackgroundTasks)).not.toThrow();
+    expect(() => old.frame({ ...noBackgroundTasks, tasks: [{ task_type: "local_bash" }] })).toThrow(
+      backgroundRefused,
+    );
   });
 
   it("fails closed on a background upgrade, a background set, a mismatched or unknown completion and a repeated start", () => {
@@ -151,8 +174,9 @@ describe("foreground Bash contract on the main thread (behavior that must not ch
       backgroundRefused,
     );
     expect(() => state.frame(taskDone("task-1", "other"))).toThrow("unverified Claude task");
-    expect(() => state.frame(taskDone("unknown", "bash-1"))).toThrow("unverified Claude task");
-    expect(() => state.frame(taskUpdated("unknown", {}))).toThrow("unknown Claude foreground task");
+    // A task this turn never saw start is only observed (a resumed process closes older ones).
+    expect(() => state.frame(taskDone("unknown", "bash-1"))).not.toThrow();
+    expect(() => state.frame(taskUpdated("unknown", {}))).not.toThrow();
     expect(() => state.frame(taskStarted("task-1", "bash-1"))).toThrow(unverifiedStart);
     expect([...state.foregroundTasks]).toEqual([["task-1", "bash-1"]]);
   });
@@ -166,29 +190,43 @@ describe("foreground Bash contract on the main thread (behavior that must not ch
   });
 
   it("still refuses a Bash call outside the current turn that no sub-agent owns", () => {
+    // While idle, any main-thread content frame is already the CLI working on its own.
     const ended = turn();
     ended.frame(finished);
-    expect(() => ended.frame(assistantWith([bashUse("late")]))).toThrow(outside);
-    expect(() => ended.frame(streamBash("late"))).toThrow(outside);
+    expect(() => ended.frame(assistantWith([bashUse("late")]))).toThrow(
+      "Claude assistant frame outside an active turn",
+    );
+    expect(() => ended.frame(streamBash("late"))).toThrow(
+      "Claude stream_event frame outside an active turn",
+    );
 
     const fresh = new ClaudeRunnerState(randomUUID());
     fresh.foregroundBashContract = true;
     expect(() => fresh.frame(assistantWith([bashUse("early")]))).toThrow(outside);
   });
 
+  it("treats a missing parent ID as the main thread, as the SDK's null", () => {
+    const state = turn();
+    const frame: Record<string, unknown> = assistantWith([bashUse("bash-1")]);
+    delete frame.parent_tool_use_id;
+    state.frame(frame);
+    expect([...state.bashToolIds]).toEqual(["bash-1"]);
+  });
+
   it.each<[string, unknown]>([
-    ["a missing field", undefined],
     ["a number", 7],
     ["an object", {}],
     ["an empty string", ""],
     ["a 257-byte string", "p".repeat(257)],
-  ])("does not mistake %s for a sub-agent's parent ID", (_label, parent) => {
+  ])("does not mistake %s for the main thread or a sub-agent", (_label, parent) => {
     const state = turn();
-    const frame: Record<string, unknown> = assistantWith([bashUse("bash-1")]);
-    if (parent === undefined) delete frame.parent_tool_use_id;
-    else frame.parent_tool_use_id = parent;
-    expect(() => state.frame(frame)).toThrow(outside);
+    const revision = state.revision;
+    expect(() => state.frame(assistantWith([bashUse("bash-1")], parent))).not.toThrow();
+    expect(() => state.frame(streamBash("bash-2", parent))).not.toThrow();
+    // Not tracked as a main-thread call (so no task can anchor on it) and not a sub-agent's either.
     expect(state.bashToolIds.size).toBe(0);
+    expect(state.subagentBashToolIds.size).toBe(0);
+    expect(state.revision).toBe(revision);
   });
 
   it("rejects a Bash call without a usable ID and caps tracking at 4096 calls", () => {
@@ -258,7 +296,13 @@ describe("foreground Bash contract inside a sub-agent (observed, never fatal)", 
     const state = turn();
     state.frame(finished);
     expect(() => state.frame(assistantWith([bashUse("late-sub")], SPAWN))).not.toThrow();
-    expect(() => state.frame(assistantWith([bashUse("late-main")], MAIN))).toThrow(outside);
+    expect(() => state.frame(assistantWith([bashUse("late-main")], MAIN))).toThrow(
+      "Claude assistant frame outside an active turn",
+    );
+    // After a stop the process may still flush frames: that is not the CLI acting on its own.
+    const stopped = turn();
+    stopped.stop(stopped.turnId, stopped.revision);
+    expect(() => stopped.frame(assistantWith([bashUse("late-main")], MAIN))).toThrow(outside);
   });
 
   it.each<[string, unknown]>([
@@ -332,7 +376,6 @@ describe("foreground Bash contract inside a sub-agent (observed, never fatal)", 
   it.each<[string, Record<string, unknown>]>([
     ["a background start", { is_backgrounded: true }],
     ["an unknown background flag", { is_backgrounded: null }],
-    ["another task type", { task_type: "local_agent" }],
     ["an explicit not-a-sub-agent flag", { owned_by_subagent: false }],
     ["a missing tool ID", { tool_use_id: "" }],
   ])("still refuses a sub-agent task start with %s", (_label, extra) => {
@@ -357,8 +400,9 @@ describe("foreground Bash contract inside a sub-agent (observed, never fatal)", 
 
   it("still refuses a task it cannot attribute", () => {
     const state = tracked();
-    expect(() => state.frame(taskUpdated("unknown", {}))).toThrow("unknown Claude foreground task");
-    expect(() => state.frame(taskDone("unknown", "sub-bash-1"))).toThrow("unverified Claude task");
+    expect(() => state.frame(taskUpdated("unknown", {}))).not.toThrow();
+    expect(() => state.frame(taskDone("unknown", "sub-bash-1"))).not.toThrow();
+    expect([...state.foregroundTasks]).toEqual([["task-1", "bash-1"]]);
     // A sub-agent task may not take over a main-thread task ID or tool call.
     expect(() =>
       state.frame(taskStarted("task-1", "sub-bash-1", { owned_by_subagent: true })),

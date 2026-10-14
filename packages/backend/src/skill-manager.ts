@@ -6,6 +6,7 @@ import path from "node:path";
 import JSON5 from "json5";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
+import { claudeConfigFiles, isClaudeConfigDirSet, resolveClaudeConfig } from "./claude-config";
 import { isReparseOrSymlink } from "./native-files";
 import { copySkillPackage, skillPackage, skillPreviewFile } from "./skill-package";
 import { commitTask, currentTask } from "./task-executor";
@@ -265,8 +266,12 @@ export class SkillManager {
 
   #agentHome(agent: Agent): { path: string; invalid: boolean } {
     const home = this.#home();
-    if (agent === "claude-code")
-      return this.#configured("CLAUDE_CONFIG_DIR", path.join(home, ".claude"));
+    if (agent === "claude-code") {
+      // The value is taken literally (a settings file needs an absolute path): `~` and `${VAR}`
+      // are not expanded, unlike the other homes below.
+      const config = resolveClaudeConfig(this.#env, home);
+      return { path: config.dir, invalid: config.invalid !== undefined };
+    }
     if (agent === "opencode") {
       const xdg = this.#configured("XDG_CONFIG_HOME", path.join(home, ".config"));
       return { path: path.join(xdg.path, "opencode"), invalid: xdg.invalid };
@@ -1125,7 +1130,7 @@ export class SkillManager {
     if (
       agent === "claude-code" &&
       scope === "personal" &&
-      this.#env.CLAUDE_CONFIG_DIR &&
+      isClaudeConfigDirSet(this.#env) &&
       !samePath(root, path.join(this.#home(), ".claude/skills"))
     )
       target.visible_to = target.visible_to.filter((item) => item !== "opencode");
@@ -1188,7 +1193,7 @@ export class SkillManager {
       "OPENCODE_DISABLE_CLAUDE_CODE",
     ].some((key) => ["1", "true"].includes(this.#env[key]?.toLowerCase() ?? ""));
     const defaultClaudeSkills = path.join(home, ".claude/skills");
-    const configuredClaudeSkills = path.join(this.#agentHome("claude-code").path, "skills");
+    const configuredClaudeSkills = claudeConfigFiles(resolveClaudeConfig(this.#env, home)).skills;
     if (!opencodeClaudeSkillsDisabled && !samePath(defaultClaudeSkills, configuredClaudeSkills))
       extra.push({
         path: defaultClaudeSkills,

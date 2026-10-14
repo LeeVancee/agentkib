@@ -29,6 +29,7 @@ import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
+import { assertClaudeConfigWritable, resolveClaudeConfig } from "./claude-config";
 import {
   ClaudeHostStateStore,
   validClaudeDeviceId,
@@ -1818,6 +1819,8 @@ export class ClaudeManagedReadOwner {
     )
       throw new Error("invalid-managed-create");
     if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    // Before the request is claimed or dispatched: nothing may be left half-recorded.
+    this.#home();
     const selectedSettings = this.#settings(value);
     if (
       Object.keys(selectedSettings).length &&
@@ -1963,6 +1966,8 @@ export class ClaudeManagedReadOwner {
     )
       throw new Error("invalid-managed-adopt");
     if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    // Before the request is claimed or dispatched: nothing may be left half-recorded.
+    this.#home();
     const logical = { ...value };
     delete logical.runtimeBootId;
     const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
@@ -2442,10 +2447,11 @@ export class ClaudeManagedReadOwner {
     return path.join(this.#directory(), `${id}.json`);
   }
 
+  /** The CLI writes the session files here, so an unusable CLAUDE_CONFIG_DIR fails closed. */
   #home(): string {
-    const configured =
-      this.environment.CLAUDE_CONFIG_DIR ??
-      path.join(this.environment.HOME ?? homedir(), ".claude");
+    const config = resolveClaudeConfig(this.environment, this.environment.HOME ?? homedir());
+    assertClaudeConfigWritable(config);
+    const configured = config.dir;
     if (existsSync(configured)) return canonicalize(configured);
     const parent = path.dirname(configured);
     return path.join(canonicalize(parent), path.basename(configured));

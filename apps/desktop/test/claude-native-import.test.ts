@@ -173,6 +173,34 @@ describe("Claude native import capability", () => {
     expect(await claude(f, `/${"a".repeat(199)}`)).toEqual({ supported: true, beta: true });
   });
 
+  it.each([
+    ["a relative path", "relative/claude-dir"],
+    ["a home-relative path", "~/.claude-work"],
+    ["a path with a parent segment", "/tmp/claude/../other"],
+    ["the filesystem root", "/"],
+    ["a path with surrounding whitespace", " /tmp/claude-dir "],
+  ])("refuses native import when CLAUDE_CONFIG_DIR is %s", async (_name, value) => {
+    if (process.platform === "win32") return;
+    const f = fixture();
+    currentSession(path.join(f.projects, "-synthetic-workspace"));
+    f.environment.CLAUDE_CONFIG_DIR = value;
+    expect(await claude(f)).toEqual({
+      supported: false,
+      beta: true,
+      reason: "config-directory-invalid",
+    });
+    // The refusal comes before the project directory name is considered.
+    f.environment.CLAUDE_CODE_PROJECT_DIR_NAME = "shared-project";
+    expect(await claude(f)).toMatchObject({ reason: "config-directory-invalid" });
+  });
+
+  it("treats a blank CLAUDE_CONFIG_DIR as unset instead of refusing", async () => {
+    const f = fixture();
+    f.environment.CLAUDE_CONFIG_DIR = "  ";
+    mkdirSync(path.join(f.environment.HOME!, ".claude", "projects"), { recursive: true });
+    expect(await claude(f)).toEqual({ supported: true, beta: true });
+  });
+
   it("refuses native import when the project directory name is overridden", async () => {
     const f = fixture();
     f.environment.CLAUDE_CODE_PROJECT_DIR_NAME = "shared-project";

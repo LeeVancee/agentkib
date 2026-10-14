@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { claudeProjectKey } from "./claude-project-path";
 import { probeClaudeSessionFormat } from "./claude-session-probe";
 import { resolveCommand } from "./command-resolution";
@@ -129,7 +130,7 @@ function nativeSessionRoot(target: "codex" | "claude-code", env: NodeJS.ProcessE
   const home = userHome(env);
   return target === "codex"
     ? path.join(env.CODEX_HOME ?? path.join(home, ".codex"), "sessions")
-    : path.join(env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects");
+    : claudeConfigFiles(resolveClaudeConfig(env, home)).projects;
 }
 
 /** Claude Code is judged by `probeClaudeSessionFormat`; only Codex still checks the first record. */
@@ -208,6 +209,9 @@ export async function nativeImportCapability(
   } catch {}
   const unsupported = (reason: string): Capability => ({ supported: false, beta: true, reason });
   if (!versionMatches) return unsupported("unsupported-version-or-schema");
+  // An unusable CLAUDE_CONFIG_DIR means the session file has no directory it can safely land in.
+  if (target === "claude-code" && resolveClaudeConfig(env, userHome(env)).invalid)
+    return unsupported("config-directory-invalid");
   const root = nativeSessionRoot(target, env);
   if (target === "claude-code") {
     // The session file must land in the directory Claude Code will look in for this workspace.
@@ -464,7 +468,9 @@ export async function prepareSessionHandoff(
     : capability(
         request.target_agent === "antigravity" || !targetSupportsContinuation
           ? "unsupported"
-          : ["cli-unavailable", "agent-home-not-writable"].includes(nativeCapability.reason ?? "")
+          : ["cli-unavailable", "agent-home-not-writable", "config-directory-invalid"].includes(
+                nativeCapability.reason ?? "",
+              )
             ? "unavailable"
             : "unsupported",
         nativeCapability.reason ?? null,

@@ -5,6 +5,12 @@ import { readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AGENTS } from "./rpc";
+import {
+  claudeGlobalConfigFile,
+  claudeGlobalConfigGate,
+  resolveClaudeConfig,
+  type ClaudeGlobalConfigGate,
+} from "./claude-config";
 import type { Agent } from "./doctor-files";
 import { canonicalize, pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
@@ -45,6 +51,8 @@ type CandidateContext = {
   grokHome?: string;
   environment: NodeJS.ProcessEnv;
 };
+const claudeConfigUnusableWarning =
+  "AgentKib cannot tell which Claude configuration file is in use (CLAUDE_CONFIG_DIR is unusable, or a legacy .config.json exists), so what is shown from this file may not match Claude Code, and migration is turned off for it.";
 const workingDirectoryWarning =
   "Native MCP working directory cannot be determined equivalently; review the original configuration";
 class NativeWorkingDirectoryError extends McpDiagnosticError {
@@ -91,6 +99,7 @@ export function scanNativeMcp(
     return true;
   });
   markLayeredOpenCode(result);
+  markClaudeConfigUnusable(result, claudeGlobalConfigGate(resolveClaudeConfig(environment, home)));
   result.sort(
     (left, right) =>
       AGENTS.indexOf(left.agent) - AGENTS.indexOf(right.agent) ||
@@ -138,12 +147,11 @@ function scanHome(context: CandidateContext): void {
   scanSafely(context, "codex", "home", path.join(home, ".codex/config.toml"), () =>
     scanConfig(path.join(home, ".codex/config.toml"), "codex", "home", context),
   );
-  for (const [agent, relative] of [
-    ["claude-code", ".claude.json"],
-    ["cursor", ".cursor/mcp.json"],
-    ["antigravity", ".gemini/config/mcp_config.json"],
+  for (const [agent, file] of [
+    ["claude-code", claudeGlobalConfigFile(resolveClaudeConfig(context.environment, home), home)],
+    ["cursor", path.join(home, ".cursor/mcp.json")],
+    ["antigravity", path.join(home, ".gemini/config/mcp_config.json")],
   ] as const) {
-    const file = path.join(home, relative);
     scanSafely(context, agent, "home", file, () => scanConfig(file, agent, "home", context));
   }
   scanSafely(context, "open-claw", "home", "OpenClaw selected profile", () =>
@@ -581,6 +589,22 @@ function markLayeredOpenCode(candidates: Candidate[]): void {
     if (!candidate.warnings.includes(warning)) {
       candidate.warnings.push(warning);
       candidate.warning_messages!.push(mcpDiagnostic("native_layered_opencode"));
+    }
+  }
+}
+
+/**
+ * Entries read from Claude's global config file are only trustworthy while that file is certain to
+ * be the one Claude Code reads. Otherwise they stay visible but cannot be collected or migrated.
+ */
+function markClaudeConfigUnusable(candidates: Candidate[], gate: ClaudeGlobalConfigGate): void {
+  if (gate.usable) return;
+  for (const candidate of candidates) {
+    if (candidate.agent !== "claude-code" || candidate.scope !== "home") continue;
+    candidate.supported = false;
+    if (!candidate.warnings.includes(claudeConfigUnusableWarning)) {
+      candidate.warnings.push(claudeConfigUnusableWarning);
+      candidate.warning_messages!.push(mcpDiagnostic("native_claude_config_unusable"));
     }
   }
 }

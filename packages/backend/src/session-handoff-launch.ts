@@ -16,6 +16,11 @@ import os from "node:os";
 import path from "node:path";
 import spawn from "cross-spawn";
 import { z } from "zod";
+import {
+  assertClaudeConfigWritable,
+  claudeConfigFiles,
+  resolveClaudeConfig,
+} from "./claude-config";
 import { resolveCommand } from "./command-resolution";
 import { Commands } from "./commands";
 import { isReparseOrSymlink } from "./native-files";
@@ -138,8 +143,11 @@ function nativeRoot(
   const home = userHome(env);
   if (request.target_agent === "codex")
     return path.join(env.CODEX_HOME ?? path.join(home, ".codex"), "sessions");
-  if (request.target_agent === "claude-code")
-    return path.join(env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects");
+  if (request.target_agent === "claude-code") {
+    const claude = resolveClaudeConfig(env, home);
+    assertClaudeConfigWritable(claude);
+    return claudeConfigFiles(claude).projects;
+  }
   throw new Error("target Agent does not support native continuation");
 }
 

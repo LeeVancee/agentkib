@@ -1,4 +1,5 @@
 import path from "node:path";
+import { resolveClaudeConfig } from "./claude-config";
 import { userHome } from "./mcp-config-read";
 import { pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
@@ -16,7 +17,7 @@ export function nativeContext(environment: NodeJS.ProcessEnv): NativeContext {
         : path.join(home, ".config"),
     candidates = [
       environment.CODEX_HOME ?? path.join(home, ".codex"),
-      environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"),
+      resolveClaudeConfig(environment, home).dir,
       path.join(home, ".cursor"),
       path.join(config, "opencode"),
       environment.OPENCLAW_STATE_DIR ?? path.join(home, ".openclaw"),

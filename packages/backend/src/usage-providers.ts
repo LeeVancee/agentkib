@@ -3,6 +3,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { availableParallelism, homedir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import type { Commands } from "./commands";
 
 export type UsageQuality = "exact" | "estimated" | "incomplete";
@@ -143,8 +144,9 @@ const fromFile = async (
   return complete(agent, events, current);
 };
 
-const claude: Provider = async (cursor, { home }) =>
-  fromFile("claude-code", path.join(home, ".claude", "stats-cache.json"), cursor, (raw) => {
+const claude: Provider = async (cursor, { home, environment }) => {
+  const { statsCache } = claudeConfigFiles(resolveClaudeConfig(environment, home));
+  return fromFile("claude-code", statsCache, cursor, (raw) => {
     const value = raw as Record<string, unknown>;
     const events: UsageEvent[] = [];
     const daily = Array.isArray(value.dailyModelTokens) ? value.dailyModelTokens : [];
@@ -227,6 +229,7 @@ const claude: Provider = async (cursor, { home }) =>
     }
     return events;
   });
+};
 
 function collectOpenClaw(
   value: unknown,

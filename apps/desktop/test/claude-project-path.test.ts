@@ -69,6 +69,14 @@ describe("claudeProjectKey", () => {
       );
     });
 
+    it("treats any set CLAUDE_CONFIG_DIR as set, even a blank or unusable one", () => {
+      // Claude Code validates the override itself, so AgentKib cannot know which directory it uses.
+      for (const value of ["   ", "relative/dir", "~/.claude-work", "/a/../b", "/"])
+        expect(resolve("/Users/alice/app", { ...override, CLAUDE_CONFIG_DIR: value })).toBe(
+          "directory-name-overridden",
+        );
+    });
+
     it("derives the key when only the config directory or an empty name is set", () => {
       expect(resolve("/Users/alice/app", { CLAUDE_CONFIG_DIR: "/config" })).toBe(
         "-Users-alice-app",

@@ -4,6 +4,7 @@ import path from "node:path";
 import { canonicalize, pathIdentity } from "./paths";
 import { isReparseOrSymlink } from "./native-files";
 import { fileTime, inspectSkill } from "./asset-scanner";
+import { resolveClaudeConfig } from "./claude-config";
 import { userHome } from "./mcp-config-read";
 import type { CatalogAsset } from "./workspaces";
 
@@ -99,7 +100,7 @@ function homes(environment: NodeJS.ProcessEnv): [string, string][] {
           : path.join(home, ".config"),
     entries: [string, string][] = [
       ["codex", environment.CODEX_HOME ?? path.join(home, ".codex")],
-      ["claude-code", environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude")],
+      ["claude-code", resolveClaudeConfig(environment, home).dir],
       ["cursor", path.join(home, ".cursor")],
       ["opencode", path.join(xdg, "opencode")],
       ["open-claw", environment.OPENCLAW_STATE_DIR ?? path.join(home, ".openclaw")],

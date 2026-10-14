@@ -22,6 +22,8 @@
  * from Claude Code's own routine and is not documented, so AgentKib cannot reproduce it with
  * certainty. Rather than guess a directory the CLI would never look in, such paths are refused.
  */
+import { claudeConfigDirVariable } from "./claude-config";
+
 const MAX_VERBATIM_KEY_LENGTH = 200;
 
 export type ClaudeProjectKeyFailure = "empty-path" | "path-too-long" | "directory-name-overridden";
@@ -34,7 +36,8 @@ export type ClaudeProjectKey =
 export function claudeProjectKey(cwd: string, env: NodeJS.ProcessEnv = {}): ClaudeProjectKey {
   // Claude Code validates the override itself and falls back to the derived name when it is
   // invalid, so a set override means AgentKib cannot tell which directory the CLI will use.
-  if (env.CLAUDE_CONFIG_DIR && env.CLAUDE_CODE_PROJECT_DIR_NAME)
+  // Any truthy value counts here, even a blank or unusable one: Claude Code decides what that means.
+  if (claudeConfigDirVariable(env) && env.CLAUDE_CODE_PROJECT_DIR_NAME)
     return { ok: false, reason: "directory-name-overridden" };
   if (!cwd) return { ok: false, reason: "empty-path" };
   const key = cwd.replace(/[^a-zA-Z0-9]/g, "-");

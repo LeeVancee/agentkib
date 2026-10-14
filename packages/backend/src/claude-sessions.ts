@@ -2,6 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync } fro
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileTime } from "./asset-scanner";
+import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { isFile, readText, within } from "./files";
 import { isDirectory, isProbeWorkspace } from "./paths";
 import { jsonLines } from "./jsonl";
@@ -145,8 +146,11 @@ function transcriptHeader(
 }
 export class ClaudeSessions {
   constructor(readonly environment: NodeJS.ProcessEnv) {}
+  #config() {
+    return resolveClaudeConfig(this.environment, homedir());
+  }
   home() {
-    return this.environment.CLAUDE_CONFIG_DIR ?? path.join(homedir(), ".claude");
+    return this.#config().dir;
   }
   list(workspace: string | null) {
     // Many sessions share a cwd. Retain probe checks only within this scan so
@@ -169,8 +173,8 @@ export class ClaudeSessions {
       }
       return result;
     };
-    const home = this.home(),
-      projects = path.join(home, "projects"),
+    const files = claudeConfigFiles(this.#config()),
+      projects = files.projects,
       errors: string[] = [],
       paths = isDirectory(projects) ? scan(projects, errors) : [],
       sessions = new Map<string, NativeSessionSource>();
@@ -257,7 +261,7 @@ export class ClaudeSessions {
         errors.push(String(error));
       }
     }
-    const history = path.join(home, "history.jsonl");
+    const history = files.history;
     if (isFile(history)) {
       try {
         for (const { value } of jsonLines(history, {

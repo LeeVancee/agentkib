@@ -72,7 +72,7 @@ OpenClaw project discovery reads the current `agents.entries` mapping and suppor
 
 Native restrictions also include OpenClaw's per-agent Skill allowlists and OpenCode's local configuration layers and explicit environment overrides. An empty OpenClaw allowlist disables all Skills for that agent. Hermes project visibility requires the actual nearest Git root; trusting an ancestor does not make a nested project's Skill directory discoverable.
 
-OpenCode's Claude compatibility sources respect `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` and `OPENCODE_DISABLE_CLAUDE_CODE`. Its personal Claude compatibility directory remains `~/.claude/skills` when `CLAUDE_CONFIG_DIR` changes; AgentKib inspects that default location separately and does not claim that OpenCode reads the overridden Claude directory. Other agents and independently readable native locations retain their own visibility.
+OpenCode's Claude compatibility sources respect `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` and `OPENCODE_DISABLE_CLAUDE_CODE`. Its personal Claude compatibility directory remains `~/.claude/skills` when `CLAUDE_CONFIG_DIR` changes; AgentKib inspects that default location separately and does not claim that OpenCode reads the overridden Claude directory. AgentKib takes `CLAUDE_CONFIG_DIR` literally: `~` and `${VAR}` are not expanded, and a value that is not an absolute path without `..` is invalid, so Skills are read from the default directory and the personal Claude Code target cannot be written. Other agents and independently readable native locations retain their own visibility.
 
 OpenCode compatibility inspection follows `.claude/skills` and `.agents/skills` from the selected project up to its nearest Git root. It includes hidden and nested Skill packages under those compatibility roots, with bounded traversal and link diagnostics. These additional observations retain their own entry paths and do not add writable targets or imply that every other agent can read them.
 
@@ -217,7 +217,7 @@ OpenClaw 项目发现读取当前的 `agents.entries` 映射，也兼容旧 `age
 
 原生限制检查也包含 OpenClaw 的各 Agent Skill 白名单，以及 OpenCode 的本地配置层和显式环境覆盖。OpenClaw 空白名单表示该 Agent 禁用全部 Skill。Hermes 项目可见性要求实际最近的 Git 根目录匹配；信任祖先仓库不会让子目录的 Skill 自动可发现。
 
-OpenCode 的 Claude 兼容来源遵循 `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 和 `OPENCODE_DISABLE_CLAUDE_CODE`。修改 `CLAUDE_CONFIG_DIR` 后，OpenCode 的个人兼容目录仍为 `~/.claude/skills`；AgentKib 单独查看该默认位置，不将自定义 Claude 目录误报为 OpenCode 可读。其他 Agent 及独立可读的原生位置仍按各自规则展示。
+OpenCode 的 Claude 兼容来源遵循 `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 和 `OPENCODE_DISABLE_CLAUDE_CODE`。修改 `CLAUDE_CONFIG_DIR` 后，OpenCode 的个人兼容目录仍为 `~/.claude/skills`；AgentKib 单独查看该默认位置，不将自定义 Claude 目录误报为 OpenCode 可读。AgentKib 按字面使用 `CLAUDE_CONFIG_DIR`，不展开 `~` 与 `${VAR}`；值不是不含 `..` 的绝对路径时视为无效，此时从默认目录读取 Skill，Claude Code 的个人目录不可写入。其他 Agent 及独立可读的原生位置仍按各自规则展示。
 
 OpenCode 兼容来源扫描包含从选定项目到最近 Git 根之间的 `.claude/skills` 和 `.agents/skills`，也包含这些兼容目录中的隐藏 Skill 和父包内嵌 Skill。遍历仍有边界限制及链接诊断。额外观察保留各自入口路径，不增加写入目标，也不将 OpenCode 的可读性套用到其他 Agent。
 

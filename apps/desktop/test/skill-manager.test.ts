@@ -50,6 +50,56 @@ describe("Skill inventory", () => {
     expect(overrideObservation?.agents).not.toContain("opencode");
   });
 
+  it.each([
+    ["a home-relative value, which Claude Code does not expand", "~/.claude-custom"],
+    ["a value with a parent segment", "/tmp/claude/../other"],
+    ["a relative value", "relative/claude-dir"],
+  ])(
+    "falls back to the default Claude directory and blocks writes for %s",
+    async (_name, value) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "agentkib-skill-manager-"));
+      temporaryHomes.push(home);
+      const backend = new Skills(
+        { CLAUDE_CONFIG_DIR: value, HOME: home, USERPROFILE: home },
+        path.join(home, "data"),
+      );
+      const targets = (await backend.request("skills.targets", {})) as Array<{
+        agent: string;
+        scope: string;
+        root: string;
+        writable: boolean;
+        reason: string | null;
+      }>;
+      const personal = targets.find(
+        (item) => item.agent === "claude-code" && item.scope === "personal",
+      );
+      expect(personal).toMatchObject({
+        root: path.join(home, ".claude", "skills"),
+        writable: false,
+        reason: "Native Skill home environment override is invalid",
+      });
+    },
+  );
+
+  it("treats a blank CLAUDE_CONFIG_DIR as unset", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agentkib-skill-manager-"));
+    temporaryHomes.push(home);
+    const backend = new Skills(
+      { CLAUDE_CONFIG_DIR: "   ", HOME: home, USERPROFILE: home },
+      path.join(home, "data"),
+    );
+    const targets = (await backend.request("skills.targets", {})) as Array<{
+      agent: string;
+      scope: string;
+      root: string;
+      writable: boolean;
+    }>;
+    const personal = targets.find(
+      (item) => item.agent === "claude-code" && item.scope === "personal",
+    );
+    expect(personal).toMatchObject({ root: path.join(home, ".claude", "skills"), writable: true });
+  });
+
   it.each(["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "OPENCODE_DISABLE_CLAUDE_CODE"])(
     "does not report ancestor Claude Skills as OpenCode-visible when %s is enabled",
     async (setting) => {

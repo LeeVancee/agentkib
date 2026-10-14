@@ -6,6 +6,11 @@ import { z } from "zod";
 import { pushChange, type ChangeSet, type FileChange } from "./change-plan";
 import { hash } from "./doctor-files";
 import { userHome } from "./mcp-config-read";
+import {
+  assertClaudeConfigWritable,
+  claudeConfigFiles,
+  resolveClaudeConfig,
+} from "./claude-config";
 import { claudeProjectKey } from "./claude-project-path";
 import { buildSessionArchive } from "./session-archive";
 import { planSessionWindow, renderHandoff, sanitizeHandoffExport } from "./session-handoff";
@@ -430,15 +435,12 @@ export async function planSessionHandoff(
         `rollout-${filenameStamp}-${sessionId}.jsonl`,
       );
     } else {
+      const claude = resolveClaudeConfig(environment, home);
+      assertClaudeConfigWritable(claude);
       const projectKey = claudeProjectKey(project, environment);
       if (!projectKey.ok)
         throw new Error("Claude Code project directory cannot be determined for this workspace");
-      target = path.join(
-        environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"),
-        "projects",
-        projectKey.key,
-        `${sessionId}.jsonl`,
-      );
+      target = path.join(claudeConfigFiles(claude).projects, projectKey.key, `${sessionId}.jsonl`);
     }
     if (existsSync(target)) throw new Error("Native target session already exists");
     const targetAgent = request.targetAgent;

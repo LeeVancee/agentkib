@@ -14,6 +14,7 @@ import {
 } from "./claude-config";
 import { hasClaudeProjects, readClaudeProjectEntry } from "./claude-project-config";
 import { resolveRepoRoot } from "./claude-memory";
+import { readClaudeAssets } from "./claude-assets";
 import { readClaudeSettings, type ClaudeSettings, type McpPolicyEntry } from "./claude-settings";
 import { isSensitiveExternalPath } from "./context-claude";
 import { defaultIo } from "./context-claude-sources";
@@ -97,6 +98,9 @@ const claudeDiagnosticText = {
     "Blocked by a deniedMcpServers entry in Claude Code settings; Claude Code does not load it.",
   native_policy_not_allowed:
     "Not on the allowedMcpServers list in Claude Code settings; Claude Code does not load it.",
+  native_plugin_provided: "Provided by the enabled plugin {{plugin}}.",
+  native_plugin_duplicate:
+    "Claude Code connects once to a plugin server that points at the same endpoint as a server you configured directly, and uses yours.",
 } as const;
 // Claude Code's own precedence, strongest first (mcp page, "Scope hierarchy and precedence").
 const claudeScopeRank: Record<string, number> = { managed: 0, local: 1, project: 2, home: 3 };
@@ -273,11 +277,33 @@ function scanClaudeSettings(context: CandidateContext, environment: NodeJS.Proce
   context.claudeSettings = settings;
   const file = settings.managedServersFile();
   const servers = settings.mcpPolicy().managedServers;
-  if (!file || !Object.keys(servers).length) return;
-  for (const name of Object.keys(servers)) context.claudeProvided.add(name);
-  scanSafely(context, "claude-code", "managed", file, () =>
-    collectReadonlyServers(file, "managed", servers as JsonObject, context),
-  );
+  if (file && Object.keys(servers).length) {
+    for (const name of Object.keys(servers)) context.claudeProvided.add(name);
+    scanSafely(context, "claude-code", "managed", file, () =>
+      collectReadonlyServers(file, "managed", servers as JsonObject, context),
+    );
+  }
+  // Servers of the plugins that settings enable. They rank below the three scopes above.
+  const assets = readClaudeAssets({
+    root,
+    dirs: [],
+    environment,
+    mode: "full",
+    settings,
+    sensitive: isSensitiveExternalPath,
+    pluginsOnly: true,
+  });
+  for (const plugin of assets.plugins)
+    for (const entry of plugin.mcp)
+      scanSafely(context, "claude-code", "plugin", entry.file, () =>
+        collectReadonlyServers(
+          entry.file,
+          "plugin",
+          entry.servers as JsonObject,
+          context,
+          plugin.id,
+        ),
+      );
 }
 
 function scanClaudeManaged(context: CandidateContext): void {
@@ -445,9 +471,10 @@ function jsonServerShape(server: JsonObject | undefined) {
  */
 function collectReadonlyServers(
   file: string,
-  scope: "local" | "managed",
+  scope: "local" | "managed" | "plugin",
   servers: JsonObject | undefined,
   context: CandidateContext,
+  plugin?: string,
 ): void {
   if (!servers) return;
   const sourcePath = canonicalPath(file);
@@ -457,7 +484,10 @@ function collectReadonlyServers(
     const text = `Read-only: this ${scope}-scope server is shown for reference. AgentKib does not collect or migrate it.`;
     const result: Candidate = {
       // The scope is part of the id: a local and a user server of one name share a file.
-      id: createHash("sha256").update(`${sourcePath}:${scope}:${name}`).digest("hex").slice(0, 24),
+      id: createHash("sha256")
+        .update(`${sourcePath}:${scope}:${plugin ? `${plugin}:` : ""}${name}`)
+        .digest("hex")
+        .slice(0, 24),
       agent: "claude-code",
       scope,
       name,
@@ -481,6 +511,15 @@ function collectReadonlyServers(
       result.warning_messages!.push(mcpDiagnostic("native_review_configuration"));
     }
     context.raw.set(result.id, server);
+    if (plugin)
+      addDiagnostic(
+        result,
+        claudeDiagnosticText.native_plugin_provided.replace("{{plugin}}", plugin),
+        "native_plugin_provided",
+        {
+          plugin,
+        },
+      );
     context.output.push(result);
   }
 }
@@ -894,6 +933,17 @@ function annotateClaudePrecedence(candidates: Candidate[], context: CandidateCon
       const state = projectApproval(context.claudeSettings, candidate.name);
       note(candidate, `native_project_${state}` as keyof typeof claudeDiagnosticText);
     }
+    // Plugin servers match by endpoint, not by name (mcp page, "Scope hierarchy and precedence").
+    if (
+      candidate.scope === "plugin" &&
+      candidate.endpoint !== "unavailable" &&
+      claude.some(
+        (other) =>
+          ["local", "project", "home"].includes(other.scope) &&
+          other.endpoint === candidate.endpoint,
+      )
+    )
+      note(candidate, "native_plugin_duplicate");
     if (candidate.scope !== "managed") {
       const scopes = scopesByName.get(candidate.name)!;
       if (context.claudeProvided.has(candidate.name))

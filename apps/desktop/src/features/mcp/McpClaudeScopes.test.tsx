@@ -58,7 +58,7 @@ describe("Claude Code scopes in the MCP import panel", () => {
     await scan();
     expect(
       await screen.findByText(
-        "Claude Code: local and managed servers are shown read-only. Plugin servers, claude.ai connectors, and policy delivered by MDM, the Windows registry or the claude.ai console are not visible here.",
+        "Claude Code: local, managed and plugin servers are shown read-only. claude.ai connectors, and policy delivered by MDM, the Windows registry or the claude.ai console, are not visible here.",
       ),
     ).toBeVisible();
     expect(
@@ -75,17 +75,17 @@ describe("Claude Code scopes in the MCP import panel", () => {
     [
       "zh-CN",
       "只读：此 local 作用域的服务仅供参考，AgentKib 不收录也不迁移。",
-      /Claude Code：local 与 managed/,
+      /Claude Code：local、managed/,
     ],
     [
       "zh-TW",
       "唯讀：此 local 範圍的服務僅供參考，AgentKib 不會收錄也不會遷移。",
-      /Claude Code：local 與 managed/,
+      /Claude Code：local、managed/,
     ],
     [
       "ja-JP",
       "読み取り専用：この local スコープのサーバーは参考表示です。AgentKib は取り込みも移行も行いません。",
-      /Claude Code：local と managed/,
+      /Claude Code：local、managed/,
     ],
   ])("shows the notices in %s", async (locale, line, hint) => {
     await initializeI18n(locale as SupportedLocale);
@@ -108,6 +108,6 @@ describe("Claude Code scopes in the MCP import panel", () => {
     ]);
     await scan();
     expect(await screen.findByText("Demo")).toBeVisible();
-    expect(screen.queryByText(/Claude Code: local and managed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Claude Code: local, managed and plugin/)).not.toBeInTheDocument();
   });
 });

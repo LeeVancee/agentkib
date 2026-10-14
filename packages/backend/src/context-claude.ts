@@ -9,6 +9,7 @@ import {
   type ClaudeConfig,
 } from "./claude-config";
 import { MEMORY_BYTES, MEMORY_LINES, autoMemoryLocation } from "./claude-memory";
+import { describeAssets, readClaudeAssets } from "./claude-assets";
 import { readClaudeSettings, type ClaudeSettings } from "./claude-settings";
 import { globMatches } from "./context-glob";
 import { supportsClaudeVersion } from "./claude-version";
@@ -1215,6 +1216,38 @@ class Assembly {
   // ---- result ----------------------------------------------------------------------------
 
   /**
+   * Plugins, commands, agents, output styles, workflows and hooks, listed read-only. The app gets
+   * everything; the MCP tool gets the project's own items and counts of the rest.
+   */
+  #assetsOutput(): void {
+    if (this.mode === "none") return;
+    const assets = readClaudeAssets({
+      root: this.options.root,
+      dirs: this.options.dirs,
+      environment: this.options.environment,
+      mode: this.mode,
+      settings: this.settings,
+      config: this.config,
+      platform: this.platform,
+      io: this.context.io,
+      sensitive: isSensitiveExternalPath,
+    });
+    const { blocks, notes } = describeAssets(
+      assets,
+      this.settings,
+      this.mode === "full" ? "full" : "metadata",
+    );
+    for (const block of blocks)
+      this.extras.push({
+        source: block.title,
+        scope: "assets",
+        content: block.content,
+        precedence: 0,
+      });
+    for (const note of notes) this.warn(note, true);
+  }
+
+  /**
    * What the settings say, as a section in the app and as metadata over MCP, plus the notes about
    * how settings changed what is listed above. Nothing is read for the Doctor.
    */
@@ -1288,6 +1321,7 @@ class Assembly {
         `${plural(this.excluded.maybe, "instruction file")} may be excluded by claudeMdExcludes: a pattern matches where a link leads but not the path it is written with. ${this.excluded.maybe === 1 ? "It is" : "They are"} still listed.`,
         true,
       );
+    this.#assetsOutput();
     const names = ENV_BLOCK_NAMES.filter((name) => settings.envSets(name));
     if (names.length)
       this.warn(

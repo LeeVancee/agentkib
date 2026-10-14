@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type Ref,
@@ -113,7 +114,7 @@ function EmbeddedShell() {
     previousCatalog.current = session.sessions;
     props.onCatalogChange?.();
   }, [session.sessions, props.onCatalogChange]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     setFilesOpen(false);
     setActionsOpen(false);
   }, [session.selected]);

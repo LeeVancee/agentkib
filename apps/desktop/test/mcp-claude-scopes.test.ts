@@ -104,6 +104,23 @@ const LEAKS = [
 ];
 
 describe("Claude Code local scope in the native MCP scan", () => {
+  it("reads trust from the matching entry only and never prints trust records", () => {
+    const f = fixture();
+    mkdirSync(path.join(f.project, ".claude"), { recursive: true });
+    writeFileSync(
+      path.join(f.project, ".mcp.json"),
+      JSON.stringify({ mcpServers: { p: http("p") } }),
+    );
+    writeFileSync(
+      path.join(f.project, ".claude", "settings.local.json"),
+      JSON.stringify({ enabledMcpjsonServers: ["p"] }),
+    );
+    f.writeGlobal({ projects: { ...OTHERS, [f.project]: { hasTrustDialogAccepted: true } } });
+    const candidates = f.scan();
+    expect(codes(f.claude(candidates, "project")[0]!)).toEqual(["native_project_approved"]);
+    const text = JSON.stringify(candidates);
+    for (const leak of LEAKS) expect(text).not.toContain(leak);
+  });
   it("shows only the current project's local entries and nothing of the other projects", () => {
     const f = fixture();
     f.writeGlobal({

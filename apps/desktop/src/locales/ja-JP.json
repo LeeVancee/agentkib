@@ -2006,7 +2006,7 @@
   "mcp.manage.diagnostic.native_overridden_by_project": "上書きされています：.mcp.json で承認済みの同名サーバーが使われます。",
   "mcp.manage.diagnostic.native_project_rejected": "Claude Code の設定ファイルの disabledMcpjsonServers で拒否されています。Claude Code はこのサーバーを読み込みません。",
   "mcp.manage.diagnostic.native_project_pending": "承認待ち：この .mcp.json のサーバーを承認する Claude Code の設定ファイルはまだなく、Claude Code は読み込む前に確認します。",
-  "mcp.manage.diagnostic.native_project_approved_if_trusted": "プロジェクトまたはローカルの設定ファイルで承認されています。Claude Code はフォルダーを信頼した後にのみ適用し、AgentKib からはその判断が見えません。",
+  "mcp.manage.diagnostic.native_project_approved_if_trusted": "プロジェクトまたはローカルの設定ファイルで承認されています。Claude Code はフォルダーを信頼した後にのみ適用します。このフォルダーの信頼記録は見つかりませんでした。",
   "mcp.manage.diagnostic.native_project_approved": "Claude Code の設定で承認済みです。Claude Code はこの .mcp.json のサーバーを読み込みます。",
   "mcp.manage.diagnostic.native_values_not_copied": "元の秘密値はコピーしません。有効化する前に必要な認証情報を入力してください",
   "mcp.manage.diagnostic.invalid_entry": "MCP 項目が無効です",

@@ -129,6 +129,61 @@ describe("approval of .mcp.json servers", () => {
     expect(by(items, "two")).toEqual([["project", ["native_project_approved_if_trusted"]]]);
   });
 
+  it("is approved once the matching project entry records that the folder is trusted", () => {
+    const f = fixture();
+    const s = withSettings(f);
+    f.writeGlobal({
+      mcpServers: { one: http("u") },
+      projects: { [f.project]: { hasTrustDialogAccepted: true } },
+    });
+    s.projectServers({ one: http("1"), two: http("2") });
+    s.local({ enabledMcpjsonServers: ["one"] });
+    s.project({ enabledMcpjsonServers: ["two"] });
+    const items = f.claude(f.scan());
+    expect(by(items, "one", "project")).toEqual([["project", ["native_project_approved"]]]);
+    expect(by(items, "two", "project")).toEqual([["project", ["native_project_approved"]]]);
+    expect(by(items, "one", "home")).toEqual([["home", ["native_overridden_by_project"]]]);
+  });
+  it("ignores trust recorded only for another project", () => {
+    const f = fixture();
+    const s = withSettings(f);
+    f.writeGlobal({
+      mcpServers: { one: http("u") },
+      projects: {
+        "/tmp/other-project-alpha": { hasTrustDialogAccepted: true },
+        [path.dirname(f.project)]: { hasTrustDialogAccepted: true },
+        [f.project]: { mcpServers: {} },
+      },
+    });
+    s.projectServers({ one: http("1") });
+    s.local({ enabledMcpjsonServers: ["one"] });
+    const items = f.claude(f.scan());
+    expect(by(items, "one", "project")).toEqual([
+      ["project", ["native_project_approved_if_trusted"]],
+    ]);
+    expect(by(items, "one", "home")).toEqual([["home", ["native_overridden_if_approved"]]]);
+    expect(JSON.stringify(items)).not.toMatch(/other-project-alpha|hasTrustDialogAccepted/);
+  });
+  it("counts only a boolean true as trust", () => {
+    for (const value of ["true", 1, "yes", null, [true], {}]) {
+      const f = fixture();
+      const s = withSettings(f);
+      f.writeGlobal({ projects: { [f.project]: { hasTrustDialogAccepted: value } } });
+      s.projectServers({ one: http("1") });
+      s.local({ enabledMcpjsonServers: ["one"] });
+      expect(by(f.claude(f.scan()), "one")).toEqual([
+        ["project", ["native_project_approved_if_trusted"]],
+      ]);
+    }
+  });
+  it("still rejects a trusted folder's server listed in disabledMcpjsonServers", () => {
+    const f = fixture();
+    const s = withSettings(f);
+    f.writeGlobal({ projects: { [f.project]: { hasTrustDialogAccepted: true } } });
+    s.projectServers({ one: http("1") });
+    s.local({ enabledMcpjsonServers: ["one"], disabledMcpjsonServers: ["one"] });
+    expect(by(f.claude(f.scan()), "one")).toEqual([["project", ["native_project_rejected"]]]);
+  });
   it("is rejected by disabledMcpjsonServers in any file, whatever else approves it", () => {
     const f = fixture();
     const s = withSettings(f);

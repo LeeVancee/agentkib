@@ -2,7 +2,7 @@
 //
 // That file also records the path, history and trust state of every other project the user has
 // ever opened, so nothing but the matching entry may leave this module. The result type below
-// holds only the two fields AgentKib shows, and the other entries are neither kept nor returned.
+// holds only the fields AgentKib shows, and the other entries are neither kept nor returned.
 //
 // Basis, https://code.claude.com/docs/en/mcp: the "local" scope is stored in `~/.claude.json`
 // under the project's path, and `/mcp` records a disabled server there as well. Which path
@@ -19,6 +19,8 @@ export interface ClaudeProjectEntry {
   mcpServers?: Record<string, unknown>;
   /** Names switched off for this project with `/mcp`. */
   disabledMcpServers: string[];
+  /** `hasTrustDialogAccepted === true` for this exact folder; any other value is untrusted. */
+  trusted: boolean;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -65,6 +67,7 @@ export function readClaudeProjectEntry(
 function pick(entry: Record<string, unknown>): ClaudeProjectEntry {
   const disabled = entry.disabledMcpServers;
   return {
+    trusted: entry.hasTrustDialogAccepted === true,
     ...(isObject(entry.mcpServers) ? { mcpServers: entry.mcpServers } : {}),
     disabledMcpServers:
       Array.isArray(disabled) && disabled.length <= MAX_DISABLED

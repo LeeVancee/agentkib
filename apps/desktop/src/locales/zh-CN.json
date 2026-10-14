@@ -2006,7 +2006,7 @@
   "mcp.manage.diagnostic.native_overridden_by_project": "已被覆盖：Claude Code 使用 .mcp.json 里已批准的同名服务。",
   "mcp.manage.diagnostic.native_project_rejected": "已被 Claude Code 设置文件里的 disabledMcpjsonServers 拒绝；Claude Code 不会加载这个服务。",
   "mcp.manage.diagnostic.native_project_pending": "待批准：还没有任何 Claude Code 设置文件批准这个 .mcp.json 里的服务，Claude Code 加载前会先询问。",
-  "mcp.manage.diagnostic.native_project_approved_if_trusted": "仅在项目或本地设置文件中批准，而 Claude Code 只有在你信任该文件夹之后才会应用它。AgentKib 看不到这个信任决定。",
+  "mcp.manage.diagnostic.native_project_approved_if_trusted": "仅在项目或本地设置文件中批准，而 Claude Code 只有在你信任该文件夹之后才会应用它。未找到该文件夹的信任记录。",
   "mcp.manage.diagnostic.native_project_approved": "已在 Claude Code 设置中批准；Claude Code 会加载这个 .mcp.json 里的服务。",
   "mcp.manage.diagnostic.native_values_not_copied": "不会复制原生私密值，请在启用前填写所需凭据",
   "mcp.manage.diagnostic.invalid_entry": "MCP 条目无效",

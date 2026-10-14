@@ -66,6 +66,8 @@ type CandidateContext = {
   claudeDisabled: Set<string>;
   /** The settings files, read once per scan: approvals and policy come from them. */
   claudeSettings?: ClaudeSettings;
+  /** Trust record of the matched `~/.claude.json` project entry; unset when there is none. */
+  claudeTrusted?: boolean;
   /** The raw definition behind each Claude candidate, kept in memory for the policy match only. */
   raw: Map<string, JsonObject | undefined>;
   /** Names of servers the organization provides through `managedMcpServers`. */
@@ -85,7 +87,7 @@ const claudeDiagnosticText = {
   native_project_approved:
     "Approved in your Claude Code settings; Claude Code loads this .mcp.json server.",
   native_project_approved_if_trusted:
-    "Approved in a project or local settings file, which Claude Code applies only once you trust the folder. AgentKib cannot see that decision.",
+    "Approved in a project or local settings file, which Claude Code applies only once you trust the folder. No trust record was found for this folder.",
   native_project_pending:
     "Pending approval: no Claude Code settings file approves this .mcp.json server yet, so Claude Code asks before it loads it.",
   native_project_rejected:
@@ -244,6 +246,7 @@ function scanClaudeGlobalFile(file: string, context: CandidateContext): void {
     process.platform,
   );
   if (!entry) return;
+  context.claudeTrusted = entry.trusted;
   for (const name of entry.disabledMcpServers) context.claudeDisabled.add(name);
   collectReadonlyServers(file, "local", entry.mcpServers, context);
 }
@@ -852,10 +855,14 @@ type ProjectApproval = "approved" | "approved_if_trusted" | "pending" | "rejecte
  * Whether Claude Code loads a `.mcp.json` server (mcp page, "Project server approvals"). An
  * approval is `enableAllProjectMcpServers` or an `enabledMcpjsonServers` entry; a
  * `disabledMcpjsonServers` entry in any file rejects. Approvals in user and managed settings count
- * at once; those in the project's or the local file wait for the workspace trust decision, which
- * AgentKib cannot see.
+ * at once; those in the project's or the local file wait for the workspace trust decision, which is read
+ * from the matched project entry of the global file (`trusted`).
  */
-function projectApproval(settings: ClaudeSettings | undefined, name: string): ProjectApproval {
+function projectApproval(
+  settings: ClaudeSettings | undefined,
+  name: string,
+  trusted: boolean | undefined,
+): ProjectApproval {
   if (!settings) return "pending";
   const approvals = settings.mcpApprovals();
   if (approvals.disabled.has(name)) return "rejected";
@@ -866,7 +873,9 @@ function projectApproval(settings: ClaudeSettings | undefined, name: string): Pr
   if (!layers.length) return "pending";
   return layers.some((layer) => layer === "user" || layer === "managed")
     ? "approved"
-    : "approved_if_trusted";
+    : trusted === true
+      ? "approved"
+      : "approved_if_trusted";
 }
 
 const wildcardMatches = (pattern: string, text: string) =>
@@ -930,7 +939,7 @@ function annotateClaudePrecedence(candidates: Candidate[], context: CandidateCon
   const policy = context.claudeSettings?.mcpPolicy();
   for (const candidate of claude) {
     if (candidate.scope === "project") {
-      const state = projectApproval(context.claudeSettings, candidate.name);
+      const state = projectApproval(context.claudeSettings, candidate.name, context.claudeTrusted);
       note(candidate, `native_project_${state}` as keyof typeof claudeDiagnosticText);
     }
     // Plugin servers match by endpoint, not by name (mcp page, "Scope hierarchy and precedence").
@@ -952,7 +961,11 @@ function annotateClaudePrecedence(candidates: Candidate[], context: CandidateCon
       else if (candidate.scope !== "local" && scopes.has("local"))
         note(candidate, "native_overridden_by_local");
       else if (candidate.scope === "home" && scopes.has("project")) {
-        const state = projectApproval(context.claudeSettings, candidate.name);
+        const state = projectApproval(
+          context.claudeSettings,
+          candidate.name,
+          context.claudeTrusted,
+        );
         if (state === "approved") note(candidate, "native_overridden_by_project");
         else if (state !== "rejected") note(candidate, "native_overridden_if_approved");
       }

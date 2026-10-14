@@ -19,9 +19,13 @@ describe("readClaudeProjectEntry", () => {
     },
   };
 
-  it("returns the two fields of the matching entry and nothing of the others", () => {
+  it("returns the three fields of the matching entry and nothing of the others", () => {
     const entry = readClaudeProjectEntry(root, ["/work/current"], "linux");
-    expect(entry).toEqual({ mcpServers: server("mine"), disabledMcpServers: ["off"] });
+    expect(entry).toEqual({
+      mcpServers: server("mine"),
+      disabledMcpServers: ["off"],
+      trusted: false,
+    });
     const text = JSON.stringify(entry);
     for (const leak of ["other-a", "other-b", "b-off", "history", "projects", "user-level"])
       expect(text).not.toContain(leak);
@@ -79,6 +83,7 @@ describe("readClaudeProjectEntry", () => {
       readClaudeProjectEntry({ projects: { "/p": value } }, ["/p"], "linux");
     expect(entry({ mcpServers: [1], disabledMcpServers: "x" })).toEqual({
       disabledMcpServers: [],
+      trusted: false,
     });
     expect(
       entry({ disabledMcpServers: ["ok", 3, "x".repeat(257), "also-ok"] })?.disabledMcpServers,

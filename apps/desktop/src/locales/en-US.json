@@ -2006,7 +2006,7 @@
   "mcp.manage.diagnostic.native_overridden_by_project": "Overridden: the approved same-named server in .mcp.json is used instead.",
   "mcp.manage.diagnostic.native_project_rejected": "Rejected by disabledMcpjsonServers in a Claude Code settings file; Claude Code does not load this server.",
   "mcp.manage.diagnostic.native_project_pending": "Pending approval: no Claude Code settings file approves this .mcp.json server yet, so Claude Code asks before it loads it.",
-  "mcp.manage.diagnostic.native_project_approved_if_trusted": "Approved in a project or local settings file, which Claude Code applies only once you trust the folder. AgentKib cannot see that decision.",
+  "mcp.manage.diagnostic.native_project_approved_if_trusted": "Approved in a project or local settings file, which Claude Code applies only once you trust the folder. No trust record was found for this folder.",
   "mcp.manage.diagnostic.native_project_approved": "Approved in your Claude Code settings; Claude Code loads this .mcp.json server.",
   "mcp.manage.diagnostic.native_values_not_copied": "Native private values are not copied; enter the required keys before enabling",
   "mcp.manage.diagnostic.invalid_entry": "Invalid MCP entry",

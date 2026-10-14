@@ -34,6 +34,7 @@ import { McpHub, type McpNetworkSettings } from "./mcp-hub";
 import { McpOAuth } from "./mcp-oauth";
 import { planSessionMcpConnection } from "./mcp-continuation";
 import { mcpConnectionInfo, planMcpConnection, verifyMcpConnection } from "./mcp-connection";
+import { markPossiblyOverwritten } from "./claude-global-writes";
 import { scanNativeMcp } from "./mcp-native-scan";
 import { planNativeMcpMigration } from "./mcp-migration-plan";
 import { webDiff } from "./web-diff";
@@ -1288,10 +1289,13 @@ export class TypeScriptBackend {
       }
       case RUNTIME_METHODS.scanNativeMcp: {
         const request = parameters(z.object({ project: z.string().nullable().optional() }), params);
-        return scanNativeMcp({ project: request.project ?? undefined }, this.#store!, {
-          ...process.env,
-          ...this.environment,
-        });
+        return markPossiblyOverwritten(
+          scanNativeMcp({ project: request.project ?? undefined }, this.#store!, {
+            ...process.env,
+            ...this.environment,
+          }),
+          this.#dataDir!,
+        );
       }
       case RUNTIME_METHODS.planMcpMigration:
         return planNativeMcpMigration(params, this.#store!, manager, {

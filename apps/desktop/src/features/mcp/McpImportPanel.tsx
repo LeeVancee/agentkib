@@ -10,6 +10,7 @@ import type {
 } from "@agentkib/runtime-protocol";
 import type { McpMigrationCandidate } from "@/core/types";
 import { api } from "@/core/api";
+import { isClaudeGlobalConfig } from "@/core/claude-global-config";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -210,6 +211,11 @@ export function McpImportPanel({
               </pre>
             </McpDisclosure>
           ))}
+          {migration.changes.some(isClaudeGlobalConfig) && (
+            <p role="note" className="text-sm text-amber-700">
+              {tr("changes.claudeGlobalConfigWarning")}
+            </p>
+          )}
           {migration.requires_home_approval && (
             <label>
               <Checkbox checked={approved} onCheckedChange={(checked) => setApproved(checked)} />

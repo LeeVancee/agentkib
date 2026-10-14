@@ -380,6 +380,51 @@ describe("MCP management review regressions", () => {
     expect(api.applyMcpMigration).not.toHaveBeenCalled();
   });
 
+  it("warns before a migration that rewrites Claude Code's global file", async () => {
+    vi.mocked(api.nativeMcpCandidates).mockResolvedValue([
+      {
+        id: "a",
+        agent: "claude-code",
+        scope: "home",
+        name: "Native a",
+        source_path: "/home/u/.claude.json",
+        transport: "http",
+        endpoint: "https://example.test",
+        has_secret_values: false,
+        supported: true,
+        warnings: [],
+      },
+    ]);
+    const preview = {
+      token: "migration-a",
+      revision: "r1",
+      requires_home_approval: true,
+      changes: [{ target: "/home/u/.claude.json", scope: "agent-home", before: "{}", after: "{}" }],
+    };
+    vi.mocked(api.previewMcpMigration).mockResolvedValue(preview);
+    const { unmount } = render(
+      <McpImportPanel project={workspace.path} onSaved={vi.fn().mockResolvedValue(undefined)} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "mcp.manage.scanNative" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /Native a/ }));
+    fireEvent.click(screen.getByRole("button", { name: "mcp.manage.migrate" }));
+    expect(await screen.findByText("changes.claudeGlobalConfigWarning")).toBeVisible();
+    unmount();
+    vi.mocked(api.previewMcpMigration).mockResolvedValue({
+      ...preview,
+      changes: [
+        { target: "/home/u/.codex/config.toml", scope: "agent-home", before: "", after: "" },
+      ],
+    });
+    render(
+      <McpImportPanel project={workspace.path} onSaved={vi.fn().mockResolvedValue(undefined)} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "mcp.manage.scanNative" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /Native a/ }));
+    fireEvent.click(screen.getByRole("button", { name: "mcp.manage.migrate" }));
+    await screen.findByRole("button", { name: "mcp.manage.applyConnection" });
+    expect(screen.queryByText("changes.claudeGlobalConfigWarning")).not.toBeInTheDocument();
+  });
   it("shows batch recovery evidence when only the shared manifest could not be restored", async () => {
     vi.mocked(api.applyMcpConnections).mockResolvedValue({
       success: false,

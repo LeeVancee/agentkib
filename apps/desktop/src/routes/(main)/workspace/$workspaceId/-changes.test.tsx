@@ -134,4 +134,73 @@ describe("Changes", () => {
     expect(api.continueSessionHandoff).toHaveBeenCalledTimes(1);
     expect(api.launchSessionHandoff).toHaveBeenCalledWith(request);
   });
+  describe("writes to Claude Code's global configuration file", () => {
+    const claudeChange = (target: string, scope: "agent-home" | "project" = "agent-home") => ({
+      target,
+      scope,
+      before: "{}",
+      after: '{"mcpServers":{}}',
+      risk: "high" as const,
+      validator: "json",
+    });
+    const props = {
+      origin: "standard" as const,
+      onPlanHome: vi.fn(),
+      onApplied: vi.fn(),
+      onLaunchCompleted: vi.fn(),
+      onRejected: vi.fn(),
+      onApplyingChange: vi.fn(),
+    };
+    const warning = /Close any running Claude Code session before you apply it/;
+
+    it("asks to close running Claude Code sessions first", () => {
+      render(
+        <Changes
+          {...props}
+          changeSet={{ ...changeSet, changes: [claudeChange("/home/u/.claude.json")] }}
+        />,
+      );
+      expect(screen.getByRole("note")).toHaveTextContent(warning);
+    });
+
+    it("also covers the file inside a CLAUDE_CONFIG_DIR, in Windows spelling too", () => {
+      render(
+        <Changes
+          {...props}
+          changeSet={{ ...changeSet, changes: [claudeChange("C:\\Data\\claude\\.claude.json")] }}
+        />,
+      );
+      expect(screen.getByRole("note")).toHaveTextContent(warning);
+    });
+
+    it("says nothing about other files, nor about a project file of the same name", () => {
+      render(
+        <Changes
+          {...props}
+          changeSet={{
+            ...changeSet,
+            changes: [
+              claudeChange("/home/u/.codex/config.toml"),
+              claudeChange("/work/project/.claude.json", "project"),
+              claudeChange("/home/u/.claude/settings.json"),
+            ],
+          }}
+        />,
+      );
+      expect(screen.queryByRole("note")).toBeNull();
+      expect(screen.queryByText(warning)).toBeNull();
+    });
+
+    it("is translated", async () => {
+      await initializeI18n("zh-CN");
+      render(
+        <Changes
+          {...props}
+          changeSet={{ ...changeSet, changes: [claudeChange("/home/u/.claude.json")] }}
+        />,
+      );
+      expect(screen.getByRole("note")).toHaveTextContent("请先关闭正在运行的 Claude Code 会话");
+      await initializeI18n("en-US");
+    });
+  });
 });

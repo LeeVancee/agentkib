@@ -23,6 +23,7 @@ import {
   publicMcpConfig,
   type ParsedMcpImport,
 } from "./mcp-import";
+import { recordClaudeGlobalWrite } from "./claude-global-writes";
 import { readNativeMcpImports, scanNativeMcp } from "./mcp-native-scan";
 import type { BackendStore } from "./store";
 import type { McpManager } from "./mcp";
@@ -218,6 +219,8 @@ export class McpManagement {
       candidates: string[];
       fingerprints: string[];
       plan: ChangeSet;
+      /** Servers this migration takes out of Claude Code's global file, kept for a later check. */
+      claudeGlobal: { file: string; names: string[] }[];
     }
   >();
   constructor(
@@ -688,6 +691,7 @@ export class McpManagement {
       candidates: input.candidateIds,
       fingerprints: parsed.map((item) => item.server!.native_source!.fingerprint),
       plan,
+      claudeGlobal: this.#claudeGlobal(input.candidateIds, scope.project),
     });
     return {
       token,
@@ -714,7 +718,7 @@ export class McpManagement {
       throw new Error("Native source or profile changed; preview again");
     // Token is consumed before writing: rollback errors require fresh inspection, never replay.
     this.#migrations.delete(input.token);
-    return applyChanges(pending.plan, path.join(this.dataDir, "mcp-migration-backups"), {
+    const result = applyChanges(pending.plan, path.join(this.dataDir, "mcp-migration-backups"), {
       approveHome: input.approveHome,
       approvedHome: pending.plan.changes
         .filter((change) => change.scope === "agent-home")
@@ -724,8 +728,40 @@ export class McpManagement {
         .map((change) => path.dirname(change.target)),
       approvedApplication: [],
     });
+    // A running Claude Code can write its older copy of the global file back over this change.
+    // The write itself was verified by applyChanges; this record lets a later scan notice it.
+    for (const entry of pending.claudeGlobal) {
+      const change = pending.plan.changes.find(
+        (item) => pathIdentity(item.target) === pathIdentity(entry.file),
+      );
+      if (change && result.applied.includes(change.target))
+        recordClaudeGlobalWrite(this.dataDir, {
+          file: change.target,
+          names: entry.names,
+          content: change.after,
+        });
+    }
+    return result;
   }
-
+  /** The user-scope Claude Code servers among the chosen candidates, by file. */
+  #claudeGlobal(ids: string[], project: string | null): { file: string; names: string[] }[] {
+    const byFile = new Map<string, string[]>();
+    for (const candidate of scanNativeMcp(
+      { ...(project ? { project } : {}) },
+      this.store,
+      this.environment,
+    ))
+      if (
+        ids.includes(candidate.id) &&
+        candidate.agent === "claude-code" &&
+        candidate.scope === "home"
+      )
+        byFile.set(candidate.source_path, [
+          ...(byFile.get(candidate.source_path) ?? []),
+          candidate.name,
+        ]);
+    return [...byFile].map(([file, names]) => ({ file, names }));
+  }
   #native(ids: string[], project: string | null): ParsedMcpImport[] {
     if (new Set(ids).size !== ids.length) throw new Error("Duplicate native MCP selection");
     const candidates = scanNativeMcp(

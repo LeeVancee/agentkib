@@ -53,7 +53,7 @@ export function SessionDetailsDialog() {
         ? value || c.unknown
         : c.contextUnavailable;
   return (
-    <Dialog closeLabel={t.close} title={t.metadata} onClose={() => setModal(undefined)}>
+    <Dialog closeLabel={t.close} title={t.metadata} onClose={() => setModal(undefined)} panel>
       <dl>
         <dt>{t.agent}</dt>
         <dd>{agentName(current?.agent)}</dd>

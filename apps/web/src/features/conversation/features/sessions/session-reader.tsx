@@ -42,6 +42,7 @@ export function SessionReader() {
   const hasNativeReply =
     !!live?.turnId &&
     page?.events.some((event) => event.kind === "agent-message" && event.turn_id === live.turnId);
+  const liveStreamText = live?.status !== "idle" ? live?.streamText : undefined;
   const following = useRef(true);
   const previousSession = useRef(selected);
   const previousContent = useRef({ events: page?.events, streamText: live?.streamText });
@@ -119,7 +120,7 @@ export function SessionReader() {
               <SessionTranscript
                 key={selected}
                 events={page.events}
-                streamText={!hasNativeReply ? live?.streamText : undefined}
+                streamText={!hasNativeReply ? liveStreamText : undefined}
                 streamTextTruncated={live?.streamTextTruncated}
                 liveTurnId={live?.turnId}
                 incomplete={page.warnings.length > 0}

@@ -56,27 +56,29 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
   const groups = groupConversationEvents(events.map(normalizeEvent), { incomplete });
   const messages: TranscriptMessage[] = [];
   for (const group of groups) {
-    const userEvents = group.events.filter((event) => event.kind === "user-message");
-    const assistantEvents = group.events.filter((event) => event.kind !== "user-message");
-    if (userEvents.length > 0) {
+    let start = 0;
+    while (start < group.events.length) {
+      const role: TranscriptMessage["role"] =
+        group.events[start].kind === "user-message" ? "user" : "assistant";
+      let end = start + 1;
+      while (
+        end < group.events.length &&
+        (group.events[end].kind === "user-message" ? "user" : "assistant") === role
+      ) {
+        end += 1;
+      }
+      const runEvents = group.events.slice(start, end);
+      const runEventIds = new Set(runEvents.map((event) => event.id));
       messages.push({
-        id: `${group.key}:user`,
-        role: "user",
-        events: userEvents,
-        segments: splitSegments(group.segments, (event) => event.kind === "user-message"),
-        time: group.timestamp,
-        running: false,
+        id: `${group.key}:${role}:${start}`,
+        role,
+        events: runEvents,
+        segments: splitSegments(group.segments, (event) => runEventIds.has(event.id)),
+        time: start === 0 ? group.timestamp : undefined,
+        running:
+          role === "assistant" && runEvents.some((event) => event.id.startsWith("session-live:")),
       });
-    }
-    if (assistantEvents.length > 0) {
-      messages.push({
-        id: `${group.key}:assistant`,
-        role: "assistant",
-        events: assistantEvents,
-        segments: splitSegments(group.segments, (event) => event.kind !== "user-message"),
-        time: userEvents.length > 0 ? undefined : group.timestamp,
-        running: assistantEvents.some((event) => event.id.startsWith("session-live:")),
-      });
+      start = end;
     }
   }
   return messages;
@@ -151,7 +153,7 @@ function MessageBlock({
   locale: string;
   onTool: (event: ConversationEvent) => void;
   openProcesses: Record<string, boolean>;
-  onToggleProcess: (key: string) => void;
+  onToggleProcess: (key: string, open: boolean) => void;
 }) {
   const isUser = message.role === "user";
   return (
@@ -202,7 +204,7 @@ function MessageBlock({
                     variant="ghost"
                     aria-expanded={open}
                     className="flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-none px-3 py-2 text-left text-xs font-normal transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                    onClick={() => onToggleProcess(segment.key)}
+                    onClick={() => onToggleProcess(segment.key, open)}
                   >
                     <ChevronRight
                       aria-hidden="true"
@@ -309,7 +311,7 @@ export function SessionTranscript({
           locale={locale}
           onTool={onTool}
           openProcesses={openProcesses}
-          onToggleProcess={(key) => setOpenProcesses((value) => ({ ...value, [key]: !value[key] }))}
+          onToggleProcess={(key, open) => setOpenProcesses((value) => ({ ...value, [key]: !open }))}
         />
       ))}
     </div>

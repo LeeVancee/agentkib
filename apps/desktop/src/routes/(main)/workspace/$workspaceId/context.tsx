@@ -1,3 +1,4 @@
+import { shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { WorkspaceContextSkeleton } from "@/features/workspace/WorkspaceSkeleton";
@@ -57,10 +58,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   }, [value, delayMs]);
   return debounced;
 }
-function shortPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
-}
+
 export function ContextPage({
   project,
   onOpenInstructions,

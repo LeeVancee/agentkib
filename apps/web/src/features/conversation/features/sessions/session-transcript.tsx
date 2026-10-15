@@ -3,7 +3,7 @@ import { SafeMarkdown } from "@agentkib/session-ui";
 import { Button } from "../../components/ui/button";
 import { groupConversationEvents } from "./conversation-groups";
 import { ChevronRight, CircleAlert, Wrench } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { toolStatusLabel } from "./tool-status";
 
 interface ReaderLabels {
@@ -23,6 +23,7 @@ type TranscriptSegment = TranscriptGroup["segments"][number];
 type TranscriptMessage = {
   id: string;
   role: "assistant" | "user";
+  turnId?: string;
   events: ConversationEvent[];
   segments: TranscriptSegment[];
   time?: string;
@@ -62,6 +63,7 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
       messages.push({
         id: `${group.key}:${role}:${start}`,
         role,
+        turnId: group.turnId,
         events: runEvents,
         segments: splitSegments(group.segments, (event) => runEventIds.has(event.id)),
         time: start === 0 ? group.timestamp : undefined,
@@ -72,6 +74,56 @@ function projectMessages(events: ConversationEvent[], incomplete: boolean): Tran
     }
   }
   return messages;
+}
+
+interface TranscriptProjection {
+  events: ConversationEvent[];
+  incomplete: boolean;
+  messages: TranscriptMessage[];
+  nextKey: number;
+}
+
+function projectTranscript(
+  events: ConversationEvent[],
+  incomplete: boolean,
+  previous?: TranscriptProjection,
+): TranscriptProjection {
+  const messages = projectMessages(events, incomplete);
+  const previousByItem = new Map<string, TranscriptMessage>();
+  for (const message of previous?.messages ?? [])
+    for (const event of message.events) previousByItem.set(event.id, message);
+  const usedMessages = new Set<string>();
+  let nextKey = previous?.nextKey ?? 0;
+  for (const message of messages) {
+    // A page can prepend tools or the missing user message to an existing turn.
+    // Keep role runs and process bodies mounted using their shared event IDs,
+    // without joining distinct runs that happen to carry the same turn ID.
+    const prior = message.events
+      .map((event) => previousByItem.get(event.id))
+      .find(
+        (candidate) =>
+          candidate &&
+          !usedMessages.has(candidate.id) &&
+          candidate.role === message.role &&
+          candidate.turnId === message.turnId,
+      );
+    if (prior) usedMessages.add(prior.id);
+    message.id = prior?.id ?? `message:${nextKey++}`;
+    const previousProcesses = new Map<string, TranscriptSegment>();
+    for (const segment of prior?.segments ?? [])
+      if (segment.kind === "process")
+        for (const event of segment.events) previousProcesses.set(event.id, segment);
+    const usedProcesses = new Set<string>();
+    for (const segment of message.segments) {
+      if (segment.kind !== "process") continue;
+      const priorProcess = segment.events
+        .map((event) => previousProcesses.get(event.id))
+        .find((candidate) => candidate && !usedProcesses.has(candidate.key));
+      if (priorProcess) usedProcesses.add(priorProcess.key);
+      segment.key = priorProcess?.key ?? `process:${nextKey++}`;
+    }
+  }
+  return { events, incomplete, messages, nextKey };
 }
 
 function EventRow({
@@ -145,6 +197,7 @@ function MessageBlock({
   openProcesses: Record<string, boolean>;
   onToggleProcess: (key: string, open: boolean) => void;
 }) {
+  const processId = useId();
   const isUser = message.role === "user";
   return (
     <article
@@ -171,7 +224,7 @@ function MessageBlock({
           }
         >
           <div className="space-y-3">
-            {message.segments.map((segment) => {
+            {message.segments.flatMap((segment) => {
               if (segment.kind !== "process") {
                 return segment.events.map((event) => (
                   <EventRow
@@ -184,6 +237,7 @@ function MessageBlock({
                 ));
               }
               const open = openProcesses[segment.key] ?? segment.defaultOpen;
+              const bodyId = `process-${processId}-${segment.key}`;
               return (
                 <div
                   key={segment.key}
@@ -193,6 +247,7 @@ function MessageBlock({
                     type="button"
                     variant="ghost"
                     aria-expanded={open}
+                    aria-controls={bodyId}
                     className="flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-none px-3 py-2 text-left text-xs font-normal transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                     onClick={() => onToggleProcess(segment.key, open)}
                   >
@@ -211,7 +266,7 @@ function MessageBlock({
                     )}
                   </Button>
                   {open && (
-                    <div className="space-y-1 border-t border-border/60 px-3 py-2">
+                    <div id={bodyId} className="space-y-1 border-t border-border/60 px-3 py-2">
                       {segment.events.map((event) => (
                         <EventRow
                           event={event}
@@ -263,7 +318,7 @@ export function SessionTranscript({
   earlierLabel: string;
   onLoadEarlier?: () => Promise<void>;
 }) {
-  const messages = useMemo(() => {
+  const projectedEvents = useMemo(() => {
     const projected = [...events];
     if (streamText) {
       projected.push({
@@ -277,8 +332,18 @@ export function SessionTranscript({
         ephemeral: true,
       });
     }
-    return projectMessages(projected, incomplete);
-  }, [events, incomplete, liveTurnId, streamText, streamTextTruncated]);
+    return projected;
+  }, [events, liveTurnId, streamText, streamTextTruncated]);
+  const [projection, setProjection] = useState(() =>
+    projectTranscript(projectedEvents, incomplete),
+  );
+  const current =
+    projection.events === projectedEvents && projection.incomplete === incomplete
+      ? projection
+      : projectTranscript(projectedEvents, incomplete, projection);
+  // Reconcile before committing children; an effect would already have replaced
+  // their DOM nodes and discarded keyboard focus and process expansion.
+  if (current !== projection) setProjection(current);
   const [openProcesses, setOpenProcesses] = useState<Record<string, boolean>>({});
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
@@ -293,7 +358,7 @@ export function SessionTranscript({
           {earlierLabel}
         </Button>
       )}
-      {messages.map((message) => (
+      {current.messages.map((message) => (
         <MessageBlock
           key={message.id}
           message={message}

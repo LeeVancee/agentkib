@@ -1,0 +1,314 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { StrictMode } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ConversationEvent } from "@agentkib/web-client";
+import { SessionTranscript } from "@/features/conversation/features/sessions/session-transcript";
+
+const props = {
+  labels: {
+    process: "Process",
+    tools: "tools",
+    failed: "failed",
+    incomplete: "incomplete",
+    details: "Details",
+    attachments: "attachments",
+    truncated: "truncated",
+    unknownTool: "Tool",
+  },
+  locale: "en-US",
+  earlierLabel: "Earlier",
+  onTool: vi.fn(),
+};
+
+function event(
+  id: string,
+  kind: ConversationEvent["kind"] = "tool-summary",
+  turnId = "turn",
+): ConversationEvent {
+  return {
+    id,
+    kind,
+    turn_id: turnId,
+    content: id,
+    tool_name: id,
+    tool_status: "completed",
+    attachment_count: 0,
+    truncated: false,
+  };
+}
+
+afterEach(cleanup);
+
+describe("production transcript identity", () => {
+  it("keeps partial paged commentary visible without a running label", () => {
+    const commentary: ConversationEvent = {
+      ...event("comment", "agent-message"),
+      content: "Still working",
+      message_phase: "commentary",
+    };
+    const tool = event("tool");
+    const view = render(<SessionTranscript {...props} events={[commentary, tool]} incomplete />);
+    expect(screen.getByText("Still working")).toBeVisible();
+    expect(screen.queryByText(props.labels.incomplete)).not.toBeInTheDocument();
+    const row = view.container.querySelector('[data-event-id="comment"]');
+
+    view.rerender(
+      <SessionTranscript
+        {...props}
+        events={[event("older", "tool-summary", "earlier-turn"), commentary, tool]}
+        incomplete
+      />,
+    );
+    expect(view.container.querySelector('[data-event-id="comment"]')).toBe(row);
+    expect(screen.getByText("Still working")).toBeVisible();
+    expect(screen.queryByText(props.labels.incomplete)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["zh-CN", "执行中", "已完成"],
+    ["zh-TW", "執行中", "已完成"],
+    ["en-US", "Running", "Completed"],
+    ["ja-JP", "実行中", "完了"],
+  ])(
+    "localizes a native inProgress tool in %s and completes the same row",
+    (locale, running, completed) => {
+      const tool: ConversationEvent = {
+        id: "active-tool",
+        kind: "tool-summary",
+        tool_name: "shell",
+        tool_status: "inProgress",
+        attachment_count: 0,
+        truncated: false,
+      };
+      const view = render(<SessionTranscript {...props} events={[tool]} locale={locale} />);
+      fireEvent.click(screen.getByRole("button", { name: /Process/ }));
+      const row = view.container.querySelector('[data-event-id="active-tool"]');
+      expect(screen.getByRole("button", { name: `shell ${running}` })).toBeVisible();
+
+      view.rerender(
+        <SessionTranscript
+          {...props}
+          events={[{ ...tool, tool_status: "completed" }]}
+          locale={locale}
+        />,
+      );
+      expect(screen.getByRole("button", { name: `shell ${completed}` })).toBeVisible();
+      expect(view.container.querySelector('[data-event-id="active-tool"]')).toBe(row);
+    },
+  );
+
+  it("keeps an expanded process and its first row mounted on a live append", () => {
+    const tool = { ...event("tool-1"), tool_name: "read", content: "first" };
+    const view = render(<SessionTranscript {...props} events={[tool]} />);
+    const toggle = screen.getByRole("button", { name: /Process/ });
+    fireEvent.click(toggle);
+    const firstRow = view.container.querySelector('[data-event-id="tool-1"]');
+    expect(firstRow).toBeVisible();
+
+    view.rerender(
+      <SessionTranscript
+        {...props}
+        events={[tool, { ...tool, id: "tool-2", content: "second" }]}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Process/ })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(view.container.querySelector('[data-event-id="tool-1"]')).toBe(firstRow);
+    expect(view.container.querySelector('[data-event-id="tool-2"]')).toBeVisible();
+  });
+
+  it("associates each process toggle with its own body across transcript instances", () => {
+    const sharedTool = event("shared-tool");
+    render(
+      <>
+        <SessionTranscript {...props} events={[{ ...sharedTool, tool_name: "first-instance" }]} />
+        <SessionTranscript {...props} events={[{ ...sharedTool, tool_name: "second-instance" }]} />
+      </>,
+    );
+    const [firstToggle, secondToggle] = screen.getAllByRole("button", { name: /Process/ });
+    fireEvent.click(firstToggle);
+    fireEvent.click(secondToggle);
+
+    const firstBody = document.getElementById(firstToggle.getAttribute("aria-controls")!);
+    const secondBody = document.getElementById(secondToggle.getAttribute("aria-controls")!);
+    expect(firstBody).toContainElement(
+      screen.getByRole("button", { name: "first-instance Completed" }),
+    );
+    expect(secondBody).toContainElement(
+      screen.getByRole("button", { name: "second-instance Completed" }),
+    );
+    expect(firstBody).not.toBe(secondBody);
+    fireEvent.click(firstToggle);
+    expect(document.getElementById(firstToggle.getAttribute("aria-controls")!)).toBeNull();
+    expect(document.getElementById(secondToggle.getAttribute("aria-controls")!)).toBe(secondBody);
+  });
+
+  it("keeps Markdown images, raw HTML and unsafe links inert", () => {
+    const message = {
+      ...event("markdown", "agent-message"),
+      content: [
+        "<script>window.evil = true</script>",
+        '<img src="https://example.test/pixel" onerror="alert(1)">',
+        "![tracking](https://example.test/tracking)",
+        "[unsafe](javascript:alert(1))",
+        "[local](file:///private/document)",
+        "[relative](/private/document)",
+        "[secure](https://example.test/secure)",
+        "[plain](http://example.test/plain)",
+      ].join("\n\n"),
+    };
+    const view = render(<SessionTranscript {...props} events={[message]} />);
+    expect(view.container.querySelector("img, script")).toBeNull();
+    const links = screen.getAllByRole("link");
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "https://example.test/secure",
+      "http://example.test/plain",
+    ]);
+    for (const link of links) {
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noreferrer noopener");
+    }
+  });
+
+  it("keeps a text row and its focused link when earlier text is prepended", () => {
+    const current = {
+      ...event("current", "agent-message"),
+      content: "[Current link](https://example.test/current)",
+    };
+    const view = render(<SessionTranscript {...props} events={[current]} />, {
+      wrapper: StrictMode,
+    });
+    const row = view.container.querySelector('[data-event-id="current"]');
+    const link = screen.getByRole("link", { name: "Current link" });
+    link.focus();
+    view.rerender(
+      <SessionTranscript {...props} events={[event("earlier", "agent-message"), current]} />,
+    );
+    expect(view.container.querySelector('[data-event-id="current"]')).toBe(row);
+    expect(screen.getByRole("link", { name: "Current link" })).toBe(link);
+    expect(document.activeElement).toBe(link);
+  });
+
+  it("keeps expanded processes, focus and rows through same-turn prepends and live appends", () => {
+    const first = event("first");
+    const second = event("second");
+    const earlier = event("earlier");
+    const view = render(<SessionTranscript {...props} events={[first, second]} />, {
+      wrapper: StrictMode,
+    });
+    const toggle = screen.getByRole("button", { name: /Process/ });
+    fireEvent.click(toggle);
+    toggle.focus();
+    const row = view.container.querySelector('[data-event-id="first"]');
+    const secondRow = view.container.querySelector('[data-event-id="second"]');
+    expect(row).toBeVisible();
+    expect(secondRow).toBeVisible();
+
+    view.rerender(<SessionTranscript {...props} events={[earlier, first, second]} />);
+    expect(screen.getByRole("button", { name: /Process/ })).toBe(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(toggle);
+    expect(view.container.querySelector('[data-event-id="first"]')).toBe(row);
+    expect(view.container.querySelector('[data-event-id="second"]')).toBe(secondRow);
+    const earlierRow = view.container.querySelector('[data-event-id="earlier"]');
+    expect(earlierRow).toBeVisible();
+
+    view.rerender(
+      <SessionTranscript {...props} events={[earlier, first, second, event("later")]} />,
+    );
+    expect(screen.getByRole("button", { name: /Process/ })).toBe(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(toggle);
+    expect(view.container.querySelector('[data-event-id="first"]')).toBe(row);
+    expect(view.container.querySelector('[data-event-id="second"]')).toBe(secondRow);
+    expect(view.container.querySelector('[data-event-id="earlier"]')).toBe(earlierRow);
+    expect(view.container.querySelector('[data-event-id="later"]')).toBeVisible();
+  });
+
+  it("keeps a failed process manually collapsed when earlier tools load", () => {
+    const failed = { ...event("failed"), tool_status: "failed" };
+    const view = render(<SessionTranscript {...props} events={[failed]} />);
+    const toggle = screen.getByRole("button", { name: /Process/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(toggle);
+    view.rerender(<SessionTranscript {...props} events={[event("earlier"), failed]} />);
+    expect(screen.getByRole("button", { name: /Process/ })).toBe(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(view.container.querySelector('[data-event-id="failed"]')).toBeNull();
+  });
+
+  it.each(["agent-message", "user-message"] as const)(
+    "keeps independent processes across repeated turn IDs with a %s boundary and preserves event order",
+    (boundaryKind) => {
+      const first = event("first");
+      const separator = event("separator", "agent-message");
+      const second = event("second");
+      const boundary = event("boundary", boundaryKind, "another-turn");
+      const repeated = event("repeated");
+      const events = [first, separator, second, boundary, repeated];
+      const view = render(<SessionTranscript {...props} events={events} />);
+      const [firstToggle, secondToggle, repeatedToggle] = screen.getAllByRole("button", {
+        name: /Process/,
+      });
+      fireEvent.click(firstToggle);
+      const row = view.container.querySelector('[data-event-id="first"]');
+      expect(row).toBeVisible();
+      view.rerender(
+        <SessionTranscript
+          {...props}
+          events={[event("older-turn", "tool-summary", "older-turn"), event("earlier"), ...events]}
+        />,
+      );
+      const toggles = screen.getAllByRole("button", { name: /Process/ });
+      expect(toggles).toHaveLength(4);
+      expect(toggles[1]).toBe(firstToggle);
+      expect(toggles[2]).toBe(secondToggle);
+      expect(toggles[3]).toBe(repeatedToggle);
+      expect(toggles.map((toggle) => toggle.getAttribute("aria-expanded"))).toEqual([
+        "false",
+        "true",
+        "false",
+        "false",
+      ]);
+      expect(view.container.querySelector('[data-event-id="first"]')).toBe(row);
+      fireEvent.click(secondToggle);
+      expect(view.container.querySelector('[data-event-id="second"]')).toBeVisible();
+      expect(toggles.map((toggle) => toggle.getAttribute("aria-expanded"))).toEqual([
+        "false",
+        "true",
+        "true",
+        "false",
+      ]);
+      expect(
+        [...view.container.querySelectorAll("[data-event-id]")].map((node) =>
+          node.getAttribute("data-event-id"),
+        ),
+      ).toEqual(["earlier", "first", "separator", "second", "boundary"]);
+    },
+  );
+
+  it("keeps the assistant process when pagination adds the user at the start of its turn", () => {
+    const tool = event("tool");
+    const final = { ...event("answer", "agent-message"), message_phase: "final_answer" as const };
+    const view = render(<SessionTranscript {...props} events={[tool, final]} />);
+    const toggle = screen.getByRole("button", { name: /Process/ });
+    fireEvent.click(toggle);
+    const row = view.container.querySelector('[data-event-id="tool"]');
+    view.rerender(
+      <SessionTranscript {...props} events={[event("question", "user-message"), tool, final]} />,
+    );
+    expect(screen.getByRole("button", { name: /Process/ })).toBe(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(view.container.querySelector('[data-event-id="tool"]')).toBe(row);
+    expect(
+      [...view.container.querySelectorAll("[data-message-role]")].map((node) =>
+        node.getAttribute("data-message-role"),
+      ),
+    ).toEqual(["user", "assistant"]);
+    expect(
+      [...view.container.querySelectorAll("[data-event-id]")].map((node) =>
+        node.getAttribute("data-event-id"),
+      ),
+    ).toEqual(["question", "tool", "answer"]);
+  });
+});

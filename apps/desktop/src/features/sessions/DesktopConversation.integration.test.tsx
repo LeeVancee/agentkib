@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("desktop embedded conversation", () => {
-  it("opens Claude handoff through the trusted bridge without sending or discarding the draft", async () => {
+  it("rechecks Claude handoff eligibility through the trusted bridge without discarding the draft", async () => {
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     sessionStorage.clear();
     const state: { live: Live; owned: boolean } = {
@@ -50,6 +50,7 @@ describe("desktop embedded conversation", () => {
         manage: true,
       },
     };
+    const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
     const bridge: DesktopConversationBridge = {
       request: vi.fn(async (path) => {
         const operation = path.split("?")[0];
@@ -122,7 +123,7 @@ describe("desktop embedded conversation", () => {
           state.owned = true;
           state.live = {
             ...state.live,
-            revision: 2,
+            revision: state.live.revision + 1,
             executionMode: "claude-managed",
             reason: undefined,
             sendEnabled: true,
@@ -151,7 +152,10 @@ describe("desktop embedded conversation", () => {
       })),
       acknowledge: vi.fn(async () => {}),
       unsubscribe: vi.fn(async () => {}),
-      onEvent: () => () => {},
+      onEvent: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
       onUnavailable: () => () => {},
       onControlChanged: () => () => {},
     };
@@ -189,6 +193,37 @@ describe("desktop embedded conversation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "确认续接" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
+    );
+    function emitLive(seq: number) {
+      for (const listener of listeners)
+        listener({
+          protocolVersion: 2,
+          sessionId: "claude-session",
+          subscriptionId: "claude-subscription",
+          runtimeBootId: "runtime",
+          epoch: "epoch",
+          seq,
+          cursor: `cursor-${seq}`,
+          type: "snapshot",
+          payload: { live: { ...state.live } },
+        });
+    }
+    state.live = {
+      ...state.live,
+      revision: 2,
+      reason: "control-outcome-unconfirmed",
+    };
+    act(() => emitLive(1));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
+    expect(mutations()).toEqual([]);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeDisabled(),
+    );
+    expect(draft).toHaveValue("保留桌面草稿");
+    state.live = { ...state.live, revision: 3, reason: "handoff-required" };
+    act(() => emitLive(2));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
     );

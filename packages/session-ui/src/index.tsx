@@ -1,18 +1,7 @@
-import { useId, useState } from "react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
-import { groupConversationEvents, type ConversationEvent } from "@agentkib/conversation-state";
-export interface ReaderLabels {
-  process: string;
-  tools: string;
-  failed: string;
-  incomplete: string;
-  details: string;
-  attachments: string;
-  truncated: string;
-  unknownTool: string;
-}
+
 export function toolStatusLabel(status: string | undefined, locale: string): string {
   const names =
     locale === "zh-TW"
@@ -30,165 +19,27 @@ export function toolStatusLabel(status: string | undefined, locale: string): str
   if (["cancelled", "canceled"].includes(value ?? "")) return names[4];
   return status ?? "";
 }
-export function groupEvents(events: ConversationEvent[], incomplete = false) {
-  return groupConversationEvents(events, incomplete);
-}
 
-type TranscriptGroup = ReturnType<typeof groupEvents>[number];
-interface TranscriptProjection {
-  events: ConversationEvent[];
-  incomplete: boolean;
-  groups: TranscriptGroup[];
-  nextKey: number;
-}
-
-function projectTranscript(
-  events: ConversationEvent[],
-  incomplete: boolean,
-  previous?: TranscriptProjection,
-): TranscriptProjection {
-  const groups = groupEvents(events, incomplete);
-  const previousByItem = new Map<string, TranscriptGroup>();
-  for (const group of previous?.groups ?? [])
-    for (const segment of group.segments)
-      for (const event of segment.events) previousByItem.set(event.id, group);
-  const usedGroups = new Set<string>();
-  let nextKey = previous?.nextKey ?? 0;
-  for (const group of groups) {
-    // Both ends of a loaded window can grow. Reuse a shared item's group and
-    // process identities so neither pagination nor live appends remount them.
-    const prior = group.segments
-      .flatMap((segment) => segment.events)
-      .map((event) => previousByItem.get(event.id))
-      .find(
-        (candidate) =>
-          candidate &&
-          !usedGroups.has(candidate.key) &&
-          (candidate.turnId?.trim() || undefined) === (group.turnId?.trim() || undefined),
-      );
-    if (prior) usedGroups.add(prior.key);
-    group.key = prior?.key ?? String(nextKey++);
-    const previousProcesses = new Map<string, TranscriptGroup["segments"][number]>();
-    for (const segment of prior?.segments ?? [])
-      if (segment.process)
-        for (const event of segment.events) previousProcesses.set(event.id, segment);
-    const usedProcesses = new Set<string>();
-    for (const segment of group.segments) {
-      if (!segment.process) continue;
-      const priorProcess = segment.events
-        .map((event) => previousProcesses.get(event.id))
-        .find((candidate) => candidate && !usedProcesses.has(candidate.key));
-      if (priorProcess) usedProcesses.add(priorProcess.key);
-      segment.key = priorProcess?.key ?? String(nextKey++);
-    }
-  }
-  return { events, incomplete, groups, nextKey };
-}
+const markdownComponents: Components = {
+  img: () => null,
+  a: ({ href, children }) =>
+    href && /^https?:\/\//i.test(href) ? (
+      <a href={href} target="_blank" rel="noreferrer noopener">
+        {children}
+      </a>
+    ) : (
+      <span>{children}</span>
+    ),
+};
 
 export function SafeMarkdown({ text }: { text: string }) {
   return (
     <Markdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[rehypeSanitize]}
-      components={{
-        img: () => null,
-        a: ({ href, children }) =>
-          href && /^https?:\/\//i.test(href) ? (
-            <a href={href} target="_blank" rel="noreferrer noopener">
-              {children}
-            </a>
-          ) : (
-            <span>{children}</span>
-          ),
-      }}
+      components={markdownComponents}
     >
       {text}
     </Markdown>
-  );
-}
-export function Transcript({
-  events,
-  incomplete = false,
-  labels,
-  onTool,
-  locale,
-}: {
-  events: ConversationEvent[];
-  incomplete?: boolean;
-  labels: ReaderLabels;
-  onTool: (event: ConversationEvent) => void;
-  locale: string;
-}) {
-  const transcriptId = useId();
-  const [projection, setProjection] = useState(() => projectTranscript(events, incomplete));
-  const current =
-    projection.events === events && projection.incomplete === incomplete
-      ? projection
-      : projectTranscript(events, incomplete, projection);
-  // Adjust before committing children; an effect would first render new keys
-  // and lose the very DOM nodes and expansion state we need to preserve.
-  if (current !== projection) setProjection(current);
-  const [opened, setOpened] = useState<Record<string, boolean>>({});
-  const row = (e: ConversationEvent) => (
-    <div key={`item-${e.id}`} data-event-id={e.id} className={`message ${e.kind}`}>
-      {e.kind === "tool-summary" ? (
-        <button className="tool" onClick={() => onTool(e)}>
-          ⌘ {e.tool_name || labels.unknownTool}{" "}
-          <span>{toolStatusLabel(e.tool_status, locale)}</span>
-        </button>
-      ) : (
-        <SafeMarkdown text={e.content ?? ""} />
-      )}
-      {e.attachment_count > 0 && (
-        <small>
-          {labels.attachments}: {e.attachment_count}
-        </small>
-      )}
-      {e.truncated && <small role="note">{labels.truncated}</small>}
-    </div>
-  );
-  return (
-    <div className="transcript">
-      {current.groups.map((g) => (
-        <section key={g.key} className="turn">
-          {g.time && (
-            <time
-              tabIndex={0}
-              dateTime={g.time}
-              aria-label={new Date(g.time).toLocaleString(locale)}
-            >
-              {new Date(g.time).toLocaleString(locale)}
-            </time>
-          )}
-          {g.segments.map((s) => {
-            if (!s.process) return s.events.map(row);
-            const failed = s.events.filter((e) =>
-              /^(failed|failure|error|errored)$/i.test(e.tool_status ?? ""),
-            ).length;
-            const open = opened[s.key] ?? failed > 0;
-            return (
-              <div key={`process-${s.key}`} className="process">
-                <button
-                  aria-expanded={open}
-                  aria-controls={`process-${transcriptId}-${s.key}`}
-                  onClick={() => setOpened((v) => ({ ...v, [s.key]: !open }))}
-                >
-                  {open ? "⌄" : "›"} {labels.process}{" "}
-                  <span>
-                    {s.events.filter((e) => e.kind === "tool-summary").length} {labels.tools}
-                    {failed > 0 && ` · ${failed} ${labels.failed}`}
-                  </span>
-                </button>
-                {open && (
-                  <div id={`process-${transcriptId}-${s.key}`} className="process-body">
-                    {s.events.map(row)}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </section>
-      ))}
-    </div>
   );
 }

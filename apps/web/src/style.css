@@ -134,90 +134,60 @@
   }
 }
 
-/* Shared transcript markup is owned by @agentkib/session-ui. */
+/* SessionTranscript is also mounted directly by the routed Web reader. */
 @layer components {
-  .transcript {
-    @apply mx-auto max-w-3xl;
-  }
-  .turn {
-    @apply mb-8 flow-root;
-  }
-  .turn > time,
-  .incomplete {
-    @apply mb-3 block text-right text-[10px] text-muted-foreground;
-  }
-  .message {
-    @apply my-4 text-sm leading-8 break-words;
+  .aui-markdown {
+    @apply min-w-0 break-words;
     overflow-wrap: anywhere;
   }
-  .message p {
+  .aui-markdown p {
     @apply mb-3;
   }
-  .message p:last-child {
+  .aui-markdown p:last-child {
     @apply mb-0;
   }
-  .message h1 {
+  .aui-markdown h1 {
     @apply mb-5 text-2xl font-semibold;
   }
-  .message h2 {
+  .aui-markdown h2 {
     @apply mb-4 text-xl font-semibold;
   }
-  .message h3 {
+  .aui-markdown h3 {
     @apply mb-3 text-lg font-semibold;
   }
-  .message ul {
+  .aui-markdown ul {
     @apply my-3 list-disc space-y-1 pl-6;
   }
-  .message ol {
+  .aui-markdown ol {
     @apply my-3 list-decimal space-y-1 pl-6;
   }
-  .message blockquote {
+  .aui-markdown blockquote {
     @apply my-4 border-l-2 pl-4 text-muted-foreground;
   }
-  .user-message {
-    @apply mb-7 ml-auto w-fit max-w-[90%] rounded-2xl bg-muted px-5 py-3 md:max-w-[85%];
-  }
-  .message pre {
+  .aui-markdown pre {
     @apply my-4 max-w-full overflow-auto rounded-xl border bg-muted/40 p-4 text-xs leading-6;
   }
-  .message code {
+  .aui-markdown code {
     @apply rounded bg-muted px-1 py-0.5 text-[0.9em];
   }
-  .message pre code {
+  .aui-markdown pre code {
     @apply bg-transparent p-0;
   }
-  .message table {
+  .aui-markdown table {
     @apply my-4 block max-w-full overflow-auto border-collapse;
   }
-  .message th,
-  .message td {
+  .aui-markdown th,
+  .aui-markdown td {
     @apply border px-3 py-2 text-left;
   }
-  .message a {
+  .aui-markdown a {
     @apply text-accent-foreground underline underline-offset-4;
   }
-  .process {
-    @apply my-5;
-  }
-  .process > button {
-    @apply inline-flex min-h-9 items-center gap-2 rounded-md px-2 text-xs hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring;
-  }
-  .process > button span {
-    @apply text-muted-foreground;
-  }
-  .process-body {
-    @apply mt-2 border-l pl-4;
-  }
-  .tool {
-    @apply inline-flex max-w-full items-center justify-start gap-2 rounded-md px-2 py-2 text-left text-xs break-all hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring;
-  }
-  .tool span {
-    @apply text-muted-foreground;
-  }
-  .tool-summary {
-    @apply my-1;
+  [data-message-role="user"] .aui-markdown a {
+    @apply text-primary-foreground;
   }
 }
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

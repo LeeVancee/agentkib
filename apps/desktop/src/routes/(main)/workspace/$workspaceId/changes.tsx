@@ -1,3 +1,4 @@
+import { fileName, shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
@@ -74,10 +75,7 @@ function Diff({ before, after }: { before: string; after: string }) {
     </pre>
   );
 }
-function shortPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
-}
+
 export function Changes({
   changeSet,
   origin,
@@ -272,7 +270,7 @@ export function Changes({
           >
             <FileCode2 size={16} />
             <div>
-              <strong>{file.target.split("/").pop()}</strong>
+              <strong>{fileName(file.target)}</strong>
               <span>{shortPath(file.target)}</span>
             </div>
             <span
@@ -313,7 +311,7 @@ export function Changes({
           <>
             <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-4">
               <div>
-                <h2>{change.target.split("/").pop()}</h2>
+                <h2>{fileName(change.target)}</h2>
                 <p>
                   {change.target} · {tr(`status.scope.${change.scope}`)}
                 </p>

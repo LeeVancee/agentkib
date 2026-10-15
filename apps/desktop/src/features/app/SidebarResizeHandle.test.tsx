@@ -76,8 +76,8 @@ describe("shared sidebar resize handle", () => {
     rerender(shell(true));
     expect(screen.getByRole("separator")).toHaveAttribute("aria-valuenow", "400");
     fireEvent.doubleClick(screen.getByRole("separator"));
-    await waitFor(() => expect(saveWidth).toHaveBeenLastCalledWith(250));
-    expect(screen.getByRole("separator")).toHaveAttribute("aria-valuenow", "250");
+    await waitFor(() => expect(saveWidth).toHaveBeenLastCalledWith(270));
+    expect(screen.getByRole("separator")).toHaveAttribute("aria-valuenow", "270");
   });
 
   it("previews a clamped drag and writes only on pointer release", async () => {

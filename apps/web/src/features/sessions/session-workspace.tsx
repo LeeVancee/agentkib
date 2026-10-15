@@ -1,4 +1,4 @@
-import { HistorySearchTrigger } from "@agentkib/conversation-ui/features/history/history-search-controls";
+import { HistorySearchTrigger } from "@/features/conversation/features/history/history-search-controls";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import {
@@ -10,15 +10,15 @@ import {
   LogOut,
   Monitor,
 } from "lucide-react";
-import { SessionCatalog } from "@agentkib/conversation-ui/features/catalog/session-catalog";
-import { Button } from "@agentkib/conversation-ui/components/ui/button";
-import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
-import { ManagedTasks } from "@agentkib/conversation-ui/features/sessions/managed-tasks";
-import { PendingCenter } from "@agentkib/conversation-ui/features/sessions/pending-center";
-import { SessionPanelsContext } from "@agentkib/conversation-ui/features/sessions/session-panels";
-import { sessionDisplayState } from "@agentkib/conversation-ui/features/sessions/session-display-state";
-import { webLayoutCopy } from "@agentkib/conversation-ui/features/sessions/web-layout-copy";
-import { cn } from "@agentkib/conversation-ui/lib/utils";
+import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
+import { Button } from "@/features/conversation/components/ui/button";
+import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { ManagedTasks } from "@/features/conversation/features/sessions/managed-tasks";
+import { PendingCenter } from "@/features/conversation/features/sessions/pending-center";
+import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
+import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
+import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { cn } from "@/features/conversation/lib/utils";
 
 export function SessionWorkspace() {
   const session = useSession();

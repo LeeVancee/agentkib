@@ -1,12 +1,12 @@
 import { ConnectionPreferences } from "./connection-preferences";
-import { Input } from "@agentkib/conversation-ui/components/ui/input";
-import { Button } from "@agentkib/conversation-ui/components/ui/button";
+import { Input } from "@/features/conversation/components/ui/input";
+import { Button } from "@/features/conversation/components/ui/button";
 import { useState, type FormEvent } from "react";
-import { useAppearance } from "@agentkib/conversation-ui/features/preferences/use-appearance";
+import { useAppearance } from "@/features/conversation/features/preferences/use-appearance";
 import { parseLanOrigin } from "@agentkib/web-client";
 import { useNavigate } from "@tanstack/react-router";
 import { useEnvironment } from "@/providers/environment";
-import { dictionaries, type Locale } from "@agentkib/conversation-ui/i18n";
+import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { Monitor, ArrowRight, ShieldAlert, ChevronDown } from "lucide-react";
 import { connectionCopy } from "@/features/connection/connection-copy";
 

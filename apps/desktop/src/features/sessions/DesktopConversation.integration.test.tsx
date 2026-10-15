@@ -2,9 +2,9 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EmbeddedConversation } from "@agentkib/conversation-ui/conversation";
+import { EmbeddedConversation } from "./conversation/conversation";
 import { WebClient, type Access, type Live } from "@agentkib/web-client";
-import { permissionModeCopy } from "@agentkib/conversation-ui/features/sessions/permission-mode-copy";
+import { permissionModeCopy } from "./conversation/features/sessions/permission-mode-copy";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import {
   createDesktopConversationAdapter,

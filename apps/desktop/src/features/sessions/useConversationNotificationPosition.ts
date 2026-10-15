@@ -10,21 +10,26 @@ export function useConversationNotificationPosition(
     let bell: HTMLElement | null = null;
     let anchor: HTMLElement | null = null;
     let sidebar: Element | null = null;
+    let directoryToolbar: HTMLElement | null = null;
+    const bellSize = 36;
     const align = () => {
       if (!bell || !anchor) return;
       const rect = anchor.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
       const fallback = rect.width === 0 || rect.height === 0;
       const mobileAnchor = anchor.matches("[data-sidebar-mobile-trigger]");
+      const toolbarRect = directoryToolbar?.getBoundingClientRect();
       const left = mobileAnchor
         ? rect.right + 8
         : fallback
           ? Math.max(containerRect.left + 8, 8)
-          : Math.max(8, rect.left - rect.width - 8);
+          : Math.max(8, rect.left - bellSize - 8);
       bell.style.left = `${left}px`;
-      bell.style.top = `${rect.top}px`;
-      bell.style.width = `${fallback ? 36 : rect.width}px`;
-      bell.style.height = `${fallback ? 36 : rect.height}px`;
+      bell.style.top = `${
+        toolbarRect ? toolbarRect.top + (toolbarRect.height - bellSize) / 2 : rect.top
+      }px`;
+      bell.style.width = `${bellSize}px`;
+      bell.style.height = `${bellSize}px`;
     };
     const resizeObserver = new ResizeObserver(align);
     const sync = () => {
@@ -43,17 +48,27 @@ export function useConversationNotificationPosition(
         null;
       const nextBell = container.querySelector<HTMLElement>("[data-conversation-pending-trigger]");
       const nextSidebar = nextAnchor?.closest(".app-context-sidebar") ?? null;
+      const nextDirectoryToolbar =
+        nextAnchor?.closest<HTMLElement>("[data-session-directory-toolbar]") ??
+        document.querySelector<HTMLElement>("[data-session-directory-toolbar]");
       // Streaming changes the transcript frequently, but does not move these controls.
-      if (anchor === nextAnchor && bell === nextBell && sidebar === nextSidebar) {
+      if (
+        anchor === nextAnchor &&
+        bell === nextBell &&
+        sidebar === nextSidebar &&
+        directoryToolbar === nextDirectoryToolbar
+      ) {
         align();
         return;
       }
       anchor = nextAnchor;
       bell = nextBell;
       sidebar = nextSidebar;
+      directoryToolbar = nextDirectoryToolbar;
       resizeObserver.disconnect();
       if (anchor) resizeObserver.observe(anchor);
       if (sidebar) resizeObserver.observe(sidebar);
+      if (directoryToolbar) resizeObserver.observe(directoryToolbar);
       if (bell) resizeObserver.observe(bell);
       align();
     };

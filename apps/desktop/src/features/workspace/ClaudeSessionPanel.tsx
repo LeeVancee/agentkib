@@ -15,10 +15,10 @@ import type {
 import {
   ContextUsageIndicator,
   useObservedContextUsage,
-} from "@agentkib/conversation-ui/features/sessions/context-usage";
-import { codexReason } from "@agentkib/conversation-ui/features/sessions/codex-copy";
-import { contextUsageCopy } from "@agentkib/conversation-ui/features/sessions/context-usage-copy";
-import { PermissionModeNotice } from "@agentkib/conversation-ui/features/sessions/permission-mode-notice";
+} from "@/features/sessions/conversation/features/sessions/context-usage";
+import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
+import { contextUsageCopy } from "@/features/sessions/conversation/features/sessions/context-usage-copy";
+import { PermissionModeNotice } from "@/features/sessions/conversation/features/sessions/permission-mode-notice";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
 import { api } from "@/core/api";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
@@ -39,10 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { isClaudeReadBusy, useClaudeSessionObservation } from "./useClaudeSessionObservation";
-import {
-  mergeNativeCoverage,
-  mergeOrderedPersistedHistory,
-} from "@agentkib/conversation-ui/features/sessions/session-model";
+import { mergeNativeCoverage, mergeOrderedPersistedHistory } from "@agentkib/conversation-state";
 
 type Pending = { requestId: string; operation: string; sessionId?: string; workspaceId: string };
 type Interaction = Approval | UserQuestionRequest;

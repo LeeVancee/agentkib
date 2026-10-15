@@ -1,3 +1,4 @@
+import { shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { WorkspaceContextSkeleton } from "@/features/workspace/WorkspaceSkeleton";
@@ -60,10 +61,6 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
     return () => window.clearTimeout(timeout);
   }, [value, delayMs]);
   return debounced;
-}
-function shortPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
 }
 // 后端 Claude Code 来源的 scope 哨兵（context-files.ts 的保留名）：不是项目目录，徽章显示来源类别。
 // 其余取值是项目内的相对目录，原样显示；空串表示项目根。

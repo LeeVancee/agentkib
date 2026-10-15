@@ -10,23 +10,23 @@ import type {
   SessionStreamHandlers,
   WebClient,
 } from "@agentkib/web-client";
-import { dictionaries } from "@agentkib/conversation-ui/i18n";
+import { dictionaries } from "@/features/conversation/i18n";
 import {
   mergeNativeCoverage,
   type NativeCoverage,
-} from "@agentkib/conversation-ui/features/sessions/session-model";
-import { useSessionLive } from "@agentkib/conversation-ui/features/sessions/use-session-live";
-import { SessionReader } from "@agentkib/conversation-ui/features/sessions/session-reader";
-import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
-import { webLayoutCopy } from "@agentkib/conversation-ui/features/sessions/web-layout-copy";
+} from "@/features/conversation/features/sessions/session-model";
+import { useSessionLive } from "@/features/conversation/features/sessions/use-session-live";
+import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
+import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
 
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
 }));
-vi.mock("@agentkib/conversation-ui/features/sessions/session-operations", () => ({
+vi.mock("@/features/conversation/features/sessions/session-operations", () => ({
   SessionOperations: () => null,
 }));
-vi.mock("@agentkib/conversation-ui/features/sessions/artifact-browser", () => ({
+vi.mock("@/features/conversation/features/sessions/artifact-browser", () => ({
   ArtifactBrowser: () => null,
 }));
 

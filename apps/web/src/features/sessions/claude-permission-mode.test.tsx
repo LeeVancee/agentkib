@@ -2,9 +2,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Access, Live, LivePermission } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
-import { PermissionModeNotice } from "@agentkib/conversation-ui/features/sessions/permission-mode-notice";
-import { permissionModeCopy } from "@agentkib/conversation-ui/features/sessions/permission-mode-copy";
-import type { Locale } from "@agentkib/conversation-ui/i18n";
+import { PermissionModeNotice } from "../conversation/features/sessions/permission-mode-notice";
+import { permissionModeCopy } from "../conversation/features/sessions/permission-mode-copy";
+import type { Locale } from "../conversation/i18n";
 
 const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
 const noticeKeys = ["auto", "dontAsk", "bypassPermissions", "possiblyAuto", "previous"] as const;

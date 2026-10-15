@@ -2,12 +2,12 @@ import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-libr
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import { WebClient, type ConversationEvent } from "@agentkib/web-client";
-import { dictionaries } from "@agentkib/conversation-ui/i18n";
-import { useSessionController } from "@agentkib/conversation-ui/features/sessions/use-session-controller";
-import { SessionDialogs } from "@agentkib/conversation-ui/features/sessions/session-dialogs";
+import { dictionaries } from "@/features/conversation/i18n";
+import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
+import { SessionDialogs } from "@/features/conversation/features/sessions/session-dialogs";
 
 const state = vi.hoisted(() => ({ modal: undefined as unknown }));
-vi.mock("@agentkib/conversation-ui/features/sessions/use-session-live", () => ({
+vi.mock("@/features/conversation/features/sessions/use-session-live", () => ({
   useSessionLive: ({
     streamReady,
     selected,
@@ -23,10 +23,10 @@ vi.mock("@agentkib/conversation-ui/features/sessions/use-session-live", () => ({
     }, [streamReady, selected, setControlReady]);
   },
 }));
-vi.mock("@agentkib/conversation-ui/features/preferences/use-appearance", () => ({
+vi.mock("@/features/conversation/features/preferences/use-appearance", () => ({
   useAppearance: () => {},
 }));
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: () => ({ modal: state.modal, t: dictionaries["zh-CN"], locale: "zh-CN" }),
 }));
 

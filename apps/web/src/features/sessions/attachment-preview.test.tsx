@@ -1,14 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
-import { dictionaries } from "@agentkib/conversation-ui/i18n";
-import { CodexComposer } from "@agentkib/conversation-ui/features/sessions/codex-composer";
-import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
+import { dictionaries } from "@/features/conversation/i18n";
+import { CodexComposer } from "@/features/conversation/features/sessions/codex-composer";
+import { useSession } from "@/features/conversation/features/sessions/session-context";
 
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
 }));
-vi.mock("@agentkib/conversation-ui/features/sessions/codex-session-controls", () => ({
+vi.mock("@/features/conversation/features/sessions/codex-session-controls", () => ({
   CodexComposerControls: () => null,
 }));
 

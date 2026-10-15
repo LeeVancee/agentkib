@@ -1,14 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexCapabilities, UploadedAttachment } from "@agentkib/web-client";
-import { CodexTools } from "@agentkib/conversation-ui/features/sessions/codex-tools";
-import { CodexComposer } from "@agentkib/conversation-ui/features/sessions/codex-composer";
-import { NativeDecisions } from "@agentkib/conversation-ui/features/interactions/native-decisions";
-import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
-import { dictionaries } from "@agentkib/conversation-ui/i18n";
-import { publishSessionInvalidation } from "@agentkib/conversation-ui/features/sessions/session-events";
+import { CodexTools } from "@/features/conversation/features/sessions/codex-tools";
+import { CodexComposer } from "@/features/conversation/features/sessions/codex-composer";
+import { NativeDecisions } from "@/features/conversation/features/interactions/native-decisions";
+import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { dictionaries } from "@/features/conversation/i18n";
+import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
 }));
 const sessionMock = vi.mocked(useSession);

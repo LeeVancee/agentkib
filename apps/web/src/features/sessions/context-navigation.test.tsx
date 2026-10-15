@@ -2,9 +2,9 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type CodexContextOptions, type CodexContextResource } from "@agentkib/web-client";
-import { CodexComposerControls } from "@agentkib/conversation-ui/features/sessions/codex-session-controls";
-import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+import { CodexComposerControls } from "@/features/conversation/features/sessions/codex-session-controls";
+import { useSession } from "@/features/conversation/features/sessions/session-context";
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
 }));
 let state: ReturnType<typeof useSession>;

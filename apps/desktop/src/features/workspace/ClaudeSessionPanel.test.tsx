@@ -6,8 +6,8 @@ import { api } from "@/core/api";
 import { ClaudeSessionPanel } from "./ClaudeSessionPanel";
 import type { Live } from "../../../../../packages/web-client/src/index";
 import type { SessionStreamHandlers } from "@agentkib/web-client";
-import { permissionModeCopy } from "@agentkib/conversation-ui/features/sessions/permission-mode-copy";
-import type { Locale } from "@agentkib/conversation-ui/i18n";
+import { permissionModeCopy } from "@/features/sessions/conversation/features/sessions/permission-mode-copy";
+import type { SupportedLocale as Locale } from "@/core/types";
 vi.mock("@/core/api", () => ({ api: { claudeRequest: vi.fn() } }));
 vi.mock("@/core/useI18n", () => ({ useI18n: () => ({ locale }) }));
 vi.mock("@/components/MarkdownContent", () => ({

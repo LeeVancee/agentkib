@@ -1,3 +1,4 @@
+import { fileName, shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { WorkspaceAssetsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
@@ -25,10 +26,7 @@ import { cn } from "cn";
 import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 type WorkspaceAssetSection = "instructions" | "skills" | "mcp" | "native";
-function shortPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
-}
+
 function formatBytes(bytes: number) {
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 }
@@ -317,7 +315,7 @@ function Assets({
                   <span className="min-w-0">
                     <FileCode2 size={16} />
                     <div>
-                      <strong>{asset.path.split("/").pop()}</strong>
+                      <strong>{fileName(asset.path)}</strong>
                       <small>{shortPath(asset.path)}</small>
                     </div>
                   </span>

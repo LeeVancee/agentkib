@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebClient, type Access, type HistorySearchStatus } from "@agentkib/web-client";
-import { HistorySearchLauncher } from "@agentkib/conversation-ui/features/history/history-search";
+import { HistorySearchLauncher } from "@/features/conversation/features/history/history-search";
 
 afterEach(cleanup);
 

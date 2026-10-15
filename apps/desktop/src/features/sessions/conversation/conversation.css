@@ -1,0 +1,83 @@
+/* Embedded conversation only; host owns global theme, fonts and resets. */
+@layer components {
+  [data-slot="dialog-content"]:has(.session-settings-layout) {
+    max-width: 48rem;
+  }
+
+  .agentkib-conversation .info {
+    @apply flex items-start gap-3 rounded-xl border bg-muted/40 p-4 text-xs leading-6 text-muted-foreground;
+  }
+  .agentkib-conversation .info > svg {
+    @apply mt-1 shrink-0;
+  }
+  .agentkib-conversation-dialog {
+    @apply text-sm leading-7;
+  }
+  .agentkib-conversation-dialog pre {
+    @apply max-w-full overflow-auto rounded-xl border bg-muted/40 p-4 text-xs leading-6;
+  }
+  .agentkib-conversation-dialog dt {
+    @apply text-xs text-muted-foreground;
+  }
+  .agentkib-conversation-dialog dd {
+    @apply mb-3 break-all;
+  }
+  .agentkib-conversation-dialog h3 {
+    @apply font-semibold;
+  }
+}
+
+/* Keep the transcript proportions consistent while SafeMarkdown renders
+   persisted agent output. */
+@layer components {
+  .agentkib-conversation .aui-markdown {
+    @apply min-w-0 break-words;
+    overflow-wrap: anywhere;
+  }
+  .agentkib-conversation .aui-markdown p {
+    @apply mb-3;
+  }
+  .agentkib-conversation .aui-markdown p:last-child {
+    @apply mb-0;
+  }
+  .agentkib-conversation .aui-markdown h1 {
+    @apply mb-5 text-2xl font-semibold;
+  }
+  .agentkib-conversation .aui-markdown h2 {
+    @apply mb-4 text-xl font-semibold;
+  }
+  .agentkib-conversation .aui-markdown h3 {
+    @apply mb-3 text-lg font-semibold;
+  }
+  .agentkib-conversation .aui-markdown ul {
+    @apply my-3 list-disc space-y-1 pl-6;
+  }
+  .agentkib-conversation .aui-markdown ol {
+    @apply my-3 list-decimal space-y-1 pl-6;
+  }
+  .agentkib-conversation .aui-markdown blockquote {
+    @apply my-4 border-l-2 pl-4 text-muted-foreground;
+  }
+  .agentkib-conversation .aui-markdown pre {
+    @apply my-4 max-w-full overflow-auto rounded-xl border bg-muted/40 p-4 text-xs leading-6;
+  }
+  .agentkib-conversation .aui-markdown code {
+    @apply rounded bg-muted px-1 py-0.5 text-[0.9em];
+  }
+  .agentkib-conversation .aui-markdown pre code {
+    @apply bg-transparent p-0;
+  }
+  .agentkib-conversation .aui-markdown table {
+    @apply my-4 block max-w-full overflow-auto border-collapse;
+  }
+  .agentkib-conversation .aui-markdown th,
+  .agentkib-conversation .aui-markdown td {
+    @apply border px-3 py-2 text-left;
+  }
+  .agentkib-conversation .aui-markdown a {
+    @apply text-accent-foreground underline underline-offset-4;
+  }
+  .agentkib-conversation [data-message-role="user"] .aui-markdown a {
+    @apply text-primary-foreground;
+  }
+}

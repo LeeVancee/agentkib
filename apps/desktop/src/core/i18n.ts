@@ -9,6 +9,144 @@ import type { LocalizedMessage, SupportedLocale } from "./types";
 export type LocalePreference = "system" | SupportedLocale;
 
 export const supportedLocales: SupportedLocale[] = ["zh-CN", "zh-TW", "ja-JP", "en-US"];
+export const localeResources = {
+  "en-US": enUS,
+  "zh-CN": zhCN,
+  "zh-TW": zhTW,
+  "ja-JP": jaJP,
+} as const;
+const conversationKeys = [
+  "lanAddress",
+  "lanPlaintextShort",
+  "lanRisk",
+  "lanAcknowledge",
+  "lanPermission",
+  "lanFailure",
+  "lanInvalid",
+  "lanIncompatible",
+  "changeBackend",
+  "connect",
+  "cwd",
+  "localExecution",
+  "policyProposal",
+  "remote",
+  "pairTitle",
+  "pairInfo",
+  "code",
+  "name",
+  "pair",
+  "scope",
+  "pending",
+  "verify",
+  "expires",
+  "cancel",
+  "ended",
+  "endedInfo",
+  "again",
+  "sessions",
+  "search",
+  "empty",
+  "select",
+  "selectInfo",
+  "untitled",
+  "history",
+  "live",
+  "refresh",
+  "logout",
+  "back",
+  "details",
+  "close",
+  "earlier",
+  "loading",
+  "offline",
+  "retry",
+  "unknown",
+  "controlUnconfirmed",
+  "idle",
+  "running",
+  "unavailable",
+  "openOriginalClient",
+  "unverifiedInstallation",
+  "unsupportedControl",
+  "process",
+  "tools",
+  "failed",
+  "incomplete",
+  "attachments",
+  "truncated",
+  "unknownTool",
+  "indexDisabled",
+  "error",
+  "send",
+  "stop",
+  "message",
+  "experimental",
+  "controlInfo",
+  "accepted",
+  "uncertain",
+  "notDispatched",
+  "approval",
+  "accept",
+  "allow",
+  "claudeContextInfo",
+  "deny",
+  "claudeDecisionInfo",
+  "managedResumeInfo",
+  "handoffRequired",
+  "confirmHandoff",
+  "streamingReply",
+  "streamingReplyTruncated",
+  "decline",
+  "cancelTurn",
+  "approvalFallback",
+  "decisionInfo",
+  "language",
+  "theme",
+  "system",
+  "light",
+  "dark",
+  "accent",
+  "blue",
+  "violet",
+  "green",
+  "preferences",
+  "metadata",
+  "metadataOnly",
+  "agent",
+  "workspace",
+  "workspaceId",
+  "sessionId",
+  "status",
+  "warnings",
+  "tool",
+  "toolSummaryUnavailable",
+  "readOnly",
+  "noSendPermission",
+  "device",
+  "safety",
+] as const;
+
+export type ConversationWords = {
+  [K in (typeof conversationKeys)[number]]: string;
+};
+
+/**
+ * Some conversation helpers still consume a typed object. The values come
+ * from Desktop's global locale resources rather than a feature-local dictionary.
+ */
+export function conversationWords(locale: SupportedLocale): ConversationWords {
+  if (!i18n.isInitialized) {
+    const resources = localeResources[locale] as Record<string, unknown>;
+    return Object.fromEntries(
+      conversationKeys.map((key) => [key, String(resources[`conversation.${key}`] ?? key)]),
+    ) as ConversationWords;
+  }
+  const translate = i18n.getFixedT(locale);
+  return Object.fromEntries(
+    conversationKeys.map((key) => [key, String(translate(`conversation.${key}`))]),
+  ) as ConversationWords;
+}
+
 const EFFECTIVE_LOCALE_STORAGE_KEY = "agentkib.effective-locale";
 const LOCALE_PREFERENCE_STORAGE_KEY = "agentkib.cached-locale-preference";
 
@@ -50,12 +188,9 @@ export async function initializeI18n(locale: SupportedLocale) {
       lng: locale,
       fallbackLng: "en-US",
       supportedLngs: supportedLocales,
-      resources: {
-        "en-US": { translation: enUS },
-        "zh-CN": { translation: zhCN },
-        "zh-TW": { translation: zhTW },
-        "ja-JP": { translation: jaJP },
-      },
+      resources: Object.fromEntries(
+        Object.entries(localeResources).map(([key, value]) => [key, { translation: value }]),
+      ),
       interpolation: { escapeValue: false },
       returnNull: false,
       showSupportNotice: false,

@@ -1,6 +1,6 @@
 import { DesktopHistorySearch } from "./DesktopHistorySearch";
 import { useShallow } from "zustand/react/shallow";
-import { SlidersHorizontal, X } from "lucide-react";
+import { ListFilter, SlidersHorizontal, X } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
 import type { AgentKind } from "@/core/types";
 import { Button } from "@/components/ui/button";
@@ -42,95 +42,112 @@ export function SessionDirectoryControls({
   const activeFilterCount =
     Number(view.agent !== "all") + Number(view.filter !== "current") + Number(view.host !== "all");
   return (
-    <div className="session-directory-controls grid gap-2.5 py-3 pb-2.5">
+    <div className="session-directory-controls grid gap-3 px-1 pt-3 pb-2">
       <DesktopHistorySearch />
-      <div className="flex min-h-8 items-center justify-between gap-2">
-        <span className="text-sm font-medium text-muted-foreground">
-          {tr("sessions.directory")}
-        </span>
-        <DropdownMenu onOpenChange={onMenuOpenChange}>
-          <DropdownMenuTrigger
-            render={<Button variant="outline" size="sm" className="h-8 gap-2 px-2.5" />}
-            aria-label={tr("sessions.directoryOptions")}
-            data-session-directory-options=""
-            disabled={!hub.enabled}
-          >
-            <SlidersHorizontal size={15} aria-hidden="true" />
-            <span>{tr("sessions.filters")}</span>
-            {activeFilterCount > 0 && (
-              <span className="grid size-5 place-items-center rounded-full bg-primary text-[11px] text-primary-foreground">
-                {activeFilterCount}
-              </span>
-            )}
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-48" positionerClassName="z-80">
-            {!!hub.remoteHosts?.length && (
+      <div
+        data-session-directory-toolbar
+        className="flex min-h-9 items-center justify-between gap-2 px-1.5"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <ListFilter size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className="truncate text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+            {tr("sessions.directory")}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div
+            data-session-directory-pending-slot
+            className="flex size-9 shrink-0 items-center justify-center"
+          />
+          <DropdownMenu onOpenChange={onMenuOpenChange}>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="relative size-8 rounded-lg p-0 text-muted-foreground hover:text-foreground"
+                />
+              }
+              aria-label={tr("sessions.directoryOptions")}
+              data-session-directory-options=""
+              disabled={!hub.enabled}
+            >
+              <SlidersHorizontal size={15} aria-hidden="true" />
+              {activeFilterCount > 0 && (
+                <span className="absolute -top-1 -right-1 grid size-5 place-items-center rounded-full bg-primary text-[11px] text-primary-foreground">
+                  {activeFilterCount}
+                </span>
+              )}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-48" positionerClassName="z-80">
+              {!!hub.remoteHosts?.length && (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>{tr("remote.hostFilter")}</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="min-w-44" positionerClassName="z-80">
+                    <DropdownMenuRadioGroup value={view.host} onValueChange={view.setHost}>
+                      <DropdownMenuRadioItem value="all">
+                        {tr("remote.allHosts")}
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="local">
+                        {tr("sessions.local")}
+                      </DropdownMenuRadioItem>
+                      {hub.remoteHosts.map((host) => (
+                        <DropdownMenuRadioItem key={host.id} value={host.id}>
+                          {host.name}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              )}
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>{tr("remote.hostFilter")}</DropdownMenuSubTrigger>
+                <DropdownMenuSubTrigger>{tr("conversations.agentFilter")}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="min-w-44" positionerClassName="z-80">
-                  <DropdownMenuRadioGroup value={view.host} onValueChange={view.setHost}>
+                  <DropdownMenuRadioGroup
+                    value={view.agent}
+                    onValueChange={(value) => view.setAgent(value as AgentKind | "all")}
+                  >
                     <DropdownMenuRadioItem value="all">
-                      {tr("remote.allHosts")}
+                      {tr("sessions.allAgents")}
                     </DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="local">
-                      {tr("sessions.local")}
-                    </DropdownMenuRadioItem>
-                    {hub.remoteHosts.map((host) => (
-                      <DropdownMenuRadioItem key={host.id} value={host.id}>
-                        {host.name}
+                    {[...new Set([...agents, ...(view.agent === "all" ? [] : [view.agent])])].map(
+                      (agent) => (
+                        <DropdownMenuRadioItem key={agent} value={agent}>
+                          {sessionAgentNames[agent]}
+                        </DropdownMenuRadioItem>
+                      ),
+                    )}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>{tr("conversations.filterLabel")}</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="min-w-44" positionerClassName="z-80">
+                  <DropdownMenuRadioGroup
+                    value={view.filter}
+                    onValueChange={(value) => view.setFilter(value as SessionRecordFilter)}
+                  >
+                    {(["current", "archived", "metadata", "all"] as const).map((filter) => (
+                      <DropdownMenuRadioItem key={filter} value={filter}>
+                        {tr(`conversations.filter.${filter}`)}
                       </DropdownMenuRadioItem>
                     ))}
                   </DropdownMenuRadioGroup>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-            )}
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>{tr("conversations.agentFilter")}</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="min-w-44" positionerClassName="z-80">
-                <DropdownMenuRadioGroup
-                  value={view.agent}
-                  onValueChange={(value) => view.setAgent(value as AgentKind | "all")}
-                >
-                  <DropdownMenuRadioItem value="all">
-                    {tr("sessions.allAgents")}
-                  </DropdownMenuRadioItem>
-                  {[...new Set([...agents, ...(view.agent === "all" ? [] : [view.agent])])].map(
-                    (agent) => (
-                      <DropdownMenuRadioItem key={agent} value={agent}>
-                        {sessionAgentNames[agent]}
-                      </DropdownMenuRadioItem>
-                    ),
-                  )}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>{tr("conversations.filterLabel")}</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="min-w-44" positionerClassName="z-80">
-                <DropdownMenuRadioGroup
-                  value={view.filter}
-                  onValueChange={(value) => view.setFilter(value as SessionRecordFilter)}
-                >
-                  {(["current", "archived", "metadata", "all"] as const).map((filter) => (
-                    <DropdownMenuRadioItem key={filter} value={filter}>
-                      {tr(`conversations.filter.${filter}`)}
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              disabled={view.agent === "all" && view.filter === "current" && view.host === "all"}
-              onClick={view.resetFilters}
-            >
-              {tr("sessions.clearFilters")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={view.agent === "all" && view.filter === "current" && view.host === "all"}
+                onClick={view.resetFilters}
+              >
+                {tr("sessions.clearFilters")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
       {(view.agent !== "all" || view.filter !== "current" || view.host !== "all") && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 px-1.5">
           {view.host !== "all" && (
             <Button
               variant="outline"

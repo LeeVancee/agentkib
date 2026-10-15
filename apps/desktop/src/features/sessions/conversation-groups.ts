@@ -75,8 +75,9 @@ function isProcessEvent(event: ConversationEventWithTurn, complete: boolean) {
 }
 
 function segmentKey(groupKey: string, events: ConversationEventWithTurn[], index: number) {
-  const lastId = events.at(-1)?.id || `index-${index}`;
-  return `${groupKey}:segment:${lastId}`;
+  const anchor = events.find((event) => event.kind === "tool-summary") ?? events[0];
+  const anchorId = anchor?.id || `index-${index}`;
+  return `${groupKey}:segment:${anchorId}`;
 }
 
 function createSegment(
@@ -139,11 +140,11 @@ function createGroup(
     !truncated &&
     events[0]?.kind === "user-message" &&
     hasExplicitFinal(events);
-  // The last event is used as the stable anchor because history pagination
-  // prepends older records. Duplicate turn ids in separate runs still get
-  // distinct anchors and are never merged.
-  const lastId = events.at(-1)?.id || `index-${index}`;
-  const key = turnId ? `turn:${turnId}:end:${lastId}` : `event:${lastId}`;
+  // The first event is the stable anchor for live appends. Duplicate turn ids
+  // in separate runs still get distinct anchors and are never merged.
+  const anchor = events.find((event) => event.kind === "user-message") ?? events[0];
+  const anchorId = anchor?.id || `index-${index}`;
+  const key = turnId ? `turn:${turnId}:start:${anchorId}` : `event:${anchorId}`;
 
   return {
     key,

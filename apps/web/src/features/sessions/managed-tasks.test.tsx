@@ -6,9 +6,9 @@ import {
   pendingScope,
   rememberPending,
   readPending,
-} from "@agentkib/conversation-ui/features/sessions/pending-controls";
-import { ManagedTasks } from "@agentkib/conversation-ui/features/sessions/managed-tasks";
-import { publishSessionInvalidation } from "@agentkib/conversation-ui/features/sessions/session-events";
+} from "@/features/conversation/features/sessions/pending-controls";
+import { ManagedTasks } from "@/features/conversation/features/sessions/managed-tasks";
+import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import type { WebClient } from "@agentkib/web-client";
 
 const navigate = vi.fn();
@@ -42,11 +42,11 @@ let session: {
   refresh: ReturnType<typeof vi.fn>;
   locale: string;
 };
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: () => session,
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
-vi.mock("@agentkib/conversation-ui/components/ui/dialog", () => ({
+vi.mock("@/features/conversation/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
     open ? <div role="dialog">{children}</div> : null,
   DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,

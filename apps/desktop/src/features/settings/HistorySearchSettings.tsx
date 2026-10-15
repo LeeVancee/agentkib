@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { HistorySearchStatus } from "@agentkib/web-client";
-import { historyCopy } from "@agentkib/conversation-ui/features/history/history-copy";
-import { HistoryCoverageStatus } from "@agentkib/conversation-ui/features/history/history-search";
+import { historyCopy } from "@/features/sessions/conversation/features/history/history-copy";
+import { HistoryCoverageStatus } from "@/features/sessions/conversation/features/history/history-search";
 import {
   createDesktopConversationClient,
   hasDesktopConversation,

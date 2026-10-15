@@ -63,7 +63,7 @@
 
 - [Claude owner](../packages/backend/src/claude-managed-read.ts)、[原生 runner](../packages/backend/src/claude-managed-runner.ts)、[Claude 持久状态](../packages/backend/src/claude-host-state.ts)、[私有目标报告](../packages/backend/src/claude-goal-report.ts)。
 - [统一 Backend 分派](../packages/backend/src/index.ts)、[宿主 HTTP/权限接口](../apps/desktop/electron/main/web/service.ts)、[共享调度器](../apps/desktop/electron/main/web/claude-scheduler.ts)、[WebSocket 适配器](../apps/desktop/electron/main/web/managed-websocket.ts)。
-- [WebClient](../packages/web-client/src/index.ts)、[共享设置控件](../packages/conversation-ui/src/features/sessions/codex-session-controls.tsx)、[共享会话操作](../packages/conversation-ui/src/features/sessions/codex-tools.tsx)、[真实链路测试](../apps/desktop/test/claude-web-backend-integration.test.ts)。
+- [WebClient](../packages/web-client/src/index.ts)、[Desktop 设置控件](../apps/desktop/src/features/sessions/conversation/features/sessions/codex-session-controls.tsx)、[Web 设置控件](../apps/web/src/features/conversation/features/sessions/codex-session-controls.tsx)、[Desktop 会话操作](../apps/desktop/src/features/sessions/conversation/features/sessions/codex-tools.tsx)、[Web 会话操作](../apps/web/src/features/conversation/features/sessions/codex-tools.tsx)、[真实链路测试](../apps/desktop/test/claude-web-backend-integration.test.ts)。
 
 ## 故障处理与未执行范围
 

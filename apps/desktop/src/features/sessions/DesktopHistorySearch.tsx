@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { HistorySearchLauncher } from "@agentkib/conversation-ui/features/history/history-search";
+import { HistorySearchLauncher } from "./conversation/features/history/history-search";
 import {
   createDesktopConversationClient,
   hasDesktopConversation,

@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactEntry, ArtifactTicket } from "@agentkib/web-client";
-import { ArtifactBrowser } from "@agentkib/conversation-ui/features/sessions/artifact-browser";
-import { ArtifactPanel } from "@agentkib/conversation-ui/features/sessions/artifact-panel";
+import { ArtifactBrowser } from "@/features/conversation/features/sessions/artifact-browser";
+import { ArtifactPanel } from "@/features/conversation/features/sessions/artifact-panel";
 
 let session: {
   client: { request: ReturnType<typeof vi.fn> };
@@ -12,7 +12,7 @@ let session: {
   locale: string;
   embedded?: boolean;
 };
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: () => session,
 }));
 const file = (id: string, previewKind: ArtifactEntry["previewKind"], name = id): ArtifactEntry => ({

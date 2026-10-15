@@ -1,13 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexComposer } from "@agentkib/conversation-ui/features/sessions/codex-composer";
-import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
-import { dictionaries, type Locale } from "@agentkib/conversation-ui/i18n";
-import { composerLayoutCopy } from "@agentkib/conversation-ui/features/sessions/composer-layout-copy";
-import { codexCopy } from "@agentkib/conversation-ui/features/sessions/codex-copy";
-import { publishSessionInvalidation } from "@agentkib/conversation-ui/features/sessions/session-events";
+import { CodexComposer } from "@/features/conversation/features/sessions/codex-composer";
+import { useSession } from "@/features/conversation/features/sessions/session-context";
+import { dictionaries, type Locale } from "@/features/conversation/i18n";
+import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
+import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
+import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
 }));
 let state: ReturnType<typeof useSession>;

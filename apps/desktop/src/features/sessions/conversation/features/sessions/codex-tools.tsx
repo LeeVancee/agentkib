@@ -1,0 +1,503 @@
+import { useSessionNavigate } from "./session-navigation";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  ApiError,
+  type SessionAction,
+  type SessionActionBody,
+  type CodexOptions,
+  type CodexQueue,
+} from "@agentkib/web-client";
+import { Button } from "@/components/ui/button";
+import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
+import { Input } from "@/components/ui/input";
+import { NativeCheckbox } from "@/components/ui/native-checkbox";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Dialog } from "../../components/dialog";
+import { useSession } from "./session-context";
+import { webLayoutCopy } from "./web-layout-copy";
+import { codexCopy, codexReason } from "./codex-copy";
+import { blockedWhileCompacting } from "./session-activity";
+import { contextUsageCopy } from "./context-usage-copy";
+import { subscribeSessionInvalidation } from "./session-events";
+import { sessionAgentCopy } from "./session-agent-copy";
+
+export function CodexTools({
+  open: controlledOpen,
+  onOpenChange,
+  showTrigger = true,
+  ownership,
+  shortcuts,
+}: {
+  open?: boolean;
+  onOpenChange?: (value: boolean) => void;
+  showTrigger?: boolean;
+  ownership?: ReactNode;
+  shortcuts?: ReactNode;
+} = {}) {
+  const {
+    current,
+    selected,
+    client,
+    capabilities,
+    codexAction,
+    busy,
+    online,
+    controlReady,
+    locale,
+    access,
+    live,
+    refresh,
+  } = useSession();
+  const copy = codexCopy[locale];
+  const agentCopy = sessionAgentCopy[locale];
+  const isClaude = current?.agent === "claude-code";
+  const queueReadable =
+    !isClaude ||
+    ["queue-list", "queue-add", "queue-resume", "queue-pause"].some(
+      (key) => capabilities?.features[key as SessionAction | "queue-list"]?.available,
+    );
+  const navigate = useSessionNavigate();
+  const [context, setContext] = useState<unknown>();
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
+  function setOpen(value: boolean) {
+    setLocalOpen(value);
+    onOpenChange?.(value);
+  }
+  const layout = webLayoutCopy[locale];
+  const [queue, setQueue] = useState<CodexQueue>();
+  const [options, setOptions] = useState<CodexOptions>();
+  const [name, setName] = useState("");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const [mode, setMode] = useState<"" | "default" | "plan">("");
+  const [editing, setEditing] = useState("");
+  const [text, setText] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const [queueError, setQueueError] = useState("");
+  const [revision, setRevision] = useState(0);
+  const [operation, setOperation] = useState(false);
+  useEffect(() => {
+    setContext(undefined);
+    setQueue(undefined);
+    setOptions(undefined);
+    setModel("");
+    setEffort("");
+    setMode("");
+    setEditing("");
+    setText("");
+    setConfirmed(false);
+  }, [selected]);
+  useEffect(() => {
+    setName(current?.title ?? "");
+  }, [selected, current?.title]);
+  useEffect(() => {
+    if (!open || !selected || access?.status !== "approved") return;
+    const abort = new AbortController();
+    let flight = false;
+    let dirty = false;
+    const load = async () => {
+      if (flight) {
+        dirty = true;
+        return;
+      }
+      flight = true;
+      try {
+        do {
+          dirty = false;
+          try {
+            if (!queueReadable) {
+              setQueue(undefined);
+              setQueueError("");
+              return;
+            }
+            const result = isClaude
+              ? await client.sessionQueue(selected, "claude-code", abort.signal)
+              : await client.codexQueue(selected, abort.signal);
+            if (!abort.signal.aborted) {
+              setQueue(result);
+              setQueueError("");
+            }
+          } catch (error) {
+            if (!abort.signal.aborted) {
+              setQueue(undefined);
+              setQueueError(
+                error instanceof ApiError && error.code === "queue_too_large"
+                  ? copy.queueTooLarge
+                  : copy.unavailableQueue,
+              );
+            }
+          }
+        } while (dirty && !abort.signal.aborted);
+      } finally {
+        flight = false;
+      }
+    };
+    void load();
+    if (!isClaude)
+      void client
+        .request<CodexOptions>("managed/options", undefined, abort.signal)
+        .then((value) => {
+          if (!abort.signal.aborted) setOptions(value);
+        })
+        .catch(() => {
+          if (!abort.signal.aborted) setOptions(undefined);
+        });
+    const unsubscribe = subscribeSessionInvalidation(client, (id, domains) => {
+      if (
+        (!id || id === selected) &&
+        domains.some((domain) => ["queue", "ownership"].includes(domain))
+      )
+        void load();
+    });
+    return () => {
+      abort.abort();
+      unsubscribe();
+    };
+  }, [
+    open,
+    selected,
+    client,
+    access?.status,
+    access?.device?.id,
+    revision,
+    copy.queueTooLarge,
+    copy.unavailableQueue,
+    isClaude,
+    queueReadable,
+  ]);
+  if (current?.agent !== "codex" && !isClaude) return null;
+  function enabled(action: SessionAction) {
+    return !!(
+      access?.experimentalEnabled &&
+      !busy &&
+      !operation &&
+      !(live?.activity === "compacting" && blockedWhileCompacting(action)) &&
+      (action === "inspect" || action === "resume" || (online && controlReady)) &&
+      capabilities?.sessionId === selected &&
+      capabilities.features[action]?.available
+    );
+  }
+  const actionLabels: Record<string, string> = {
+    resume: copy.resume,
+    inspect: copy.inspect,
+    steer: copy.steer,
+    "queue-add": copy.queueAdd,
+    "queue-update": copy.queueUpdate,
+    "queue-delete": copy.queueDelete,
+    "queue-reorder": copy.queueUp,
+    "queue-start": copy.queueStart,
+    "queue-pause": agentCopy.pauseQueue,
+    "queue-resume": agentCopy.resumeQueue,
+    rename: copy.rename,
+    archive: copy.archive,
+    unarchive: copy.unarchive,
+    fork: copy.fork,
+    settings: copy.settings,
+    attachments: copy.attachment,
+  };
+  const reason = (action: SessionAction) =>
+    live?.activity === "compacting" && blockedWhileCompacting(action)
+      ? contextUsageCopy[locale].compactingDetail
+      : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason).text;
+  async function run(
+    action: SessionAction,
+    fields: Omit<
+      Partial<SessionActionBody>,
+      "requestId" | "bootId" | "sessionId" | "expectedRevision"
+    > = {},
+  ) {
+    if (!enabled(action)) return;
+    setOperation(true);
+    try {
+      const result = await codexAction(action, fields);
+      if (result) {
+        if (action === "inspect") setContext(result.context);
+        if (action === "fork" && result.sessionId && result.sessionId !== selected) {
+          setOpen(false);
+          void navigate({ to: "/sessions/$sessionId", params: { sessionId: result.sessionId } });
+        }
+        if (action === "archive") {
+          setOpen(false);
+          void navigate({ to: "/sessions" });
+        }
+        setEditing("");
+        setText("");
+        setRevision((n) => n + 1);
+      }
+    } finally {
+      setOperation(false);
+    }
+  }
+  const actionButton = (
+    action: SessionAction,
+    label: string,
+    fields = {},
+    itemAvailable = true,
+  ) => (
+    <div className="min-w-0 max-w-full space-y-1">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={!itemAvailable || !enabled(action)}
+        title={enabled(action) ? undefined : reason(action)}
+        onClick={() => void run(action, fields)}
+      >
+        {label}
+      </Button>
+      {!enabled(action) && (
+        <p className="max-w-64 text-xs text-muted-foreground">{reason(action)}</p>
+      )}
+    </div>
+  );
+  const pendingQueue =
+    queue?.data?.filter(
+      (item) => item.status === "pending" || (!isClaude && item.status === undefined),
+    ) ?? [];
+  return (
+    <>
+      {showTrigger && (
+        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
+          {layout.actions}
+        </Button>
+      )}
+      {open && (
+        <Dialog panel title={layout.actions} closeLabel={copy.close} onClose={() => setOpen(false)}>
+          {shortcuts}
+
+          <section className="space-y-3 border-t pt-3">
+            <h3 className="font-medium">{layout.management}</h3>
+            <label className="block text-sm">
+              {copy.name}
+              <Input value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                disabled={!enabled("rename") || !name.trim()}
+                title={reason("rename")}
+                onClick={() => void run("rename", { name: name.trim() })}
+              >
+                {copy.rename}
+              </Button>
+              {actionButton(
+                current.archived ? "unarchive" : "archive",
+                current.archived ? copy.unarchive : copy.archive,
+              )}
+              {actionButton("fork", copy.fork)}
+            </div>
+          </section>
+          <section className="space-y-3 border-t pt-3">
+            <h3 className="font-medium">{layout.ownership}</h3>
+            {ownership}
+            {!isClaude && (
+              <Disclosure>
+                <DisclosureSummary className="cursor-pointer py-2 text-sm">
+                  {copy.resume}
+                </DisclosureSummary>
+                <div className="space-y-3 pt-2">
+                  <label className="flex items-start gap-2 text-xs">
+                    <NativeCheckbox
+                      checked={confirmed}
+                      onChange={(e) => setConfirmed(e.target.checked)}
+                    />
+                    {copy.handoff}
+                  </label>
+                  <Button
+                    variant="outline"
+                    disabled={!enabled("resume") || !confirmed}
+                    title={reason("resume")}
+                    onClick={() => void run("resume", { handoffConfirmed: true })}
+                  >
+                    {copy.resume}
+                  </Button>
+                  {!capabilities?.features.resume?.available && (
+                    <p className="text-xs text-muted-foreground">{reason("resume")}</p>
+                  )}
+                </div>
+              </Disclosure>
+            )}
+          </section>
+          {!isClaude && access?.device?.accessMode !== "full" && (
+            <section className="space-y-3 border-t pt-3">
+              <h3>{copy.settings}</h3>
+              <label className="block text-sm">
+                {copy.model}
+                <NativeSelect
+                  className="block w-full rounded border bg-background p-2"
+                  value={model}
+                  onChange={(e) => {
+                    setModel(e.target.value);
+                    setEffort("");
+                  }}
+                >
+                  <option value="">{copy.keep}</option>
+                  {options?.models?.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name || item.id}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </label>
+              <label className="block text-sm">
+                {copy.effort}
+                <NativeSelect
+                  className="block w-full rounded border bg-background p-2"
+                  value={effort}
+                  onChange={(e) => setEffort(e.target.value)}
+                >
+                  <option value="">{copy.keep}</option>
+                  {options?.models
+                    ?.find((item) => item.id === model)
+                    ?.efforts?.map((item) => (
+                      <option key={item}>{item}</option>
+                    ))}
+                </NativeSelect>
+              </label>
+              <label className="block text-sm">
+                {copy.mode}
+                <NativeSelect
+                  className="block w-full rounded border bg-background p-2"
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as "" | "default" | "plan")}
+                >
+                  <option value="">{copy.keep}</option>
+                  <option value="default">{copy.normal}</option>
+                  <option value="plan">{copy.plan}</option>
+                </NativeSelect>
+              </label>
+              {actionButton("settings", copy.apply, {
+                ...(model ? { model } : {}),
+                ...(effort ? { effort } : {}),
+                ...(mode ? { mode } : {}),
+              })}
+            </section>
+          )}
+          {queueReadable && (
+            <section className="space-y-3 border-t pt-3">
+              <h3>{isClaude ? agentCopy.queue : copy.queue}</h3>
+              {isClaude && (queue?.requiresResume || queue?.paused) && (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {queue.requiresResume ? agentCopy.queueRecovery : agentCopy.queuePaused}
+                </p>
+              )}
+              {isClaude &&
+                queue &&
+                (queue.paused || queue.requiresResume
+                  ? actionButton("queue-resume", agentCopy.resumeQueue)
+                  : !!queue.data.length && actionButton("queue-pause", agentCopy.pauseQueue))}
+              {queueError && <p role="status">{queueError}</p>}
+              {queue?.data?.length === 0 && <p>{copy.queueEmpty}</p>}
+              {queue?.data?.map((item) => {
+                const pendingIndex = pendingQueue.findIndex((entry) => entry.id === item.id);
+                const editable = pendingIndex >= 0;
+                return (
+                  <div key={item.id} className="space-y-2 rounded border p-3">
+                    <p className="whitespace-pre-wrap break-words text-sm">
+                      {item.text || item.id}
+                    </p>
+                    {item.hasAttachments && (
+                      <p className="text-xs text-muted-foreground">{copy.queueAttachments}</p>
+                    )}
+                    {editing === item.id && editable && !item.hasAttachments && (
+                      <Input
+                        aria-label={copy.text}
+                        value={text}
+                        onChange={(e) => setText(e.target.value)}
+                      />
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={
+                          !enabled("queue-update") ||
+                          !editable ||
+                          item.hasAttachments === true ||
+                          (editing === item.id && !text.trim())
+                        }
+                        onClick={() => {
+                          if (editing === item.id)
+                            void run("queue-update", { queuedSubmissionId: item.id, text });
+                          else {
+                            setEditing(item.id);
+                            setText(item.text ?? "");
+                          }
+                        }}
+                      >
+                        {copy.queueUpdate}
+                      </Button>
+                      {actionButton(
+                        "queue-delete",
+                        copy.queueDelete,
+                        { queuedSubmissionId: item.id },
+                        editable,
+                      )}
+                      {pendingIndex > 0 &&
+                        actionButton("queue-reorder", copy.queueUp, {
+                          queuedSubmissionIds: pendingQueue.map((entry, position) =>
+                            position === pendingIndex - 1
+                              ? item.id
+                              : position === pendingIndex
+                                ? pendingQueue[pendingIndex - 1]!.id
+                                : entry.id,
+                          ),
+                        })}
+                    </div>
+                  </div>
+                );
+              })}
+              {!!queue?.data?.length &&
+                !isClaude &&
+                live?.status === "idle" &&
+                actionButton("queue-start", copy.queueStart)}
+            </section>
+          )}
+          <Disclosure className="space-y-3 border-t pt-3">
+            <DisclosureSummary className="cursor-pointer py-2 font-medium">
+              {layout.diagnostics}
+            </DisclosureSummary>
+            <h3>{copy.capabilities}</h3>
+            <p className="break-words text-xs text-muted-foreground">
+              {capabilities
+                ? `${capabilities.executionMode} · ${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason).text}` : ""}`
+                : copy.unavailable}
+            </p>
+            <ul className="space-y-1 text-xs text-muted-foreground">
+              {Object.entries(capabilities?.features ?? {})
+                .filter(([, feature]) => !feature?.available)
+                .map(([action, feature]) => (
+                  <li key={action}>
+                    {actionLabels[action] ?? action}: {codexReason(locale, feature?.reason).text}
+                    {codexReason(locale, feature?.reason).technical && (
+                      <Disclosure>
+                        <DisclosureSummary>{copy.context}</DisclosureSummary>
+                        <code className="break-all">{feature?.reason}</code>
+                      </Disclosure>
+                    )}
+                  </li>
+                ))}
+            </ul>
+            <Button
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setRevision((n) => n + 1);
+                void refresh(true);
+              }}
+            >
+              {copy.refresh}
+            </Button>
+            <div className="flex flex-wrap gap-2">{actionButton("inspect", copy.inspect)}</div>
+            {context !== undefined && (
+              <pre className="whitespace-pre-wrap break-words text-xs">
+                {JSON.stringify(context, null, 2)}
+              </pre>
+            )}
+          </Disclosure>
+        </Dialog>
+      )}
+    </>
+  );
+}

@@ -4,7 +4,7 @@ import { localizeMessage } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import type { RuntimeInfo } from "@/core/types";
 
-export const DEFAULT_SIDEBAR_WIDTH = 250;
+export const DEFAULT_SIDEBAR_WIDTH = 270;
 export const MIN_SIDEBAR_WIDTH = 250;
 export const MAX_SIDEBAR_WIDTH = 400;
 

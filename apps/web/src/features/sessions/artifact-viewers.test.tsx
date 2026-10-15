@@ -4,7 +4,7 @@ import type { ArtifactEntry, ArtifactPreviewKind, ArtifactTicket } from "@agentk
 import {
   ArtifactPreview,
   createArtifactViewerRegistry,
-} from "@agentkib/conversation-ui/features/sessions/artifact-viewers";
+} from "@/features/conversation/features/sessions/artifact-viewers";
 
 const entry = (
   kind: ArtifactPreviewKind,

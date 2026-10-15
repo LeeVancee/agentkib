@@ -16,12 +16,12 @@ describe("sidebar width preference", () => {
     saveWidth.mockImplementation(async (width) => ({ sidebar_width_preference: width }));
   });
 
-  it("defaults to 250 and clamps only interactive values to 250–400", () => {
-    expect(store().width).toBe(250);
-    expect([100, 300.6, 500, NaN].map(clampSidebarWidth)).toEqual([250, 301, 400, 250]);
+  it("defaults to 270 and clamps only interactive values to 250–400", () => {
+    expect(store().width).toBe(270);
+    expect([100, 300.6, 500, NaN].map(clampSidebarWidth)).toEqual([250, 301, 400, 270]);
     for (const value of [null, undefined, "300", 249, 401, 300.5]) {
       store().hydrate(value, store().revision);
-      expect(store().width).toBe(250);
+      expect(store().width).toBe(270);
     }
   });
 
@@ -98,11 +98,11 @@ describe("sidebar width preference", () => {
 
   it("skips unchanged width and rejects an unconfirmed write", async () => {
     store().hydrate(null, 0);
-    await store().save(250);
+    await store().save(270);
     expect(saveWidth).not.toHaveBeenCalled();
     saveWidth.mockResolvedValue({ sidebar_width_preference: null });
     await store().save(300);
-    expect(store().width).toBe(250);
+    expect(store().width).toBe(270);
     expect(store().error).not.toBe("");
   });
 });

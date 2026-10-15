@@ -8,9 +8,9 @@ import {
   type SessionSettings,
 } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
-import { codexCopy } from "@agentkib/conversation-ui/features/sessions/codex-copy";
-import { composerLayoutCopy } from "@agentkib/conversation-ui/features/sessions/composer-layout-copy";
-import { webLayoutCopy } from "@agentkib/conversation-ui/features/sessions/web-layout-copy";
+import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
+import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
+import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
 
 // Exercise the real provider, controller and WebClient against the public API,
 // including revision fencing and the follow-up reads after an accepted mutation.

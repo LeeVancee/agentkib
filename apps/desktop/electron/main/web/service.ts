@@ -1698,6 +1698,7 @@ export class WebAccessService {
       stateDirectory: join(this.options.dataDir, "relay", digest(config.brokerUrl).slice(0, 24)),
       target: targets.control,
       preview: targets.preview,
+      directAddresses: () => this.addresses.map(({ address }) => address),
       onOrigins: ({ publicUrl, previewUrl }) => {
         const update = this.adminQueue.then(async () => {
           if (epoch !== this.relayEpoch || !this.config.relay?.enabled) return;
@@ -3846,6 +3847,8 @@ export class WebAccessService {
         device && !browser.ended && this.options.historyRequest
           ? await this.historyAccessScope(hash)
           : undefined;
+      const directConnection =
+        external && device && !browser.ended ? this.relay?.directConnection : undefined;
       return this.json(res, 200, {
         status: browser.ended
           ? "ended"
@@ -3862,6 +3865,11 @@ export class WebAccessService {
         pairingMode: lan ? "confirmation" : "code",
         experimentalEnabled: this.controlsEnabled(undefined, device),
         ...(historyAccess ? { historySearch: true, historySearchScope: historyAccess.token } : {}),
+        ...(directConnection &&
+        directConnection.controlOrigin === this.config.externalOrigin &&
+        directConnection.previewOrigin === this.previewOrigin
+          ? { directConnection }
+          : {}),
         ...(bearerToken ? { bearerToken } : {}),
       });
     }
@@ -4038,6 +4046,9 @@ export class WebAccessService {
         if (!artifacts) throw new HttpError(503, "preview_unavailable");
         const result = await artifacts.issueTicket(scope, {
           artifactId: this.field(body.artifactId),
+          ...(body.expectedRevision !== undefined
+            ? { expectedRevision: this.field(body.expectedRevision) }
+            : {}),
           download: body.download === true,
         });
         this.grant(hash, "files");

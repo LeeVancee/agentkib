@@ -137,12 +137,48 @@ describe("remote capabilities share device and workspace authorization", () => {
     const issued = await api("artifact-tickets", { workspaceId: "w", artifactId: clip.id });
     expect(issued.status).toBe(200);
     const ticket = await issued.json();
+    expect(ticket.sourceRevision).toBe(clip.revision);
+    expect(ticket.revision).toBe(clip.revision);
     expect(new URL(ticket.url).origin).not.toBe(origin);
     const media = await fetch(ticket.url, { headers: { Range: "bytes=100-199" } });
     expect(media.status).toBe(206);
     expect((await media.arrayBuffer()).byteLength).toBe(100);
     await service.request({ operation: "revoke", id: deviceId });
     expect((await fetch(ticket.url)).status).not.toBe(200);
+  });
+  it("checks the requested artifact revision while retaining the bundle hash contract", async () => {
+    await pair({ files: true });
+    const listing = await (await api("files/list?workspaceId=w")).json();
+    const html = listing.entries.find((e: { name: string }) => e.name === "report.html");
+    const issued = await api("artifact-tickets", {
+      workspaceId: "w",
+      artifactId: html.id,
+      expectedRevision: html.revision,
+    });
+    expect(issued.status).toBe(200);
+    const ticket = await issued.json();
+    expect(ticket.sourceRevision).toBe(html.revision);
+    expect(ticket.revision).not.toBe(html.revision);
+    await writeFile(join(root, "report.html"), "<h1>New report</h1>");
+    const stale = await api("artifact-tickets", {
+      workspaceId: "w",
+      artifactId: html.id,
+      expectedRevision: html.revision,
+    });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: "artifact_changed" });
+    expect(
+      (
+        await api("artifact-tickets", {
+          workspaceId: "w",
+          artifactId: html.id,
+          expectedRevision: 7,
+        })
+      ).status,
+    ).toBe(400);
+    expect((await api("artifact-tickets", { workspaceId: "w", artifactId: html.id })).status).toBe(
+      200,
+    );
   });
   it("clears old tickets when directory grants change", async () => {
     await pair({ files: true });

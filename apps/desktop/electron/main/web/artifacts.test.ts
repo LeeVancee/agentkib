@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer, request, type Server } from "node:http";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,6 +37,7 @@ describe("authorized project artifacts", () => {
     });
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     service.clear();
     server.closeAllConnections();
     await new Promise<void>((done) => server.close(() => done()));
@@ -328,6 +329,8 @@ describe("authorized project artifacts", () => {
     await writeFile(join(root, "unrelated.txt"), "private outside bundle");
     const [found] = await service.resolveReferences(scope, ["site/index.html"]);
     const ticket = await service.issueTicket(scope, { artifactId: found.id });
+    expect(ticket.sourceRevision).toBe(found.revision);
+    expect(ticket.revision).not.toBe(ticket.sourceRevision);
     expect(ticket.manifest?.map((item) => item.path)).toEqual([
       "assets/app.js",
       "assets/plot.png",
@@ -353,6 +356,50 @@ describe("authorized project artifacts", () => {
     expect((await http(traversal)).status).toBe(403);
     epoch = "workspace-removed";
     expect((await http(ticket.url)).status).toBe(403);
+  });
+  it("returns the actual HTML entry snapshot revision when it changes during bundle preparation", async () => {
+    await writeFile(join(root, "index.html"), "old entry");
+    const found = await entry("index.html");
+    const internal = service as unknown as {
+      snapshot(...args: unknown[]): Promise<{ bytes: Buffer; revision: string }>;
+    };
+    const original = internal.snapshot.bind(service);
+    let capturedRevision = "";
+    vi.spyOn(internal, "snapshot").mockImplementationOnce(async (...args) => {
+      await writeFile(join(root, "index.html"), "new entry captured in the snapshot");
+      const result = await original(...args);
+      capturedRevision = result.revision;
+      return result;
+    });
+    const ticket = await service.issueTicket(scope, { artifactId: found.id });
+    expect(ticket.sourceRevision).toBe(capturedRevision);
+    expect(ticket.sourceRevision).not.toBe(found.revision);
+    expect(ticket.revision).not.toBe(ticket.sourceRevision);
+    expect((await http(ticket.url)).body.toString()).toBe("new entry captured in the snapshot");
+    await expect(
+      service.issueTicket(scope, {
+        artifactId: found.id,
+        expectedRevision: found.revision,
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "artifact_changed" });
+  });
+  it("rejects a changed entry during snapshot preparation when its revision was required", async () => {
+    await writeFile(join(root, "index.html"), "original");
+    const found = await entry("index.html");
+    const internal = service as unknown as {
+      snapshot(...args: unknown[]): Promise<{ bytes: Buffer; revision: string }>;
+    };
+    const original = internal.snapshot.bind(service);
+    vi.spyOn(internal, "snapshot").mockImplementationOnce(async (...args) => {
+      await writeFile(join(root, "index.html"), "changed while walking the bundle");
+      return original(...args);
+    });
+    await expect(
+      service.issueTicket(scope, {
+        artifactId: found.id,
+        expectedRevision: found.revision,
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "artifact_changed" });
   });
   it("rejects escaping symlinks and excess bundle files rather than publishing them", async () => {
     await mkdir(join(root, "site"));

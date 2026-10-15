@@ -19,6 +19,18 @@ import { promisify } from "node:util";
 
 export const DEFAULT_RELAY_BROKER = "https://api.agentkib.com";
 type Channel = "control" | "preview";
+export type DirectConnection = {
+  version: 1;
+  controlOrigin: string;
+  previewOrigin: string;
+  candidates: Array<{ address: string; controlPort: number; previewPort: number }>;
+};
+type DirectListener = {
+  address: string;
+  servers: Map<Channel, Server>;
+  sockets: Set<Duplex>;
+  abort: AbortController;
+};
 export type RelayFailure = {
   stage:
     | "broker"
@@ -96,6 +108,8 @@ export type RelayOptions = {
   ) => Promise<{ csrPem: string }>;
   target: Target;
   preview: Target;
+  /** Bind only currently assigned private IPv4 interfaces, never a wildcard address. */
+  directAddresses?: () => string[];
   onStatus?: (status: RelayStatus) => void;
   onOrigins?: (origins: { publicUrl: string; previewUrl: string }) => void | Promise<void>;
 };
@@ -107,6 +121,17 @@ type PendingRegistration = {
   credential: string;
 };
 const execute = promisify(execFile);
+const DIRECT_ADDRESS_INTERVAL_MS = 5_000;
+function isPrivateAddress(address: string): boolean {
+  const parts = address.split(".");
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !/^(0|[1-9]\d{0,2})$/.test(part) || Number(part) > 255)
+  )
+    return false;
+  const [a, b] = parts.map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
 const HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const CREDENTIAL = /^[A-Za-z0-9_-]{40,128}$/;
 const RENEW_BEFORE = 21 * 86_400_000;
@@ -284,6 +309,9 @@ export class RelayManager {
   private readonly brokerUrl: string;
   private registration?: Registration;
   private servers = new Map<Channel, Server>();
+  private directListeners = new Map<string, DirectListener>();
+  private directTimer?: ReturnType<typeof setInterval>;
+  private checkingDirect?: Promise<void>;
   private children = new Map<Channel, ChildProcess>();
   private connectorFailures = new Map<Channel, RelayFailure>();
   private sockets = new Set<Duplex>();
@@ -341,6 +369,45 @@ export class RelayManager {
   }
   get status(): RelayStatus {
     return { ...this.current, channels: { ...this.ready } };
+  }
+  /** Authenticated callers keep these origins; only their TCP destination changes. */
+  get directConnection(): DirectConnection | undefined {
+    if (!this.registration || !this.abort || this.abort.signal.aborted || !this.liveLease())
+      return undefined;
+    const current = new Set(this.directAddresses());
+    const candidates = [...this.directListeners.values()].flatMap((listener) => {
+      const control = listener.servers.get("control"),
+        preview = listener.servers.get("preview");
+      const controlAddress = control?.address(),
+        previewAddress = preview?.address();
+      return current.has(listener.address) &&
+        control?.listening &&
+        preview?.listening &&
+        controlAddress &&
+        typeof controlAddress !== "string" &&
+        previewAddress &&
+        typeof previewAddress !== "string"
+        ? [
+            {
+              address: listener.address,
+              controlPort: controlAddress.port,
+              previewPort: previewAddress.port,
+            },
+          ]
+        : [];
+    });
+    if (!candidates.length) return undefined;
+    return {
+      version: 1,
+      controlOrigin: `https://${this.registration.controlHost}`,
+      previewOrigin: `https://${this.registration.previewHost}`,
+      candidates,
+    };
+  }
+  private directAddresses(): string[] {
+    return [...new Set((this.options.directAddresses?.() ?? []).filter(isPrivateAddress))]
+      .sort()
+      .slice(0, 16);
   }
   private report(phase: RelayStatus["phase"], reason?: Reason, retryAt?: number) {
     if (phase === "ready" || phase === "disabled") {
@@ -802,6 +869,9 @@ export class RelayManager {
       this.watchCertificate(renewed, generation);
       for (const server of this.servers.values())
         server.setSecureContext({ key: this.key, cert: this.certificate, minVersion: "TLSv1.2" });
+      for (const listener of this.directListeners.values())
+        for (const server of listener.servers.values())
+          server.setSecureContext({ key: this.key, cert: this.certificate, minVersion: "TLSv1.2" });
     } catch (error) {
       this.nextRenewal = Date.now() + (valid ? this.certificateRetryDelay(valid) : 3_600_000);
       this.active(generation);
@@ -838,9 +908,13 @@ export class RelayManager {
     );
     this.certificateTimer.unref();
   }
-  private track(socket: Duplex) {
+  private track(socket: Duplex, direct?: DirectListener) {
     this.sockets.add(socket);
-    socket.once("close", () => this.sockets.delete(socket));
+    direct?.sockets.add(socket);
+    socket.once("close", () => {
+      this.sockets.delete(socket);
+      direct?.sockets.delete(socket);
+    });
   }
   private forwardUpgrade(
     request: IncomingMessage,
@@ -850,6 +924,7 @@ export class RelayManager {
     generation: number,
     expectedHost: string,
     target: Target,
+    direct?: DirectListener,
   ) {
     socket.on("error", () => socket.destroy());
     const allowed = () =>
@@ -857,6 +932,7 @@ export class RelayManager {
       !!this.abort &&
       !this.abort.signal.aborted &&
       this.liveLease() &&
+      (!direct || this.directActive(direct)) &&
       request.headers.host === expectedHost &&
       (request.socket as TLSSocket).servername === expectedHost;
     if (
@@ -893,7 +969,7 @@ export class RelayManager {
     socket.once("close", close);
     upstream.on("error", close);
     upstream.on("socket", (outgoing) => {
-      this.track(outgoing);
+      this.track(outgoing, direct);
       if (!allowed() || socket.destroyed) {
         outgoing.destroy();
         close();
@@ -964,15 +1040,18 @@ export class RelayManager {
     });
     upstream.end();
   }
-  private async startTls(channel: Channel, generation: number) {
-    if (this.servers.has(channel)) return;
+  private createTls(channel: Channel, generation: number, direct?: DirectListener) {
     const expectedHost =
       channel === "control" ? this.registration!.controlHost : this.registration!.previewHost;
     const target = channel === "control" ? this.options.target : this.options.preview;
     const server = createServer(
       { key: this.key, cert: this.certificate, minVersion: "TLSv1.2" },
       (request, response) => {
-        if (generation !== this.generation || !this.liveLease()) {
+        if (
+          generation !== this.generation ||
+          !this.liveLease() ||
+          (direct && !this.directActive(direct))
+        ) {
           request.socket.destroy();
           return;
         }
@@ -1004,7 +1083,7 @@ export class RelayManager {
             incoming.on("error", () => response.destroy());
           },
         );
-        upstream.on("socket", (socket) => this.track(socket));
+        upstream.on("socket", (socket) => this.track(socket, direct));
         upstream.on("error", () => {
           if (!response.headersSent) response.writeHead(502);
           response.end();
@@ -1016,12 +1095,106 @@ export class RelayManager {
         request.pipe(upstream);
       },
     );
-    server.on("connection", (socket) => this.track(socket));
-    server.on("secureConnection", (socket) => this.track(socket));
+    server.on("connection", (socket) => this.track(socket, direct));
+    server.on("secureConnection", (socket) => this.track(socket, direct));
     server.on("upgrade", (request, socket, head) =>
-      this.forwardUpgrade(request, socket, head, channel, generation, expectedHost, target),
+      this.forwardUpgrade(request, socket, head, channel, generation, expectedHost, target, direct),
     );
     server.on("tlsClientError", () => {});
+    return server;
+  }
+  private directActive(listener: DirectListener) {
+    return (
+      this.directListeners.get(listener.address) === listener &&
+      !listener.abort.signal.aborted &&
+      this.directAddresses().includes(listener.address)
+    );
+  }
+  private closeDirect(listener: DirectListener) {
+    if (this.directListeners.get(listener.address) === listener)
+      this.directListeners.delete(listener.address);
+    listener.abort.abort();
+    for (const socket of listener.sockets) {
+      socket.destroy();
+      this.sockets.delete(socket);
+    }
+    listener.sockets.clear();
+    for (const server of listener.servers.values()) {
+      server.closeAllConnections();
+      server.close();
+    }
+    listener.servers.clear();
+  }
+  private checkDirectAddresses(generation: number): Promise<void> {
+    if (this.checkingDirect) return this.checkingDirect;
+    const work = (async () => {
+      this.active(generation);
+      if (!this.liveLease()) return;
+      validateCertificate(this.certificate, this.key, [
+        this.registration!.controlHost,
+        this.registration!.previewHost,
+      ]);
+      const addresses = this.directAddresses();
+      for (const listener of this.directListeners.values())
+        if (!addresses.includes(listener.address)) this.closeDirect(listener);
+      for (const address of addresses) {
+        this.active(generation);
+        if (!this.liveLease()) return;
+        if (this.directListeners.has(address)) continue;
+        const listener: DirectListener = {
+          address,
+          servers: new Map(),
+          sockets: new Set(),
+          abort: new AbortController(),
+        };
+        this.directListeners.set(address, listener);
+        try {
+          for (const channel of CHANNELS) {
+            const server = this.createTls(channel, generation, listener);
+            listener.servers.set(channel, server);
+            server.on("error", () => this.closeDirect(listener));
+            await abortable(
+              new Promise<void>((resolve, reject) => {
+                server.once("error", reject);
+                server.listen({ port: 0, host: address, signal: listener.abort.signal }, () => {
+                  server.off("error", reject);
+                  resolve();
+                });
+              }),
+              listener.abort.signal,
+            );
+            this.active(generation);
+            if (!this.liveLease() || !this.directActive(listener))
+              throw new Error("Direct listener is no longer current");
+          }
+        } catch {
+          // A disappearing interface or a firewall/bind failure is local to this route.
+          // It must not restart the authenticated service or its healthy public tunnel.
+          this.closeDirect(listener);
+        }
+      }
+    })();
+    this.checkingDirect = work;
+    void work
+      .finally(() => {
+        if (this.checkingDirect === work) this.checkingDirect = undefined;
+      })
+      .catch(() => {});
+    return work;
+  }
+  private async maintainDirect(generation: number) {
+    if (!this.options.directAddresses) return;
+    if (!this.directTimer) {
+      this.directTimer = setInterval(() => {
+        void this.checkDirectAddresses(generation).catch(() => {});
+      }, DIRECT_ADDRESS_INTERVAL_MS);
+      this.directTimer.unref();
+    }
+    await this.checkDirectAddresses(generation);
+  }
+  private async startTls(channel: Channel, generation: number) {
+    if (this.servers.has(channel)) return;
+    const server = this.createTls(channel, generation);
     this.servers.set(channel, server);
     try {
       await new Promise<void>((resolve, reject) => {
@@ -1164,6 +1337,12 @@ export class RelayManager {
         this.registration!.controlHost,
         this.registration!.previewHost,
       ]);
+      // LAN reachability does not depend on the relay connector or its public probe.
+      await this.maintainDirect(generation);
+      this.active(generation);
+      // Renewal must also continue while only LAN is reachable. Keep it in the
+      // background so slow ACME/CSR work cannot block public connector recovery.
+      this.renewInBackground(generation);
       for (const channel of CHANNELS) {
         try {
           await this.startTls(channel, generation);
@@ -1202,10 +1381,6 @@ export class RelayManager {
       if (!this.ready.control || !this.ready.preview) throw new Error("Channel unavailable");
       this.failures = 0;
       this.report("ready");
-      // Authorization refresh and its deadline run separately while ACME is slow.
-      // 续期在后台进行：maintain 是单飞的，续期卡住（CSR 或 ACME 慢）时，
-      // frpc 退出后的重连也会被一起卡住。
-      this.renewInBackground(generation);
       this.scheduleMaintain(generation, false);
     })().catch((error) => {
       if (generation !== this.generation) return;
@@ -1267,6 +1442,7 @@ export class RelayManager {
     this.ready = { control: false, preview: false };
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
+    for (const listener of this.directListeners.values()) this.closeDirect(listener);
     for (const server of this.servers.values()) {
       server.closeAllConnections();
       server.close();
@@ -1315,6 +1491,8 @@ export class RelayManager {
     this.authTimer = undefined;
     this.leaseTimer = undefined;
     this.certificateTimer = undefined;
+    if (this.directTimer) clearInterval(this.directTimer);
+    this.directTimer = undefined;
     this.retryTimer = undefined;
     this.disconnect();
   }
@@ -1331,9 +1509,13 @@ export class RelayManager {
     this.retryTimer = setTimeout(() => {
       void (async () => {
         await Promise.allSettled(
-          [this.running, this.maintaining, this.authorizing, this.renewing].filter(
-            (p): p is Promise<void> => !!p,
-          ),
+          [
+            this.running,
+            this.maintaining,
+            this.authorizing,
+            this.renewing,
+            this.checkingDirect,
+          ].filter((p): p is Promise<void> => !!p),
         );
         if (generation !== this.generation || !this.enabled || this.suspended) return;
         this.disconnect();
@@ -1349,7 +1531,7 @@ export class RelayManager {
     if (this.stopping) return this.stopping;
     this.invalidate();
     const work = Promise.allSettled(
-      [this.running, this.maintaining, this.authorizing, this.renewing].filter(
+      [this.running, this.maintaining, this.authorizing, this.renewing, this.checkingDirect].filter(
         (p): p is Promise<void> => !!p,
       ),
     ).then(() => {

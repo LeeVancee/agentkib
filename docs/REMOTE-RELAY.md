@@ -6,7 +6,7 @@ AgentKib Remote 已开放账号注册：[account.agentkib.com](https://account.a
 
 在桌面「设置 → 远程连接」登录账号，并按提示完成设备登记与手机访问设置。默认注册与授权 API 是 `https://api.agentkib.com`，通常不需要手动填写地址。连接就绪后，扫描桌面显示的手机链接并输入八位一次性授权码，完成该浏览器的访问授权；发送、审批和文件访问仍受主机开关及浏览器权限控制。仅将授权码交给可信设备；电脑仍可随时撤销访问。安装包包含连接器，用户无需部署服务器或手动安装 frp。完整操作见 [Codex 远控与产物查看](REMOTE-CODEX-WEB.md)。
 
-`https://remote.agentkib.com` 保留为托管网页入口和局域网访问的可信 Origin，不是新的注册 API。局域网直连是同一网络内的次级方式，需单独启用，见 [托管 Web 与局域网直连](WEB-HOSTED-LAN.md)。桌面「连接其他电脑」属于另一条原生连接流程，见 [原生局域网连接](REMOTE.md)，不能替代手机配对。
+`https://remote.agentkib.com` 保留为托管网页入口和旧版局域网访问的可信 Origin，不是新的注册 API。支持自动线路选择的 Remote App 可以在同一网络中复用现有 HTTPS 身份和配对授权，直连电脑的私网入口。旧版 HTTP LAN 模式仍需单独启用，见 [托管 Web 与局域网直连](WEB-HOSTED-LAN.md)。桌面「连接其他电脑」属于另一条原生连接流程，见 [原生局域网连接](REMOTE.md)，不能替代手机配对。
 
 桌面应用必须保持运行。关闭窗口可按托盘设置保留后台；完全退出、休眠或关机会使远控不可用。本地 Web 访问与托管服务分别配置，高级设置中的自定义地址不代表本仓库提供托管服务端的部署能力。
 
@@ -18,12 +18,20 @@ AgentKib Remote 已开放账号注册：[account.agentkib.com](https://account.a
 
 浏览器业务 HTTPS 在用户电脑终止。正常转发时，中继无法解密会话和产物内容；这一边界依赖域名、DNS 和证书签发的信任，不扩展到恶意控制这些设施的运营方。控制与预览使用独立连接及 origin，手机配对和文件访问仍由桌面授权。
 
-开放账号注册不取消设备授权：密码策略、限速、恢复码、TOTP、桌面 PKCE、设备邀请以及八位远控授权仍各自有效。托管连接需要有效的设备授权。撤销或授权租约到期会关闭正常 AgentKib 客户端的公网连接，不自动终止本机 Codex 后台任务。预览链接是短效 bearer 凭证，不能转发给无权访问的人。
+开放账号注册不取消设备授权：密码策略、限速、恢复码、TOTP、桌面 PKCE、设备邀请以及八位远控授权仍各自有效。托管连接需要有效的设备授权。撤销或授权租约到期会关闭正常 AgentKib 客户端的公网与自动直连入口，不自动终止本机 Codex 后台任务。预览链接是短效 bearer 凭证，不能转发给无权访问的人。
 
 账号页面产物与公开 API 健康已做只读复核；这些结果不替代成功注册、桌面原生授权及真实手机全流程验收。当前证据与剩余门槛见[2026-10-07 QA](../qa/typescript-stability-2026-10-07.md#独立-backend-交付与剩余门槛)。
 
 ## 客户端开发
 
 本仓库包含桌面连接器、Web 界面、Codex 执行、手机配对授权和本机产物服务。公开客户端实现不授予托管服务的使用权限。
+
+### 已授权 Remote App 的 HTTPS 直连
+
+启用托管远程访问后，桌面端在当前私有 IPv4 地址上增加控制、预览两个 HTTPS 监听端口，每 5 秒核对地址变化。监听器复用公网域名证书和同一套设备权限，保持控制与预览隔离；不会将旧版 HTTP LAN 的 Bearer 授权或功能限制带入此路径。没有可用私网地址或绑定失败时，公网连接继续工作；frpc 故障也不会单独关闭仍持有有效授权租约的直连入口。关闭远程访问、休眠、证书失效或授权失效会关闭相关监听和连接，恢复后重新取得授权再开放。此功能不提供互联网长期断开后的离线授权。
+
+现有 `GET /api/web/v1/access` 只在已授权设备通过其 HTTPS origin 访问时，按可用情况附加 `directConnection: { version: 1, controlOrigin, previewOrigin, candidates: [{ address, controlPort, previewPort }] }`。未配对、已撤销、旧主机或无可用候选时不返回该字段。客户端只改变 TCP 拨号目标，URL、Host、TLS SNI、证书主机名校验和 Cookie 所属 origin 仍使用原来的 HTTPS 身份。候选地址不是认证依据，必须完成正常 TLS 校验和现有设备访问检查；切换线路不得自动重放结果不明的控制请求。
+
+`POST /api/web/v1/artifact-tickets` 可携带可选字符串 `expectedRevision`，文件变化时返回 `409 artifact_changed`。成功响应的 `sourceRevision` 对应实际入口文件快照；原 `revision` 保持既有语义，HTML 为完整 bundle 的 hash，其他文件为文件 revision。客户端核对选中文件时使用 `sourceRevision`，不能用 HTML bundle hash 替代文件 revision。
 
 桌面构建执行 `pnpm --dir apps/desktop relay:stage` 下载并验证固定版本，随后将 connector、校验清单和许可证打包；用户启动时不需要访问 GitHub。校验清单在 `apps/desktop/scripts/stage-frpc.mjs`，可使用 `AGENTKIB_PACKAGE_PLATFORM` / `AGENTKIB_PACKAGE_ARCH` 指定打包目标。正式升级 frp 需同步验证后端插件与双通道集成测试。首次本地开发需要手动执行该 staging 命令；正式 build/dist 和发布 CI 已接入。

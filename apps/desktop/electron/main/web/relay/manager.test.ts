@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync, type ChildProcess } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, X509Certificate } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,12 +53,18 @@ type Internals = {
   leaseUntil: number;
   wallLeaseUntil: number;
   servers: Map<"control" | "preview", Server>;
+  directListeners: Map<
+    string,
+    { servers: Map<"control" | "preview", Server>; sockets: Set<Duplex> }
+  >;
   children: Map<"control" | "preview", ChildProcess>;
   sockets: Set<Duplex>;
   authorize(generation: number): Promise<void>;
   register(generation: number): Promise<void>;
   ensureCertificate(generation: number): Promise<void>;
   startTls(channel: "control" | "preview", generation: number): Promise<void>;
+  checkDirectAddresses(generation: number): Promise<void>;
+  maintainDirect(generation: number): Promise<void>;
   spawnFrpc(channel: "control" | "preview", generation: number): void;
   maintain(generation: number): Promise<void>;
   probe(host: string, generation: number): Promise<void>;
@@ -832,6 +838,330 @@ describe("relay TLS channels and certificate lifecycle", () => {
     expect(internal.servers.size).toBe(0);
     expect(manager.status.reason).toBe("revoked");
   });
+});
+
+describe("authenticated direct TLS routes", () => {
+  function isolatedPrivateListeners() {
+    const original = TlsServer.prototype.listen;
+    const bindings: string[] = [];
+    // Exercise real TLS without exposing test endpoints on the developer's LAN.
+    vi.spyOn(TlsServer.prototype, "listen").mockImplementation(function (
+      this: TlsServer,
+      ...args: Parameters<TlsServer["listen"]>
+    ) {
+      const options = args[0];
+      if (options && typeof options === "object" && "host" in options) {
+        bindings.push(String(options.host));
+        return Reflect.apply(original, this, [{ ...options, host: "127.0.0.1" }, ...args.slice(1)]);
+      }
+      return Reflect.apply(original, this, args);
+    });
+    return bindings;
+  }
+  async function localTarget() {
+    const server = createHttpServer((req, res) => {
+      if (req.url === "/stream") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write("data: alive\n\n");
+      } else {
+        res.end(JSON.stringify({ cookie: req.headers.cookie, origin: req.headers.origin }));
+      }
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    stops.push(
+      () =>
+        new Promise<void>((done) => {
+          server.closeAllConnections();
+          server.close(() => done());
+        }),
+    );
+    return { host: "127.0.0.1" as const, port: (server.address() as { port: number }).port };
+  }
+  function get(port: number, cert: string, host = registration.controlHost, sni = host) {
+    return new Promise<{ status: number; body: string }>((done, fail) => {
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          port,
+          servername: sni,
+          ca: cert,
+          agent: false,
+          headers: { Host: host, Cookie: "ak_web_secure=paired", Origin: `https://${host}` },
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (data) => {
+            body += data;
+          });
+          res.on("end", () => done({ status: res.statusCode!, body }));
+          res.on("error", fail);
+        },
+      );
+      req.on("error", fail);
+      req.end();
+    });
+  }
+  it("keeps HTTPS identity and credentials across both routes and rejects wrong host/SNI", async () => {
+    const bindings = isolatedPrivateListeners();
+    const { path, key, cert } = await certificate();
+    const target = await localTarget();
+    const { manager, internal } = setup(path, {
+      target,
+      preview: target,
+      directAddresses: () => [
+        "192.168.20.10",
+        "192.168.20.10",
+        "127.0.0.1",
+        "0.0.0.0",
+        "8.8.8.8",
+        "192.168.020.10",
+      ],
+    });
+    internal.key = key;
+    internal.certificate = cert;
+    await internal.startTls("control", 1);
+    await internal.checkDirectAddresses(1);
+    expect(bindings).toEqual(["192.168.20.10", "192.168.20.10"]);
+    const direct = manager.directConnection!;
+    expect(direct).toMatchObject({
+      version: 1,
+      controlOrigin: `https://${registration.controlHost}`,
+      previewOrigin: `https://${registration.previewHost}`,
+      candidates: [{ address: "192.168.20.10" }],
+    });
+    const candidate = direct.candidates[0];
+    const expected = {
+      status: 200,
+      body: JSON.stringify({ cookie: "ak_web_secure=paired", origin: direct.controlOrigin }),
+    };
+    expect(await get(candidate.controlPort, cert)).toEqual(expected);
+    expect(
+      await get((internal.servers.get("control")!.address() as { port: number }).port, cert),
+    ).toEqual(expected);
+    expect((await get(candidate.previewPort, cert, registration.previewHost)).status).toBe(200);
+    expect((await get(candidate.controlPort, cert, registration.previewHost)).status).toBe(421);
+    expect(
+      (await get(candidate.controlPort, cert, registration.controlHost, registration.previewHost))
+        .status,
+    ).toBe(421);
+    internal.failClosed("revoked", false);
+    expect(manager.directConnection).toBeUndefined();
+    expect(internal.directListeners.size).toBe(0);
+    expect(internal.sockets.size).toBe(0);
+    await expect(get(candidate.controlPort, cert)).rejects.toThrow();
+  });
+  it("removes disappeared addresses and their active stream without closing the public route", async () => {
+    isolatedPrivateListeners();
+    const { path, key, cert } = await certificate();
+    const target = await localTarget();
+    let addresses = ["192.168.20.10"];
+    const { manager, internal } = setup(path, {
+      target,
+      preview: target,
+      directAddresses: () => addresses,
+    });
+    internal.key = key;
+    internal.certificate = cert;
+    await internal.startTls("control", 1);
+    const publicPort = (internal.servers.get("control")!.address() as { port: number }).port;
+    await internal.checkDirectAddresses(1);
+    const oldPort = manager.directConnection!.candidates[0].controlPort;
+    const streaming = deferred<void>(),
+      closed = deferred<void>();
+    const req = request(
+      {
+        hostname: "127.0.0.1",
+        port: oldPort,
+        servername: registration.controlHost,
+        ca: cert,
+        agent: false,
+        path: "/stream",
+        headers: { Host: registration.controlHost },
+      },
+      (res) => {
+        res.on("data", () => streaming.resolve());
+        res.on("close", () => closed.resolve());
+        res.on("error", () => {});
+      },
+    );
+    req.on("error", () => closed.resolve());
+    req.end();
+    await streaming.promise;
+    addresses = ["10.0.1.5"];
+    // Stale candidates are hidden even before the periodic reconciliation runs.
+    expect(manager.directConnection).toBeUndefined();
+    await internal.checkDirectAddresses(1);
+    await closed.promise;
+    expect(manager.directConnection!.candidates.map((c) => c.address)).toEqual(addresses);
+    expect(internal.directListeners.has("192.168.20.10")).toBe(false);
+    expect((await get(publicPort, cert)).status).toBe(200);
+    await expect(get(oldPort, cert)).rejects.toThrow();
+  });
+  it("rechecks adapters every five seconds and closes direct routes on suspend", async () => {
+    isolatedPrivateListeners();
+    const { path, key, cert } = await certificate();
+    let addresses: string[] = [];
+    const { manager, internal } = setup(path, { directAddresses: () => addresses });
+    internal.key = key;
+    internal.certificate = cert;
+    vi.useFakeTimers();
+    await internal.maintainDirect(1);
+    addresses = ["172.16.2.3"];
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(manager.directConnection).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(manager.directConnection?.candidates).toHaveLength(1));
+    await manager.suspend();
+    expect(manager.directConnection).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(internal.directListeners.size).toBe(0);
+  });
+  it("keeps a healthy LAN route when frpc fails and ignores a failed additional bind", async () => {
+    const bindings = isolatedPrivateListeners();
+    const { path, key, cert } = await certificate();
+    const target = await localTarget();
+    let addresses = ["192.168.20.10"];
+    const { manager, internal } = setup(path, {
+      target,
+      preview: target,
+      directAddresses: () => addresses,
+    });
+    internal.key = key;
+    internal.certificate = cert;
+    vi.spyOn(internal, "spawnFrpc").mockImplementation(() => {
+      throw new Error("unreachable relay");
+    });
+    await internal.maintain(1);
+    expect(manager.status.phase).toBe("offline");
+    const port = manager.directConnection!.candidates[0].controlPort;
+    expect((await get(port, cert)).status).toBe(200);
+    addresses = ["192.168.20.10", "10.0.1.5"];
+    vi.spyOn(TlsServer.prototype, "listen").mockImplementationOnce(function (this: TlsServer) {
+      process.nextTick(() =>
+        this.emit(
+          "error",
+          Object.assign(new Error("address unavailable"), { code: "EADDRNOTAVAIL" }),
+        ),
+      );
+      return this;
+    });
+    await internal.checkDirectAddresses(1);
+    expect(manager.directConnection!.candidates).toHaveLength(1);
+    expect((await get(port, cert)).status).toBe(200);
+    expect(bindings).toEqual(["192.168.20.10", "192.168.20.10"]);
+    internal.failClosed("lease-expired", false);
+    expect(internal.directListeners.size).toBe(0);
+    expect(manager.directConnection).toBeUndefined();
+  });
+  it("does not publish a late binding after stop and never reopens it from the timer", async () => {
+    const { path, key, cert } = await certificate();
+    const { manager, internal } = setup(path, { directAddresses: () => ["192.168.20.10"] });
+    internal.key = key;
+    internal.certificate = cert;
+    let completeBinding: (() => void) | undefined;
+    vi.spyOn(TlsServer.prototype, "listen").mockImplementationOnce(function (
+      this: TlsServer,
+      ...args: Parameters<TlsServer["listen"]>
+    ) {
+      const callback = args[1];
+      completeBinding = () => {
+        if (typeof callback === "function") callback();
+      };
+      return this;
+    });
+    const pending = internal.maintainDirect(1);
+    expect(internal.directListeners.size).toBe(1);
+    await manager.stop();
+    completeBinding?.();
+    await pending;
+    expect(internal.directListeners.size).toBe(0);
+    expect(manager.directConnection).toBeUndefined();
+    expect(internal.sockets.size).toBe(0);
+  });
+  it.each([false, true])(
+    "hot-renews both LAN channels with public probes failing: %s",
+    async (publicFailure) => {
+      isolatedPrivateListeners();
+      const { path, key, cert } = await certificate();
+      const target = await localTarget();
+      const { manager, internal } = setup(path, {
+        target,
+        preview: target,
+        directAddresses: () => ["192.168.20.10"],
+        createCsr: async () => ({
+          csrPem: "-----BEGIN CERTIFICATE REQUEST-----\nfixture\n-----END CERTIFICATE REQUEST-----",
+        }),
+      });
+      internal.key = key;
+      internal.certificate = cert;
+      const publicProbe = vi
+        .spyOn(internal, "probe")
+        .mockRejectedValue(new Error("public unreachable"));
+      if (publicFailure) {
+        vi.spyOn(internal, "spawnFrpc").mockImplementation((channel) =>
+          internal.children.set(channel, {
+            kill: vi.fn(),
+            once: vi.fn(),
+            exitCode: 0,
+          } as unknown as ChildProcess),
+        );
+        // Establish the private route while both public probes remain unavailable.
+        await internal.maintain(1);
+        expect(manager.status.phase).toBe("offline");
+      }
+      await internal.checkDirectAddresses(1);
+      const candidate = manager.directConnection!.candidates[0];
+      execFileSync("openssl", [
+        "req",
+        "-new",
+        "-x509",
+        "-days",
+        "3",
+        "-set_serial",
+        "42",
+        "-key",
+        join(path, "key.pem"),
+        "-config",
+        join(path, "req.conf"),
+        "-out",
+        join(path, "renewed.pem"),
+      ]);
+      const renewed = await readFile(join(path, "renewed.pem"), "utf8");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify({ certificate: renewed }))),
+      );
+      vi.useFakeTimers();
+      vi.setSystemTime(Date.now() + 36 * 3_600_000);
+      internal.leaseUntil = performance.now() + 60_000;
+      internal.wallLeaseUntil = Date.now() + 60_000;
+      if (publicFailure) {
+        await internal.maintain(1);
+        await vi.waitFor(() => expect(internal.certificate).toBe(renewed));
+        expect(publicProbe).toHaveBeenCalledTimes(4);
+        expect(manager.status.phase).toBe("offline");
+      } else {
+        await internal.ensureCertificate(1);
+      }
+      expect(manager.directConnection!.candidates[0]).toEqual(candidate);
+      for (const [port, host] of [
+        [candidate.controlPort, registration.controlHost],
+        [candidate.previewPort, registration.previewHost],
+      ] as const) {
+        const peer = await new Promise<string>((done, fail) => {
+          const socket = connectTls(
+            { host: "127.0.0.1", port, servername: host, ca: renewed },
+            () => {
+              done(socket.getPeerCertificate().fingerprint256);
+              socket.destroy();
+            },
+          );
+          socket.on("error", fail);
+        });
+        expect(peer).toBe(new X509Certificate(renewed).fingerprint256);
+      }
+    },
+  );
 });
 
 describe("relay managed WebSocket transport", () => {

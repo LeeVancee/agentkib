@@ -42,6 +42,6 @@ Web 仅能使用桌面已经建立且当前授权允许的连接，不能安装�
 
 ## 验证范围
 
-源码、插件产物身份、自动化与原生结果见[接入 QA](../qa/native-session-connection-2026-10-16.md)和[审查修复 QA](../qa/native-session-review-loop-2026-10-16.md)。代码测试、原生合成模型测试和真实模型回复分别记录；未验证能力保持关闭。
+源码、插件产物身份、自动化与原生结果见[接入 QA](../qa/native-session-connection-2026-10-16.md)和[审查修复 QA](../qa/native-session-review-loop-2026-10-16.md)。Haiku 5.5 与 Codex Luna6 的后续结果见[真实模型补验](../qa/native-session-real-model-2026-10-16.md)，其中模型回复与完整链路是否通过分别报告。代码测试、原生合成模型测试和真实模型回复分别记录；未验证能力保持关闭。
 
 官方依据：[Mods API](https://code.claude.com/docs/en/plugins/mods/api)、[事件和方法](https://code.claude.com/docs/en/plugins/mods/reference)、[安装与热加载](https://code.claude.com/docs/en/plugins/mods/overview)。

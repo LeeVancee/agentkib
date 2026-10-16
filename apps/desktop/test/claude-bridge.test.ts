@@ -16,6 +16,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeBridge, type ClaudeBridgeTarget } from "../../../packages/backend/src/claude-bridge";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
+import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import type { ClaudeBridgeSnapshot } from "@agentkib/runtime-protocol";
 import { createConversationState, reduceSessionStreamEvent } from "@agentkib/conversation-state";
 import { register as registerPlugin } from "../../../packages/claude-bridge-plugin/hooks/register.js";
@@ -557,6 +558,219 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     expect(await result).toMatchObject({ accepted: true });
     await f.events({ type: "turn-complete", turnId, revision: 2, text: "", aborted: true });
     expect(f.live().status).toBe("idle");
+  });
+  it("persists an accepted stop completion without replacing its acknowledgement or dispatching again", async () => {
+    const f = await fixture(),
+      turnId = randomUUID();
+    await f.events({ type: "turn-start", turnId, revision: 1 });
+    const input = f.control("stop"),
+      result = f.bridge.request(input);
+    const command = (await f.poll()).body.commands[0];
+    await f.post("/v1/results", {
+      commandId: command.commandId,
+      status: "accepted",
+      revision: 1,
+      turnId,
+    });
+    const accepted = await result;
+    expect(accepted).toMatchObject({ accepted: true, completed: false });
+    const receipt = () =>
+      f.bridge.receipt(
+        readControlReceipt(f.options.dataDir, {
+          requestId: input.requestId,
+          deviceId: input.deviceId,
+        }),
+      );
+    const identity = () => {
+      const database = openManagedLedger(f.options.dataDir)!;
+      try {
+        return database
+          .prepare(
+            "SELECT session_id,fingerprint,evidence,device_id,claim_version FROM managed_commands WHERE request_id=?",
+          )
+          .get(input.requestId);
+      } finally {
+        database.close();
+      }
+    };
+    const originalIdentity = identity();
+    expect(receipt()).toMatchObject({ status: "accepted", completionObserved: false });
+    await f.events({ type: "turn-complete", turnId, revision: 2, text: "", aborted: true });
+    expect(receipt()).toMatchObject({ status: "accepted", completionObserved: true });
+    const completed = { ...accepted, completed: true, completionObserved: true };
+    expect(await f.bridge.request(input)).toEqual(completed);
+    await f.events({ type: "turn-complete", turnId, revision: 2, text: "", aborted: true });
+    expect(await f.bridge.request(input)).toEqual(completed);
+    expect(identity()).toEqual(originalIdentity);
+    expect((await f.poll()).body.commands).toEqual([]);
+    await f.restart();
+    await f.events({ type: "snapshot", snapshot: { ...f.snapshot, revision: 2 } });
+    expect(receipt()).toMatchObject({ status: "accepted", completionObserved: true });
+    expect(await f.bridge.request(input)).toEqual(completed);
+    expect((await f.poll()).body.commands).toEqual([]);
+  });
+  it("retains an aborted completion arriving before the stop acknowledgement", async () => {
+    const f = await fixture(),
+      turnId = randomUUID();
+    await f.events({ type: "turn-start", turnId, revision: 1 });
+    const input = f.control("stop"),
+      result = f.bridge.request(input);
+    const command = (await f.poll()).body.commands[0];
+    await f.events({ type: "turn-complete", turnId, revision: 2, text: "", aborted: true });
+    await f.post("/v1/results", {
+      commandId: command.commandId,
+      status: "accepted",
+      revision: 2,
+      turnId,
+    });
+    expect(await result).toMatchObject({ accepted: true, completed: true });
+    expect(
+      f.bridge.receipt(
+        readControlReceipt(f.options.dataDir, {
+          requestId: input.requestId,
+          deviceId: input.deviceId,
+        }),
+      ),
+    ).toMatchObject({ status: "accepted", completionObserved: true });
+    expect((await f.poll()).body.commands).toEqual([]);
+  });
+  it.each(["before", "after"])(
+    "does not treat a normal completion %s a stop acknowledgement as cancellation evidence",
+    async (order) => {
+      const f = await fixture(),
+        turnId = randomUUID();
+      await f.events({ type: "turn-start", turnId, revision: 1 });
+      const input = f.control("stop"),
+        result = f.bridge.request(input);
+      const command = (await f.poll()).body.commands[0];
+      const complete = () =>
+        f.events({ type: "turn-complete", turnId, revision: 2, text: "done", aborted: false });
+      if (order === "before") await complete();
+      await f.post("/v1/results", {
+        commandId: command.commandId,
+        status: "accepted",
+        revision: 2,
+        turnId,
+      });
+      expect(await result).toMatchObject({ accepted: true, completed: false });
+      if (order === "after") await complete();
+      expect(
+        f.bridge.receipt(
+          readControlReceipt(f.options.dataDir, {
+            requestId: input.requestId,
+            deviceId: input.deviceId,
+          }),
+        ),
+      ).toMatchObject({ status: "accepted", completionObserved: false });
+      expect((await f.poll()).body.commands).toEqual([]);
+    },
+  );
+  it("only completes a stop for the matching native identity and turn, including after restart", async () => {
+    const f = await fixture(),
+      turnId = randomUUID();
+    await f.events({ type: "turn-start", turnId, revision: 1 });
+    const input = f.control("stop"),
+      result = f.bridge.request(input);
+    const command = (await f.poll()).body.commands[0];
+    expect(
+      (
+        await f.post("/v1/results", {
+          commandId: command.commandId,
+          status: "accepted",
+          revision: 1,
+          turnId: randomUUID(),
+        })
+      ).status,
+    ).toBe(409);
+    await f.post("/v1/results", {
+      commandId: command.commandId,
+      status: "accepted",
+      revision: 1,
+      turnId,
+    });
+    await result;
+    const receipt = () =>
+      f.bridge.receipt(
+        readControlReceipt(f.options.dataDir, {
+          requestId: input.requestId,
+          deviceId: input.deviceId,
+        }),
+      );
+    await f.events({
+      type: "turn-complete",
+      turnId: randomUUID(),
+      revision: 2,
+      text: "",
+      aborted: true,
+    });
+    expect(
+      (
+        await f.post("/v1/events", {
+          nativeId: randomUUID(),
+          events: [
+            {
+              seq: 3,
+              event: { type: "turn-complete", turnId, revision: 2, text: "", aborted: true },
+            },
+          ],
+        })
+      ).status,
+    ).toBe(410);
+    expect(receipt()).toMatchObject({ status: "accepted", completionObserved: false });
+    await f.restart();
+    await f.events({ type: "turn-complete", turnId, revision: 2, text: "", aborted: true });
+    expect(receipt()).toMatchObject({ status: "accepted", completionObserved: true });
+    expect((await f.poll()).body.commands).toEqual([]);
+  });
+  it("does not use a new binding's aborted turn to complete an earlier binding's stop", async () => {
+    const f = await fixture(),
+      turnId = randomUUID();
+    await f.events({ type: "turn-start", turnId, revision: 1 });
+    const input = f.control("stop"),
+      result = f.bridge.request(input);
+    const command = (await f.poll()).body.commands[0];
+    await f.post("/v1/results", {
+      commandId: command.commandId,
+      status: "accepted",
+      revision: 1,
+      turnId,
+    });
+    await result;
+    await f.manage("bridge-disconnect");
+    const challenge = (await f.manage("bridge-challenge")) as { challenge: string };
+    const ticket = JSON.parse(Buffer.from(challenge.challenge, "base64url").toString());
+    const paired = await f.http("/v1/pair", { ...f.hello, ticket: ticket.ticket });
+    expect(paired.status).toBe(200);
+    expect(paired.body.bindingId).not.toBe(f.connection.bindingId);
+    expect(
+      (
+        await f.http(
+          "/v1/events",
+          {
+            nativeId: f.target.nativeId,
+            cwd: f.target.workspace,
+            instanceId: f.hello.instanceId,
+            bindingId: paired.body.bindingId,
+            leaseId: paired.body.leaseId,
+            events: [
+              {
+                seq: 1,
+                event: { type: "turn-complete", turnId, revision: 2, text: "", aborted: true },
+              },
+            ],
+          },
+          paired.body.token,
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      f.bridge.receipt(
+        readControlReceipt(f.options.dataDir, {
+          requestId: input.requestId,
+          deviceId: input.deviceId,
+        }),
+      ),
+    ).toMatchObject({ status: "accepted", completionObserved: false });
   });
   it("preserves terminal permission and question ownership", async () => {
     const f = await fixture();

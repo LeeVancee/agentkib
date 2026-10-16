@@ -935,6 +935,31 @@ describe("Claude Code native session plugin", () => {
     expect(f.results().at(-1)).toMatchObject({ status: "accepted", turnId });
   });
 
+  it("cancels a streaming turn once even when text advances before command execution", async () => {
+    const f = await fixture({ experiment: false });
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal input", turnId });
+    await f.flush();
+    const revision = f.snapshots().at(-1).revision;
+    const command = { commandId: randomUUID(), kind: "stop", turnId, expectedRevision: revision };
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/commands"))
+        await collectStream(
+          f.stream(turnId, [
+            { kind: "text", text: "first delta" },
+            { kind: "text", text: "second delta" },
+          ]),
+        );
+    });
+    await f.deliver(command);
+    const accepted = f.results().at(-1);
+    expect(accepted).toMatchObject({ status: "accepted", turnId, revision });
+    expect(f.stops).toBe(1);
+    await f.deliver(command);
+    expect(f.results().at(-1)).toEqual(accepted);
+    expect(f.stops).toBe(1);
+  });
+
   it("forwards native chunks and results unchanged, excluding thinking from the bridge", async () => {
     const f = await fixture();
     const turnId = randomUUID();

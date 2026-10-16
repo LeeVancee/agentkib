@@ -19,7 +19,7 @@ Native acceptance is tied to each QA report's revision and Agent version. Curren
 | Codex Desktop follower / managed | Existing compatibility gates unchanged | Current production paths retained. |
 | Codex shared app-server | CLI 0.155.1, isolated macOS probe | Verification only; no new production mode or daemon installation. |
 
-Current native and synthetic results are recorded separately in [connection QA](../qa/native-session-connection-2026-10-16.md). See [Claude connection instructions](CLAUDE-NATIVE-CONNECTION.md).
+Current native and synthetic results are recorded separately in [connection QA](../qa/native-session-connection-2026-10-16.md). Subsequent Haiku 5.5 and Luna6 checks distinguish model responses from complete-chain acceptance in [real-model QA](../qa/native-session-real-model-2026-10-16.md). See [Claude connection instructions](CLAUDE-NATIVE-CONNECTION.md).
 
 原会话连接与托管执行分别验收。Claude 原连接暂限 macOS CLI 2.1.301 与主动安装的插件；审批和问题在原终端处理。Codex 共享 app-server 本轮只验证，不替换现有生产链路。
 

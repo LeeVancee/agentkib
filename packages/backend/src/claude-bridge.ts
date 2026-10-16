@@ -34,6 +34,7 @@ import {
   claimManagedCommand,
   dispatchManagedCommand,
   finishManagedCommand,
+  observeManagedCommandCompletion,
   readUnknownManagedCommands,
   replayManagedCommand,
 } from "./managed-ledger";
@@ -87,7 +88,7 @@ type Connection = {
   pending: Pending | null;
   wake?: () => void;
   pollActive: boolean;
-  completed: Set<string>;
+  completed: Map<string, boolean>;
 };
 interface BridgeOptions {
   dataDir: string;
@@ -1015,7 +1016,7 @@ export class ClaudeBridge {
                   row,
                   lateClaim.requestId,
                   input.status === "accepted" ? "accepted" : "not-dispatched",
-                  !!input.turnId && connection.completed.has(input.turnId),
+                  !!input.turnId && connection.completed.get(input.turnId) === true,
                 ),
               );
             this.#publish(row.target.sessionId);
@@ -1050,10 +1051,20 @@ export class ClaudeBridge {
         if (!pending) throw new Error("missing-bridge-command");
         if (input.status === "accepted" && pending.command.kind === "send" && !input.turnId)
           throw new Error("missing-native-turn");
+        if (
+          input.status === "accepted" &&
+          pending.command.kind === "stop" &&
+          input.turnId !== pending.command.turnId
+        )
+          throw new Error("bridge-turn-mismatch");
         if (input.status === "accepted" && row.inflight?.commandId === input.commandId)
           row.inflight.turnId = input.turnId!;
         const completed =
-          input.status === "accepted" && !!input.turnId && connection.completed.has(input.turnId);
+          input.status === "accepted" &&
+          !!input.turnId &&
+          (pending.command.kind === "stop"
+            ? connection.completed.get(input.turnId) === true
+            : connection.completed.has(input.turnId));
         if (completed && row.inflight?.commandId === input.commandId) row.inflight = null;
         if (input.status === "rejected" && row.inflight?.commandId === input.commandId)
           row.inflight = null;
@@ -1091,7 +1102,7 @@ export class ClaudeBridge {
       gap: false,
       pending: null,
       pollActive: false,
-      completed: new Set(),
+      completed: new Map(),
     };
     this.#connections.set(row.target.sessionId, connection);
     this.#publish(row.target.sessionId);
@@ -1168,9 +1179,12 @@ export class ClaudeBridge {
     connection: Connection,
     event: Extract<ClaudeBridgeEvent, { type: "turn-complete" }>,
   ): void {
-    connection.completed.add(event.turnId);
+    connection.completed.set(
+      event.turnId,
+      event.aborted || connection.completed.get(event.turnId) === true,
+    );
     if (connection.completed.size > 256)
-      connection.completed.delete(connection.completed.values().next().value!);
+      connection.completed.delete(connection.completed.keys().next().value!);
     if (row.inflight?.turnId === event.turnId) {
       const requestId = row.inflight.requestId;
       row.inflight = null;
@@ -1181,17 +1195,19 @@ export class ClaudeBridge {
       });
     }
     if (event.aborted)
-      for (const command of readUnknownManagedCommands(
+      observeManagedCommandCompletion(
         this.options.dataDir,
         row.target.sessionId,
-      )) {
-        if (command.evidence?.operation === "stop" && command.evidence.turnId === event.turnId)
-          finishManagedCommand(
-            this.options.dataDir,
-            command.requestId,
-            this.#result(row, command.requestId, "accepted", true),
-          );
-      }
+        {
+          operation: "stop",
+          executionMode: "claude-follower",
+          bindingId: row.bindingId,
+          nativeId: row.target.nativeId,
+          workspaceId: row.target.workspaceId,
+          turnId: event.turnId,
+        },
+        this.#result(row, "", "accepted", true),
+      );
     this.options.publish(
       row.target.sessionId,
       "invalidate",

@@ -66,6 +66,7 @@ import {
 } from "@/features/sessions/session-catalog";
 import { useConversationCatalog } from "@/features/sessions/conversation-catalog";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
+import { withAsyncCleanup } from "@/lib/utils";
 
 type SessionFilter = "current" | "archived" | "metadata" | "all";
 type AgentFilter = "all" | ConversationSessionSummary["agent"];
@@ -142,6 +143,9 @@ export function WorkspaceSessionsPage({
   targetAgents: AgentKind[];
 }) {
   const { formatDateTime, formatRelativeTime, localizeMessage, tr } = useI18n();
+  const [enabling, setEnabling] = useState(false);
+  const [enableError, setEnableError] = useState("");
+  const enableLock = useRef(false);
   const [showClaude, setShowClaude] = useState(false);
   const [cursorBridgeWorkspaceId, setCursorBridgeWorkspaceId] = useState<string>();
   const [cursorBindingId, setCursorBindingId] = useState("");
@@ -191,6 +195,30 @@ export function WorkspaceSessionsPage({
   >();
   const consumedInitialSession = useRef<string | undefined>(undefined);
   const revealSession = useSessionViewStore((state) => state.revealSession);
+
+  const enableIndex = async () => {
+    if (enableLock.current) return;
+    enableLock.current = true;
+    setEnabling(true);
+    setEnableError("");
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await onRuntimeChanged(true);
+        } catch (error) {
+          setEnableError(localizeMessage(error));
+        }
+      },
+      () => {
+        enableLock.current = false;
+        setEnabling(false);
+      },
+    );
+  };
+
+  useEffect(() => {
+    if (enabled) setEnableError("");
+  }, [enabled]);
 
   const onCursorStatusChange = (status: CursorBridgeStatus | undefined) => {
     if (!status || workspace.remote) return;
@@ -407,7 +435,15 @@ export function WorkspaceSessionsPage({
               {tr("conversations.settingsTitle")}
             </span>
           </div>
-          <Button onClick={() => void onRuntimeChanged(true)}>{tr("conversations.enable")}</Button>
+          {enableError && (
+            <p role="alert" className="text-sm text-destructive break-words">
+              {enableError}
+            </p>
+          )}
+          <Button disabled={enabling} aria-busy={enabling} onClick={() => void enableIndex()}>
+            {enabling && <RefreshCw className="animate-spin" size={16} />}
+            {tr(enabling ? "sessions.enabling" : "conversations.enable")}
+          </Button>
         </div>
       </div>
     );

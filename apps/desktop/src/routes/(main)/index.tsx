@@ -7,6 +7,7 @@ import { HomeSkeleton } from "@/features/home/HomeSkeleton";
 import { api } from "@/core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { useAppStore } from "@/stores/app-store";
+import { useAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { desktopApi } from "@/core/desktop";
 import { homeBenchmarkOutcome } from "@/features/home/home-benchmark";
 import { useConversationCatalog } from "@/features/sessions/conversation-catalog";
@@ -32,7 +33,8 @@ import {
 } from "@/features/home/home-query";
 
 function HomeRoute() {
-  const { localizeMessage } = useI18n();
+  const { localizeMessage, tr } = useI18n();
+  const { app } = useAppNavigationContext();
   const navigate = useNavigate();
   const runtime = useAppStore((state) => state.runtime);
   const setRuntime = useAppStore((state) => state.setRuntime);
@@ -188,9 +190,10 @@ function HomeRoute() {
     await navigate({ to: path as never, params: { workspaceId: workspace.id } as never });
   };
   const addScanRoot = async () => {
-    const selected = await api.pickDirectory();
+    const selected = await api.pickDirectory(tr("dialog.addScanRoot"));
     if (typeof selected === "string") {
       await api.addScanRoot(selected, 5);
+      await queryClient.invalidateQueries({ queryKey: homeKeys.scanRoots() });
       await api.requestRefresh("discovery", true);
     }
   };
@@ -211,7 +214,12 @@ function HomeRoute() {
       insights={insightsSummary}
       uniqueAssetCount={groupedCatalog.filter((asset) => asset.scope === "workspace").length}
       assetCounts={assetCounts}
-      onShowInsights={() => void navigate({ to: "/insights" })}
+      onShowActivity={() =>
+        void navigate({
+          to: "/settings",
+          search: { settingsSection: "diagnostics", settingsTarget: "diagnostics-activity" },
+        })
+      }
       onShowWorkspaces={() => void navigate({ to: "/workspaces" })}
       onShowAgents={() => void navigate({ to: "/agents" })}
       recentContinuations={recentContinuations}
@@ -240,6 +248,7 @@ function HomeRoute() {
       onOpenAssets={(section) =>
         void navigate({ to: "/catalog", search: { assetSection: section } as never })
       }
+      onAddWorkspace={app.addWorkspace}
       onAddRoot={addScanRoot}
       onRefresh={() => {
         void Promise.all([

@@ -1183,8 +1183,8 @@ export class SkillManager {
     return target;
   }
 
-  async #inventoryRoots(): Promise<Target[]> {
-    const targets = await this.targets();
+  async #inventoryRoots(currentTargets: readonly Target[]): Promise<Target[]> {
+    const targets = [...currentTargets];
     const home = this.#home();
     const extra: Array<{
       path: string;
@@ -1300,9 +1300,13 @@ export class SkillManager {
   }
 
   async inventory(): Promise<{ observations: Observation[]; warnings: string[] }> {
+    return this.#inventory(await this.targets());
+  }
+
+  async #inventory(targets: readonly Target[]) {
     const observations = new Map<string, Observation>();
     const warnings: string[] = [];
-    for (const target of await this.#inventoryRoots()) {
+    for (const target of await this.#inventoryRoots(targets)) {
       const pathParts = path.resolve(target.root).split(path.sep);
       const compatibilityRoot =
         path.basename(target.root) === "skills" &&
@@ -1458,12 +1462,15 @@ export class SkillManager {
         observation.status = "unverified";
     }
     const unverifiedOwnership: string[] = [];
-    for (const receipt of await this.#allReceipts({
-      tolerateUnavailableLibraries: true,
-      tolerateUnreadableReceipts: true,
-      warnings,
-      unverified: unverifiedOwnership,
-    })) {
+    for (const receipt of await this.#allReceipts(
+      {
+        tolerateUnavailableLibraries: true,
+        tolerateUnreadableReceipts: true,
+        warnings,
+        unverified: unverifiedOwnership,
+      },
+      targets,
+    )) {
       if (receipt.status === "inactive") continue;
       for (const observation of output) {
         if (!sameEntryPath(observation.path, receipt.target)) continue;
@@ -1482,8 +1489,8 @@ export class SkillManager {
       }
     }
     const pendingTargets = [
-      ...(await this.#allReservations()).map((row) => ({ destination: row.target })),
-      ...(await this.#syncRecoveryTargets()),
+      ...(await this.#allReservations(targets)).map((row) => ({ destination: row.target })),
+      ...(await this.#syncRecoveryTargets(targets)),
     ];
     for (const observation of output)
       if (pendingTargets.some((row) => sameEntryPath(row.destination, observation.path))) {
@@ -1763,6 +1770,7 @@ export class SkillManager {
       warnings?: string[];
       unverified?: string[];
     } = {},
+    targets?: readonly Target[],
   ) {
     const files = new Set([this.#receiptFile("personal", this.#root)]);
     const addLibraryReceipts = async (library: string) => {
@@ -1781,7 +1789,7 @@ export class SkillManager {
       for (const library of await this.#readLibraries("workspace", workspace.path))
         await addLibraryReceipts(library);
     }
-    for (const target of await this.targets()) {
+    for (const target of targets ?? (await this.targets())) {
       if (target.scope !== "personal") continue;
       for (const library of await this.#readLibraries("personal", target.scope_root))
         await addLibraryReceipts(library);
@@ -1813,7 +1821,7 @@ export class SkillManager {
     return groups.flat();
   }
 
-  async #allReservations(): Promise<Deployment[]> {
+  async #allReservations(targets?: readonly Target[]): Promise<Deployment[]> {
     const files = new Set([this.#reservationFile("personal", this.#root)]);
     for (const workspace of this.#workspaceList()) {
       files.add(this.#reservationFile("workspace", workspace.path));
@@ -1822,7 +1830,7 @@ export class SkillManager {
         files.add(path.join(library, "skill-deployment-reservations.json"));
       }
     }
-    for (const target of await this.targets()) {
+    for (const target of targets ?? (await this.targets())) {
       if (target.scope !== "personal") continue;
       for (const library of await this.#readLibraries("personal", target.scope_root)) {
         await this.#assertLibraryAvailable(library);
@@ -1833,11 +1841,11 @@ export class SkillManager {
     return groups.flat();
   }
 
-  async #syncRecoveryTargets() {
+  async #syncRecoveryTargets(targets?: readonly Target[]) {
     const roots = new Set([this.#root]);
     for (const workspace of this.#workspaceList())
       for (const root of await this.#readLibraries("workspace", workspace.path)) roots.add(root);
-    for (const target of await this.targets()) {
+    for (const target of targets ?? (await this.targets())) {
       if (target.scope !== "personal") continue;
       for (const root of await this.#readLibraries("personal", target.scope_root)) roots.add(root);
     }
@@ -1845,16 +1853,24 @@ export class SkillManager {
   }
 
   async assertSyncOperationAvailable(destination: string, operationId?: string): Promise<void> {
+    return this.#assertSyncOperationAvailable(destination, operationId, await this.targets());
+  }
+
+  async #assertSyncOperationAvailable(
+    destination: string,
+    operationId: string | undefined,
+    targets: readonly Target[],
+  ): Promise<void> {
     const pending = [
-      ...(await this.#allReservations()).map((row) => ({
+      ...(await this.#allReservations(targets)).map((row) => ({
         operation_id: row.operation_id,
         destination: row.target,
       })),
-      ...(await this.#activeJournals()).map(({ journal }) => ({
+      ...(await this.#activeJournals(targets)).map(({ journal }) => ({
         operation_id: journal.operation_id,
         destination: journal.destination,
       })),
-      ...(await this.#syncRecoveryTargets()),
+      ...(await this.#syncRecoveryTargets(targets)),
     ];
     if (
       pending.some(
@@ -1915,17 +1931,23 @@ export class SkillManager {
   }
 
   async listDeployments(ignoreSyncOperationId?: string) {
-    const inventory = await this.inventory();
+    // Reuse discovery only within this read. Writers retain their separate checks
+    // before and after staging, and the next read always discovers targets again.
+    const targets = await this.targets();
+    const inventory = await this.#inventory(targets);
     const observations = inventory.observations;
-    const deployments = await this.#allReceipts({
-      tolerateUnavailableLibraries: true,
-      tolerateUnreadableReceipts: true,
-    });
-    const journals = await this.#activeJournals();
-    const reservations = (await this.#allReservations()).filter(
+    const deployments = await this.#allReceipts(
+      {
+        tolerateUnavailableLibraries: true,
+        tolerateUnreadableReceipts: true,
+      },
+      targets,
+    );
+    const journals = await this.#activeJournals(targets);
+    const reservations = (await this.#allReservations(targets)).filter(
       (row) => row.operation_id !== ignoreSyncOperationId,
     );
-    const syncTargets = (await this.#syncRecoveryTargets()).filter(
+    const syncTargets = (await this.#syncRecoveryTargets(targets)).filter(
       (row) => row.operation_id !== ignoreSyncOperationId,
     );
     const known = await Promise.all(
@@ -2011,7 +2033,7 @@ export class SkillManager {
     if (params.deployment_id && params.observation_id)
       throw new Error("Choose exactly one deployment or observation ID");
     const targets = await this.targets();
-    const receipts = await this.#allReceipts();
+    const receipts = await this.#allReceipts({}, targets);
     let receipt: Deployment | null = null;
     let destination: string;
     if (params.deployment_id) {
@@ -2021,7 +2043,7 @@ export class SkillManager {
         throw new Error("Skill deployment belongs to another library");
       destination = receipt.target;
     } else if (params.observation_id) {
-      const observation = (await this.inventory()).observations.find(
+      const observation = (await this.#inventory(targets)).observations.find(
         (item) => item.id === params.observation_id,
       );
       if (!observation) throw new Error("Skill observation no longer exists");
@@ -2044,7 +2066,7 @@ export class SkillManager {
     );
     if (!target || !target.writable)
       throw new Error(target?.reason ?? "Skill location is not a writable native target");
-    await this.assertSyncOperationAvailable(destination, operationId);
+    await this.#assertSyncOperationAvailable(destination, operationId, targets);
     const rootIdentity = physicalPathIdentity(this.#root);
     const entryIdentity = mode === "ownership" ? await this.#ownershipIdentity(destination) : null;
     const targetHash = await this.#currentHash(destination, mode);
@@ -2178,9 +2200,9 @@ export class SkillManager {
       throw new Error("Unsupported Skill deployment operation");
     const action = operation as DeploymentOperation;
     const currentTargets = await this.targets();
-    const receipts = await this.#allReceipts();
-    const allReservations = await this.#allReservations();
-    const syncTargets = await this.#syncRecoveryTargets();
+    const receipts = await this.#allReceipts({}, currentTargets);
+    const allReservations = await this.#allReservations(currentTargets);
+    const syncTargets = await this.#syncRecoveryTargets(currentTargets);
     let selected: Target[];
     let libraryId: string | null;
     let receipt: Deployment | null = null;
@@ -2466,8 +2488,10 @@ export class SkillManager {
     }
   }
 
-  async #activeJournals(): Promise<Array<{ directory: string; journal: Journal }>> {
-    const targets = await this.targets();
+  async #activeJournals(
+    currentTargets?: readonly Target[],
+  ): Promise<Array<{ directory: string; journal: Journal }>> {
+    const targets = currentTargets ?? (await this.targets());
     const roots = new Set(targets.map((target) => path.dirname(target.root)));
     const journals: Array<{ directory: string; journal: Journal }> = [];
     for (const root of roots) {
@@ -2607,7 +2631,10 @@ export class SkillManager {
     operationId: string,
   ) {
     if (plan.conflicts.length) throw new Error(plan.conflicts.join("; "));
-    const current = (await this.targets()).find((item) => item.id === plan.target.id);
+    // Share discovery only within this locked validation phase; staging is
+    // followed by an independent discovery and content/ownership check below.
+    const currentTargets = await this.targets();
+    const current = currentTargets.find((item) => item.id === plan.target.id);
     if (!current || !current.writable || !samePath(current.root, plan.target.root))
       throw new Error("Skill target changed after preview");
     const mode = plan.syncMutation === "detach" ? "ownership" : "package";
@@ -2626,12 +2653,12 @@ export class SkillManager {
       (currentReceipt && JSON.stringify(currentReceipt) !== JSON.stringify(plan.receipt))
     )
       throw new Error("Skill deployment ownership changed after preview");
-    const otherOwners = (await this.#allReceipts()).filter(
+    const otherOwners = (await this.#allReceipts({}, currentTargets)).filter(
       (item) => item.status !== "inactive" && sameEntryPath(item.target, plan.destination),
     );
     if (otherOwners.some((item) => item.id !== currentReceipt?.id))
       throw new Error("Skill destination is owned by another library");
-    await this.assertSyncOperationAvailable(plan.destination, operationId);
+    await this.#assertSyncOperationAvailable(plan.destination, operationId, currentTargets);
     const sourceHash = plan.source ? await this.#currentHash(plan.source) : null;
     if (sourceHash !== plan.sourceHash) throw new Error("Skill source changed after preview");
     if (

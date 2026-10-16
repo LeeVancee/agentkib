@@ -145,6 +145,7 @@ export function WorkspacesPage({
       <div className="grid items-start gap-5 min-[1024px]:grid-cols-[minmax(360px,1fr)_minmax(0,1.25fr)]">
         <WorkspaceListPanel
           workspaces={paginatedWorkspaces}
+          totalCount={workspaces.length}
           selectedId={selectedId}
           pageStart={pageStart}
           pageEnd={pageEnd}
@@ -230,7 +231,13 @@ export function discoveryStatusSummary(
   };
 }
 
-export function WorkspacesLoadError({ onRetry }: { onRetry: () => void }) {
+export function WorkspacesLoadError({
+  onRetry,
+  retrying = false,
+}: {
+  onRetry: () => void;
+  retrying?: boolean;
+}) {
   const { tr } = useI18n();
   return (
     <section
@@ -240,7 +247,9 @@ export function WorkspacesLoadError({ onRetry }: { onRetry: () => void }) {
       <FolderGit2 size={26} className="text-destructive" />
       <h2 className="text-base font-semibold">{tr("nav.workspaces")}</h2>
       <p className="max-w-md text-sm text-muted-foreground">{tr("errors.generic")}</p>
-      <Button onClick={onRetry}>{tr("runtime.retry")}</Button>
+      <Button disabled={retrying} onClick={onRetry}>
+        {tr("runtime.retry")}
+      </Button>
     </section>
   );
 }

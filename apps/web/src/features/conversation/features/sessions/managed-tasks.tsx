@@ -1,5 +1,5 @@
 import { managedText } from "./managed-copy";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useSessionNavigate } from "./session-navigation";
 import { subscribeSessionInvalidation } from "./session-events";
 import { Plus } from "lucide-react";
@@ -13,8 +13,10 @@ import {
 import { Button } from "../../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../../components/ui/dialog";
 import { useSession } from "./session-context";
-import { canConfirmClaudeHandoff } from "./claude-handoff";
+import { canConfirmClaudeHandoff, claudeHandoffBlockReason } from "./claude-handoff";
+import { managedControlCopy, type ManagedControlBlockReason } from "./managed-control-copy";
 import { catalogCopy } from "../catalog/catalog-copy";
+import { dictionaries } from "../../i18n";
 import { sessionAgentCopy } from "./session-agent-copy";
 import {
   forgetPending,
@@ -58,6 +60,8 @@ export function ManagedTasks({
       ? "claude-code"
       : "codex";
   const [handoffFingerprint, setHandoffFingerprint] = useState<string>();
+  const [handoffInspectPending, setHandoffInspectPending] = useState(false);
+  const controlHintId = useId();
   const [options, setOptions] = useState<Options>();
   const [workspaceId, setWorkspaceId] = useState("");
   const [model, setModel] = useState("");
@@ -206,6 +210,7 @@ export function ManagedTasks({
   useEffect(() => {
     setConfirmed(false);
     setHandoffFingerprint(undefined);
+    setHandoffInspectPending(false);
     setError("");
     if (!open || !access?.device?.manage || !access.experimentalEnabled) return;
     const abort = new AbortController();
@@ -228,6 +233,7 @@ export function ManagedTasks({
         if (!abort.signal.aborted) setError(e instanceof ApiError ? e.code : "connection_failed");
       });
     if (!create && agent === "claude-code") {
+      setHandoffInspectPending(true);
       void client
         .managedInspect(selected, agent, abort.signal)
         .then((value) => {
@@ -236,6 +242,9 @@ export function ManagedTasks({
         })
         .catch((e: unknown) => {
           if (!abort.signal.aborted) setError(e instanceof ApiError ? e.code : "connection_failed");
+        })
+        .finally(() => {
+          if (!abort.signal.aborted) setHandoffInspectPending(false);
         });
     }
     return () => {
@@ -265,6 +274,25 @@ export function ManagedTasks({
   const managed =
     live?.executionMode === "codex-managed" ||
     (live?.executionMode === "claude-managed" && live.status !== "released");
+  const claudeBlockReason =
+    !managed && agent === "claude-code" ? claudeHandoffBlockReason(session) : undefined;
+  const controlBlockReason: ManagedControlBlockReason | undefined = busy
+    ? "processing"
+    : uncertain
+      ? "uncertain"
+      : live?.activity === "compacting"
+        ? "compacting"
+        : !options?.available
+          ? "tool"
+          : claudeBlockReason
+            ? claudeBlockReason
+            : !managed && !confirmed
+              ? "confirmation"
+              : !managed && agent === "claude-code" && !handoffFingerprint
+                ? handoffInspectPending
+                  ? "fingerprintLoading"
+                  : "fingerprintUnavailable"
+                : undefined;
   async function run(operation: "create" | "adopt" | "release" | "reconcile") {
     if (
       flight.current ||
@@ -354,11 +382,11 @@ export function ManagedTasks({
       if (generation === epoch.current)
         setError(
           e instanceof ApiError
-            ? `${e.code}${e.controlOutcome === "unknown" ? managedText(locale, ": refresh and verify before trying again", "：请刷新核对，勿直接重复操作") : ""}`
+            ? `${e.code}${e.controlOutcome === "unknown" ? managedText(locale, ": refresh and check the outcome; do not repeat the operation", "：请刷新检查结果，勿重复操作") : ""}`
             : managedText(
                 locale,
                 "Connection lost. Verify the task list before retrying.",
-                "连接中断，请先核对任务列表再重试。",
+                "连接中断，请先检查任务列表再重试。",
               ),
         );
     } finally {
@@ -371,8 +399,8 @@ export function ManagedTasks({
       <p className="text-sm text-muted-foreground">
         {managedText(
           locale,
-          "AgentKib must stay running. Tasks use workspace access and request approval when needed.",
-          "AgentKib 需要保持后台运行。任务使用工作区权限，需要审批时等待你的确认。",
+          "AgentKib must stay running on the host (the computer running the Agent). Tasks use workspace access and request approval when needed.",
+          "AgentKib 需要在主机（运行 Agent 的电脑）上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
         )}
       </p>
       {create && (
@@ -399,15 +427,15 @@ export function ManagedTasks({
           <p>
             {managedText(
               locale,
-              "A previous result is unknown. Wait for its saved receipt before another operation.",
-              "上次结果尚未确认，请等待已保存的请求回执后再执行新的操作。",
+              "The previous outcome is unconfirmed. Wait for the saved request's status before another operation.",
+              "上次操作结果尚未确认。请等待系统确认已保存的请求，再执行新的操作。",
             )}
           </p>
           <p>
             {managedText(
               locale,
-              "The saved request is checked automatically. Refreshing cannot authorize a replay.",
-              "正在自动查询已保存的请求回执；刷新不会授权重新执行。",
+              "The saved request status is checked automatically. Refreshing does not run the operation again.",
+              "正在自动查询已保存请求的处理状态；刷新不会重新执行操作。",
             )}
           </p>
         </div>
@@ -531,11 +559,15 @@ export function ManagedTasks({
             <>
               <p>
                 {managed
-                  ? managedText(locale, "Execution belongs to AgentKib", "当前由 AgentKib 执行")
+                  ? managedText(
+                      locale,
+                      "This session has been handed over to AgentKib",
+                      "此会话已交给 AgentKib",
+                    )
                   : managedText(
                       locale,
-                      "Execution belongs to the original client",
-                      "当前由原客户端执行",
+                      "This session has not been handed over to AgentKib",
+                      "此会话尚未交给 AgentKib",
                     )}
               </p>
               {!managed && (
@@ -547,12 +579,13 @@ export function ManagedTasks({
                   />
                   {managedText(
                     locale,
-                    "I have stopped the turn, handled pending requests and background commands, and closed the original execution client. Continue with the same task ID.",
-                    "我已结束当前轮次、处理待审批事项和后台命令，并关闭原执行客户端。使用原任务 ID 继续。",
+                    "I have stopped the turn, handled pending requests and background commands, and closed the original execution client. Continue with the same session ID.",
+                    "我已结束当前轮次、处理待审批事项和后台命令，并关闭原执行客户端。使用原会话 ID 继续。",
                   )}
                 </label>
               )}
               <Button
+                aria-describedby={controlBlockReason ? controlHintId : undefined}
                 disabled={
                   busy ||
                   uncertain ||
@@ -564,12 +597,17 @@ export function ManagedTasks({
                 onClick={() => void run(managed ? "release" : "adopt")}
               >
                 {managed
-                  ? managedText(locale, "Release to original client", "释放给原客户端")
+                  ? managedText(locale, "Return to original client", "交还原客户端")
                   : managedText(locale, "Hand over to AgentKib", "交给 AgentKib")}
               </Button>
+              {controlBlockReason && (
+                <p id={controlHintId} role="status" className="text-sm text-muted-foreground">
+                  {managedControlCopy[locale][controlBlockReason]}
+                </p>
+              )}
               {managed && (
                 <Button variant="outline" disabled={busy} onClick={() => void run("reconcile")}>
-                  {managedText(locale, "Verify previous outcome", "核对上次执行结果")}
+                  {managedText(locale, "Check previous outcome", "检查上次操作结果")}
                 </Button>
               )}
             </>
@@ -586,7 +624,7 @@ export function ManagedTasks({
           {create && <Plus size={16} />}
           {create
             ? managedText(locale, "New task", "新建任务")
-            : managedText(locale, "Execution", "执行管理")}
+            : managedText(locale, "Execution management", "执行管理")}
         </Button>
       )}
       <Dialog
@@ -598,11 +636,11 @@ export function ManagedTasks({
           }
         }}
       >
-        <DialogContent>
+        <DialogContent closeLabel={dictionaries[locale].close}>
           <DialogTitle>
             {create
               ? managedText(locale, "New task", "新建任务")
-              : managedText(locale, "Execution ownership", "执行归属")}
+              : managedText(locale, "Execution management", "执行管理")}
           </DialogTitle>
           {content}
         </DialogContent>

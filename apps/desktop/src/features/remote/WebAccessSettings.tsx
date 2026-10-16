@@ -38,6 +38,34 @@ import {
 
 // setTimeout 的最大延迟约 24.8 天，超过会立即触发。
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+const configFields = [
+  "enabled",
+  "port",
+  "externalOrigin",
+  "experimentalEnabled",
+  "lanAddress",
+  "allowPlaintext",
+  "allowedWorkspaceIds",
+  "extraRoots",
+  "previewBytesPerSecond",
+  "relay",
+] as const;
+
+function mergeConfigDraft(draft: WebConfig, previous: WebConfig, next: WebConfig): WebConfig {
+  const merged = { ...next };
+  for (const key of configFields) {
+    // Remote connection operations can update config while unrelated form edits are unsaved.
+    if (JSON.stringify(draft[key]) !== JSON.stringify(previous[key]))
+      Object.assign(merged, { [key]: draft[key] });
+  }
+  return merged;
+}
+
+function comparableConfig(config: WebConfig) {
+  return configFields.map((key) =>
+    key === "extraRoots" ? (config.extraRoots?.map((root) => root.path) ?? []) : config[key],
+  );
+}
 
 /**
  * 返回"当前时间"，只在下一个截止时间到达时刷新一次。
@@ -74,7 +102,9 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
     status?.devices.some((device) => device.accessMode !== "full") ||
     Boolean(status?.pending.length);
   const [config, setConfig] = useState<WebConfig>();
-  const [error, setError] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [operationError, setOperationError] = useState<"save" | "request">();
+  const [saveState, setSaveState] = useState<"saved" | "failed">();
   const [busy, setBusy] = useState(false);
   const [activeOperation, setActiveOperation] = useState<WebAdminRequest["operation"]>();
   const [codeCopied, setCodeCopied] = useState(false);
@@ -82,6 +112,10 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   const [relayBroker, setRelayBroker] = useState("");
   const [frpcPath, setFrpcPath] = useState("");
   const frpcHintId = useId();
+  const invitationId = useId();
+  const invitationHintId = useId();
+  const generateHintId = useId();
+  const saveHintId = useId();
   const [inviteCode, setInviteCode] = useState("");
   const [grants, setGrants] = useState<
     Record<
@@ -101,46 +135,68 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   >({});
   const mounted = useRef(false);
   const locked = useRef(false);
+  const serverConfig = useRef<WebConfig | undefined>(undefined);
   const now = useDeadlineClock(status?.code?.expiresAt, status?.relay?.retryAt);
   useEffect(() => {
     mounted.current = true;
     const unsubscribe = subscribeWebStatus(target, {
       status: (next) => {
+        const previous = serverConfig.current;
+        serverConfig.current = next.config;
         setStatus(next);
-        setConfig((old) => old ?? next.config);
-        setRelayBroker((old) => old || next.config.relay?.brokerUrl || "https://api.agentkib.com");
-        setFrpcPath((old) => old || next.config.relay?.frpcPath || "");
+        setConfig((old) =>
+          old && previous ? mergeConfigDraft(old, previous, next.config) : next.config,
+        );
+        setRelayBroker((old) =>
+          !previous || old === (previous.relay?.brokerUrl || "https://api.agentkib.com")
+            ? next.config.relay?.brokerUrl || "https://api.agentkib.com"
+            : old,
+        );
+        setFrpcPath((old) =>
+          !previous || old === (previous.relay?.frpcPath || "")
+            ? next.config.relay?.frpcPath || ""
+            : old,
+        );
       },
-      error: () => setError(c.unavailable),
-      success: () => setError(""),
+      error: () => setLoadFailed(true),
+      success: () => setLoadFailed(false),
     });
     return () => {
       mounted.current = false;
       unsubscribe();
     };
-  }, [c.unavailable, lan, target]);
+  }, [target]);
   async function run(input: WebAdminRequest) {
     if (locked.current) return;
     locked.current = true;
     setBusy(true);
     setActiveOperation(input.operation);
-    setError("");
+    setOperationError(undefined);
+    setLoadFailed(false);
     await withAsyncCleanup(
       async () => {
         try {
           const next = await requestWebAdmin({ ...input, ...(lan ? { target } : {}) });
           if (mounted.current) {
             setStatus(next);
-            if (
-              input.operation === "configure" ||
-              input.operation === "relay-start" ||
-              input.operation === "remote-enable" ||
-              input.operation === "relay-stop"
-            )
-              setConfig(next.config);
+            if (input.operation === "configure") {
+              if (next.error === "web_state_save_failed") {
+                setSaveState("failed");
+                setOperationError("save");
+              } else {
+                setConfig(next.config);
+                setExtraRootsText(undefined);
+                setSaveState("saved");
+              }
+            }
+            if (input.operation === "remote-enable" && !next.error)
+              setInviteCode((old) => (old === input.inviteCode ? "" : old));
           }
         } catch {
-          if (mounted.current) setError(c.unavailable);
+          if (mounted.current) {
+            setOperationError(input.operation === "configure" ? "save" : "request");
+            if (input.operation === "configure") setSaveState("failed");
+          }
         }
       },
       () => {
@@ -177,10 +233,46 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
     status?.running &&
     !status.config.relay?.enabled &&
     (!status.relay || status.relay.phase === "disabled");
+  const configToSave = config
+    ? {
+        ...config,
+        ...(status?.config.relay?.enabled
+          ? { externalOrigin: status.config.externalOrigin, relay: status.config.relay }
+          : {}),
+        ...(extraRootsText === undefined
+          ? {}
+          : {
+              extraRoots: extraRootsText
+                .split("\n")
+                .map((line) => line.trim())
+                .filter(Boolean)
+                .map((path, index) => ({
+                  id: `extra-${index}`,
+                  name: path.split("/").filter(Boolean).at(-1) ?? path,
+                  path,
+                })),
+            }),
+      }
+    : undefined;
+  const unsaved =
+    configToSave &&
+    status &&
+    (saveState === "failed" ||
+      JSON.stringify(comparableConfig(configToSave)) !==
+        JSON.stringify(comparableConfig(status.config)));
+  const generateHint = !status?.running
+    ? lan
+      ? c.generateNeedsLanService
+      : c.generateNeedsService
+    : !lan && !manualAccess && status.relay?.phase !== "ready"
+      ? c.generateNeedsConnection
+      : undefined;
   const levelLabel = (level: WebAccessLevel) =>
     level === "read" ? c.readOnlyAccess : c.fullAccess;
-  const generateCode = () =>
-    run({ operation: "generate-code", ...(codeAccess ? { access: codeLevel } : {}) });
+  const generateCode = () => {
+    if (generateHint) return;
+    return run({ operation: "generate-code", ...(codeAccess ? { access: codeLevel } : {}) });
+  };
   const accessLevelSelect = codeAccess ? (
     <Select
       value={codeLevel}
@@ -230,6 +322,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
     <p>{c.loading}</p>
   ) : (
     <>
+      <SettingsNotice id={saveHintId}>{c.saveHint}</SettingsNotice>
       <SettingsRow>
         <SettingsCopy>
           <strong>{c.enabled}</strong>
@@ -239,6 +332,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
           aria-label={c.enabled}
           checked={config.enabled}
           disabled={busy}
+          aria-describedby={saveHintId}
           onCheckedChange={(enabled) => setConfig({ ...config, enabled })}
         />
       </SettingsRow>
@@ -362,6 +456,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
             <Textarea
               className="w-full rounded-md border bg-background p-2"
               rows={3}
+              disabled={busy}
               value={
                 extraRootsText ?? (config.extraRoots ?? []).map((root) => root.path).join("\n")
               }
@@ -389,27 +484,11 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
           onClick={() =>
             void run({
               operation: "configure",
-              ...config,
-              ...(status?.config.relay?.enabled
-                ? { externalOrigin: status.config.externalOrigin, relay: status.config.relay }
-                : {}),
-              ...(extraRootsText === undefined
-                ? {}
-                : {
-                    extraRoots: extraRootsText
-                      .split("\n")
-                      .map((line) => line.trim())
-                      .filter(Boolean)
-                      .map((path, index) => ({
-                        id: `extra-${index}`,
-                        name: path.split("/").filter(Boolean).at(-1) ?? path,
-                        path,
-                      })),
-                  }),
+              ...configToSave!,
             })
           }
         >
-          {c.save}
+          {activeOperation === "configure" ? c.saving : c.save}
         </Button>
         {(lan || manualAccess) && (
           <>
@@ -417,6 +496,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
             <Button
               variant="outline"
               disabled={busy || !status?.running}
+              aria-describedby={generateHint ? generateHintId : undefined}
               onClick={() => void generateCode()}
             >
               {codeAccess ? c.generateAccess : c.generate}
@@ -424,6 +504,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
           </>
         )}
       </div>
+      {lan && generateHint && <SettingsNotice id={generateHintId}>{generateHint}</SettingsNotice>}
       {manualAccess && (
         <div className="space-y-3 p-4">
           <p className="text-sm text-muted-foreground">{r.manualAccess}</p>
@@ -435,17 +516,39 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   return (
     <SettingsSection title={c.title}>
       {!lan && <RemoteAccountSettings />}
-      <SettingsNotice>{codeAccess ? c.codeScope : c.scope}</SettingsNotice>
+      <SettingsNotice>
+        <p>{codeAccess ? c.codeScope : c.scope}</p>
+        <p>{codeAccess ? c.accessCodeHint : c.pairingCodeHint}</p>
+      </SettingsNotice>
+      {unsaved && (
+        <SettingsNotice tone="warning" role="status">
+          <strong>{c.unsaved}</strong>
+          <p>{c.saveHint}</p>
+        </SettingsNotice>
+      )}
+      {!unsaved && saveState === "saved" && (
+        <SettingsNotice role="status">{c.saved}</SettingsNotice>
+      )}
       {status?.acceptanceSessionId && (
         <SettingsNotice>
           {c.acceptance} <code>{status.acceptanceSessionId}</code>
         </SettingsNotice>
       )}
-      {error && (
-        <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
-          {error}
-        </SettingsNotice>
-      )}
+      {(loadFailed || operationError) &&
+        !(operationError === "save" && status?.error === "web_state_save_failed") && (
+          <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
+            <p>{operationError === "save" ? r.saveFailed : c.unavailable}</p>
+            {!config && (
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={() => void run({ operation: "status" })}
+              >
+                {c.retryLoad}
+              </Button>
+            )}
+          </SettingsNotice>
+        )}
       {status?.error && (
         <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
           {status.error === "port_in_use"
@@ -487,15 +590,21 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
             </SettingsNotice>
           )}
           {!remoteEnabled && (
-            <label className="block">
-              {r.invitation}
+            <div className="space-y-1">
+              <label htmlFor={invitationId}>{r.invitation}</label>
               <Input
+                id={invitationId}
+                aria-describedby={invitationHintId}
                 type="password"
                 autoComplete="off"
                 value={inviteCode}
+                disabled={busy}
                 onChange={(e) => setInviteCode(e.target.value)}
               />
-            </label>
+              <p id={invitationHintId} className="text-xs text-muted-foreground">
+                {c.invitationCodeHint}
+              </p>
+            </div>
           )}
           <div className="flex flex-wrap gap-2">
             <Button
@@ -515,7 +624,6 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
                   ...(inviteCode ? { inviteCode } : {}),
                   ...(status?.relay?.reason === "revoked" ? { reenroll: true } : {}),
                 });
-                setInviteCode("");
               }}
             >
               {remoteEnabled
@@ -541,55 +649,72 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
               : status?.relay?.phase === "ready" && status.pending.length
                 ? r.pendingPhone
                 : r.phases[status?.relay?.phase ?? "disabled"]}
-            {status?.relay?.reason
-              ? ` · ${r.reasons[status.relay.reason]}`
-              : status?.relay?.error
-                ? ` · ${status.relay.error}`
-                : ""}
+            {status?.relay?.reason ? ` · ${r.reasons[status.relay.reason]}` : ""}
           </p>
-          {status?.relay?.failure && status.relay.phase !== "ready" && (
-            <p className="text-xs text-muted-foreground" role="status">
-              {r.failureStages[status.relay.failure.stage]}:{" "}
-              {r.failureCodes[status.relay.failure.code]}
-            </p>
-          )}
-          {status?.relay?.connectorExit && (
-            <p className="text-xs text-muted-foreground">
-              {status.relay.connectorExit.code !== undefined && (
-                <>
-                  {r.exitCode}: {status.relay.connectorExit.code}
-                </>
-              )}
-              {status.relay.connectorExit.signal && (
-                <>
-                  {r.exitSignal}: {status.relay.connectorExit.signal}
-                </>
-              )}
-            </p>
-          )}
           {status?.relay?.retryAt && status.relay.retryAt > now && (
             <p className="text-xs text-muted-foreground">
               {r.retryAt} {formatDateTime(new Date(status.relay.retryAt))}
             </p>
           )}
-          {status?.relay?.channels && status.relay.phase !== "disabled" && (
-            <p className="text-xs text-muted-foreground">
-              {r.control}：{status.relay.channels.control ? "✓" : "…"}
-              {" · "}
-              {r.preview}：{status.relay.channels.preview ? "✓" : "…"}
-            </p>
+          {(status?.relay?.failure || status?.relay?.connectorExit || status?.relay?.channels) && (
+            <Collapsible className="space-y-3">
+              <CollapsibleTrigger className="cursor-pointer text-muted-foreground">
+                {c.diagnostics}
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-3">
+                {status.relay.failure && status.relay.phase !== "ready" && (
+                  <p className="text-xs text-muted-foreground">
+                    {r.failureStages[status.relay.failure.stage]}:{" "}
+                    {r.failureCodes[status.relay.failure.code]}
+                  </p>
+                )}
+                {status.relay.connectorExit && (
+                  <p className="text-xs text-muted-foreground">
+                    {status.relay.connectorExit.code !== undefined && (
+                      <>
+                        {r.exitCode}: {status.relay.connectorExit.code}
+                      </>
+                    )}
+                    {status.relay.connectorExit.signal && (
+                      <>
+                        {r.exitSignal}: {status.relay.connectorExit.signal}
+                      </>
+                    )}
+                  </p>
+                )}
+                {status.relay.channels && status.relay.phase !== "disabled" && (
+                  <p className="text-xs text-muted-foreground">
+                    {r.control}：{status.relay.channels.control ? "✓" : "…"}
+                    {" · "}
+                    {r.preview}：{status.relay.channels.preview ? "✓" : "…"}
+                  </p>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
           )}
           {status?.relay?.certificateWarning && (
             <p role="status" className="text-xs text-muted-foreground">
               {r.certificateWarning}
             </p>
           )}
-          {status?.relay?.phase === "ready" && (
-            <div className="flex flex-wrap items-center gap-2">
-              {accessLevelSelect}
-              <Button variant="outline" disabled={busy} onClick={() => void generateCode()}>
-                {codeAccess ? c.generateAccess : c.generate}
-              </Button>
+          {config && !manualAccess && (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {!generateHint && accessLevelSelect}
+                <Button
+                  variant="outline"
+                  disabled={busy || Boolean(generateHint)}
+                  aria-describedby={generateHint ? generateHintId : undefined}
+                  onClick={() => void generateCode()}
+                >
+                  {codeAccess ? c.generateAccess : c.generate}
+                </Button>
+              </div>
+              {generateHint && (
+                <p id={generateHintId} className="text-xs text-muted-foreground">
+                  {generateHint}
+                </p>
+              )}
             </div>
           )}
           {status?.relay?.phase === "ready" && status.relay.publicUrl && (
@@ -608,6 +733,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
                 <Input
                   type="url"
                   value={relayBroker}
+                  disabled={busy}
                   placeholder="https://api.agentkib.com"
                   onChange={(e) => setRelayBroker(e.target.value)}
                 />
@@ -616,6 +742,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
                 {r.frpc}
                 <Input
                   value={frpcPath}
+                  disabled={busy}
                   aria-describedby={frpcHintId}
                   placeholder={r.bundled}
                   onChange={(e) => setFrpcPath(e.target.value)}
@@ -624,6 +751,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
               <p id={frpcHintId} className="text-xs text-muted-foreground">
                 {r.frpcHint}
               </p>
+              <p className="text-xs text-muted-foreground">{c.connectionApplyHint}</p>
               <label className="block">
                 {r.bandwidth}
                 <Input
@@ -631,6 +759,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
                   min={16}
                   max={1048576}
                   step={1}
+                  disabled={busy || !config}
                   value={(config?.previewBytesPerSecond ?? 2 * 1024 * 1024) / 1024}
                   onChange={(event) =>
                     setConfig((old) =>

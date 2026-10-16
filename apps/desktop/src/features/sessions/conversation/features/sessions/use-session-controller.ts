@@ -134,6 +134,7 @@ export function useSessionController({
     [indexEnabled, setIndexEnabled] = useState(true),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(false),
+    [pairingError, setPairingError] = useState<string>(),
     [incompatible, setIncompatible] = useState(false),
     [notice, setNotice] = useState<"accepted" | "uncertain" | "notDispatched">(),
     [code, setCode] = useState(""),
@@ -471,6 +472,7 @@ export function useSessionController({
   const refresh = useCallback(
     async function refreshCurrent(manual = false, preserveHistory = false): Promise<void> {
       if (manual) {
+        setPairingError(undefined);
         retryCatalogObservation.current?.();
         setCapabilitiesEpoch((value) => value + 1);
       }
@@ -1159,8 +1161,32 @@ export function useSessionController({
   }
   async function pair(e: FormEvent) {
     e.preventDefault();
-    await post("pair", { code, name: name.trim() || "Web" });
-    setCode("");
+    if (mutating.current) return;
+    mutating.current = true;
+    setBusy(true);
+    setError(!!nativeCoverage.current.historyRecoveryFailed);
+    setPairingError(undefined);
+    const g = generation.current;
+    try {
+      await client.request("pair", { code, name: name.trim() || "Web" });
+      if (g !== generation.current) return;
+      // The host consumed the code. A later status-refresh failure must not
+      // invite resubmitting that one-time code as though pairing was rejected.
+      setCode("");
+      await refresh();
+    } catch (e) {
+      if (g !== generation.current) return;
+      if (
+        e instanceof ApiError &&
+        (e.code === "access_ended" || e.code === "incompatible_protocol")
+      )
+        fail(e, g);
+      else if (!(e instanceof DOMException && e.name === "AbortError"))
+        setPairingError(e instanceof ApiError ? e.code : "request_failed");
+    } finally {
+      mutating.current = false;
+      setBusy(false);
+    }
   }
   async function earlier() {
     if (!page?.next_cursor || busy) return;
@@ -1780,6 +1806,7 @@ export function useSessionController({
     controlReady,
     indexEnabled,
     busy,
+    pairingError,
     error: error || catalogObservationFailed,
     incompatible,
     setIncompatible,

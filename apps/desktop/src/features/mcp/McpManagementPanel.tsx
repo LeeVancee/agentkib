@@ -13,6 +13,14 @@ import { AGENT_LABELS } from "@/core/agents";
 import { changeMcpTargets, MCP_MANAGED_AGENTS } from "./mcp-targets";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoreHorizontal } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { McpRuntimeProbe } from "./McpRuntimeProbe";
 import { McpBatchConnectionPanel } from "./McpBatchConnectionPanel";
@@ -20,11 +28,14 @@ import { McpImportPanel } from "./McpImportPanel";
 import { McpPolicyEditor } from "./McpPolicyEditor";
 import { McpServiceEditor, newMcpDraft, type McpEditorDraft } from "./McpServiceEditor";
 
-type BatchResult = {
+type BatchItem = {
   id: string;
+  name?: string;
+  enabled: boolean;
+};
+type BatchResult = BatchItem & {
   status: "saved" | "failed" | "skipped";
   error?: string;
-  enabled: boolean;
 };
 export type McpEditorState = { entry?: McpManagedEntry; revision: string; draft: McpEditorDraft };
 export function McpManagementPanel({
@@ -103,7 +114,10 @@ export function McpManagementPanel({
       if (alive.current) await refresh();
     });
   }
-  async function batch(items: { id: string; enabled: boolean }[]) {
+  async function batch(requested: BatchItem[]) {
+    // Keep the operation's names through inventory changes and retries, without
+    // carrying a previous failure message into a successful retry result.
+    const items = requested.map(({ id, name, enabled }) => ({ id, name, enabled }));
     await run(async () => {
       const report: BatchResult[] = [];
       let latest: McpManagementState;
@@ -245,7 +259,11 @@ export function McpManagementPanel({
               void batch(
                 visible
                   .filter((entry) => selected.includes(entry.config.id))
-                  .map((entry) => ({ id: entry.config.id, enabled: true })),
+                  .map((entry) => ({
+                    id: entry.config.id,
+                    name: entry.config.name,
+                    enabled: true,
+                  })),
               )
             }
           >
@@ -257,7 +275,11 @@ export function McpManagementPanel({
               void batch(
                 visible
                   .filter((entry) => selected.includes(entry.config.id))
-                  .map((entry) => ({ id: entry.config.id, enabled: false })),
+                  .map((entry) => ({
+                    id: entry.config.id,
+                    name: entry.config.name,
+                    enabled: false,
+                  })),
               )
             }
           >
@@ -269,7 +291,10 @@ export function McpManagementPanel({
         <div role="status">
           {results.map((result) => (
             <p key={result.id}>
-              {result.id} · {tr(`mcp.manage.import_${result.status}`)} {result.error}
+              {result.name && result.name !== result.id
+                ? `${result.name} (${result.id})`
+                : result.id}{" "}
+              · {tr(`mcp.manage.import_${result.status}`)} {result.error}
             </p>
           ))}
           {results.some((result) => result.status === "failed") && (
@@ -313,7 +338,9 @@ export function McpManagementPanel({
               <tr key={entry.config.id} className="border-t">
                 <td className="p-2">
                   <Checkbox
-                    aria-label={`select ${entry.config.name}`}
+                    aria-label={tr("mcp.manage.selectService", {
+                      name: entry.config.name || entry.config.id,
+                    })}
                     checked={selected.includes(entry.config.id)}
                     onCheckedChange={(checked) =>
                       setSelected((old) =>
@@ -360,77 +387,127 @@ export function McpManagementPanel({
                   </td>
                 ))}
                 <td className="p-3">
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      disabled={busy || !!editor}
-                      onClick={() => {
-                        setEditor({ entry, revision: state!.revision, draft: newMcpDraft(entry) });
-                        setOpen(undefined);
-                      }}
-                    >
-                      {tr(entry.inherited ? "mcp.manage.createOverride" : "mcp.manage.edit")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() =>
-                        void navigator.clipboard
-                          .writeText(JSON.stringify(entry.config, null, 2))
-                          .catch((reason) => setError(localizeMessage(reason)))
-                      }
-                    >
-                      {tr("mcp.manage.copy")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() =>
-                        setPolicy(policy === entry.config.id ? undefined : entry.config.id)
-                      }
-                    >
-                      {tr("mcp.manage.toolPolicy")}
-                    </Button>
-                    {entry.config.enabled && (
+                  <div
+                    className="flex flex-wrap gap-2"
+                    onFocus={(event) => {
+                      // Native focus scrolling can leave a table action partially clipped.
+                      // Portal menu focus bubbles through React outside this scroll region.
+                      if (event.currentTarget.contains(event.target))
+                        event.target.scrollIntoView({ block: "nearest", inline: "nearest" });
+                    }}
+                  >
+                    {entry.config.enabled ? (
                       <McpRuntimeProbe
                         key={JSON.stringify([project, entry.config, state?.revision])}
                         serverId={entry.config.id}
                         project={project}
                         onProbed={refresh}
                       />
-                    )}
-                    {entry.config.transport === "streamable-http" && (
+                    ) : (
                       <Button
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() =>
-                          void run(async () => {
-                            const response = await api.startMcpOAuth(entry.config.id, project);
-                            if (alive.current) await api.openExternal(response.authorization_url);
-                          })
-                        }
+                        disabled={busy || !!editor}
+                        onClick={() => {
+                          setEditor({
+                            entry,
+                            revision: state!.revision,
+                            draft: newMcpDraft(entry),
+                          });
+                          setOpen(undefined);
+                        }}
                       >
-                        {tr("mcp.authorize")}
+                        {tr(entry.inherited ? "mcp.manage.createOverride" : "mcp.manage.edit")}
                       </Button>
                     )}
-                    {!entry.inherited && (
-                      <Button
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() =>
-                          void run(async () => {
-                            if (!(await dialogs.confirm(tr("mcp.manage.removeConfirm")))) return;
-                            if (!alive.current) return;
-                            await api.removeMcpConfiguration({
-                              project,
-                              revision: state!.revision,
-                              id: entry.config.id,
-                            });
-                            if (alive.current) await refresh();
-                          })
-                        }
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        render={<Button variant="outline" size="icon" />}
+                        aria-label={tr("mcp.manage.moreActions", { name: entry.config.name })}
+                        title={tr("mcp.manage.moreActions", { name: entry.config.name })}
                       >
-                        {tr(project ? "mcp.manage.removeOverride" : "common.remove")}
-                      </Button>
-                    )}
+                        <MoreHorizontal size={16} aria-hidden="true" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="min-w-52">
+                        {entry.config.enabled && (
+                          <DropdownMenuItem
+                            disabled={busy || !!editor}
+                            onClick={() => {
+                              setEditor({
+                                entry,
+                                revision: state!.revision,
+                                draft: newMcpDraft(entry),
+                              });
+                              setOpen(undefined);
+                            }}
+                          >
+                            {tr(entry.inherited ? "mcp.manage.createOverride" : "mcp.manage.edit")}
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem
+                          onClick={() =>
+                            void navigator.clipboard
+                              .writeText(JSON.stringify(entry.config, null, 2))
+                              .catch((reason) => setError(localizeMessage(reason)))
+                          }
+                        >
+                          {tr("mcp.manage.copy")}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() =>
+                            setPolicy(policy === entry.config.id ? undefined : entry.config.id)
+                          }
+                        >
+                          {tr("mcp.manage.toolPolicy")}
+                        </DropdownMenuItem>
+                        {entry.config.transport === "streamable-http" && (
+                          <DropdownMenuItem
+                            disabled={busy}
+                            onClick={() =>
+                              void run(async () => {
+                                const response = await api.startMcpOAuth(entry.config.id, project);
+                                if (alive.current)
+                                  await api.openExternal(response.authorization_url);
+                              })
+                            }
+                          >
+                            {tr("mcp.authorize")}
+                          </DropdownMenuItem>
+                        )}
+                        {!entry.inherited && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              disabled={busy}
+                              onClick={() =>
+                                void run(async () => {
+                                  if (
+                                    !(await dialogs.confirm({
+                                      title: tr("mcp.manage.removeNamedTitle", {
+                                        name: entry.config.name,
+                                      }),
+                                      description: tr("mcp.manage.removeConfirm", {
+                                        name: entry.config.name,
+                                      }),
+                                      tone: "destructive",
+                                    }))
+                                  )
+                                    return;
+                                  if (!alive.current) return;
+                                  await api.removeMcpConfiguration({
+                                    project,
+                                    revision: state!.revision,
+                                    id: entry.config.id,
+                                  });
+                                  if (alive.current) await refresh();
+                                })
+                              }
+                            >
+                              {tr(project ? "mcp.manage.removeOverride" : "common.remove")}
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                   {policy === entry.config.id && state && (
                     <McpPolicyEditor
@@ -446,9 +523,16 @@ export function McpManagementPanel({
             ))}
           </tbody>
         </table>
-        {!visible.length && (
-          <p className="p-5">{tr(query.isPending ? "common.loading" : "mcp.configuredEmpty")}</p>
-        )}
+        {!visible.length &&
+          (query.isPending ? (
+            <p className="p-5">{tr("common.loading")}</p>
+          ) : state ? (
+            <p className="p-5">
+              {state.servers.length
+                ? tr("mcp.manage.searchEmpty", { query: search })
+                : tr("mcp.configuredEmpty")}
+            </p>
+          ) : null)}
       </div>
     </div>
   );

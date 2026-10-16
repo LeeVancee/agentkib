@@ -11,7 +11,7 @@ const globalNav: SidebarEntry<GlobalPage>[] = [
     shortcut: "navigate-workspaces",
   },
   { id: "agents", label: "nav.agents", icon: Bot, shortcut: "navigate-agents" },
-  { id: "sessions", label: "sessions.nav", icon: MessageSquareText },
+  { id: "sessions", label: "sessions.nav", icon: MessageSquareText, shortcut: "navigate-sessions" },
   { id: "catalog", label: "nav.catalog", icon: Library, shortcut: "navigate-catalog" },
   { id: "quota", label: "nav.quota", icon: Gauge, shortcut: "navigate-quota" },
   { id: "insights", label: "nav.insights", icon: Award, shortcut: "navigate-insights" },

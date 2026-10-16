@@ -10,6 +10,7 @@ import { createGlobalNavigation } from "@/features/app/global-navigation";
 import { useAppStore } from "@/stores/app-store";
 import type { WorkspaceSummary } from "@/core/types";
 import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
+import { currentAppPlatform } from "@/core/keyboard-shortcuts";
 
 vi.mock("@/features/sessions/SessionDirectory", () => ({
   SessionDirectory: () => <button data-session-entry>Example session</button>,
@@ -294,7 +295,9 @@ describe("AppSidebar v8 navigation", () => {
     expect(names.indexOf(tr("sessions.nav"))).toBe(names.indexOf(tr("nav.agents")) + 1);
     const sessions = screen.getByRole("button", { name: tr("sessions.nav") });
     expect(sessions.getAttribute("aria-current")).toBe("page");
-    expect(sessions.hasAttribute("aria-keyshortcuts")).toBe(false);
+    expect(sessions.getAttribute("aria-keyshortcuts")).toBe(
+      currentAppPlatform() === "macos" ? "Meta+4" : "Control+4",
+    );
     expect(within(sidebar as HTMLElement).getByText("Example session")).toBeTruthy();
     expect(screen.getByRole("button", { name: tr("nav.catalog") })).toBeTruthy();
     expect(screen.getByRole("button", { name: tr("nav.quota") })).toBeTruthy();

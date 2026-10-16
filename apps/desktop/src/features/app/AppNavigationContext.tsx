@@ -21,8 +21,12 @@ export function AppNavigationProvider({
   return <AppNavigationContext.Provider value={value}>{children}</AppNavigationContext.Provider>;
 }
 
+export function useOptionalAppNavigationContext() {
+  return useContext(AppNavigationContext);
+}
+
 export function useAppNavigationContext() {
-  const value = useContext(AppNavigationContext);
+  const value = useOptionalAppNavigationContext();
   if (!value) throw new Error("useAppNavigationContext must be used within AppNavigationProvider");
   return value;
 }

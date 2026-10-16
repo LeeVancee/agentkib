@@ -8,7 +8,12 @@ const state = {
   controlReady: true,
   canSend: true,
   busy: false,
-  access: { experimentalEnabled: true, device: { send: true } },
+  access: {
+    status: "approved",
+    protocolVersion: 2,
+    experimentalEnabled: true,
+    device: { send: true },
+  },
   live: { status: "idle", sendEnabled: true, approvals: [] },
 } as unknown as SessionController;
 describe("session display state", () => {
@@ -20,7 +25,7 @@ describe("session display state", () => {
         ...compacting,
         live: { ...compacting.live, reason: "control-outcome-unconfirmed" },
       }).label,
-    ).toBe("结果待核对");
+    ).toBe("结果待确认");
     expect(
       sessionDisplayState({
         ...compacting,
@@ -41,14 +46,14 @@ describe("session display state", () => {
   it("never describes SSE alone as controllable", () => {
     expect(
       sessionDisplayState({ ...state, canSend: false, controlReady: false, live: undefined }).label,
-    ).toBe("正在核对状态");
+    ).toBe("正在检查状态");
     expect(
       sessionDisplayState({
         ...state,
         canSend: false,
         access: { ...state.access!, device: { ...state.access!.device!, send: false } },
       }).label,
-    ).toBe("仅可查看");
+    ).toBe("权限不足");
   });
   it("prioritizes unconfirmed results even when the connection drops", () => {
     expect(
@@ -57,7 +62,7 @@ describe("session display state", () => {
         online: false,
         live: { ...state.live!, reason: "control-outcome-unconfirmed" },
       }).label,
-    ).toBe("结果待核对");
+    ).toBe("结果待确认");
   });
   it("does not present stale approval as currently actionable offline", () => {
     expect(
@@ -89,7 +94,10 @@ describe("session display state", () => {
     };
     expect(
       sessionDisplayState({ ...unavailable, live: { ...unavailable.live, reason } }),
-    ).toMatchObject({ label: "仅可查看", reason: expected });
+    ).toMatchObject({
+      label: reason === "unverified-installation" ? "尚未验证" : "仅可查看",
+      reason: expected,
+    });
     expect(
       sessionDisplayState({
         ...unavailable,
@@ -100,7 +108,10 @@ describe("session display state", () => {
           features: { send: { available: false, reason } },
         },
       }),
-    ).toMatchObject({ label: "仅可查看", reason: expected });
+    ).toMatchObject({
+      label: reason === "unverified-installation" ? "尚未验证" : "仅可查看",
+      reason: expected,
+    });
   });
   it("provides localized status for every locale", () => {
     for (const locale of ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)

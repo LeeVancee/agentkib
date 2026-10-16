@@ -366,8 +366,8 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                               {hiddenAgentCount > 0 && (
                                 <span
                                   className="grid size-5 shrink-0 place-items-center rounded-md bg-muted text-[9px] font-semibold text-muted-foreground"
-                                  title={`${hiddenAgentCount} more agents`}
-                                  aria-label={`${hiddenAgentCount} more agents`}
+                                  title={tr("catalog.moreAgents", { count: hiddenAgentCount })}
+                                  aria-label={tr("catalog.moreAgents", { count: hiddenAgentCount })}
                                 >
                                   +{hiddenAgentCount}
                                 </span>

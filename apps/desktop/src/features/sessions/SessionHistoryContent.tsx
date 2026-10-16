@@ -1,4 +1,4 @@
-import { ChevronRight, Clock, FileText, GitBranch, RefreshCw } from "lucide-react";
+import { ArrowUpRight, ChevronRight, Clock, FileText, GitBranch, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "@/core/useI18n";
@@ -10,6 +10,7 @@ import { sessionAgentNames, sessionRecordLabel, sessionSourceDetails } from "./s
 import { ConversationTranscript } from "./ConversationTranscript";
 import { HistoryError, HistoryWarning } from "./HistoryFeedback";
 import type { useSessionHistory } from "./useSessionHistory";
+import { useHistoryContinuation } from "./useHistoryContinuation";
 
 export function SessionHistoryContent({
   selected,
@@ -25,6 +26,7 @@ export function SessionHistoryContent({
   const { tr, formatDateTime } = useI18n();
   const hub = useSessionHub();
   const workspace = hub.selectedWorkspace;
+  const continuation = useHistoryContinuation(selected, workspace, hub.historyRevision);
   const selectedSources = sessionSourceDetails(selected, hub.sessions, tr, formatDateTime);
   return (
     <>
@@ -34,6 +36,19 @@ export function SessionHistoryContent({
           {sessionAgentNames[selected.agent]}
         </span>
         <span>{tr("sessions.historyReadonly")}</span>
+        {continuation.canContinue ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-auto whitespace-normal px-2 py-1 text-xs"
+            onClick={continuation.continueSession}
+          >
+            <ArrowUpRight size={13} />
+            {tr("sessions.continueWorkspace")}
+          </Button>
+        ) : (
+          <span>{tr(continuation.reasonKey!)}</span>
+        )}
       </div>
       <Collapsible
         className="session-history-details mx-auto mt-2 max-w-[900px] text-xs text-muted-foreground"

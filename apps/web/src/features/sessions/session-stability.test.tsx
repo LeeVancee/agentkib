@@ -405,7 +405,7 @@ describe("live interaction validity", () => {
     expect(
       server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/approve")),
     ).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "等待审批" }));
+    fireEvent.click(screen.getByRole("button", { name: "等待审批 · Bash #approval" }));
     await screen.findByRole("dialog", { name: "等待审批" });
 
     const changed = {

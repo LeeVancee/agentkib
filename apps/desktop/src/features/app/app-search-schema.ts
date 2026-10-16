@@ -24,6 +24,8 @@ export const appSearchSchema = z.object({
     .enum(["instructions", "skills", "mcp", "memory", "other"])
     .optional()
     .catch(undefined),
+  catalogTarget: z.literal("mcp-network").optional().catch(undefined),
+  skillSection: z.enum(["library", "workspace", "discover"]).optional().catch(undefined),
   workspaceAssetSection: z
     .enum(["instructions", "skills", "mcp", "native"])
     .optional()

@@ -2,6 +2,7 @@ import { Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { useSession } from "../sessions/session-context";
+import { useSessionNavigate } from "../sessions/session-navigation";
 import { historyCopy } from "./history-copy";
 import { HistorySearchDialog, historyAccessScope } from "./history-search";
 import {
@@ -26,6 +27,7 @@ export function HistorySearchTrigger() {
 }
 export function HistorySearchControls() {
   const session = useSession();
+  const navigate = useSessionNavigate();
   const scope = historyAccessScope(session.access);
   if (!scope || !session.historySearchOpen || session.modal) return null;
   const targetId = session.selected;
@@ -41,6 +43,13 @@ export function HistorySearchControls() {
       client={session.client}
       locale={session.locale}
       scope={scope}
+      currentSessionId={targetId}
+      navigationContext={JSON.stringify([targetId, session.message, session.historyReferences])}
+      openDisabled={session.busy || session.notice === "uncertain"}
+      onOpenSession={async (source) => {
+        await navigate({ to: "/sessions/$sessionId", params: { sessionId: source.id } });
+        session.setHistorySearchOpen(false);
+      }}
       onClose={() => session.setHistorySearchOpen(false)}
       onScopeEnded={() => {
         session.setHistorySearchOpen(false);

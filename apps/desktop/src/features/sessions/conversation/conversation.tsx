@@ -129,7 +129,7 @@ function EmbeddedShell() {
       <div className="agentkib-conversation flex min-h-0 flex-1 flex-col bg-background text-foreground">
         <div
           data-conversation-toolbar
-          className="flex shrink-0 items-center justify-end gap-2 border-b px-4 py-2"
+          className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-b px-4 py-2"
         >
           <ManagedTasks
             key={String(props.create)}
@@ -138,20 +138,31 @@ function EmbeddedShell() {
             initialOpen={props.create}
             onDismiss={props.onCreateClosed}
           />
-          <HistorySearchTrigger />
-          <PendingCenter compact />
           {session.selected && (
             <>
               {session.access?.device?.files && (
-                <Button variant="ghost" onClick={() => setFilesOpen(!filesOpen)}>
+                <Button
+                  variant="ghost"
+                  className="min-h-11"
+                  aria-expanded={filesOpen}
+                  onClick={() => setFilesOpen(!filesOpen)}
+                >
                   {copy.files}
                 </Button>
               )}
-              <Button variant="ghost" onClick={() => setActionsOpen(true)}>
+              <Button
+                variant="ghost"
+                className="min-h-11"
+                aria-haspopup="dialog"
+                aria-expanded={actionsOpen}
+                onClick={() => setActionsOpen(true)}
+              >
                 {copy.actions}
               </Button>
             </>
           )}
+          <HistorySearchTrigger />
+          <PendingCenter compact />
         </div>
         {session.error && (
           <p role="alert" className="px-4 py-2 text-sm text-destructive">

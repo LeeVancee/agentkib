@@ -1,7 +1,7 @@
 import { useI18n } from "@/core/useI18n";
+import { useRef, useState } from "react";
 import { FolderGit2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import type {
   ActivityRecord,
   AgentInstallation,
@@ -16,7 +16,11 @@ import { GettingStartedCard } from "./GettingStartedCard";
 import type { RecentContinuation } from "./home-continuations";
 import { HomeSummaryBar } from "./HomeSummaryBar";
 import { ContinueWorkCard, PendingTasksCard } from "./HomeTaskCards";
-import { RecentActivitySection, RecentWorkspacesCard } from "./HomeRecentSections";
+import {
+  RecentActivitySection,
+  RecentWorkspacesCard,
+  WorkspaceAddActions,
+} from "./HomeRecentSections";
 
 export type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
 export type ContinuationHomeState =
@@ -49,7 +53,7 @@ export function GlobalHome({
   catalogPending = false,
   uniqueAssetCount,
   assetCounts,
-  onShowInsights,
+  onShowActivity,
   onShowWorkspaces,
   onShowAgents,
   recentContinuations = [],
@@ -63,6 +67,7 @@ export function GlobalHome({
   onOpen,
   onOpenDoctor,
   onOpenAssets,
+  onAddWorkspace,
   onAddRoot,
   onRefresh,
   runtime,
@@ -81,7 +86,7 @@ export function GlobalHome({
   insights?: InsightsSummary;
   uniqueAssetCount: number;
   assetCounts: Map<string, number>;
-  onShowInsights: () => void;
+  onShowActivity: () => void;
   onShowWorkspaces: () => void;
   onShowAgents: () => void;
   recentContinuations?: RecentContinuation[];
@@ -95,12 +100,36 @@ export function GlobalHome({
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
   onOpenAssets: (section: AssetSection) => void;
+  onAddWorkspace: () => Promise<void>;
   onAddRoot: () => Promise<void>;
   onRefresh: () => void;
   runtime?: RuntimeInfo;
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
 }) {
-  const { tr } = useI18n();
+  const { tr, localizeMessage } = useI18n();
+  const addLock = useRef(false);
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<{ reason: unknown }>();
+  const runAdd = async (operation: () => Promise<void>) => {
+    if (addLock.current) return;
+    addLock.current = true;
+    setAdding(true);
+    setAddError(undefined);
+    try {
+      await operation();
+    } catch (reason) {
+      setAddError({ reason });
+    } finally {
+      addLock.current = false;
+      setAdding(false);
+    }
+  };
+  const addWorkspace = () => runAdd(onAddWorkspace);
+  const addRoot = () => runAdd(onAddRoot);
+  const onboarding = runtime?.onboarding;
+  const showOnboarding = Boolean(
+    onboarding && onboarding.acknowledged_version < onboarding.version,
+  );
   const resolvedContinuationState = resolveContinuationState(
     continuationState,
     recentContinuations,
@@ -174,15 +203,23 @@ export function GlobalHome({
 
   return (
     <div className="grid gap-6">
-      {!workspaces.length && (
+      {showOnboarding && (
         <GettingStartedCard
           onboarding={runtime?.onboarding}
           workspaces={workspaces}
           doctorSummaries={doctorSummaries}
           onRuntimeChanged={onRuntimeChanged}
-          onAddRoot={onAddRoot}
+          additionsBusy={adding}
+          onAddWorkspace={addWorkspace}
+          onAddRoot={addRoot}
           onOpenDoctor={onOpenDoctor}
         />
+      )}
+
+      {addError && (
+        <p role="alert" className="text-sm text-destructive">
+          {localizeMessage(addError.reason)}
+        </p>
       )}
 
       <HomeSummaryBar
@@ -194,16 +231,16 @@ export function GlobalHome({
         onRefresh={onRefresh}
       />
 
-      {!workspaces.length ? (
+      {!workspaces.length && !showOnboarding ? (
         <Card className="grid min-h-[260px] place-content-center justify-items-center gap-3 rounded-xl border-dashed bg-card p-8 text-center shadow-none">
           <span className="grid size-12 place-items-center rounded-xl bg-primary/8 text-primary">
             <FolderGit2 size={24} />
           </span>
           <h2 className="text-lg font-semibold tracking-[-.02em]">{tr("home.emptyTitle")}</h2>
           <p className="max-w-md text-sm leading-6 text-muted-foreground">{tr("home.emptyText")}</p>
-          <Button onClick={() => void onAddRoot()}>{tr("home.addScanRoot")}</Button>
+          <WorkspaceAddActions busy={adding} onAddWorkspace={addWorkspace} onAddRoot={addRoot} />
         </Card>
-      ) : (
+      ) : workspaces.length > 0 ? (
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="grid gap-6">
             {issuesPending || issueCount > 0 ? (
@@ -220,7 +257,7 @@ export function GlobalHome({
             <RecentActivitySection
               activity={activity}
               pending={activityPending}
-              onShowInsights={onShowInsights}
+              onShowActivity={onShowActivity}
             />
           </div>
           <RecentWorkspacesCard
@@ -228,10 +265,12 @@ export function GlobalHome({
             assetCounts={assetCounts}
             onOpen={onOpen}
             onShowWorkspaces={onShowWorkspaces}
-            onAddRoot={onAddRoot}
+            additionsBusy={adding}
+            onAddWorkspace={addWorkspace}
+            onAddRoot={addRoot}
           />
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

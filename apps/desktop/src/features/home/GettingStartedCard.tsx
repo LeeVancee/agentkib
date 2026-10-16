@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Check, ChevronRight, Circle, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -12,6 +12,8 @@ export function GettingStartedCard({
   workspaces,
   doctorSummaries,
   onRuntimeChanged,
+  additionsBusy = false,
+  onAddWorkspace,
   onAddRoot,
   onOpenDoctor,
 }: {
@@ -19,11 +21,14 @@ export function GettingStartedCard({
   workspaces: WorkspaceSummary[];
   doctorSummaries: Record<string, ContextDoctorSummary>;
   onRuntimeChanged: (runtime: Awaited<ReturnType<typeof api.updateOnboarding>>) => void;
+  additionsBusy?: boolean;
+  onAddWorkspace: () => Promise<void>;
   onAddRoot: () => Promise<void>;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
 }) {
   const { tr, localizeMessage } = useI18n();
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [error, setError] = useState<{ reason: unknown }>();
   const errorMessage = error === undefined ? "" : localizeMessage(error.reason);
   if (!onboarding || onboarding.acknowledged_version >= onboarding.version) return null;
@@ -45,7 +50,8 @@ export function GettingStartedCard({
       : tr("onboarding.runDoctor");
 
   const run = async (operation: () => Promise<void>) => {
-    if (busy) return;
+    if (busyRef.current || additionsBusy) return;
+    busyRef.current = true;
     setBusy(true);
     setError(undefined);
     await withAsyncCleanup(
@@ -56,7 +62,10 @@ export function GettingStartedCard({
           setError({ reason });
         }
       },
-      () => setBusy(false),
+      () => {
+        busyRef.current = false;
+        setBusy(false);
+      },
     );
   };
 
@@ -64,7 +73,7 @@ export function GettingStartedCard({
     run(async () => onRuntimeChanged(await api.updateOnboarding({ event: "dismissed" })));
   const continueOnboarding = () =>
     run(async () => {
-      if (!workspaceDone) await onAddRoot();
+      if (!workspaceDone) await onAddWorkspace();
       else if (selectedWorkspace) await onOpenDoctor(selectedWorkspace);
     });
 
@@ -83,7 +92,7 @@ export function GettingStartedCard({
           variant="ghost"
           size="icon-sm"
           aria-label={tr("onboarding.dismiss")}
-          disabled={busy}
+          disabled={busy || additionsBusy}
           onClick={() => void dismiss()}
         >
           <X size={15} />
@@ -95,13 +104,39 @@ export function GettingStartedCard({
           <OnboardingStep done={doctorDone} label={tr("onboarding.doctorStep")} />
           <OnboardingStep done={repairDone} label={tr("onboarding.repairStep")} />
         </ol>
-        <Button disabled={busy} onClick={() => void continueOnboarding()}>
-          {actionLabel}
-          <ChevronRight size={15} />
-        </Button>
+        <div className="grid gap-2 md:max-w-64">
+          <Button
+            disabled={busy || additionsBusy}
+            aria-busy={busy || additionsBusy}
+            onClick={() => void continueOnboarding()}
+          >
+            {actionLabel}
+            <ChevronRight size={15} />
+          </Button>
+          {!workspaceDone && (
+            <>
+              <p className="text-xs leading-5 text-muted-foreground">
+                {tr("home.addWorkspaceHint")}
+              </p>
+              <Button
+                variant="outline"
+                disabled={busy || additionsBusy}
+                onClick={() => void run(onAddRoot)}
+              >
+                {tr("home.addScanRoot")}
+              </Button>
+              <p className="text-xs leading-5 text-muted-foreground">
+                {tr("home.addScanRootHint")}
+              </p>
+            </>
+          )}
+        </div>
       </div>
       {errorMessage && (
-        <div className="border-t border-destructive/20 bg-destructive/5 px-5 py-2.5 text-xs text-destructive">
+        <div
+          role="alert"
+          className="border-t border-destructive/20 bg-destructive/5 px-5 py-2.5 text-xs text-destructive"
+        >
           {errorMessage}
         </div>
       )}

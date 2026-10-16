@@ -10,18 +10,18 @@ import { AGENT_LABELS as agentLabels } from "@/core/agents";
 export function RecentActivitySection({
   activity,
   pending,
-  onShowInsights,
+  onShowActivity,
 }: {
   activity: ActivityRecord[];
   pending: boolean;
-  onShowInsights: () => void;
+  onShowActivity: () => void;
 }) {
   const { tr } = useI18n();
   return (
-    <section>
+    <section aria-label={tr("home.recentActivity")}>
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-base font-semibold">{tr("home.recentActivity")}</h2>
-        <Button variant="link" className="h-auto p-0 text-xs text-primary" onClick={onShowInsights}>
+        <Button variant="link" className="h-auto p-0 text-xs text-primary" onClick={onShowActivity}>
           {tr("home.viewAll")}
         </Button>
       </div>
@@ -55,12 +55,16 @@ export function RecentWorkspacesCard({
   assetCounts,
   onOpen,
   onShowWorkspaces,
+  additionsBusy = false,
+  onAddWorkspace,
   onAddRoot,
 }: {
   workspaces: WorkspaceSummary[];
   assetCounts: Map<string, number>;
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
   onShowWorkspaces: () => void;
+  additionsBusy?: boolean;
+  onAddWorkspace: () => Promise<void>;
   onAddRoot: () => Promise<void>;
 }) {
   const { tr } = useI18n();
@@ -86,13 +90,43 @@ export function RecentWorkspacesCard({
           />
         ))}
         <div className="px-5 py-4">
-          <Button className="gap-1.5" onClick={() => void onAddRoot()}>
-            <FolderGit2 size={14} />
-            {tr("home.createWorkspace")}
-          </Button>
+          <WorkspaceAddActions
+            busy={additionsBusy}
+            onAddWorkspace={onAddWorkspace}
+            onAddRoot={onAddRoot}
+          />
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+export function WorkspaceAddActions({
+  busy,
+  onAddWorkspace,
+  onAddRoot,
+}: {
+  busy: boolean;
+  onAddWorkspace: () => Promise<void>;
+  onAddRoot: () => Promise<void>;
+}) {
+  const { tr } = useI18n();
+  return (
+    <div className="grid gap-3 text-left">
+      <div className="grid gap-1.5">
+        <Button disabled={busy} aria-busy={busy} onClick={() => void onAddWorkspace()}>
+          <FolderGit2 size={14} />
+          {tr("home.addWorkspace")}
+        </Button>
+        <p className="text-xs leading-5 text-muted-foreground">{tr("home.addWorkspaceHint")}</p>
+      </div>
+      <div className="grid gap-1.5">
+        <Button variant="outline" disabled={busy} onClick={() => void onAddRoot()}>
+          {tr("home.addScanRoot")}
+        </Button>
+        <p className="text-xs leading-5 text-muted-foreground">{tr("home.addScanRootHint")}</p>
+      </div>
+    </div>
   );
 }
 

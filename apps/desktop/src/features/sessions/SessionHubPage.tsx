@@ -92,20 +92,57 @@ export function SessionHubPage() {
     );
 
   const selected = hub.selected;
+  const remoteNotices = hub.remoteHosts?.filter(
+    (host) => host.status !== "online" || hub.remoteErrors?.[host.id],
+  );
+  const scanErrorCount = Object.keys(hub.errors).length;
+  const hasCatalogNotices =
+    !!hub.catalogError || !!remoteNotices?.length || !!hub.workspacesError || scanErrorCount > 0;
 
-  const catalogNotice = hub.catalogError && (
-    <Notice error>
-      {hub.catalogError}
-      <Button variant="ghost" disabled={hub.refreshing} onClick={() => void hub.refresh()}>
-        {tr("sessions.retry")}
-      </Button>
-    </Notice>
+  const catalogNotices = (
+    <>
+      {hub.catalogError && (
+        <Notice error>
+          {hub.catalogError}
+          <Button variant="ghost" disabled={hub.refreshing} onClick={() => void hub.refresh()}>
+            {tr("sessions.retry")}
+          </Button>
+        </Notice>
+      )}
+      {!interactive && hub.hiddenSessionNotice && <Notice>{tr("sessions.hiddenRecord")}</Notice>}
+      {remoteNotices?.map((host) => (
+        <Notice key={host.id} error={!!hub.remoteErrors?.[host.id]}>
+          {host.name} · {tr(`remote.state.${host.status}`)}
+          {hub.remoteErrors?.[host.id] && <RemoteErrorDetails error={hub.remoteErrors[host.id]} />}
+        </Notice>
+      ))}
+      {hub.workspacesError && (
+        <Notice error>
+          {hub.workspacesError}
+          <Button variant="ghost" onClick={hub.retryWorkspaces}>
+            {tr("sessions.retry")}
+          </Button>
+        </Notice>
+      )}
+      {scanErrorCount > 0 && (
+        <Notice error>{tr("sessions.partialFailure", { count: scanErrorCount })}</Notice>
+      )}
+    </>
   );
 
   if (interactive)
     return (
       <div className="session-hub-page flex min-w-0 min-h-0 flex-1 flex-col text-sm">
-        {catalogNotice}
+        {hasCatalogNotices && (
+          <div
+            className="max-h-[40%] shrink-0 overflow-y-auto overscroll-contain focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
+            role="region"
+            aria-label={tr("sessions.directory")}
+            tabIndex={0}
+          >
+            {catalogNotices}
+          </div>
+        )}
         <DesktopConversationPane
           sessionId={creating ? undefined : selected?.id}
           create={creating}
@@ -119,32 +156,7 @@ export function SessionHubPage() {
         className="session-hub-body min-h-0 flex-1 overflow-auto overscroll-contain p-6 px-7 pb-8 [overflow-anchor:none] max-[600px]:p-4"
         ref={historyRef}
       >
-        {catalogNotice}
-        {hub.hiddenSessionNotice && <Notice>{tr("sessions.hiddenRecord")}</Notice>}
-        {hub.remoteHosts?.map(
-          (host) =>
-            (host.status !== "online" || hub.remoteErrors?.[host.id]) && (
-              <Notice key={host.id} error={!!hub.remoteErrors?.[host.id]}>
-                {host.name} · {tr(`remote.state.${host.status}`)}
-                {hub.remoteErrors?.[host.id] && (
-                  <RemoteErrorDetails error={hub.remoteErrors[host.id]} />
-                )}
-              </Notice>
-            ),
-        )}
-        {hub.workspacesError && (
-          <Notice error>
-            {hub.workspacesError}
-            <Button variant="ghost" onClick={hub.retryWorkspaces}>
-              {tr("sessions.retry")}
-            </Button>
-          </Notice>
-        )}
-        {Object.keys(hub.errors).length > 0 && (
-          <Notice error>
-            {tr("sessions.partialFailure", { count: Object.keys(hub.errors).length })}
-          </Notice>
-        )}
+        {catalogNotices}
         {selected ? (
           <SessionHistoryContent
             selected={selected}

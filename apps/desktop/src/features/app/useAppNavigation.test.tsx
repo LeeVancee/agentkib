@@ -4,10 +4,18 @@ import type { ReactNode } from "react";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { initializeI18n } from "@/core/i18n";
+import { initializeI18n, tr } from "@/core/i18n";
+import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import type { Manifest, WorkspaceSummary } from "@/core/types";
+import type {
+  ChangeSet,
+  Manifest,
+  RuntimeInfo,
+  SessionHandoffLaunchRequest,
+  WorkspaceScan,
+  WorkspaceSummary,
+} from "@/core/types";
 import { useAppNavigation } from "./useAppNavigation";
 import type { AppHistoryEntry } from "./useAppHistory";
 import { SESSION_REFRESH_EVENT } from "@/features/sessions/session-refresh";
@@ -76,7 +84,11 @@ describe("useAppNavigation guards", () => {
     testDoubles.search = {};
   });
 
-  afterEach(cleanup);
+  afterEach(async () => {
+    cleanup();
+    vi.restoreAllMocks();
+    await initializeI18n("en-US");
+  });
 
   it("routes session refresh to the mounted hub instead of starting discovery", async () => {
     testDoubles.location.pathname = "/sessions";
@@ -92,6 +104,35 @@ describe("useAppNavigation guards", () => {
     }
   });
 
+  it("retires an old global notice when entering settings without clearing its failure state", () => {
+    const { rerender } = renderHook(() => useAppNavigation());
+    act(() => useWorkspaceStore.getState().setMessage("previous page failed"));
+    expect(useWorkspaceStore.getState().messageDismissed).toBe(false);
+    testDoubles.location.pathname = "/settings";
+    rerender();
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      message: "previous page failed",
+      messageDismissed: true,
+    });
+    testDoubles.location.pathname = "/catalog";
+    rerender();
+    expect(useWorkspaceStore.getState().messageDismissed).toBe(true);
+  });
+
+  it.each(["previous page failed", "destination failed"])(
+    "keeps a new destination notice with text %s during navigation",
+    (message) => {
+      const { rerender } = renderHook(() => useAppNavigation());
+      act(() => useWorkspaceStore.getState().setMessage("previous page failed"));
+      testDoubles.location.pathname = "/settings";
+      act(() => {
+        useWorkspaceStore.getState().setMessage(message);
+        rerender();
+      });
+      expect(useWorkspaceStore.getState()).toMatchObject({ message, messageDismissed: false });
+    },
+  );
+
   it("does not loop while resolving a direct workspace route after discovery fails", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -105,9 +146,49 @@ describe("useAppNavigation guards", () => {
     renderHook(() => useAppNavigation(), { wrapper });
 
     await waitFor(() => {
-      expect(useWorkspaceStore.getState().message).toBe("Not found");
+      expect(useWorkspaceStore.getState().message).toContain("workspace discovery unavailable");
     });
     expect(testDoubles.workspaces).toHaveBeenCalledOnce();
+    queryClient.clear();
+  });
+
+  it("publishes a fresh missing-workspace notice for another destination and a completed retry", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    testDoubles.location.pathname = "/workspace/missing-a";
+    const { result, rerender } = renderHook(() => useAppNavigation(), { wrapper });
+    await waitFor(() => expect(useWorkspaceStore.getState().message).toBe("Not found"));
+    const first = useWorkspaceStore.getState().messageRevision;
+    act(() => useWorkspaceStore.getState().dismissMessage(first));
+    rerender();
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      messageRevision: first,
+      messageDismissed: true,
+    });
+    testDoubles.location.pathname = "/workspace/missing-b";
+    rerender();
+    await waitFor(() =>
+      expect(useWorkspaceStore.getState().messageRevision).toBeGreaterThan(first),
+    );
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      message: "Not found",
+      messageDismissed: false,
+    });
+    const second = useWorkspaceStore.getState().messageRevision;
+    act(() => useWorkspaceStore.getState().dismissMessage(second));
+    await act(async () => result.current.retryWorkspaces());
+    await waitFor(() =>
+      expect(useWorkspaceStore.getState().messageRevision).toBeGreaterThan(second),
+    );
+    expect(useWorkspaceStore.getState().messageDismissed).toBe(false);
+    testDoubles.location.pathname = "/settings";
+    rerender();
+    expect(useWorkspaceStore.getState().messageDismissed).toBe(true);
+    testDoubles.location.pathname = "/workspace/missing-b";
+    rerender();
+    expect(useWorkspaceStore.getState().messageDismissed).toBe(false);
     queryClient.clear();
   });
 
@@ -155,14 +236,131 @@ describe("useAppNavigation guards", () => {
     expect(useAppStore.getState().navigationRequest).toBeUndefined();
   });
 
-  it("blocks settings navigation while a ChangeSet is applying", () => {
+  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+    "blocks settings navigation with an operation warning in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      useWorkspaceStore.setState({ applyingChanges: true });
+      const { result } = renderHook(() => useAppNavigation());
+      act(() => expect(result.current.openSettings("diagnostics")).toBe(false));
+      expect(testDoubles.navigate).not.toHaveBeenCalled();
+      expect(testDoubles.notify).toHaveBeenCalledExactlyOnceWith(tr("workspace.changesApplying"));
+      expect(testDoubles.notify).not.toHaveBeenCalledWith(tr("dialog.quit.changesApplying"));
+    },
+  );
+
+  it("opens the MCP integration anchor through guarded settings navigation", () => {
+    const { result } = renderHook(() => useAppNavigation());
+    act(() => result.current.openSettings("integrations", "integrations-mcp"));
+    expect(testDoubles.navigate).toHaveBeenCalledOnce();
+    expect(
+      testDoubles.navigate.mock.calls[0][0].search({ settingsTarget: "diagnostics-activity" }),
+    ).toMatchObject({
+      settingsSection: "integrations",
+      settingsTarget: "integrations-mcp",
+    });
+  });
+
+  it("keeps the integration shortcut blocked while a change plan is applying", () => {
     useWorkspaceStore.setState({ applyingChanges: true });
     const { result } = renderHook(() => useAppNavigation());
-
-    act(() => result.current.openSettings("diagnostics"));
-
+    act(() => expect(result.current.openSettings("integrations", "integrations-mcp")).toBe(false));
     expect(testDoubles.navigate).not.toHaveBeenCalled();
     expect(testDoubles.notify).toHaveBeenCalledOnce();
+  });
+
+  it.each(["toolbar", "menu"] as const)(
+    "blocks a workspace refresh from the %s while a handoff is applying",
+    async (entry) => {
+      const workspace: WorkspaceSummary = {
+        id: "workspace-1",
+        path: "/workspace",
+        name: "Workspace",
+        status: "healthy",
+        asset_count: 0,
+        warning_count: 0,
+        sources: [],
+      };
+      const manifest = {} as Manifest;
+      const changeSet: ChangeSet = {
+        id: "native-import-plan",
+        project_root: workspace.path,
+        created_at: "2026-10-16T00:00:00Z",
+        requires_home_approval: false,
+        changes: [],
+      };
+      const launchRequest: SessionHandoffLaunchRequest = {
+        mode: "native-import",
+        operation_id: "native-import-operation",
+        workspace_id: workspace.id,
+        target_agent: "codex",
+        plan_hash: "plan-hash",
+      };
+      useWorkspaceStore.setState({
+        selectedWorkspace: workspace,
+        project: workspace.path,
+        manifest,
+        baselineManifest: JSON.stringify(manifest),
+        changeSet,
+        handoffLaunchRequest: launchRequest,
+        applyingChanges: true,
+      });
+      testDoubles.location.pathname = "/workspace/workspace-1/changes";
+      const scan = vi.spyOn(api, "scan");
+      const loadManifest = vi.spyOn(api, "manifest");
+      const runtime = vi.spyOn(api, "runtime");
+      if (entry === "menu") useAppStore.getState().setMenuCommand({ command: "refresh-current" });
+      const { result } = renderHook(() => useAppNavigation());
+
+      if (entry === "toolbar") await act(async () => result.current.refreshCurrentView());
+      else await waitFor(() => expect(testDoubles.notify).toHaveBeenCalledOnce());
+
+      expect(scan).not.toHaveBeenCalled();
+      expect(loadManifest).not.toHaveBeenCalled();
+      expect(runtime).not.toHaveBeenCalled();
+      expect(testDoubles.notify).toHaveBeenCalledOnce();
+      const current = useWorkspaceStore.getState();
+      expect(current.busy).toBe(false);
+      expect(current.applyingChanges).toBe(true);
+      expect(current.manifest).toBe(manifest);
+      expect(current.changeSet).toBe(changeSet);
+      expect(current.handoffLaunchRequest).toBe(launchRequest);
+    },
+  );
+
+  it("rechecks the applying lock immediately before starting a workspace reload", async () => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const manifest = {} as Manifest;
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest,
+    });
+    testDoubles.location.pathname = "/workspace/workspace-1/changes";
+    const scan = vi.spyOn(api, "scan");
+    const loadManifest = vi.spyOn(api, "manifest");
+    const runtime = vi.spyOn(api, "runtime");
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => {
+      const refreshing = result.current.refreshCurrentView();
+      useWorkspaceStore.getState().setApplyingChanges(true);
+      await refreshing;
+    });
+
+    expect(scan).not.toHaveBeenCalled();
+    expect(loadManifest).not.toHaveBeenCalled();
+    expect(runtime).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().busy).toBe(false);
+    expect(useWorkspaceStore.getState().manifest).toBe(manifest);
   });
 
   it("blocks adding a workspace before opening the directory picker", async () => {
@@ -173,6 +371,80 @@ describe("useAppNavigation guards", () => {
 
     expect(testDoubles.open).not.toHaveBeenCalled();
     expect(testDoubles.notify).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["during the disk read", "newer draft"],
+    ["during the disk read", "baseline"],
+    ["before the disk read starts", "newer draft"],
+    ["before the disk read starts", "baseline"],
+  ])("retains edits made %s, including %s, on a global workspace refresh", async (timing, text) => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const baseline: Manifest = {
+      schema_version: 2,
+      workspace: { id: workspace.id, name: workspace.name },
+      instructions: { shared: "baseline", scoped: [], platform_overrides: {} },
+      skills: [],
+      connections: [],
+      adapters: {},
+      mcp: { config: "mcp.json" },
+      memories: { require_approval: true },
+    };
+    const draft = {
+      ...baseline,
+      instructions: { ...baseline.instructions, shared: "original draft" },
+    };
+    const disk = {
+      ...baseline,
+      instructions: { ...baseline.instructions, shared: "new disk content" },
+    };
+    const scan: WorkspaceScan = {
+      root: workspace.path,
+      manifest_exists: true,
+      agents: [],
+      assets: [],
+      warnings: [],
+    };
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      scan,
+      manifest: draft,
+      baselineManifest: JSON.stringify(baseline),
+    });
+    testDoubles.location.pathname = "/workspace/workspace-1/assets";
+    let finish!: (value: WorkspaceScan) => void;
+    const pending = new Promise<WorkspaceScan>((resolve) => {
+      finish = resolve;
+    });
+    const scanRequest = vi.spyOn(api, "scan").mockReturnValue(pending);
+    vi.spyOn(api, "manifest").mockResolvedValue(disk);
+    vi.spyOn(api, "runtime").mockResolvedValue({ app_name: "AgentKib" } as RuntimeInfo);
+    const { result } = renderHook(() => useAppNavigation());
+    const newer = { ...draft, instructions: { ...draft.instructions, shared: text } };
+    let refreshing!: Promise<void>;
+    await act(async () => {
+      refreshing = result.current.refreshCurrentView();
+      if (timing === "before the disk read starts") useWorkspaceStore.getState().setManifest(newer);
+    });
+    await waitFor(() => expect(scanRequest).toHaveBeenCalledOnce());
+    if (timing === "during the disk read")
+      act(() => useWorkspaceStore.getState().setManifest(newer));
+    await act(async () => {
+      finish({ ...scan });
+      await refreshing;
+    });
+    expect(useWorkspaceStore.getState().manifest).toEqual(newer);
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+    expect(useWorkspaceStore.getState().busy).toBe(false);
   });
 
   it("blocks direct workspace navigation while a ChangeSet is applying", async () => {

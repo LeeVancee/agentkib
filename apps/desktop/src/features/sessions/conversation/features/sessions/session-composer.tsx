@@ -79,6 +79,9 @@ export function SessionComposer() {
   const setComposerText = setMessage;
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [submitted, setSubmitted] = useState(false);
+  const submitPending = useRef(false);
+  const composing = useRef(false);
+  const shortcutHintId = useId();
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
   const [previewKey, setPreviewKey] = useState<string>();
@@ -99,6 +102,8 @@ export function SessionComposer() {
     setComposerText("");
     setResources([]);
     setSubmitted(false);
+    submitPending.current = false;
+    composing.current = false;
     setError("");
     setPreviewKey(undefined);
     count.current = 0;
@@ -224,36 +229,49 @@ export function SessionComposer() {
   const resourceNeedsMessage =
     resourceIds.length > 0 && !draft.trim() && !attachmentIds.length && !historyReferences.length;
   async function send(action: "send" | "steer" | "queue-add") {
-    if (!valid || busy || submitted || (live?.activity === "compacting" && action !== "queue-add"))
+    if (
+      !valid ||
+      !online ||
+      !controlReady ||
+      busy ||
+      submitted ||
+      submitPending.current ||
+      (live?.activity === "compacting" && action !== "queue-add")
+    )
       return;
     const requestGeneration = generation.current;
+    submitPending.current = true;
     setSubmitted(true);
-    const result =
-      action === "send"
-        ? await control("send", undefined, undefined, undefined, undefined, {
-            attachmentIds,
-            ...(resourceIds.length ? { resourceIds } : {}),
-          })
-        : await codexAction(action, {
-            text: draft.trim(),
-            ...(historyReferences.length
-              ? { historyReferences: historyReferences.map((item) => item.reference) }
-              : {}),
-            ...(attachmentIds.length ? { attachmentIds } : {}),
-            ...(resourceIds.length ? { resourceIds } : {}),
-            ...(action === "steer" ? { turnId: live?.turnId } : {}),
-          });
-    if (result && requestGeneration === generation.current) {
-      for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
-      previewUrls.current.clear();
-      setPreviewKey(undefined);
-      setUploads([]);
-      setResources([]);
-      setHistoryReferences?.([]);
-      count.current = 0;
-      setComposerText("");
-      setMessage("");
-      setSubmitted(false);
+    try {
+      const result =
+        action === "send"
+          ? await control("send", undefined, undefined, undefined, undefined, {
+              attachmentIds,
+              ...(resourceIds.length ? { resourceIds } : {}),
+            })
+          : await codexAction(action, {
+              text: draft.trim(),
+              ...(historyReferences.length
+                ? { historyReferences: historyReferences.map((item) => item.reference) }
+                : {}),
+              ...(attachmentIds.length ? { attachmentIds } : {}),
+              ...(resourceIds.length ? { resourceIds } : {}),
+              ...(action === "steer" ? { turnId: live?.turnId } : {}),
+            });
+      if (result && requestGeneration === generation.current) {
+        for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
+        previewUrls.current.clear();
+        setPreviewKey(undefined);
+        setUploads([]);
+        setResources([]);
+        setHistoryReferences?.([]);
+        count.current = 0;
+        setComposerText("");
+        setMessage("");
+        setSubmitted(false);
+      }
+    } finally {
+      if (requestGeneration === generation.current) submitPending.current = false;
     }
   }
   const preview = uploads.find((item) => item.key === previewKey && item.previewUrl);
@@ -272,6 +290,7 @@ export function SessionComposer() {
       toast.dismiss(connectionToastId);
     };
   }, [connectionFailure, connectionToastId, display.reason, selected]);
+  const canSubmit = online && controlReady && canSend;
   const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
   const primaryAction = canStop ? (
     <Button
@@ -288,7 +307,7 @@ export function SessionComposer() {
       type="submit"
       className="inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0"
       aria-label={t.send}
-      disabled={!canSend || compacting || !valid || submitted}
+      disabled={!canSubmit || compacting || !valid || submitted}
     >
       <ArrowUp size={20} />
     </Button>
@@ -348,7 +367,7 @@ export function SessionComposer() {
         className="w-full space-y-2 rounded-3xl border bg-background p-2 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/20 md:p-3"
         onSubmit={(event) => {
           event.preventDefault();
-          if (canSend && !compacting) void send("send");
+          if (canSubmit && !compacting) void send("send");
         }}
       >
         {isClaude && (live?.model || live?.cliVersion) && (
@@ -370,7 +389,41 @@ export function SessionComposer() {
           rows={1}
           onChange={(event) => setMessage(event.target.value)}
           placeholder={t.message}
-          disabled={!online || busy || submitted}
+          disabled={busy || submitted}
+          aria-describedby={shortcutHintId}
+          onCompositionStart={() => {
+            composing.current = true;
+          }}
+          onCompositionEnd={() => {
+            composing.current = false;
+          }}
+          onBlur={() => {
+            composing.current = false;
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.defaultPrevented ||
+              event.key !== "Enter" ||
+              event.shiftKey ||
+              event.ctrlKey ||
+              event.metaKey ||
+              event.altKey ||
+              composing.current ||
+              event.nativeEvent.isComposing ||
+              event.nativeEvent.keyCode === 229
+            )
+              return;
+            event.preventDefault();
+            if (
+              !event.repeat &&
+              !event.currentTarget.disabled &&
+              canSubmit &&
+              !compacting &&
+              valid &&
+              !submitPending.current
+            )
+              event.currentTarget.form?.requestSubmit();
+          }}
           onPaste={(event) => {
             const files = Array.from(event.clipboardData.files);
             if (files.length && uploadPermission) {
@@ -379,6 +432,9 @@ export function SessionComposer() {
             }
           }}
         />
+        <p id={shortcutHintId} className="px-3 text-xs leading-5 text-muted-foreground">
+          {layout.sendShortcut}
+        </p>
         <HistoryReferenceChips />
         {uploads.length > 0 && (
           <ul className="space-y-2">

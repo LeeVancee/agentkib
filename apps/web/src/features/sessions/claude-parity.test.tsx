@@ -302,9 +302,10 @@ describe("Claude history handoff shortcut", () => {
     fireEvent.change(draft, { target: { value: "Keep this draft" } });
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(
-      screen.getAllByText("尚未交接给 AgentKib，请先停止原终端中的同一会话，再确认续接。").length,
+      screen.getAllByText("此会话尚未交给 AgentKib。请先停止原客户端中的同一会话，再确认交接。")
+        .length,
     ).toBeGreaterThan(0);
-    fireEvent.click(await screen.findByRole("button", { name: "确认续接" }));
+    fireEvent.click(await screen.findByRole("button", { name: "交给 AgentKib" }));
     const confirm = await screen.findByRole("button", { name: "交给 AgentKib" });
     expect(confirm).toBeDisabled();
     expect(state.mutations).toEqual([]);
@@ -312,7 +313,7 @@ describe("Claude history handoff shortcut", () => {
     expect(draft).toHaveValue("Keep this draft");
     expect(state.mutations).toEqual([]);
 
-    fireEvent.click(screen.getByRole("button", { name: "确认续接" }));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
@@ -350,7 +351,7 @@ describe("Claude history handoff shortcut", () => {
     );
     expect(draft).toHaveValue("Keep this draft");
     expect(state.mutations).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
   });
 
   it.each(["manage", "capability", "unknown"])(
@@ -361,7 +362,7 @@ describe("Claude history handoff shortcut", () => {
       if (reason === "capability") state.features.adopt = unavailable;
       if (reason === "unknown") state.live.reason = "control-outcome-unconfirmed";
       await openSession();
-      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       expect(state.mutations).toEqual([]);
     },
   );

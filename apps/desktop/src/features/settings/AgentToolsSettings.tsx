@@ -67,6 +67,20 @@ import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 type Translate = typeof tr;
 
+type BatchUpdateOutcome =
+  | { kind: "waiting" }
+  | { kind: "running" }
+  | { kind: "result"; result: AgentToolExecutionResult }
+  | { kind: "unconfirmed"; error: unknown };
+type BatchUpdateItem = {
+  agent: AgentKind;
+  actionId: string;
+  channel: AgentToolChannel;
+  targetVersion?: string;
+  outcome: BatchUpdateOutcome;
+};
+type BatchUpdateReport = { items: BatchUpdateItem[]; complete: boolean };
+
 const PROJECT_URL = "https://github.com/starroyhq/agentkib";
 const RELEASES_URL = `${PROJECT_URL}/releases`;
 const MANAGED_AGENTS = new Set<AgentKind>([
@@ -106,6 +120,7 @@ export function AgentToolsSettings({
   const [selectedAgent, setSelectedAgent] = useState<AgentKind | "">("");
   const [copyNotice, setCopyNotice] = useState("");
   const [executingAgent, setExecutingAgent] = useState<AgentKind>();
+  const [batchReport, setBatchReport] = useState<BatchUpdateReport>();
   const executionLock = useRef(false);
   const lifecycleGeneration = useRef(0);
   useEffect(
@@ -131,7 +146,7 @@ export function AgentToolsSettings({
   const selectedCommandAction = selectedTool?.actions.find((action) => action.command);
 
   const refresh = async () => {
-    if (refreshing) return;
+    if (refreshing || executionLock.current) return;
     setRefreshing(true);
     setGlobalMessage("");
     await withAsyncCleanup(
@@ -237,51 +252,71 @@ export function AgentToolsSettings({
 
   const executeBatch = async () => {
     if (!upgrades.length || executionLock.current) return;
+    // Keep the reviewed targets stable if detection publishes a new snapshot while we wait.
+    let items: BatchUpdateItem[] = upgrades.map(({ tool, action }) => ({
+      agent: tool.agent,
+      actionId: action.id,
+      channel: action.channel,
+      targetVersion: action.target_version,
+      outcome: { kind: "waiting" },
+    }));
     const generation = lifecycleGeneration.current;
     const isCurrent = () => generation === lifecycleGeneration.current;
     executionLock.current = true;
+    setExecutingAgent(items[0].agent);
     const releaseExecution = await acquireAgentToolsExecution();
     if (!releaseExecution || !isCurrent()) {
       releaseExecution?.();
       executionLock.current = false;
+      if (isCurrent()) setExecutingAgent(undefined);
       return;
     }
     await withAsyncCleanup(
       async () => {
         const confirmed = await dialogs.confirm({
           title: tr("settings.tools.batchExecuteTitle"),
-          description: tr("settings.tools.batchExecuteConfirm", { count: upgrades.length }),
+          description: tr("settings.tools.batchExecuteConfirm", { count: items.length }),
         });
         if (!confirmed || !isCurrent()) return;
         setGlobalMessage("");
         setBatchOpen(false);
-        const results: AgentToolExecutionResult[] = [];
-        let requestFailures = 0;
-        for (const { tool, action } of upgrades) {
+        setBatchReport({ items, complete: false });
+        const updateItem = (index: number, outcome: BatchUpdateOutcome) => {
+          items = items.map((item, itemIndex) =>
+            itemIndex === index ? { ...item, outcome } : item,
+          );
+          if (isCurrent()) setBatchReport({ items, complete: false });
+        };
+        for (let index = 0; index < items.length; index += 1) {
           if (!isCurrent()) return;
-          setExecutingAgent(tool.agent);
+          const item = items[index];
+          setExecutingAgent(item.agent);
+          updateItem(index, { kind: "running" });
           try {
-            results.push(await api.executeAgentTool(tool.agent, action.id));
-          } catch {
-            requestFailures += 1;
+            const result = await api.executeAgentTool(item.agent, item.actionId);
+            updateItem(index, { kind: "result", result });
+          } catch (error) {
+            // A lost response cannot establish whether the command ran. Never retry it here.
+            updateItem(index, { kind: "unconfirmed", error });
           }
         }
         releaseExecution();
         if (!isCurrent()) return;
+        setBatchReport({ items, complete: true });
         try {
           await refreshAgentTools(queryClient);
         } catch (error) {
           if (isCurrent()) setGlobalMessage(localizeMessage(error));
         }
         if (!isCurrent()) return;
-        const succeeded = results.filter((result) => result.status === "succeeded").length;
+        const succeeded = successfulBatchUpdates(items);
         await dialogs.notify({
           title: tr("settings.tools.batchResultTitle"),
           description: tr("settings.tools.batchResult", {
             succeeded,
-            failed: results.length - succeeded + requestFailures,
+            failed: items.length - succeeded,
           }),
-          tone: succeeded === upgrades.length ? "default" : "warning",
+          tone: succeeded === items.length ? "default" : "warning",
         });
       },
       () => {
@@ -492,6 +527,7 @@ export function AgentToolsSettings({
               {copyNotice && <p className="text-xs text-muted-foreground">{copyNotice}</p>}
             </div>
           </div>
+          {batchReport && <BatchUpdateResults report={batchReport} />}
         </SettingsPanel>
       </SettingsAnchor>
 
@@ -968,6 +1004,100 @@ function BatchCommandsDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function successfulBatchUpdates(items: BatchUpdateItem[]) {
+  return items.filter(
+    ({ outcome }) => outcome.kind === "result" && outcome.result.status === "succeeded",
+  ).length;
+}
+
+function BatchUpdateResults({ report }: { report: BatchUpdateReport }) {
+  const { tr, localizeMessage } = useI18n();
+  const completed = report.items.filter(
+    ({ outcome }) => outcome.kind === "result" || outcome.kind === "unconfirmed",
+  ).length;
+  const succeeded = successfulBatchUpdates(report.items);
+  return (
+    <section
+      aria-labelledby="agent-tools-batch-results-heading"
+      className="grid gap-3 border-t border-border/60 px-5 py-4"
+    >
+      <h3 id="agent-tools-batch-results-heading" className="font-heading font-semibold">
+        {tr("settings.tools.batchDetailsTitle")}
+      </h3>
+      <p role="status" className="text-sm text-muted-foreground">
+        {report.complete
+          ? tr("settings.tools.batchResult", {
+              succeeded,
+              failed: report.items.length - succeeded,
+            })
+          : tr("settings.tools.batchProgress", { completed, total: report.items.length })}
+      </p>
+      <ul className="grid gap-3">
+        {report.items.map((item) => {
+          const { outcome } = item;
+          const result = outcome.kind === "result" ? outcome.result : undefined;
+          const status = result
+            ? tr(`settings.tools.result.${result.status}`)
+            : tr(
+                outcome.kind === "waiting"
+                  ? "settings.tools.batchWaiting"
+                  : outcome.kind === "running"
+                    ? "settings.tools.batchRunning"
+                    : "settings.tools.batchUnconfirmed",
+              );
+          const details = result
+            ? [
+                result.before_version || result.after_version
+                  ? tr("settings.tools.versionChange", {
+                      before: result.before_version ?? tr("common.unknown"),
+                      after: result.after_version ?? tr("common.unknown"),
+                    })
+                  : "",
+                result.exit_code !== undefined
+                  ? tr("settings.tools.executionExitCode", { code: result.exit_code })
+                  : "",
+                result.status === "busy" ? tr("settings.tools.batchBusyDescription") : "",
+                result.output ||
+                  (result.status === "busy" ? "" : tr("settings.tools.batchNoDetails")),
+              ]
+                .filter(Boolean)
+                .join("\n")
+            : outcome.kind === "unconfirmed"
+              ? localizeMessage(outcome.error)
+              : "";
+          return (
+            <li key={`${item.agent}:${item.actionId}`} className="grid gap-2 rounded-lg border p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-semibold">{agentLabels[item.agent]}</h4>
+                  <p className="text-xs text-muted-foreground">
+                    {channelLabel(item.channel, tr)}
+                    {item.targetVersion &&
+                      ` · ${tr("settings.tools.recommendedVersion")}: ${item.targetVersion}`}
+                  </p>
+                </div>
+                <Badge variant="outline" className="max-w-full whitespace-normal">
+                  {status}
+                </Badge>
+              </div>
+              {outcome.kind === "unconfirmed" && (
+                <p className="text-sm text-muted-foreground">
+                  {tr("settings.tools.batchUnconfirmedDescription")}
+                </p>
+              )}
+              {details && (
+                <pre className="max-h-48 overflow-auto text-xs break-words whitespace-pre-wrap">
+                  {details}
+                </pre>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 

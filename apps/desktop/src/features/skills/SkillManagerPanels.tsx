@@ -2,7 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { skillKeys } from "./skills-query";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
-import { Check, CircleAlert, Copy, Eye, LoaderCircle, RefreshCw } from "lucide-react";
+import {
+  Check,
+  CircleAlert,
+  Copy,
+  Eye,
+  LoaderCircle,
+  MoreHorizontal,
+  RefreshCw,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,6 +24,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -110,6 +124,65 @@ export function readableSkillFile(file: SkillPreviewFile): SkillReadableContent 
     before_executable: file.before_executable ?? undefined,
     after_executable: file.after_executable ?? undefined,
   };
+}
+
+interface SkillUsageAction {
+  id: string;
+  label: string;
+  disabled?: boolean;
+  destructive?: boolean;
+  run(): void;
+}
+
+function SkillUsageActions({
+  name,
+  actions,
+  primaryId,
+}: {
+  name: string;
+  actions: SkillUsageAction[];
+  primaryId: string;
+}) {
+  const { tr } = useI18n();
+  const primary = actions.find((action) => action.id === primaryId);
+  const secondary = actions.filter((action) => action.id !== primaryId);
+  return (
+    <div className="flex flex-wrap gap-2">
+      {primary && (
+        <Button size="sm" disabled={primary.disabled} onClick={primary.run}>
+          {primary.label}
+        </Button>
+      )}
+      {!!secondary.length && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                size="sm"
+                variant="outline"
+                aria-label={`${tr("common.moreActions")} · ${name}`}
+              />
+            }
+          >
+            <MoreHorizontal size={14} />
+            {tr("common.moreActions")}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {secondary.map((action) => (
+              <DropdownMenuItem
+                key={action.id}
+                variant={action.destructive ? "destructive" : "default"}
+                disabled={action.disabled}
+                onClick={action.run}
+              >
+                {action.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  );
 }
 
 export function SkillDetailDialog({
@@ -537,6 +610,16 @@ export function SkillDeploymentDialog({
                 : tr("skills.manager.deploymentDescription")}
           </DialogDescription>
         </DialogHeader>
+        {action.operation === "undeploy" && !recovery && !report && (
+          <p
+            role="note"
+            className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"
+          >
+            {tr("skills.manager.withdrawWarning", {
+              name: action.deployment?.display_name ?? action.deployment?.package_name ?? "",
+            })}
+          </p>
+        )}
         {errors.length > 0 && (
           <div role="alert" className="text-sm text-destructive">
             {errors.map(localizeMessage).join(" · ")}
@@ -769,7 +852,7 @@ export function SkillDeploymentDialog({
             )}
             {recoveryLookupError !== undefined && (
               <p role="alert" className="text-sm text-amber-700">
-                {tr("skills.manager.refreshFailed")} {localizeMessage(recoveryLookupError)}
+                {tr("skills.manager.recoveryLookupFailed")} {localizeMessage(recoveryLookupError)}
               </p>
             )}
           </div>
@@ -781,7 +864,7 @@ export function SkillDeploymentDialog({
           {report && !pendingRecovery && (
             <Button disabled={busy} onClick={() => void reviewRecovery()}>
               <RefreshCw size={14} />
-              {tr("skills.manager.replan")}
+              {tr("skills.manager.retryRecoveryLookup")}
             </Button>
           )}
           {report && !!pendingRecovery?.targets.length && (
@@ -824,16 +907,25 @@ export function SkillDeploymentDialog({
                   }}
                 >
                   <RefreshCw size={14} />
-                  {tr("skills.manager.replan")}
+                  {tr(
+                    action.operation === "deploy"
+                      ? "skills.manager.changeTargets"
+                      : "skills.manager.replan",
+                  )}
                 </Button>
                 <Button
+                  variant={action.operation === "undeploy" ? "destructive" : "default"}
                   disabled={
                     busy || !hasEligible || (preview.requires_home_approval && !approveHome)
                   }
                   onClick={() => void apply()}
                 >
                   {busy && <LoaderCircle size={14} className="animate-spin" />}
-                  {tr("skills.manager.applyDeployment")}
+                  {tr(
+                    action.operation === "undeploy"
+                      ? "skills.manager.applyWithdrawal"
+                      : "skills.manager.applyDeployment",
+                  )}
                 </Button>
               </>
             ) : (
@@ -863,6 +955,8 @@ export function SkillUsageList({
   onOpen,
   syncState,
   onSync,
+  pendingDeploymentIds,
+  emptyMessage,
 }: {
   inventory: SkillInventory;
   deployments: SkillDeployment[];
@@ -876,6 +970,8 @@ export function SkillUsageList({
   onOpen: (id: string) => void;
   syncState?: SkillSyncState;
   onSync?: (request: PrepareSkillSyncRequest) => void;
+  pendingDeploymentIds?: ReadonlySet<string>;
+  emptyMessage?: string | null;
 }) {
   const { tr } = useI18n();
   const [query, setQuery] = useState("");
@@ -899,16 +995,19 @@ export function SkillUsageList({
       ...deployments.flatMap((item) => item.visible_to),
     ]),
   ];
-  const filteredDeployments = deployments.filter(
-    (item) =>
-      (showInactive || item.status !== "inactive") &&
-      matches(item.display_name ?? item.package_name, item.target, item.scope, item.visible_to),
+  const filteredDeployments = deployments.filter((item) =>
+    pendingDeploymentIds
+      ? pendingDeploymentIds.has(item.id)
+      : (showInactive || item.status !== "inactive") &&
+        matches(item.display_name ?? item.package_name, item.target, item.scope, item.visible_to),
   );
-  const filteredNative = groupSkillObservations(native).filter((group) =>
-    group.observations.some((item) =>
-      matches(item.name, `${item.path} ${group.path}`, item.scope, item.agents),
-    ),
-  );
+  const filteredNative = pendingDeploymentIds
+    ? []
+    : groupSkillObservations(native).filter((group) =>
+        group.observations.some((item) =>
+          matches(item.name, `${item.path} ${group.path}`, item.scope, item.agents),
+        ),
+      );
   const location = (item: { scope: string; workspace_id: string | null }) =>
     item.scope === "personal"
       ? tr("skills.manager.personal")
@@ -958,82 +1057,92 @@ export function SkillUsageList({
             {diagnostic}
           </p>
         ))}
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" onClick={() => onDetail({ observation_id: item.id })}>
-            <Eye size={14} />
-            {tr("skills.manager.details")}
-          </Button>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => onImport(item.id)}>
-            <Copy size={14} />
-            {tr("skills.manager.copyToLibrary")}
-          </Button>
-          {syncState?.observations.find((observation) => observation.id === item.id)?.can_adopt && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => onSync?.({ operation: "adopt", observation_id: item.id })}
-            >
-              {tr("skills.sync.operation.adopt")}
-            </Button>
-          )}
-          {workspaceIds.map((id) => (
-            <Button key={id} size="sm" variant="ghost" onClick={() => onOpen(id)}>
-              {tr("skills.manager.openWorkspace")} ·{" "}
-              {workspaces.find((workspace) => workspace.id === id)?.name ?? id}
-            </Button>
-          ))}
-        </div>
+        <SkillUsageActions
+          name={item.name}
+          primaryId="details"
+          actions={[
+            {
+              id: "details",
+              label: tr("skills.manager.details"),
+              run: () => onDetail({ observation_id: item.id }),
+            },
+            {
+              id: "import",
+              label: tr("skills.manager.copyToLibrary"),
+              disabled: busy,
+              run: () => onImport(item.id),
+            },
+            ...(syncState?.observations.find((observation) => observation.id === item.id)?.can_adopt
+              ? [
+                  {
+                    id: "adopt",
+                    label: tr("skills.sync.operation.adopt"),
+                    disabled: busy || !onSync,
+                    run: () => onSync?.({ operation: "adopt", observation_id: item.id }),
+                  },
+                ]
+              : []),
+            ...workspaceIds.map((id) => ({
+              id: `workspace:${id}`,
+              label: `${tr("skills.manager.openWorkspace")} · ${workspaces.find((workspace) => workspace.id === id)?.name ?? id}`,
+              run: () => onOpen(id),
+            })),
+          ]}
+        />
       </div>
     );
   };
   return (
     <div className="grid gap-3">
-      <div className="flex flex-wrap gap-2">
-        <Input
-          className="min-w-40 flex-1"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          aria-label={tr("skills.search")}
-          placeholder={tr("skills.search")}
-        />
-        <Select value={scope} onValueChange={(value) => value && setScope(value)}>
-          <SelectTrigger aria-label={tr("skills.manager.scope")} className="w-36">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              <SelectLabel>{tr("skills.manager.scope")}</SelectLabel>
-              <SelectItem value="all">{tr("skills.manager.allScopes")}</SelectItem>
-              <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
-              <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-        <Select value={agent} onValueChange={(value) => value && setAgent(value)}>
-          <SelectTrigger aria-label={tr("workspace.allAgents")} className="w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              <SelectLabel>{tr("workspace.allAgents")}</SelectLabel>
-              <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
-              {agents.map((value) => (
-                <SelectItem value={value} key={value}>
-                  {sessionAgentNames[value]}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-      </div>
-      <Label className="flex items-center gap-2 text-xs">
-        <Checkbox
-          checked={showInactive}
-          onCheckedChange={(checked) => setShowInactive(Boolean(checked))}
-        />
-        {tr("skills.manager.showInactive")}
-      </Label>
+      {!pendingDeploymentIds && (
+        <>
+          <div className="flex flex-wrap gap-2">
+            <Input
+              className="min-w-40 flex-1"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              aria-label={tr("skills.search")}
+              placeholder={tr("skills.search")}
+            />
+            <Select value={scope} onValueChange={(value) => value && setScope(value)}>
+              <SelectTrigger aria-label={tr("skills.manager.scope")} className="w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectLabel>{tr("skills.manager.scope")}</SelectLabel>
+                  <SelectItem value="all">{tr("skills.manager.allScopes")}</SelectItem>
+                  <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
+                  <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Select value={agent} onValueChange={(value) => value && setAgent(value)}>
+              <SelectTrigger aria-label={tr("workspace.allAgents")} className="w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectLabel>{tr("workspace.allAgents")}</SelectLabel>
+                  <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+                  {agents.map((value) => (
+                    <SelectItem value={value} key={value}>
+                      {sessionAgentNames[value]}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <Label className="flex items-center gap-2 text-xs">
+            <Checkbox
+              checked={showInactive}
+              onCheckedChange={(checked) => setShowInactive(Boolean(checked))}
+            />
+            {tr("skills.manager.showInactive")}
+          </Label>
+        </>
+      )}
       {loading && <p role="status">{tr("common.loading")}</p>}
       <p className="text-xs text-muted-foreground">{tr("skills.manager.visibilityNotice")}</p>
       {filteredDeployments.map((item) => {
@@ -1065,6 +1174,152 @@ export function SkillUsageList({
             ...observed.flatMap((observation) => observation.diagnostics),
           ]),
         ];
+        const actions: SkillUsageAction[] = [];
+        const syncAction = (
+          id: string,
+          label: string,
+          request: PrepareSkillSyncRequest,
+          disabled = busy,
+        ) => actions.push({ id, label, disabled, run: () => onSync?.(request) });
+        let primaryId = "details";
+        if (sync && onSync && item.status !== "inactive" && item.status !== "recovery-required") {
+          if (["incoming", "converged", "conflict"].includes(sync.sync_state))
+            syncAction("pull", tr("skills.sync.operation.pull"), {
+              operation: "pull",
+              deployment_id: item.id,
+            });
+          if (
+            ["outgoing", "converged", "conflict"].includes(sync.sync_state) ||
+            (sync.sync_state === "unverified" && localSource)
+          )
+            syncAction("push", tr("skills.sync.operation.push"), {
+              operation: "push",
+              deployment_id: item.id,
+            });
+          if (sync.sync_state === "incoming" || unacceptedLibrary)
+            syncAction(
+              "use-library",
+              tr(unacceptedLibrary ? "skills.sync.acceptLibrary" : "skills.sync.useLibrary"),
+              {
+                operation: "push",
+                deployment_id: item.id,
+                resolution: "library",
+              },
+            );
+          if (unacceptedLibrary)
+            syncAction("use-deployment", tr("skills.sync.useDeployment"), {
+              operation: "pull",
+              deployment_id: item.id,
+              resolution: "deployment",
+            });
+          if (sync.sync_state === "missing")
+            syncAction("restore", tr("skills.sync.operation.restore"), {
+              operation: "restore",
+              deployment_id: item.id,
+            });
+          if (
+            sync.sync_state === "unverified" &&
+            !item.library_root &&
+            installed.some((entry) => entry.name === item.library_id)
+          ) {
+            syncAction("bind", tr("skills.sync.operation.bind"), {
+              operation: "bind",
+              deployment_id: item.id,
+              library_id: item.library_id,
+            });
+            primaryId = "bind";
+          }
+          // Identical changed copies only need baseline review. A conflict still opens the
+          // existing preview without a resolution; the user must explicitly choose a version.
+          if (sync.sync_state === "converged" || sync.sync_state === "conflict") {
+            const conflict = sync.sync_state === "conflict";
+            primaryId = conflict ? "review-conflict" : "confirm-baseline";
+            syncAction(
+              primaryId,
+              tr(conflict ? "skills.sync.reviewConflict" : "skills.sync.confirmBaseline"),
+              {
+                operation: "push",
+                deployment_id: item.id,
+              },
+            );
+          } else if (sync.sync_state === "incoming") primaryId = "pull";
+          else if (sync.sync_state === "outgoing") primaryId = "push";
+          else if (sync.sync_state === "missing") primaryId = "restore";
+          else if (unacceptedLibrary) primaryId = "use-library";
+          syncAction(
+            "fork",
+            tr("skills.sync.operation.fork"),
+            { operation: "fork", deployment_id: item.id },
+            busy || ["missing", "blocked"].includes(sync.sync_state),
+          );
+          syncAction("detach", tr("skills.sync.operation.detach"), {
+            operation: "detach",
+            deployment_id: item.id,
+          });
+        }
+        actions.push({
+          id: "details",
+          label: tr("skills.manager.details"),
+          disabled: !observed.length && !localSource,
+          run: () =>
+            onDetail(
+              observed[0] ? { observation_id: observed[0].id } : { library_id: item.library_id },
+            ),
+        });
+        if (!sync || item.status === "recovery-required" || item.status === "inactive") {
+          primaryId = "deployment";
+          actions.push({
+            id: "deployment",
+            label: tr(
+              item.status === "recovery-required"
+                ? "skills.manager.operation.recover"
+                : item.status === "inactive"
+                  ? "skills.manager.deploy"
+                  : "skills.manager.syncUpdate",
+            ),
+            disabled:
+              busy ||
+              (item.status !== "recovery-required" &&
+                (!localSource || !installed.some((skill) => skill.name === item.library_id))),
+            run: () =>
+              onAction(
+                item.status === "recovery-required"
+                  ? {
+                      operation: "recover",
+                      deployment: item,
+                      recoveryDeployments: deployments.filter(
+                        (deployment) =>
+                          deployment.operation_id === item.operation_id &&
+                          deployment.status === "recovery-required",
+                      ),
+                    }
+                  : item.status === "inactive"
+                    ? { operation: "deploy", libraryId: item.library_id }
+                    : { operation: "update", deployment: item },
+              ),
+          });
+        }
+        if (item.previous_hash && item.status !== "recovery-required")
+          actions.push({
+            id: "rollback",
+            label: tr("skills.manager.rollbackDeployment"),
+            disabled: busy,
+            run: () => onAction({ operation: "rollback", deployment: item }),
+          });
+        if (item.status !== "inactive" && item.status !== "recovery-required")
+          actions.push({
+            id: "withdraw",
+            label: tr("skills.manager.withdraw"),
+            disabled: busy,
+            destructive: true,
+            run: () => onAction({ operation: "undeploy", deployment: item }),
+          });
+        if (item.workspace_id)
+          actions.push({
+            id: "workspace",
+            label: tr("skills.manager.openWorkspace"),
+            run: () => onOpen(item.workspace_id!),
+          });
         return (
           <div key={item.id} className="grid gap-3 rounded-xl border p-4">
             <div className="flex flex-wrap items-center gap-2">
@@ -1128,206 +1383,23 @@ export function SkillUsageList({
                 {diagnostic}
               </p>
             ))}
-            <div className="flex flex-wrap gap-2">
-              {sync &&
-                onSync &&
-                item.status !== "inactive" &&
-                item.status !== "recovery-required" && (
-                  <>
-                    {["incoming", "converged", "conflict"].includes(sync.sync_state) && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => onSync({ operation: "pull", deployment_id: item.id })}
-                      >
-                        {tr("skills.sync.operation.pull")}
-                      </Button>
-                    )}
-                    {(["outgoing", "converged", "conflict"].includes(sync.sync_state) ||
-                      (sync.sync_state === "unverified" && localSource)) && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => onSync({ operation: "push", deployment_id: item.id })}
-                      >
-                        {tr("skills.sync.operation.push")}
-                      </Button>
-                    )}
-                    {(sync.sync_state === "incoming" || unacceptedLibrary) && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() =>
-                            onSync({
-                              operation: "push",
-                              deployment_id: item.id,
-                              resolution: "library",
-                            })
-                          }
-                        >
-                          {tr(
-                            unacceptedLibrary
-                              ? "skills.sync.acceptLibrary"
-                              : "skills.sync.useLibrary",
-                          )}
-                        </Button>
-                        {unacceptedLibrary && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={busy}
-                            onClick={() =>
-                              onSync({
-                                operation: "pull",
-                                deployment_id: item.id,
-                                resolution: "deployment",
-                              })
-                            }
-                          >
-                            {tr("skills.sync.useDeployment")}
-                          </Button>
-                        )}
-                      </>
-                    )}
-                    {sync.sync_state === "missing" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => onSync({ operation: "restore", deployment_id: item.id })}
-                      >
-                        {tr("skills.sync.operation.restore")}
-                      </Button>
-                    )}
-                    {sync.sync_state === "unverified" &&
-                      !item.library_root &&
-                      installed.some((entry) => entry.name === item.library_id) && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() =>
-                            onSync({
-                              operation: "bind",
-                              deployment_id: item.id,
-                              library_id: item.library_id,
-                            })
-                          }
-                        >
-                          {tr("skills.sync.operation.bind")}
-                        </Button>
-                      )}
-                    {item.status !== "inactive" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy || ["missing", "blocked"].includes(sync.sync_state)}
-                        onClick={() => onSync({ operation: "fork", deployment_id: item.id })}
-                      >
-                        {tr("skills.sync.operation.fork")}
-                      </Button>
-                    )}
-                    {item.status !== "inactive" && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy}
-                        onClick={() => onSync({ operation: "detach", deployment_id: item.id })}
-                      >
-                        {tr("skills.sync.operation.detach")}
-                      </Button>
-                    )}
-                  </>
-                )}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!observed.length && !localSource}
-                onClick={() =>
-                  onDetail(
-                    observed[0]
-                      ? { observation_id: observed[0].id }
-                      : { library_id: item.library_id },
-                  )
-                }
-              >
-                {tr("skills.manager.details")}
-              </Button>
-              {(!sync || item.status === "recovery-required" || item.status === "inactive") && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={
-                    busy ||
-                    (item.status !== "recovery-required" &&
-                      (!localSource || !installed.some((skill) => skill.name === item.library_id)))
-                  }
-                  onClick={() =>
-                    onAction(
-                      item.status === "recovery-required"
-                        ? {
-                            operation: "recover",
-                            deployment: item,
-                            recoveryDeployments: deployments.filter(
-                              (deployment) =>
-                                deployment.operation_id === item.operation_id &&
-                                deployment.status === "recovery-required",
-                            ),
-                          }
-                        : item.status === "inactive"
-                          ? { operation: "deploy", libraryId: item.library_id }
-                          : { operation: "update", deployment: item },
-                    )
-                  }
-                >
-                  {tr(
-                    item.status === "recovery-required"
-                      ? "skills.manager.operation.recover"
-                      : item.status === "inactive"
-                        ? "skills.manager.deploy"
-                        : "skills.manager.syncUpdate",
-                  )}
-                </Button>
-              )}
-              {item.previous_hash && item.status !== "recovery-required" && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => onAction({ operation: "rollback", deployment: item })}
-                >
-                  {tr("skills.manager.rollbackDeployment")}
-                </Button>
-              )}
-              {item.status !== "inactive" && item.status !== "recovery-required" && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={() => onAction({ operation: "undeploy", deployment: item })}
-                >
-                  {tr("skills.manager.withdraw")}
-                </Button>
-              )}
-              {item.workspace_id && (
-                <Button size="sm" variant="ghost" onClick={() => onOpen(item.workspace_id!)}>
-                  {tr("skills.manager.openWorkspace")}
-                </Button>
-              )}
-            </div>
+            <SkillUsageActions
+              name={item.display_name ?? item.package_name}
+              actions={actions}
+              primaryId={primaryId}
+            />
           </div>
         );
       })}
       {filteredNative.map(observationRow)}
-      {!loading && !filteredDeployments.length && !filteredNative.length && (
-        <p className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
-          {tr("skills.manager.noUsage")}
-        </p>
-      )}
+      {!loading &&
+        !filteredDeployments.length &&
+        !filteredNative.length &&
+        emptyMessage !== null && (
+          <p className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
+            {emptyMessage ?? tr("skills.manager.noUsage")}
+          </p>
+        )}
     </div>
   );
 }

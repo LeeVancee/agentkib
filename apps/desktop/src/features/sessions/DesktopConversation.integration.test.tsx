@@ -179,10 +179,13 @@ describe("desktop embedded conversation", () => {
     fireEvent.change(draft, { target: { value: "保留桌面草稿" } });
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(
-      (await screen.findAllByText("尚未交接给 AgentKib，请先停止原终端中的同一会话，再确认续接。"))
-        .length,
+      (
+        await screen.findAllByText(
+          "此会话尚未交给 AgentKib。请先停止原客户端中的同一会话，再确认交接。",
+        )
+      ).length,
     ).toBeGreaterThan(0);
-    fireEvent.click(await screen.findByRole("button", { name: "确认续接" }));
+    fireEvent.click(await screen.findByRole("button", { name: "交给 AgentKib" }));
     const confirm = await screen.findByRole("button", { name: "交给 AgentKib" });
     expect(confirm).toBeDisabled();
     fireEvent.click(confirm);
@@ -191,7 +194,7 @@ describe("desktop embedded conversation", () => {
     expect(draft).toHaveValue("保留桌面草稿");
     expect(mutations()).toEqual([]);
 
-    fireEvent.click(screen.getByRole("button", { name: "确认续接" }));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
@@ -245,7 +248,7 @@ describe("desktop embedded conversation", () => {
       ],
     ]);
     expect(vi.mocked(bridge.request).mock.calls.some(([path]) => path === "send")).toBe(false);
-    expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
   });
 
   it("uses the trusted bridge for history, streaming and sends without pairing or a second application shell", async () => {

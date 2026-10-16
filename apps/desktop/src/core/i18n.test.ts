@@ -17,6 +17,18 @@ import {
 const dictionaries = { "en-US": enUS, "zh-CN": zhCN, "zh-TW": zhTW, "ja-JP": jaJP } as const;
 
 describe("i18n resources", () => {
+  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+    "describes the actual ignored-workspace recovery destination in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      const message = tr("workspace.ignoreConfirm");
+      expect(message).toContain(tr("nav.settings"));
+      expect(message).toContain(tr("settings.section.discovery"));
+      expect(message).toContain(tr("settings.excluded"));
+      expect(tr("workspace.changesApplying")).not.toEqual(tr("dialog.quit.changesApplying"));
+    },
+  );
+
   it("keeps keys and interpolation parameters identical", () => {
     const englishKeys = Object.keys(enUS).sort();
     for (const dictionary of Object.values(dictionaries)) {

@@ -1,7 +1,7 @@
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { WorkspaceOverviewSkeleton } from "@/features/workspace/WorkspaceSkeleton";
-import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useWorkspaceStore, type ChangeSetOrigin } from "@/features/workspace/workspace-store";
 import { WorkspaceContextHealthCard } from "@/features/workspace/WorkspaceContextHealthCard";
 import { useHomeDoctorReport } from "@/features/home/home-query";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -23,7 +23,8 @@ function Overview({
   manifest,
   onOpenDoctor,
   onOpenChanges,
-  pendingDoctorReview,
+  pendingChanges,
+  busy,
   doctorSummary,
 }: {
   workspace: WorkspaceSummary;
@@ -31,10 +32,12 @@ function Overview({
   manifest: Manifest;
   onOpenDoctor: () => void;
   onOpenChanges: () => void;
-  pendingDoctorReview: boolean;
+  pendingChanges?: { origin: ChangeSetOrigin; count: number };
+  busy: boolean;
   doctorSummary?: import("@/core/types").ContextDoctorSummary;
 }) {
   const { tr } = useI18n();
+  const pendingDoctorReview = pendingChanges?.origin === "doctor";
   const configuredAgents = scan.agents.filter(
     (agent) => agent.detected || agent.warnings.length > 0,
   );
@@ -54,6 +57,24 @@ function Overview({
   ] as const;
   return (
     <div className="grid gap-5">
+      {pendingChanges && !pendingDoctorReview && (
+        <Card
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-3 border-amber-500/30 bg-amber-500/5 p-4"
+        >
+          <div>
+            <h2 className="text-sm font-semibold">
+              {tr("overview.pendingChangesTitle", { count: pendingChanges.count })}
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {tr("overview.pendingChangesText")}
+            </p>
+          </div>
+          <Button onClick={onOpenChanges} disabled={busy}>
+            {tr("overview.contextHealthReviewChanges")}
+          </Button>
+        </Card>
+      )}
       <WorkspaceContextHealthCard
         summary={doctorSummary}
         pendingReview={pendingDoctorReview}
@@ -180,9 +201,29 @@ function Overview({
 function WorkspaceOverviewRoute() {
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/" });
-  const { selectedWorkspace, scan, manifest, changeSet, changeSetOrigin } = useWorkspaceStore();
+  const {
+    selectedWorkspace,
+    project,
+    scan,
+    manifest,
+    changeSet,
+    changeSetManifest,
+    changeSetOrigin,
+    busy,
+    applyingChanges,
+  } = useWorkspaceStore();
   const doctorReport = useHomeDoctorReport(workspaceId);
   if (!selectedWorkspace || !scan || !manifest) return <WorkspaceOverviewSkeleton />;
+  const pendingChanges =
+    selectedWorkspace.id === workspaceId &&
+    selectedWorkspace.path === project &&
+    changeSet?.project_root === project &&
+    changeSet.changes.length > 0 &&
+    (changeSetOrigin !== "standard" ||
+      changeSetManifest === undefined ||
+      changeSetManifest === JSON.stringify(manifest))
+      ? { origin: changeSetOrigin, count: changeSet.changes.length }
+      : undefined;
   const open = (page: "doctor" | "changes") =>
     void navigate({
       to: `/workspace/$workspaceId/${page}` as never,
@@ -193,7 +234,8 @@ function WorkspaceOverviewRoute() {
       workspace={selectedWorkspace}
       scan={scan}
       manifest={manifest}
-      pendingDoctorReview={Boolean(changeSet && changeSetOrigin === "doctor")}
+      pendingChanges={pendingChanges}
+      busy={busy || applyingChanges}
       doctorSummary={doctorReport.data?.summary}
       onOpenDoctor={() => open("doctor")}
       onOpenChanges={() => open("changes")}

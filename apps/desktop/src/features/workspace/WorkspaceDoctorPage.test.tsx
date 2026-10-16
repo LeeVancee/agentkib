@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
@@ -159,5 +159,111 @@ describe("WorkspaceDoctorPage", () => {
     render(<WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={vi.fn()} />);
 
     expect(await screen.findByText("Repairable: 1 · manual action: 1.")).toBeTruthy();
+  });
+
+  it("hides repair review when no automatic repairs are available", async () => {
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue(report);
+    const onRepair = vi.fn();
+    render(<WorkspaceDoctorPage workspace={workspace} onRepair={onRepair} onDiagnosed={vi.fn()} />);
+    await screen.findByText("No deterministic configuration issues found");
+
+    expect(screen.queryByRole("button", { name: /Review .*Repairs/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    expect(onRepair).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["skill.source-unavailable", "doctor.manual.skillSource", "doctor.openSkills", "skills"],
+    ["skill.target-missing", "doctor.manual.skillTarget", "doctor.openSkills", "skills"],
+    ["instruction.missing", "doctor.manual.instruction", "doctor.openContext", "context"],
+    [
+      "instruction.expected-content-missing",
+      "doctor.manual.instruction",
+      "doctor.openContext",
+      "context",
+    ],
+    ["instruction.exact-duplicate", "doctor.manual.duplicate", "doctor.openContext", "context"],
+    ["context.warning", "doctor.manual.context", "doctor.openContext", "context"],
+    ["context.unavailable", "doctor.manual.context", "doctor.openContext", "context"],
+    ["mcp.target-missing", "doctor.manual.mcpTarget", "doctor.openMcp", "mcp"],
+  ])(
+    "offers the appropriate inspection action for %s",
+    async (code, guidance, label, destination) => {
+      vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+        ...report,
+        summary: { ...report.summary, warning_count: 1 },
+        issues: [{ id: code, code, severity: "warning", repairable: false, evidence: [] }],
+      });
+      const onOpenIssue = vi.fn();
+      render(
+        <WorkspaceDoctorPage
+          workspace={workspace}
+          onRepair={vi.fn()}
+          onDiagnosed={vi.fn()}
+          onOpenIssue={onOpenIssue}
+        />,
+      );
+
+      expect(await screen.findByText(tr(guidance))).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: tr(label) }));
+      expect(onOpenIssue).toHaveBeenCalledExactlyOnceWith(destination);
+      expect(screen.queryByRole("button", { name: /Review .*Repairs/ })).toBeNull();
+    },
+  );
+
+  it.each([
+    ["manifest.invalid", "doctor.manual.manifest"],
+    ["native.invalid", "doctor.manual.native"],
+    ["managed.missing", "doctor.manual.managed"],
+    ["managed.drift", "doctor.manual.managed"],
+    ["mcp.config-unavailable", "doctor.manual.mcpConfig"],
+    ["agent.read-only", "doctor.manual.readOnly"],
+    ["future.issue", "doctor.manual.other"],
+  ])(
+    "provides external repair instructions for %s without an unrelated navigation",
+    async (code, guidance) => {
+      vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+        ...report,
+        summary: { ...report.summary, warning_count: 1 },
+        issues: [{ id: code, code, severity: "warning", repairable: false, evidence: [] }],
+      });
+      render(
+        <WorkspaceDoctorPage
+          workspace={workspace}
+          onRepair={vi.fn()}
+          onDiagnosed={vi.fn()}
+          onOpenIssue={vi.fn()}
+        />,
+      );
+
+      expect(await screen.findByText(tr(guidance))).toBeTruthy();
+      expect(screen.getAllByRole("button")).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    },
+  );
+
+  it("keeps repairable issues on the review path instead of suggesting manual changes", async () => {
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+      ...report,
+      summary: { ...report.summary, warning_count: 1, repairable_count: 1 },
+      issues: [
+        {
+          id: "repairable",
+          code: "instruction.missing",
+          severity: "warning",
+          repairable: true,
+          evidence: [],
+        },
+      ],
+    });
+    const onRepair = vi.fn().mockResolvedValue(undefined);
+    render(<WorkspaceDoctorPage workspace={workspace} onRepair={onRepair} onDiagnosed={vi.fn()} />);
+
+    const review = await screen.findByRole("button", {
+      name: tr("doctor.reviewRepairCount", { count: 1 }),
+    });
+    expect(screen.queryByText(tr("doctor.manual.instruction"))).toBeNull();
+    fireEvent.click(review);
+    expect(onRepair).toHaveBeenCalledOnce();
   });
 });

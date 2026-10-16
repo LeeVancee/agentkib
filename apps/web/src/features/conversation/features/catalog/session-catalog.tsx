@@ -28,6 +28,7 @@ export interface CatalogWorkspace {
   name: string;
   path: string;
 }
+export type CatalogStatus = "loading" | "ready" | "error";
 export function SessionCatalog({
   sessions,
   workspaces,
@@ -36,6 +37,7 @@ export function SessionCatalog({
   locale = "zh-CN",
   indexEnabled = true,
   pendingSessions = {},
+  status = "ready",
 }: {
   sessions: ConversationSessionSummary[];
   workspaces?: CatalogWorkspace[];
@@ -44,6 +46,7 @@ export function SessionCatalog({
   locale?: Locale;
   indexEnabled?: boolean;
   pendingSessions?: Record<string, boolean>;
+  status?: CatalogStatus;
 }) {
   const t = dictionaries[locale],
     c = catalogCopy[locale];
@@ -95,7 +98,9 @@ export function SessionCatalog({
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-4">
         {!indexEnabled ? (
           <p>{t.indexDisabled}</p>
-        ) : !workspaces ? (
+        ) : status === "loading" ? (
+          <p role="status">{t.loading}</p>
+        ) : status === "error" ? null : !workspaces ? (
           <p role="status">{c.missing}</p>
         ) : (
           <>
@@ -106,7 +111,7 @@ export function SessionCatalog({
                   <div className="relative flex items-center">
                     <Button
                       variant="ghost"
-                      className="h-9 min-w-0 flex-1 justify-start gap-2 px-2 text-xs text-muted-foreground [&>strong]:min-w-0 [&>strong]:flex-1 [&>strong]:truncate [&>strong]:text-left [&>strong]:font-medium [&>small]:text-[10px]"
+                      className="h-auto min-h-11 min-w-11 flex-1 justify-start gap-2 px-2 text-xs text-muted-foreground [&>strong]:min-w-0 [&>strong]:flex-1 [&>strong]:truncate [&>strong]:text-left [&>strong]:font-medium [&>small]:text-[10px]"
                       aria-expanded={open}
                       title={workspace.path}
                       aria-label={`${label} · ${rows.length}`}
@@ -120,7 +125,7 @@ export function SessionCatalog({
                       <strong>{label}</strong>
                       <small>{rows.length}</small>
                     </Button>
-                    <details className="shrink-0 text-muted-foreground [&>summary]:cursor-pointer [&>summary]:list-none [&>summary]:rounded-md [&>summary]:p-2 [&>span]:absolute [&>span]:inset-x-0 [&>span]:top-full [&>span]:z-10 [&>span]:rounded-lg [&>span]:border [&>span]:bg-popover [&>span]:p-3 [&>span]:text-xs [&>span]:break-all [&>span]:shadow-md">
+                    <details className="shrink-0 text-muted-foreground [&>summary]:cursor-pointer [&>summary]:list-none [&>summary]:grid [&>summary]:size-11 [&>summary]:place-items-center [&>summary]:rounded-md [&>span]:absolute [&>span]:inset-x-0 [&>span]:top-full [&>span]:z-10 [&>span]:rounded-lg [&>span]:border [&>span]:bg-popover [&>span]:p-3 [&>span]:text-xs [&>span]:break-all [&>span]:shadow-md">
                       <summary aria-label={`${label} · ${c.path}`} title={c.path}>
                         <Info size={14} />
                       </summary>

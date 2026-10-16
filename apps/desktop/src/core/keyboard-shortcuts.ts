@@ -3,8 +3,9 @@ import { normalizePlatform, type AppPlatform } from "./platform";
 export type ShortcutId =
   | "navigate-home"
   | "navigate-workspaces"
-  | "navigate-catalog"
   | "navigate-agents"
+  | "navigate-sessions"
+  | "navigate-catalog"
   | "navigate-quota"
   | "navigate-insights"
   | "open-settings"
@@ -46,17 +47,30 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
     nativeMac: true,
   },
   {
-    id: "navigate-catalog",
+    id: "navigate-agents",
     key: "3",
-    labelKey: "nav.assets",
+    labelKey: "nav.agents",
     group: "navigation",
     nativeMac: true,
   },
-  { id: "navigate-agents", key: "4", labelKey: "nav.agents", group: "navigation", nativeMac: true },
-  { id: "navigate-quota", key: "5", labelKey: "nav.quota", group: "navigation", nativeMac: true },
+  {
+    id: "navigate-sessions",
+    key: "4",
+    labelKey: "sessions.nav",
+    group: "navigation",
+    nativeMac: true,
+  },
+  {
+    id: "navigate-catalog",
+    key: "5",
+    labelKey: "nav.catalog",
+    group: "navigation",
+    nativeMac: true,
+  },
+  { id: "navigate-quota", key: "6", labelKey: "nav.quota", group: "navigation", nativeMac: true },
   {
     id: "navigate-insights",
-    key: "6",
+    key: "7",
     labelKey: "nav.insights",
     group: "navigation",
     nativeMac: true,

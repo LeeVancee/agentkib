@@ -1,6 +1,6 @@
 import { HistorySearchTrigger } from "@/features/conversation/features/history/history-search-controls";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   ArrowLeft,
   FolderOpen,
@@ -12,6 +12,12 @@ import {
 } from "lucide-react";
 import { SessionCatalog } from "@/features/conversation/features/catalog/session-catalog";
 import { Button } from "@/features/conversation/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/features/conversation/components/ui/dialog";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { ManagedTasks } from "@/features/conversation/features/sessions/managed-tasks";
 import { PendingCenter } from "@/features/conversation/features/sessions/pending-center";
@@ -19,6 +25,7 @@ import { SessionPanelsContext } from "@/features/conversation/features/sessions/
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
 import { cn } from "@/features/conversation/lib/utils";
+import { sessionAccessCopy } from "./session-access-copy";
 
 export function SessionWorkspace() {
   const session = useSession();
@@ -46,6 +53,21 @@ export function SessionWorkspace() {
   });
   const [filesOpen, setFilesOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [logoutPending, setLogoutPending] = useState(false);
+  const [logoutFailed, setLogoutFailed] = useState(false);
+  const logoutLocked = useRef(false);
+  const mounted = useRef(false);
+  const logoutTrigger = useRef<HTMLButtonElement | null>(null);
+  const cancelLogout = useRef<HTMLButtonElement | null>(null);
+  const logoutDescriptionId = useId();
+  const accessCopy = sessionAccessCopy[locale];
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     setFilesOpen(false);
     setActionsOpen(false);
@@ -56,7 +78,32 @@ export function SessionWorkspace() {
     // focus trap. Keep the existing global dialog as the sole modal surface.
     setFilesOpen(false);
     setActionsOpen(false);
+    setLogoutOpen(false);
   }, [session.modal]);
+  function closeLogout() {
+    if (logoutLocked.current) return;
+    setLogoutOpen(false);
+    setLogoutFailed(false);
+  }
+  async function endAccess() {
+    if (logoutLocked.current || session.busy) return;
+    logoutLocked.current = true;
+    setLogoutPending(true);
+    setLogoutFailed(false);
+    try {
+      await post("logout", {});
+    } catch {
+      // A thrown request failure is shown as an unconfirmed logout below.
+    } finally {
+      logoutLocked.current = false;
+      if (mounted.current) {
+        setLogoutPending(false);
+        // post handles transport errors internally. A confirmed access change
+        // leaves this workspace through SessionShell; staying here is not success.
+        setLogoutFailed(true);
+      }
+    }
+  }
   const copy = webLayoutCopy[locale];
   const status = sessionDisplayState(session);
   return (
@@ -193,7 +240,7 @@ export function SessionWorkspace() {
               </div>
               <Button
                 variant="ghost"
-                size="icon-sm"
+                className="size-11 p-0"
                 aria-label={t.refresh}
                 onClick={() => void refresh(true)}
               >
@@ -217,6 +264,7 @@ export function SessionWorkspace() {
               }}
               locale={locale}
               indexEnabled={indexEnabled}
+              status={session.catalogStatus}
             />
             <footer className="flex items-center gap-3 border-t p-4">
               <span className="grid size-9 place-items-center rounded-lg border bg-background">
@@ -227,10 +275,19 @@ export function SessionWorkspace() {
                 <div className="truncate text-xs font-medium">{access?.device?.name}</div>
               </div>
               <Button
+                ref={logoutTrigger}
                 variant="ghost"
                 size="icon"
                 aria-label={t.logout}
-                onClick={() => void post("logout", {})}
+                aria-haspopup="dialog"
+                disabled={logoutPending || session.busy}
+                onClick={() => {
+                  if (logoutLocked.current || session.busy) return;
+                  setFilesOpen(false);
+                  setActionsOpen(false);
+                  setLogoutFailed(false);
+                  setLogoutOpen(true);
+                }}
               >
                 <LogOut className="size-4" />
               </Button>
@@ -246,6 +303,44 @@ export function SessionWorkspace() {
           </main>
         </div>
       </div>
+      <Dialog open={logoutOpen && !session.modal} onOpenChange={(open) => !open && closeLogout()}>
+        <DialogContent
+          showCloseButton={false}
+          initialFocus={cancelLogout}
+          finalFocus={logoutTrigger}
+          aria-describedby={logoutDescriptionId}
+          aria-busy={logoutPending || undefined}
+        >
+          <DialogHeader>
+            <DialogTitle>{accessCopy.title}</DialogTitle>
+          </DialogHeader>
+          <p id={logoutDescriptionId} className="text-sm text-muted-foreground">
+            {accessCopy.description}
+          </p>
+          {logoutFailed && (
+            <p role="alert" className="text-sm text-destructive">
+              {accessCopy.failed}
+            </p>
+          )}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              ref={cancelLogout}
+              variant="outline"
+              disabled={logoutPending}
+              onClick={closeLogout}
+            >
+              {accessCopy.cancel}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={logoutPending || session.busy}
+              onClick={() => void endAccess()}
+            >
+              {logoutPending ? accessCopy.pending : accessCopy.confirm}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </SessionPanelsContext>
   );
 }

@@ -292,7 +292,7 @@ describe("Codex composer", () => {
     fireEvent.click(await screen.findByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-    expect(screen.getByText("引用文件或技能后，请输入消息或添加手机附件再发送。")).toBeVisible();
+    expect(screen.getByText("引用文件或技能后，请输入消息或添加附件再发送。")).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
     state = { ...state, message: "Use these references" };
     view.rerender(<CodexComposer />);
@@ -451,7 +451,7 @@ it("keeps native inspection available while write outcome is unconfirmed", async
   };
   render(<CodexTools />);
   fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
-  const inspect = screen.getByRole("button", { name: "核对原生状态" });
+  const inspect = screen.getByRole("button", { name: "检查原客户端状态" });
   expect(inspect).toBeEnabled();
   expect(screen.getByRole("button", { name: "重命名" })).toBeDisabled();
   fireEvent.click(inspect);

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { changeLocale, initializeI18n } from "@/core/i18n";
+import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type {
   AgentKind,
   SkillDeployment,
@@ -160,6 +160,11 @@ const observation: SkillObservation = {
   library_id: null,
   diagnostics: ["Shared package managed outside AgentKib"],
 };
+
+async function openUsageMenu(index = 0) {
+  await userEvent.setup().click(screen.getAllByRole("button", { name: /^More actions/ })[index]);
+  return screen.findByRole("menu");
+}
 
 describe("Skill deployment workflow", () => {
   it("restores an interrupted operation from saved usage after restart without preparing a new plan", async () => {
@@ -497,7 +502,9 @@ describe("Skill deployment workflow", () => {
         expect(
           await screen.findByText(/operation result was saved.*Recovery list unavailable/),
         ).toBeTruthy();
-        await user.click(screen.getByRole("button", { name: "Review again" }));
+        await user.click(screen.getByRole("button", { name: "Retry recovery status check" }));
+        expect(mocks.prepareSkillDeployment).toHaveBeenCalledTimes(1);
+        expect(mocks.applySkillDeployment).toHaveBeenCalledTimes(1);
       }
       await user.click(await screen.findByRole("button", { name: "Recover operation" }));
       expect(screen.getByText(deployment.target)).toBeTruthy();
@@ -702,7 +709,7 @@ describe("Skill deployment workflow", () => {
       />,
     );
     expect(await screen.findByText(/Preview token expired/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Review again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate a new plan" })).toBeTruthy();
     expect(mocks.readSkillDetailFile).not.toHaveBeenCalled();
   });
 });
@@ -733,8 +740,9 @@ describe("Skill usage and details", () => {
       ...syncState,
       deployments: [{ ...syncState.deployments[0], sync_state: "incoming" }],
     });
-    expect(screen.getByRole("button", { name: "Bring changes into library" })).toBeTruthy();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Use library package" }));
+    expect(screen.getByRole("button", { name: "Save to Skill library" })).toBeTruthy();
+    await openUsageMenu();
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Use library package" }));
     expect(onSync).toHaveBeenCalledExactlyOnceWith({
       operation: "push",
       deployment_id: deployment.id,
@@ -745,8 +753,9 @@ describe("Skill usage and details", () => {
     "offers explicit acceptance of valid library edits using the %s version",
     async (resolution) => {
       const onSync = renderSyncUsage(syncState);
+      if (resolution === "deployment") await openUsageMenu();
       await userEvent.setup().click(
-        screen.getByRole("button", {
+        screen.getByRole(resolution === "library" ? "button" : "menuitem", {
           name:
             resolution === "library" ? "Review and accept library changes" : "Use deployed package",
         }),
@@ -767,7 +776,7 @@ describe("Skill usage and details", () => {
     "missing-target-identity",
     "missing-target",
     "recovery-required",
-  ])("does not offer library-edit acceptance for %s", (reason) => {
+  ])("does not offer library-edit acceptance for %s", async (reason) => {
     const next = structuredClone(syncState);
     if (reason === "invalid-library") next.library[0].valid = false;
     if (reason === "unchanged-library") next.library[0].observed_hash = next.library[0].hash;
@@ -799,18 +808,23 @@ describe("Skill usage and details", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "Review and accept library changes" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Use deployed package" })).toBeNull();
+    await openUsageMenu();
+    expect(
+      screen.queryByRole("menuitem", { name: "Review and accept library changes" }),
+    ).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Use deployed package" })).toBeNull();
   });
-  it("keeps acceptance unavailable while another write is in progress", () => {
+  it("keeps acceptance unavailable while another write is in progress", async () => {
     renderSyncUsage(syncState, true);
     expect(
       screen
         .getByRole("button", { name: "Review and accept library changes" })
         .hasAttribute("disabled"),
     ).toBe(true);
+    await openUsageMenu();
     expect(
-      screen.getByRole("button", { name: "Use deployed package" }).hasAttribute("disabled"),
-    ).toBe(true);
+      screen.getByRole("menuitem", { name: "Use deployed package" }).getAttribute("aria-disabled"),
+    ).toBe("true");
   });
   it.each([
     ["en-US", "Broken link"],
@@ -879,10 +893,11 @@ describe("Skill usage and details", () => {
         onOpen={vi.fn()}
       />,
     );
-    expect(screen.getAllByRole("button", { name: "Copy to My Skills" })).toHaveLength(1);
+    await openUsageMenu();
+    expect(screen.getAllByRole("menuitem", { name: "Copy to Skill library" })).toHaveLength(1);
     expect(screen.getByText(alias.path)).toBeTruthy();
     expect(screen.getByText(observation.path)).toBeTruthy();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Copy to My Skills" }));
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Copy to Skill library" }));
     expect(onImport).toHaveBeenCalledWith("cc-root");
   });
   it("keeps external aliases of a managed package visible, filterable and copyable", async () => {
@@ -915,18 +930,21 @@ describe("Skill usage and details", () => {
       />,
     );
     expect(screen.getByText(alias.path)).toBeTruthy();
-    expect(screen.getByText("Managed deployment")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Copy to My Skills" })).toHaveLength(1);
+    expect(screen.getByText("Deployment managed by AgentKib")).toBeTruthy();
+    await openUsageMenu(1);
+    expect(screen.getAllByRole("menuitem", { name: "Copy to Skill library" })).toHaveLength(1);
     const user = userEvent.setup();
+    await user.keyboard("{Escape}");
     await user.click(screen.getByRole("combobox", { name: "All Agents" }));
     await user.click(await screen.findByRole("option", { name: "Claude Code" }));
     await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
     expect(screen.getByText(alias.path)).toBeTruthy();
-    expect(screen.queryByText("Managed deployment")).toBeNull();
+    expect(screen.queryByText("Deployment managed by AgentKib")).toBeNull();
     expect(screen.queryByText("No matching Skill locations.")).toBeNull();
     await user.click(screen.getByRole("button", { name: "View contents" }));
     expect(onDetail).toHaveBeenCalledWith({ observation_id: alias.id });
-    await user.click(screen.getByRole("button", { name: "Copy to My Skills" }));
+    await openUsageMenu();
+    await user.click(screen.getByRole("menuitem", { name: "Copy to Skill library" }));
     expect(onImport).toHaveBeenCalledWith(alias.id);
   });
   it.each(["library", "external alias"])(
@@ -970,7 +988,9 @@ describe("Skill usage and details", () => {
       expect(screen.getByText(/Personal · Claude Code · Native visibility:/)).toBeTruthy();
       expect(screen.getByText(/Personal · Codex · OpenCode · Native visibility:/)).toBeTruthy();
       if (!library) {
-        await userEvent.setup().click(screen.getByRole("button", { name: "Copy to My Skills" }));
+        await userEvent
+          .setup()
+          .click(screen.getByRole("button", { name: "Copy to Skill library" }));
         expect(onImport).toHaveBeenCalledWith(alias.id);
       }
     },
@@ -1017,8 +1037,9 @@ describe("Skill usage and details", () => {
     expect(screen.getByText("Restricted by native settings")).toBeTruthy();
     expect(screen.getByText("Disabled by native policy")).toBeTruthy();
     expect(screen.getByText(/does not confirm a running Agent/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy to My Skills" })).toBeNull();
-    await userEvent.setup().click(screen.getByRole("button", { name: "View contents" }));
+    await openUsageMenu();
+    expect(screen.queryByRole("menuitem", { name: "Copy to Skill library" })).toBeNull();
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: "View contents" }));
     expect(onDetail).toHaveBeenCalledWith({ observation_id: "deployed-observation" });
   });
   it.each([false, undefined])(
@@ -1061,11 +1082,12 @@ describe("Skill usage and details", () => {
       expect(
         screen.getByRole("button", { name: "Sync library version" }).hasAttribute("disabled"),
       ).toBe(true);
-      expect(screen.getByRole("button", { name: "View contents" }).hasAttribute("disabled")).toBe(
-        true,
-      );
       expect(screen.getByText(/Update this deployment from its original library/)).toBeTruthy();
-      await userEvent.setup().click(screen.getByRole("button", { name: "Withdraw deployment" }));
+      await openUsageMenu();
+      expect(
+        screen.getByRole("menuitem", { name: "View contents" }).getAttribute("aria-disabled"),
+      ).toBe("true");
+      await userEvent.setup().click(screen.getByRole("menuitem", { name: "Withdraw deployment" }));
       expect(onAction).toHaveBeenCalledWith(expect.objectContaining({ operation: "undeploy" }));
     },
   );
@@ -1242,9 +1264,10 @@ describe("Skill usage and details", () => {
     );
     expect(screen.getByText("cc-switch")).toBeTruthy();
     expect(screen.getByText(/does not take ownership/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Withdraw deployment" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Sync library version" })).toBeNull();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Copy to My Skills" }));
+    await openUsageMenu();
+    expect(screen.queryByRole("menuitem", { name: "Withdraw deployment" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Sync library version" })).toBeNull();
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Copy to Skill library" }));
     expect(onImport).toHaveBeenCalledWith("cc-observation");
   });
   it("preserves local source attribution and loads safe content by detail identity", async () => {
@@ -1283,4 +1306,419 @@ describe("Skill usage and details", () => {
       path: "SKILL.md",
     });
   });
+});
+
+describe("Skill deployment action hierarchy", () => {
+  function usage(state: SkillSyncState, busy = false) {
+    const callbacks = { onSync: vi.fn(), onDetail: vi.fn(), onAction: vi.fn(), onImport: vi.fn() };
+    const view = render(
+      <SkillUsageList
+        inventory={{ observations: [], warnings: [] }}
+        deployments={[deployment]}
+        installed={[]}
+        workspaces={[]}
+        loading={false}
+        busy={busy}
+        onOpen={vi.fn()}
+        syncState={state}
+        {...callbacks}
+      />,
+    );
+    const card = screen
+      .getByText("reviewer", { selector: "strong" })
+      .closest<HTMLDivElement>("div.grid");
+    if (!card) throw new Error("Deployment card missing");
+    return { ...view, ...callbacks, card: within(card) };
+  }
+  it.each([
+    ["incoming", "Save to Skill library", "pull"],
+    ["outgoing", "Update deployment", "push"],
+    ["converged", "Review shared baseline", "push"],
+    ["conflict", "Review conflicting versions", "push"],
+    ["missing", "Restore missing copy", "restore"],
+    ["current", "View contents", undefined],
+    ["blocked", "View contents", undefined],
+    ["unverified", "View contents", undefined],
+  ] as const)(
+    "shows one primary action for %s and keeps the exact review request",
+    async (sync, label, operation) => {
+      const state = structuredClone(syncState);
+      state.deployments[0].sync_state = sync;
+      state.library[0].observed_hash = state.library[0].hash;
+      const f = usage(state);
+      expect(f.card.getAllByRole("button")).toHaveLength(2);
+      expect(f.card.getByRole("button", { name: /^More actions/ })).toBeTruthy();
+      await userEvent.setup().click(f.card.getByRole("button", { name: label }));
+      if (operation)
+        expect(f.onSync).toHaveBeenCalledExactlyOnceWith({
+          operation,
+          deployment_id: deployment.id,
+        });
+      else {
+        expect(f.onDetail).toHaveBeenCalledExactlyOnceWith({ library_id: deployment.library_id });
+        expect(f.onSync).not.toHaveBeenCalled();
+      }
+      expect(f.onAction).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps both conflict directions in more actions without selecting a resolution", async () => {
+    const state = structuredClone(syncState);
+    state.deployments[0].sync_state = "conflict";
+    const f = usage(state);
+    await openUsageMenu();
+    expect(screen.getByRole("menuitem", { name: "Save to Skill library" })).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Update deployment" }));
+    expect(f.onSync).toHaveBeenCalledExactlyOnceWith({
+      operation: "push",
+      deployment_id: deployment.id,
+    });
+    expect(f.onAction).not.toHaveBeenCalled();
+  });
+  it("keeps busy writes disabled inside the menu while leaving content inspection available", async () => {
+    const f = usage(syncState, true);
+    expect(
+      f.card
+        .getByRole("button", { name: "Review and accept library changes" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    await openUsageMenu();
+    for (const name of [
+      "Use deployed package",
+      "Fork into a new Skill",
+      "Stop managing this copy",
+      "Roll back deployment",
+      "Withdraw deployment",
+    ]) {
+      const item = screen.getByRole("menuitem", { name });
+      expect(item.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(item);
+    }
+    expect(f.onSync).not.toHaveBeenCalled();
+    expect(f.onAction).not.toHaveBeenCalled();
+    await userEvent.setup().click(screen.getByRole("menuitem", { name: "View contents" }));
+    expect(f.onDetail).toHaveBeenCalledExactlyOnceWith({ library_id: deployment.library_id });
+  });
+  it("keeps external inspection primary and exposes adoption only with the existing eligibility", async () => {
+    const onSync = vi.fn();
+    const onImport = vi.fn();
+    render(
+      <SkillUsageList
+        inventory={{ observations: [observation], warnings: [] }}
+        deployments={[]}
+        installed={[]}
+        workspaces={[]}
+        loading={false}
+        busy={false}
+        onDetail={vi.fn()}
+        onImport={onImport}
+        onAction={vi.fn()}
+        onOpen={vi.fn()}
+        onSync={onSync}
+        syncState={{
+          library: [],
+          deployments: [],
+          observations: [
+            {
+              id: observation.id,
+              name: observation.name,
+              path: observation.path,
+              scope: "personal",
+              owner: "cc-switch",
+              can_adopt: true,
+            },
+          ],
+          warnings: [],
+        }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "View contents" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Adopt this installation" })).toBeNull();
+    await openUsageMenu();
+    expect(screen.queryByRole("menuitem", { name: "Withdraw deployment" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Copy to Skill library" })).toBeTruthy();
+    await userEvent
+      .setup()
+      .click(screen.getByRole("menuitem", { name: "Adopt this installation" }));
+    expect(onSync).toHaveBeenCalledExactlyOnceWith({
+      operation: "adopt",
+      observation_id: observation.id,
+    });
+    expect(onImport).not.toHaveBeenCalled();
+  });
+  it("regenerates a new immutable plan and requires personal approval again", async () => {
+    mocks.prepareSkillDeployment
+      .mockResolvedValueOnce(preview)
+      .mockResolvedValueOnce({ ...preview, token: "fresh-preview" });
+    mocks.applySkillDeployment.mockResolvedValue({
+      operation_id: "fresh-preview",
+      results: [],
+      warnings: [],
+    });
+    render(
+      <SkillDeploymentDialog
+        action={{ operation: "update", deployment }}
+        workspaces={[]}
+        onClose={vi.fn()}
+        onChanged={vi.fn().mockResolvedValue([])}
+      />,
+    );
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: "Apply eligible locations" });
+    await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
+    await user.click(screen.getByRole("button", { name: "Generate a new plan" }));
+    await waitFor(() => expect(mocks.prepareSkillDeployment).toHaveBeenCalledTimes(2));
+    expect(
+      screen.getByRole("button", { name: "Apply eligible locations" }).hasAttribute("disabled"),
+    ).toBe(true);
+    await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
+    await user.click(screen.getByRole("button", { name: "Apply eligible locations" }));
+    await waitFor(() =>
+      expect(mocks.applySkillDeployment).toHaveBeenCalledExactlyOnceWith("fresh-preview", true),
+    );
+  });
+  it("retries only recovery lookup after success and hides the retry once no recovery remains", async () => {
+    mocks.prepareSkillDeployment.mockResolvedValue(preview);
+    mocks.applySkillDeployment.mockResolvedValue({
+      operation_id: "completed",
+      results: [],
+      warnings: [],
+    });
+    mocks.skillDeployments
+      .mockRejectedValueOnce(new Error("Recovery lookup failed"))
+      .mockResolvedValueOnce([]);
+    render(
+      <SkillDeploymentDialog
+        action={{ operation: "update", deployment }}
+        workspaces={[]}
+        onClose={vi.fn()}
+        onChanged={vi.fn().mockResolvedValue([])}
+      />,
+    );
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: "Apply eligible locations" });
+    await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
+    await user.click(screen.getByRole("button", { name: "Apply eligible locations" }));
+    await user.click(await screen.findByRole("button", { name: "Retry recovery status check" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Retry recovery status check" })).toBeNull(),
+    );
+    expect(mocks.skillDeployments).toHaveBeenCalledTimes(2);
+    expect(mocks.prepareSkillDeployment).toHaveBeenCalledTimes(1);
+    expect(mocks.applySkillDeployment).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Generate a new plan" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Recover operation" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Close" }).length).toBeGreaterThan(0);
+  });
+  it.each([
+    ["en-US", "Withdraw eligible deployments", "Its deployed files will be removed"],
+    ["zh-CN", "撤销无冲突位置的部署", "部署文件会被移除"],
+    ["zh-TW", "撤銷無衝突位置的部署", "部署檔案會被移除"],
+    ["ja-JP", "競合のない配置を撤去", "配置したファイルは削除されます"],
+  ] as const)(
+    "names and styles withdrawal as destructive in %s while preserving approval and conflicts",
+    async (locale, label, warning) => {
+      await changeLocale(locale);
+      const onAction = vi.fn();
+      const view = render(
+        <SkillUsageList
+          inventory={{ observations: [], warnings: [] }}
+          deployments={[deployment]}
+          installed={[]}
+          workspaces={[]}
+          loading={false}
+          busy={false}
+          onDetail={vi.fn()}
+          onImport={vi.fn()}
+          onAction={onAction}
+          onOpen={vi.fn()}
+          syncState={syncState}
+          onSync={vi.fn()}
+        />,
+      );
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByRole("button", { name: `${tr("common.moreActions")} · reviewer` }),
+      );
+      const withdraw = await screen.findByRole("menuitem", { name: tr("skills.manager.withdraw") });
+      expect(withdraw.getAttribute("data-variant")).toBe("destructive");
+      await user.click(withdraw);
+      expect(onAction).toHaveBeenCalledExactlyOnceWith({ operation: "undeploy", deployment });
+      view.unmount();
+      mocks.prepareSkillDeployment.mockResolvedValue({
+        ...preview,
+        operation: "undeploy",
+        targets: [
+          { ...preview.targets[0], added: [], removed: ["SKILL.md"] },
+          {
+            ...preview.targets[0],
+            target_id: "conflict",
+            path: "/foreign/reviewer",
+            conflicts: ["Changed installation"],
+          },
+        ],
+      });
+      mocks.applySkillDeployment.mockResolvedValue({
+        operation_id: preview.token,
+        results: [],
+        warnings: [],
+      });
+      render(
+        <SkillDeploymentDialog
+          action={onAction.mock.calls[0][0]}
+          workspaces={[]}
+          onClose={vi.fn()}
+          onChanged={vi.fn().mockResolvedValue([])}
+        />,
+      );
+      const apply = await screen.findByRole("button", { name: label });
+      expect(apply.className).toContain("bg-destructive");
+      expect(apply.hasAttribute("disabled")).toBe(true);
+      expect(screen.getByRole("note").textContent).toContain("reviewer");
+      expect(screen.getByRole("note").textContent).toContain(warning);
+      expect(screen.getByText("Changed installation")).toBeTruthy();
+      await user.click(screen.getByRole("checkbox", { name: tr("skills.manager.approveHome") }));
+      await user.click(apply);
+      await waitFor(() =>
+        expect(mocks.applySkillDeployment).toHaveBeenCalledExactlyOnceWith(preview.token, true),
+      );
+      expect(mocks.prepareSkillDeployment).toHaveBeenCalledExactlyOnceWith({
+        operation: "undeploy",
+        deployment_id: deployment.id,
+      });
+    },
+  );
+});
+
+describe("Skill deployment state-specific safeguards", () => {
+  it.each(["missing", "blocked"] as const)(
+    "keeps fork disabled for %s while retaining stop-management review",
+    async (sync) => {
+      const state = structuredClone(syncState);
+      state.deployments[0].sync_state = sync;
+      state.library[0].observed_hash = state.library[0].hash;
+      const onSync = vi.fn();
+      render(
+        <SkillUsageList
+          inventory={{ observations: [], warnings: [] }}
+          deployments={[deployment]}
+          installed={[]}
+          workspaces={[]}
+          loading={false}
+          busy={false}
+          onDetail={vi.fn()}
+          onImport={vi.fn()}
+          onAction={vi.fn()}
+          onOpen={vi.fn()}
+          syncState={state}
+          onSync={onSync}
+        />,
+      );
+      await openUsageMenu();
+      const fork = screen.getByRole("menuitem", { name: "Fork into a new Skill" });
+      expect(fork.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(fork);
+      expect(onSync).not.toHaveBeenCalled();
+      await userEvent
+        .setup()
+        .click(screen.getByRole("menuitem", { name: "Stop managing this copy" }));
+      expect(onSync).toHaveBeenCalledExactlyOnceWith({
+        operation: "detach",
+        deployment_id: deployment.id,
+      });
+    },
+  );
+  it.each([true, false])(
+    "only recommends binding a legacy copy when its library package exists (%s)",
+    async (hasLibrary) => {
+      const state = structuredClone(syncState);
+      state.deployments[0].sync_state = "unverified";
+      const legacy = { ...deployment, library_root: null, source_is_current_library: false };
+      const onSync = vi.fn();
+      render(
+        <SkillUsageList
+          inventory={{ observations: [], warnings: [] }}
+          deployments={[legacy]}
+          installed={
+            hasLibrary
+              ? [
+                  {
+                    name: "reviewer",
+                    display_name: "Reviewer",
+                    path: "/library/skills/reviewer",
+                    description: "Review",
+                    size: 0,
+                    status: "current",
+                    can_rollback: false,
+                  },
+                ]
+              : []
+          }
+          workspaces={[]}
+          loading={false}
+          busy={false}
+          onDetail={vi.fn()}
+          onImport={vi.fn()}
+          onAction={vi.fn()}
+          onOpen={vi.fn()}
+          syncState={state}
+          onSync={onSync}
+        />,
+      );
+      if (hasLibrary) {
+        await userEvent
+          .setup()
+          .click(screen.getByRole("button", { name: "Bind legacy deployment" }));
+        expect(onSync).toHaveBeenCalledExactlyOnceWith({
+          operation: "bind",
+          deployment_id: deployment.id,
+          library_id: deployment.library_id,
+        });
+      } else {
+        expect(screen.queryByRole("button", { name: "Bind legacy deployment" })).toBeNull();
+        await openUsageMenu();
+        expect(screen.queryByRole("menuitem", { name: "Bind legacy deployment" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Update deployment" })).toBeNull();
+        expect(onSync).not.toHaveBeenCalled();
+      }
+    },
+  );
+  it.each([
+    ["en-US", "Generate a new plan", "Retry recovery status check"],
+    ["zh-CN", "重新生成计划", "重新检查恢复状态"],
+    ["zh-TW", "重新產生計畫", "重新檢查恢復狀態"],
+    ["ja-JP", "計画を再作成", "復旧状態の確認を再試行"],
+  ] as const)(
+    "distinguishes planning from recovery lookup in the real dialog in %s",
+    async (locale, plan, retry) => {
+      await changeLocale(locale);
+      mocks.prepareSkillDeployment.mockResolvedValue(preview);
+      mocks.applySkillDeployment.mockResolvedValue({
+        operation_id: "completed",
+        results: [],
+        warnings: [],
+      });
+      mocks.skillDeployments
+        .mockRejectedValueOnce(new Error("Lookup unavailable"))
+        .mockResolvedValueOnce([]);
+      render(
+        <SkillDeploymentDialog
+          action={{ operation: "update", deployment }}
+          workspaces={[]}
+          onClose={vi.fn()}
+          onChanged={vi.fn().mockResolvedValue([])}
+        />,
+      );
+      const user = userEvent.setup();
+      expect(await screen.findByRole("button", { name: plan })).toBeTruthy();
+      await user.click(screen.getByRole("checkbox", { name: tr("skills.manager.approveHome") }));
+      await user.click(screen.getByRole("button", { name: tr("skills.manager.applyDeployment") }));
+      expect(await screen.findByRole("button", { name: retry })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: plan })).toBeNull();
+      await user.click(screen.getByRole("button", { name: retry }));
+      await waitFor(() => expect(screen.queryByRole("button", { name: retry })).toBeNull());
+      expect(mocks.prepareSkillDeployment).toHaveBeenCalledTimes(1);
+      expect(mocks.applySkillDeployment).toHaveBeenCalledTimes(1);
+      expect(mocks.skillDeployments).toHaveBeenCalledTimes(2);
+    },
+  );
 });

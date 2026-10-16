@@ -8,7 +8,6 @@ import { Check, CircleAlert, Minus, RefreshCw, ShieldCheck, Wrench } from "lucid
 
 import type {
   AgentKind,
-  ContextDoctorReport,
   ContextDoctorSummary,
   DoctorAssetStatus,
   WorkspaceSummary,
@@ -18,17 +17,20 @@ import { cn } from "cn";
 import { withAsyncCleanup } from "@/lib/utils";
 import { useHomeDoctorReport } from "@/features/home/home-query";
 import { AGENT_LABELS } from "@/core/agents";
+import { doctorManualAction, type DoctorIssueDestination } from "./doctor-manual-actions";
 
 export function WorkspaceDoctorPage({
   workspace,
   onRepair,
   verification,
   onDiagnosed,
+  onOpenIssue,
 }: {
   workspace: WorkspaceSummary;
   onRepair: () => Promise<void>;
   verification?: "applied";
   onDiagnosed: (summary: ContextDoctorSummary) => void | Promise<void>;
+  onOpenIssue?: (destination: DoctorIssueDestination) => void;
 }) {
   const { localizeMessage, tr } = useI18n();
   const {
@@ -124,15 +126,14 @@ export function WorkspaceDoctorPage({
             <RefreshCw className={isFetching ? "animate-spin" : ""} size={14} />
             {tr("common.refresh")}
           </Button>
-          <Button
-            onClick={() => void repair()}
-            disabled={loading || repairing || !activeReport?.summary.repairable_count}
-          >
-            <Wrench size={14} />
-            {repairing
-              ? tr("doctor.planning")
-              : tr("doctor.reviewRepairCount", { count: repairableCount })}
-          </Button>
+          {repairableCount > 0 && (
+            <Button onClick={() => void repair()} disabled={loading || repairing}>
+              <Wrench size={14} />
+              {repairing
+                ? tr("doctor.planning")
+                : tr("doctor.reviewRepairCount", { count: repairableCount })}
+            </Button>
+          )}
         </div>
       </Card>
       {error && (
@@ -247,10 +248,40 @@ export function WorkspaceDoctorPage({
                     )}
                   </div>
                 ))}
+                {!issue.repairable && (
+                  <ManualIssueAction code={issue.code} onOpenIssue={onOpenIssue} />
+                )}
               </div>
             </article>
           ))}
         </Card>
+      )}
+    </div>
+  );
+}
+
+function ManualIssueAction({
+  code,
+  onOpenIssue,
+}: {
+  code: string;
+  onOpenIssue?: (destination: DoctorIssueDestination) => void;
+}) {
+  const { tr } = useI18n();
+  const { guidanceKey, destination } = doctorManualAction(code);
+  return (
+    <div className="mt-2 grid justify-items-start gap-2 text-xs">
+      <p>{tr(guidanceKey)}</p>
+      {destination && onOpenIssue && (
+        <Button variant="outline" size="sm" onClick={() => onOpenIssue(destination)}>
+          {tr(
+            destination === "context"
+              ? "doctor.openContext"
+              : destination === "skills"
+                ? "doctor.openSkills"
+                : "doctor.openMcp",
+          )}
+        </Button>
       )}
     </div>
   );

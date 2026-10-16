@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -8,8 +9,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { changeLocale, initializeI18n, localizeMessage, tr } from "@/core/i18n";
-import type { SkillCandidate, SkillOperationPreview } from "@/core/types";
-import { SkillHubPage } from "./SkillHubPage";
+import type {
+  InstalledSkill,
+  SkillCandidate,
+  SkillDeployment,
+  SkillOperationPreview,
+} from "@/core/types";
+import { SkillHubPage, type SkillHubSection } from "./SkillHubPage";
 
 // 每个用例一个新的 QueryClient，避免技能库缓存在用例之间泄漏。
 function renderWithClient(ui: ReactElement) {
@@ -75,7 +81,101 @@ const preview: SkillOperationPreview = {
   expires_at: "2030-01-01T00:00:00Z",
 };
 
+const librarySkill: InstalledSkill = {
+  name: "library-reviewer-id",
+  display_name: "Library Reviewer",
+  description: "Review code",
+  path: "/library/library-reviewer-id",
+  size: 128,
+  status: "current",
+  can_rollback: true,
+};
+const libraryDeployment: SkillDeployment = {
+  id: "deployment-1",
+  library_id: librarySkill.name,
+  source_is_current_library: true,
+  package_name: librarySkill.display_name,
+  package_hash: "deployed-hash",
+  scope: "personal",
+  workspace_id: null,
+  scope_root: "/native",
+  target: "/native/skills/library-reviewer-id",
+  agents: ["codex"],
+  visible_to: ["codex"],
+  status: "active",
+  diagnostics: [],
+  previous_hash: null,
+  operation_id: "deploy-operation",
+  updated_at: "2026-10-16T00:00:00Z",
+};
+
 describe("SkillHubPage", () => {
+  it("accepts externally controlled sections without rewriting them or requiring a router", async () => {
+    mocks.installedSkills.mockResolvedValue([]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillCatalog.mockResolvedValue({ entries: [], cached_at: "2026-10-16", stale: false });
+    const onSectionChange = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const page = (section: SkillHubSection) => (
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>
+          <SkillHubPage
+            section={section}
+            onSectionChange={onSectionChange}
+            workspaces={[]}
+            onOpen={vi.fn()}
+            onReload={vi.fn()}
+          />
+        </AppDialogProvider>
+      </QueryClientProvider>
+    );
+    const view = render(page("workspace"));
+    expect(screen.getByRole("tab", { name: /Usage locations/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Discover Skills" }));
+    expect(onSectionChange).toHaveBeenCalledExactlyOnceWith("discover");
+    expect(screen.getByRole("tab", { name: /Usage locations/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(mocks.skillCatalog).not.toHaveBeenCalled();
+    view.rerender(page("discover"));
+    await waitFor(() => expect(mocks.skillCatalog).toHaveBeenCalledOnce());
+    expect(screen.getByRole("tab", { name: "Discover Skills" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    view.rerender(page("library"));
+    expect(screen.getByRole("tab", { name: /Skill library/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(onSectionChange).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ["en-US", "Skill library", "The Skill library is empty"],
+    ["zh-CN", "技能库", "技能库为空"],
+    ["zh-TW", "技能庫", "技能庫是空的"],
+    ["ja-JP", "スキルライブラリ", "スキルライブラリは空です"],
+  ] as const)("names the library consistently in %s", async (locale, label, empty) => {
+    await initializeI18n(locale);
+    mocks.installedSkills.mockResolvedValue([]);
+    mocks.removedSkills.mockResolvedValue([]);
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    expect(await screen.findByText(empty)).toBeVisible();
+    expect(screen.getByRole("tab", { name: `${label} 0` })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: new RegExp(label) })).toBeVisible();
+    await initializeI18n("en-US");
+  });
   it("shows failed update checks without claiming the Skill is current", async () => {
     const user = userEvent.setup();
     const skill = {
@@ -95,12 +195,7 @@ describe("SkillHubPage", () => {
     ]);
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage
-          workspaceAssets={[]}
-          workspaces={[]}
-          onOpen={vi.fn()}
-          onReload={async () => {}}
-        />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={async () => {}} />
       </AppDialogProvider>,
     );
     await screen.findByText("Network Reviewer");
@@ -129,9 +224,10 @@ describe("SkillHubPage", () => {
       truncated: false,
     });
   });
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
     vi.clearAllMocks();
+    await initializeI18n("en-US");
   });
 
   it("separates the AgentKib library from workspace usage", async () => {
@@ -150,15 +246,36 @@ describe("SkillHubPage", () => {
 
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
 
     expect(await screen.findByText("local-reviewer")).toBeTruthy();
-    expect(screen.getByText("Local unmanaged")).toBeTruthy();
+    expect(screen.getByText("Local · not managed by AgentKib")).toBeTruthy();
     expect(screen.getByRole("tab", { name: /Usage locations/ })).toBeTruthy();
     expect(screen.getByText(/not enabled for any Agent automatically/)).toBeTruthy();
   });
+
+  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+    "keeps library and usage counts tied to their own lists in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      mocks.installedSkills.mockResolvedValue([
+        librarySkill,
+        { ...librarySkill, name: "second-reviewer", display_name: "Second Reviewer" },
+      ]);
+      mocks.removedSkills.mockResolvedValue([]);
+      mocks.skillDeployments.mockResolvedValue([libraryDeployment]);
+      renderWithClient(
+        <AppDialogProvider>
+          <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        </AppDialogProvider>,
+      );
+      await screen.findByText("Second Reviewer");
+      expect(screen.getByRole("tab", { name: `${tr("skills.library")} 2` })).toBeVisible();
+      expect(screen.getByRole("tab", { name: `${tr("skills.workspaceUsage")} 1` })).toBeVisible();
+    },
+  );
 
   it("combines source, package status and usage filters in My Skills", async () => {
     const local = {
@@ -202,7 +319,7 @@ describe("SkillHubPage", () => {
     ]);
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
     await screen.findByText("remote-reviewer");
@@ -272,18 +389,27 @@ describe("SkillHubPage", () => {
     });
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
     expect(await screen.findByText("A scan root was unavailable")).toBeTruthy();
     const user = userEvent.setup();
     await user.click(screen.getByRole("tab", { name: /Usage locations/ }));
-    await user.click(await screen.findByRole("button", { name: "Copy to My Skills" }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: `${tr("common.moreActions")} · external-reviewer`,
+      }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Copy to Skill library" }));
     expect(await screen.findByText("Review Skill package")).toBeTruthy();
     expect(mocks.prepareSkillImport).toHaveBeenCalledWith("external-1");
-    await user.click(screen.getByRole("button", { name: "Add to library" }));
+    await user.click(screen.getByRole("button", { name: "Add to Skill library" }));
     expect(await screen.findByText("Registry refresh failed after import")).toBeTruthy();
-    expect(screen.getByText(/Skill library updated/)).toBeTruthy();
+    expect(
+      screen.getByText(tr("skills.manager.libraryAdded", { name: "external-reviewer" }), {
+        exact: false,
+      }),
+    ).toBeTruthy();
     expect(mocks.applySkillOperation).toHaveBeenCalledWith("preview-token", false);
     await user.click(await screen.findByRole("button", { name: "Deploy to…" }));
     expect(await screen.findByRole("dialog", { name: "Deploy Skill" })).toBeTruthy();
@@ -303,11 +429,11 @@ describe("SkillHubPage", () => {
 
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
 
-    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
 
     try {
       for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
@@ -320,18 +446,20 @@ describe("SkillHubPage", () => {
     }
   });
 
-  it("opens batch import from My Skills and keeps the imported package when refresh fails", async () => {
-    mocks.installedSkills
-      .mockResolvedValueOnce([])
-      .mockRejectedValue(new Error("Batch refresh failed"));
-    mocks.removedSkills.mockResolvedValue([]);
-    mocks.skillInventory.mockResolvedValue({
-      observations: [
-        {
-          id: "external",
-          name: "reviewer",
-          path: "/native/reviewer",
-          resolved_path: "/native/reviewer",
+  it.each([1, 2])(
+    "keeps %i imported packages and their result when refresh fails",
+    async (count) => {
+      const names = Array.from({ length: count }, (_, index) => `reviewer-${index + 1}`);
+      mocks.installedSkills
+        .mockResolvedValueOnce([])
+        .mockRejectedValue(new Error("Batch refresh failed"));
+      mocks.removedSkills.mockResolvedValue([]);
+      mocks.skillInventory.mockResolvedValue({
+        observations: names.map((name) => ({
+          id: name,
+          name,
+          path: `/native/${name}`,
+          resolved_path: `/native/${name}`,
           agents: ["codex"],
           scope: "personal",
           workspace_id: null,
@@ -340,74 +468,82 @@ describe("SkillHubPage", () => {
           status: "observed",
           library_id: null,
           diagnostics: [],
-        },
-      ],
-      warnings: [],
-    });
-    mocks.prepareSkillImports.mockResolvedValue({
-      token: "batch",
-      expires_at: preview.expires_at,
-      total_size: 128,
-      items: [
-        {
-          id: "item",
-          observation_ids: ["external"],
-          paths: ["/native/reviewer"],
+        })),
+        warnings: [],
+      });
+      mocks.prepareSkillImports.mockResolvedValue({
+        token: "batch",
+        expires_at: preview.expires_at,
+        total_size: 128,
+        items: names.map((name) => ({
+          id: name,
+          observation_ids: [name],
+          paths: [`/native/${name}`],
           agents: ["codex"],
-          resolved_path: "/native/reviewer",
-          library_id: "reviewer",
-          display_name: "reviewer",
+          resolved_path: `/native/${name}`,
+          library_id: name,
+          display_name: name,
           status: "ready",
           preview,
-        },
-      ],
-    });
-    const imported = {
-      name: "reviewer",
-      display_name: "reviewer",
-      description: "Imported package",
-      path: "/library/reviewer",
-      size: 128,
-      status: "current",
-      source: null,
-      can_rollback: false,
-    };
-    mocks.applySkillImports.mockResolvedValue({
-      token: "batch",
-      items: [
-        {
-          id: "item",
-          observation_ids: ["external"],
+        })),
+      });
+      const imported = {
+        name: "reviewer",
+        display_name: "reviewer",
+        description: "Imported package",
+        path: "/library/reviewer",
+        size: 128,
+        status: "current",
+        source: null,
+        can_rollback: false,
+      };
+      mocks.applySkillImports.mockResolvedValue({
+        token: "batch",
+        items: names.map((name) => ({
+          id: name,
+          observation_ids: [name],
           status: "imported",
-          library_id: "reviewer",
-          skill: imported,
-        },
-      ],
-    });
-    renderWithClient(
-      <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
-      </AppDialogProvider>,
-    );
-    const user = userEvent.setup();
-    await waitFor(() =>
+          library_id: name,
+          skill: { ...imported, name, display_name: name, description: `Imported ${name}` },
+        })),
+      });
+      renderWithClient(
+        <AppDialogProvider>
+          <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        </AppDialogProvider>,
+      );
+      const user = userEvent.setup();
+      await waitFor(() =>
+        expect(
+          (screen.getByRole("button", { name: "Import from local Agents" }) as HTMLButtonElement)
+            .disabled,
+        ).toBe(false),
+      );
+      await user.click(screen.getByRole("button", { name: "Import from local Agents" }));
+      await user.click(screen.getByRole("button", { name: "Review selected packages" }));
+      await user.click(await screen.findByRole("button", { name: "Import ready packages" }));
+      expect(await screen.findAllByText("Imported")).toHaveLength(count);
+      await waitFor(() =>
+        expect(screen.getAllByText(/Batch refresh failed/).length).toBeGreaterThan(0),
+      );
+      await user.click(screen.getAllByRole("button", { name: "Close" }).at(-1)!);
+      for (const name of names) expect(await screen.findByText(`Imported ${name}`)).toBeTruthy();
+      const message = screen.getByText(
+        count === 1
+          ? tr("skills.manager.libraryAdded", { name: names[0] })
+          : tr("skills.manager.libraryAddedMultiple", { count }),
+        { exact: false },
+      );
+      const result = within(message.closest<HTMLElement>('[role="status"]')!);
+      expect(result.queryByRole("button", { name: tr("skills.manager.deploy") }) !== null).toBe(
+        count === 1,
+      );
       expect(
-        (screen.getByRole("button", { name: "Import from local Agents" }) as HTMLButtonElement)
-          .disabled,
-      ).toBe(false),
-    );
-    await user.click(screen.getByRole("button", { name: "Import from local Agents" }));
-    await user.click(screen.getByRole("button", { name: "Review selected packages" }));
-    await user.click(await screen.findByRole("button", { name: "Import ready packages" }));
-    await screen.findByText("Imported");
-    await waitFor(() =>
-      expect(screen.getAllByText(/Batch refresh failed/).length).toBeGreaterThan(0),
-    );
-    await user.click(screen.getAllByRole("button", { name: "Close" }).at(-1)!);
-    expect(await screen.findByText("Imported package")).toBeTruthy();
-    expect(screen.getByText(/Skill library updated/)).toBeTruthy();
-    expect(mocks.applySkillImports).toHaveBeenCalledOnce();
-  });
+        result.queryByRole("button", { name: tr("skills.manager.viewDeployments") }),
+      ).toBeNull();
+      expect(mocks.applySkillImports).toHaveBeenCalledOnce();
+    },
+  );
 
   it("uses a stable source identity when choosing another version from discovery", async () => {
     mocks.installedSkills.mockResolvedValue([
@@ -442,11 +578,11 @@ describe("SkillHubPage", () => {
     });
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
     const user = userEvent.setup();
-    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
     await user.click(await screen.findByRole("button", { name: "Choose version" }));
     await user.click(await screen.findByRole("button", { name: /v2.0/ }));
     await user.click(screen.getByRole("button", { name: "Review version" }));
@@ -518,11 +654,11 @@ describe("SkillHubPage", () => {
       });
       renderWithClient(
         <AppDialogProvider>
-          <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+          <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
         </AppDialogProvider>,
       );
       const user = userEvent.setup();
-      await user.click(screen.getByRole("tab", { name: "Discover" }));
+      await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
       await user.click(await screen.findByRole("button", { name: "Choose version" }));
       expect(
         await screen.findByRole("dialog", { name: `Choose a version for ${candidate.name}` }),
@@ -538,45 +674,76 @@ describe("SkillHubPage", () => {
     },
   );
 
-  it("reviews an immutable curated package before adding it", async () => {
-    mocks.installedSkills.mockResolvedValue([]);
-    mocks.removedSkills.mockResolvedValue([]);
-    mocks.skillCatalog.mockResolvedValue({
-      entries: [{ ...candidate, installed: false }],
-      cached_at: "2026-09-02T00:00:00Z",
-      stale: false,
-    });
-    mocks.prepareSkillInstall.mockResolvedValue(preview);
-    mocks.applySkillOperation.mockResolvedValue({
-      name: candidate.name,
-      display_name: candidate.name,
-      description: candidate.description,
-      path: "/tmp/.agentkib/skills/skill-installer",
-      size: 128,
-      status: "current",
-      source: candidate.source,
-      can_rollback: false,
-    });
-    const user = userEvent.setup();
+  it.each(["install", "update"] as const)(
+    "reviews an immutable curated package before %s",
+    async (operation) => {
+      const installed: InstalledSkill = {
+        name: candidate.name,
+        display_name: candidate.name,
+        description: candidate.description,
+        path: "/tmp/.agentkib/skills/skill-installer",
+        size: 128,
+        status: "current",
+        source: candidate.source,
+        can_rollback: false,
+      };
+      mocks.installedSkills
+        .mockResolvedValueOnce(operation === "install" ? [] : [installed])
+        .mockResolvedValue([installed]);
+      mocks.removedSkills.mockResolvedValue([]);
+      mocks.skillCatalog.mockResolvedValue({
+        entries: [{ ...candidate, installed: false }],
+        cached_at: "2026-09-02T00:00:00Z",
+        stale: false,
+      });
+      mocks.prepareSkillInstall.mockResolvedValue({ ...preview, operation });
+      mocks.applySkillOperation.mockResolvedValue(installed);
+      const user = userEvent.setup();
 
-    renderWithClient(
-      <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
-      </AppDialogProvider>,
-    );
+      renderWithClient(
+        <AppDialogProvider>
+          <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        </AppDialogProvider>,
+      );
 
-    await user.click(screen.getByRole("tab", { name: "Discover" }));
-    expect(await screen.findByText("skill-installer")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Add to library" }));
+      await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
+      expect(await screen.findByText("skill-installer")).toBeTruthy();
+      await user.click(
+        screen.getByRole("button", {
+          name: operation === "install" ? "Add to Skill library" : "Update",
+        }),
+      );
 
-    expect(await screen.findByText("Review Skill package")).toBeTruthy();
-    expect(screen.getByText("0123456789ab")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Add to library" }));
+      const previewTitle = tr(
+        operation === "install" ? "skills.installPreview" : "skills.updatePreview",
+      );
+      expect(await screen.findByText(previewTitle)).toBeTruthy();
+      expect(screen.getByText("0123456789ab")).toBeTruthy();
+      const review = screen.getByRole("dialog", { name: previewTitle });
+      await user.click(
+        within(review).getByRole("button", {
+          name: operation === "install" ? "Add to Skill library" : "Apply update",
+        }),
+      );
 
-    await waitFor(() =>
-      expect(mocks.applySkillOperation).toHaveBeenCalledWith("preview-token", false),
-    );
-  });
+      await waitFor(() =>
+        expect(mocks.applySkillOperation).toHaveBeenCalledWith("preview-token", false),
+      );
+      const message = await screen.findByText(
+        tr(
+          operation === "install" ? "skills.manager.libraryAdded" : "skills.manager.libraryUpdated",
+          {
+            name: candidate.name,
+          },
+        ),
+      );
+      const result = within(message.closest<HTMLElement>('[role="status"]')!);
+      expect(result.getByRole("button", { name: tr("skills.manager.deploy") })).toBeTruthy();
+      expect(
+        result.queryByRole("button", { name: tr("skills.manager.viewDeployments") }),
+      ).toBeNull();
+    },
+  );
 
   it("matches an installed source before reporting a display-name conflict", async () => {
     mocks.installedSkills.mockResolvedValue([
@@ -614,11 +781,11 @@ describe("SkillHubPage", () => {
 
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
 
-    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
     const updateButton = await screen.findByRole("button", { name: "Update" });
     expect((updateButton as HTMLButtonElement).disabled).toBe(false);
     await user.click(updateButton);
@@ -641,11 +808,11 @@ describe("SkillHubPage", () => {
 
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
 
-    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
     const input = screen.getByPlaceholderText(
       "https://github.com/owner/repo/tree/main/path/to/skill",
     );
@@ -660,7 +827,7 @@ describe("SkillHubPage", () => {
 
     expect(await screen.findByText(/inspection failed/)).toBeTruthy();
     expect(screen.queryByText("skill-installer")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Add to library" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add to Skill library" })).toBeNull();
   });
 
   it("keeps directories visible and reads removed files using the immutable preview token", async () => {
@@ -698,7 +865,7 @@ describe("SkillHubPage", () => {
     const user = userEvent.setup();
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
     await user.click(await screen.findByRole("button", { name: "Update" }));
@@ -731,11 +898,11 @@ describe("SkillHubPage", () => {
 
     renderWithClient(
       <AppDialogProvider>
-        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
 
-    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
     const input = screen.getByPlaceholderText(
       "https://github.com/owner/repo/tree/main/path/to/skill",
     );
@@ -782,7 +949,6 @@ describe("SkillHubPage", () => {
     renderWithClient(
       <AppDialogProvider>
         <SkillHubPage
-          workspaceAssets={[]}
           workspaces={[]}
           onOpen={vi.fn()}
           onReload={vi.fn().mockRejectedValue(new Error("reload failed"))}
@@ -829,7 +995,6 @@ describe("SkillHubPage", () => {
     renderWithClient(
       <AppDialogProvider>
         <SkillHubPage
-          workspaceAssets={[]}
           workspaces={[]}
           onOpen={vi.fn()}
           onReload={vi.fn().mockRejectedValue(reloadFailure)}
@@ -837,9 +1002,9 @@ describe("SkillHubPage", () => {
       </AppDialogProvider>,
     );
 
-    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
     await waitFor(() => expect(mocks.skillCatalog).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole("tab", { name: /My Skills/ }));
+    await user.click(screen.getByRole("tab", { name: /Skill library/ }));
     await user.click(await screen.findByRole("button", { name: "Roll back" }));
     await user.click(screen.getByRole("button", { name: "Confirm" }));
 
@@ -848,6 +1013,11 @@ describe("SkillHubPage", () => {
     const failures = [refreshFailure, reloadFailure, catalogFailure];
     const englishError = failures.map((failure) => localizeMessage(failure)).join(" · ");
     const message = await screen.findByText(englishError);
+    const resultMessage = screen.getByText(
+      tr("skills.manager.libraryRolledBack", { name: current.display_name }),
+      { exact: false },
+    );
+    expect(resultMessage.textContent).toContain(tr("skills.manager.refreshFailed"));
     expect(mocks.skillCatalog).toHaveBeenCalledTimes(2);
     try {
       await act(() => changeLocale("zh-CN"));
@@ -855,10 +1025,195 @@ describe("SkillHubPage", () => {
         screen.getByText(failures.map((failure) => localizeMessage(failure)).join(" · ")),
       ).toBe(message);
       expect(screen.queryByText(englishError)).toBeNull();
+      expect(
+        screen.getByText(tr("skills.manager.libraryRolledBack", { name: current.display_name }), {
+          exact: false,
+        }),
+      ).toBe(resultMessage);
+      expect(resultMessage.textContent).toContain(tr("skills.manager.refreshFailed"));
       expect(screen.getByText("Previous version")).toBeTruthy();
       expect(mocks.skillCatalog).toHaveBeenCalledTimes(2);
     } finally {
       await act(() => changeLocale("en-US"));
     }
+  });
+
+  it.each([
+    {
+      operation: "rollback",
+      action: "skills.rollback",
+      success: "skills.manager.libraryRolledBack",
+    },
+    {
+      operation: "trash",
+      action: "skills.moveToTrash",
+      success: "skills.manager.libraryMovedToTrash",
+    },
+    { operation: "restore", action: "skills.restore", success: "skills.manager.libraryRestored" },
+  ] as const)(
+    "describes a $operation result and links to its unchanged deployments",
+    async ({ operation, action, success }) => {
+      const removedSkill = {
+        id: "removed-reviewer",
+        name: librarySkill.name,
+        display_name: librarySkill.display_name,
+        path: "/trash/library-reviewer-id",
+        removed_at: "2026-10-16T00:00:00Z",
+      };
+      let installed = operation === "restore" ? [] : [librarySkill];
+      let removed = operation === "restore" ? [removedSkill] : [];
+      mocks.installedSkills.mockImplementation(async () => installed);
+      mocks.removedSkills.mockImplementation(async () => removed);
+      mocks.skillDeployments.mockResolvedValue([libraryDeployment]);
+      mocks.rollbackSkill.mockImplementation(async () => {
+        installed = [{ ...librarySkill, can_rollback: false }];
+        return installed[0];
+      });
+      mocks.uninstallSkill.mockImplementation(async () => {
+        installed = [];
+        removed = [removedSkill];
+        return removedSkill;
+      });
+      mocks.restoreSkill.mockImplementation(async () => {
+        installed = [librarySkill];
+        removed = [];
+        return librarySkill;
+      });
+      mocks.skillTargets.mockResolvedValue([
+        {
+          id: "codex-personal",
+          agent: "codex",
+          scope: "personal",
+          workspace_id: null,
+          profile: null,
+          root: "/native/codex/skills",
+          scope_root: "/native",
+          visible_to: ["codex"],
+          writable: true,
+          reason: null,
+          conditions: [],
+        },
+      ]);
+      mocks.prepareSkillDeployment.mockResolvedValue({
+        token: "deployment-preview",
+        operation: "deploy",
+        library_id: librarySkill.name,
+        expires_at: preview.expires_at,
+        requires_home_approval: true,
+        targets: [],
+      });
+      const user = userEvent.setup();
+      renderWithClient(
+        <AppDialogProvider>
+          <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        </AppDialogProvider>,
+      );
+
+      await user.click(await screen.findByRole("button", { name: tr(action) }));
+      if (operation !== "restore") {
+        await user.click(screen.getByRole("button", { name: tr("common.confirm") }));
+      }
+      const message = await screen.findByText(tr(success, { name: librarySkill.display_name }), {
+        exact: false,
+      });
+      const result = within(message.closest<HTMLElement>('[role="status"]')!);
+      expect(message.textContent).toContain(tr("skills.manager.deploymentsUnchanged"));
+      expect(message.textContent).not.toContain(tr("skills.manager.libraryChanged"));
+      await waitFor(() =>
+        expect(
+          (
+            result.getByRole("button", {
+              name: tr("skills.manager.viewDeployments"),
+            }) as HTMLButtonElement
+          ).disabled,
+        ).toBe(false),
+      );
+      await user.click(result.getByRole("button", { name: tr("skills.manager.viewDeployments") }));
+      expect(
+        screen.getByRole("tab", { name: /Usage locations/ }).getAttribute("aria-selected"),
+      ).toBe("true");
+      expect(await screen.findByText(libraryDeployment.target)).toBeTruthy();
+      expect(mocks.prepareSkillDeployment).not.toHaveBeenCalled();
+      expect(mocks.applySkillDeployment).not.toHaveBeenCalled();
+
+      if (operation === "trash") {
+        expect(result.queryByRole("button", { name: tr("skills.manager.deploy") })).toBeNull();
+      } else {
+        await user.click(result.getByRole("button", { name: tr("skills.manager.deploy") }));
+        expect(
+          await screen.findByRole("dialog", { name: tr("skills.manager.operation.deploy") }),
+        ).toBeTruthy();
+        await waitFor(() =>
+          expect(screen.getByRole("dialog").textContent).toContain("/native/codex/skills"),
+        );
+        await user.click(await screen.findByRole("checkbox", { name: /\/native\/codex\/skills/ }));
+        await user.click(
+          screen.getByRole("button", { name: tr("skills.manager.reviewDeployment") }),
+        );
+        await waitFor(() =>
+          expect(mocks.prepareSkillDeployment).toHaveBeenCalledWith({
+            operation: "deploy",
+            library_id: librarySkill.name,
+            target_ids: ["codex-personal"],
+          }),
+        );
+        expect(mocks.applySkillDeployment).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    {
+      condition: "another Skill",
+      deployment: { ...libraryDeployment, library_id: "another-skill" },
+    },
+    {
+      condition: "another library",
+      deployment: { ...libraryDeployment, source_is_current_library: false },
+    },
+    {
+      condition: "a withdrawn deployment",
+      deployment: { ...libraryDeployment, status: "inactive" },
+    },
+  ])("does not link a rollback result to $condition", async ({ deployment }) => {
+    mocks.installedSkills.mockResolvedValue([librarySkill]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillDeployments.mockResolvedValue([deployment]);
+    mocks.rollbackSkill.mockResolvedValue(librarySkill);
+    const user = userEvent.setup();
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: tr("skills.rollback") }));
+    await user.click(screen.getByRole("button", { name: tr("common.confirm") }));
+    const message = await screen.findByText(
+      tr("skills.manager.libraryRolledBack", { name: librarySkill.display_name }),
+    );
+    const result = within(message.closest<HTMLElement>('[role="status"]')!);
+    expect(result.queryByRole("button", { name: tr("skills.manager.viewDeployments") })).toBeNull();
+    expect(message.textContent).not.toContain(tr("skills.manager.deploymentsUnchanged"));
+  });
+
+  it("hides the deploy shortcut when the refreshed library no longer contains the result Skill", async () => {
+    mocks.installedSkills.mockResolvedValueOnce([librarySkill]).mockResolvedValue([]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.rollbackSkill.mockResolvedValue(librarySkill);
+    const user = userEvent.setup();
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: tr("skills.rollback") }));
+    await user.click(screen.getByRole("button", { name: tr("common.confirm") }));
+    await screen.findByText(tr("skills.libraryEmpty"));
+    const message = screen.getByText(
+      tr("skills.manager.libraryRolledBack", { name: librarySkill.display_name }),
+    );
+    const result = within(message.closest<HTMLElement>('[role="status"]')!);
+    expect(result.queryByRole("button", { name: tr("skills.manager.deploy") })).toBeNull();
+    expect(result.queryByRole("button", { name: tr("skills.manager.viewDeployments") })).toBeNull();
   });
 });

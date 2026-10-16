@@ -286,6 +286,7 @@ export function McpServiceEditor({
         </div>
       )}
       {(["env", "headers"] as const).map((group) => {
+        const groupLabel = tr(group === "env" ? "mcp.environmentSecrets" : "mcp.headerSecrets");
         const keys = [
           ...new Set([
             ...((group === "env" ? entry?.configured_env : entry?.configured_headers) ?? []),
@@ -295,14 +296,17 @@ export function McpServiceEditor({
         ];
         return (
           <div key={group} className="grid gap-2">
-            <h4>{tr(group === "env" ? "mcp.environmentSecrets" : "mcp.headerSecrets")}</h4>
+            <h4>{groupLabel}</h4>
             {keys.map((key) => {
               const op = draft.secrets[group][key] ?? { action: "keep" };
               return (
                 <div key={key} className="flex flex-wrap items-center gap-2">
                   <code>{key}</code>
                   <McpChoice
-                    aria-label={`${group} ${key}`}
+                    aria-label={tr("mcp.manage.secretAction", {
+                      group: groupLabel,
+                      key,
+                    })}
                     disabled={busy}
                     value={op.action}
                     onValueChange={(value) =>
@@ -325,7 +329,10 @@ export function McpServiceEditor({
                     <Input
                       type="password"
                       autoComplete="off"
-                      aria-label={`${key} value`}
+                      aria-label={tr("mcp.manage.secretValue", {
+                        group: groupLabel,
+                        key,
+                      })}
                       disabled={busy}
                       value={op.value}
                       onChange={(e) =>
@@ -338,7 +345,9 @@ export function McpServiceEditor({
             })}
             <div className="flex gap-2">
               <Input
-                aria-label={`${group} key`}
+                aria-label={tr("mcp.manage.secretKeyLabel", {
+                  group: groupLabel,
+                })}
                 placeholder={tr("mcp.manage.secretKey")}
                 disabled={busy}
                 value={extra[group]}

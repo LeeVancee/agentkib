@@ -28,8 +28,13 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  closeLabel,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Popup> & { showCloseButton?: boolean }) {
+}: React.ComponentProps<typeof DialogPrimitive.Popup> &
+  (
+    | { showCloseButton?: true; closeLabel: string }
+    | { showCloseButton: false; closeLabel?: never }
+  )) {
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -45,7 +50,7 @@ function DialogContent({
         {showCloseButton && (
           <DialogPrimitive.Close
             className="absolute top-4 right-4 grid size-9 place-items-center rounded-md hover:bg-accent"
-            aria-label="Close"
+            aria-label={closeLabel}
           >
             <XIcon className="size-4" />
           </DialogPrimitive.Close>

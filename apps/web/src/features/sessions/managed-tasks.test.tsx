@@ -99,8 +99,10 @@ describe("ManagedTasks", () => {
   afterEach(cleanup);
   async function show(create = false) {
     const view = render(<ManagedTasks create={create} />);
-    fireEvent.click(screen.getByRole("button", { name: create ? "New task" : "Execution" }));
-    await screen.findByRole("button", { name: create ? "Create" : /Hand over|Release to/ });
+    fireEvent.click(
+      screen.getByRole("button", { name: create ? "New task" : "Execution management" }),
+    );
+    await screen.findByRole("button", { name: create ? "Create" : /Hand over|Return to/ });
     return view;
   }
   it("creates Claude tasks through the shared management entry without Codex model fields", async () => {
@@ -272,7 +274,7 @@ describe("ManagedTasks", () => {
       path === "managed/options" ? options : { reconciled: false },
     );
     await show();
-    fireEvent.click(screen.getByRole("button", { name: "Verify previous outcome" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check previous outcome" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("still unknown");
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(mutations()).toHaveLength(1);
@@ -411,7 +413,7 @@ describe("ManagedTasks", () => {
     expect(handoff).toBeDisabled();
     fireEvent.click(handoff);
     expect(mutations()).toHaveLength(1);
-    expect(screen.getByText(/A previous result is unknown/)).toBeInTheDocument();
+    expect(screen.getByText(/The previous outcome is unconfirmed/)).toBeInTheDocument();
     view.rerender(panel(false));
     await act(async () => {
       receipt({

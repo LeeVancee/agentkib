@@ -49,7 +49,8 @@ export function claudeHandoffBlockReason(
     (capabilities.reason && capabilities.reason !== "handoff-required")
   )
     return "capability";
-  if (live.reason !== "handoff-required") return "ownership";
+  if (live.reason !== "handoff-required" || live.executionMode === "claude-follower")
+    return "ownership";
   if (live.status !== "idle" && live.status !== "released") return "turn";
   if (live.activity === "compacting") return "compacting";
   if (live.approvals?.length) return "approvals";

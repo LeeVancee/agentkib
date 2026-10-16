@@ -13,6 +13,7 @@ type Fixture = {
   current?: { id: string; agent: string };
   live?: {
     sessionId: string;
+    executionMode?: string;
     reason?: string;
     status?: string;
     activity?: string;
@@ -134,6 +135,13 @@ const blockedCases: [string, ClaudeHandoffBlockReason, (session: Fixture) => voi
     "ownership",
     (s) => {
       s.live!.reason = "control-outcome-unconfirmed";
+    },
+  ],
+  [
+    "original terminal connection with stale handoff capabilities",
+    "ownership",
+    (s) => {
+      s.live!.executionMode = "claude-follower";
     },
   ],
   [

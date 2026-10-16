@@ -1,3 +1,4 @@
+import { claudeConnectionReason } from "./claude-connection-copy";
 import {
   historyMessageText,
   historyReferenceKey,
@@ -1320,6 +1321,28 @@ export function useSessionController({
       setModal(pending);
     }
   }, [live, selected, online, controlReady, modal, access]);
+  const terminalBinding = useRef<
+    { sessionId: string; mode?: string; generation?: string } | undefined
+  >(undefined);
+  const terminalPresent = !!live;
+  const terminalMode = live?.executionMode;
+  const terminalGeneration = live?.connectionGeneration;
+  useEffect(() => {
+    const previous = terminalBinding.current;
+    terminalBinding.current = terminalPresent
+      ? { sessionId: selected, mode: terminalMode, generation: terminalGeneration }
+      : undefined;
+    const changed =
+      previous?.sessionId === selected &&
+      (previous.mode === "claude-follower" || terminalMode === "claude-follower") &&
+      (previous.mode !== terminalMode || previous.generation !== terminalGeneration);
+    if (!changed && !(terminalMode === "claude-follower" && !online)) return;
+    // A replaced binding invalidates reviewed forms and source references, not the draft.
+    setModal(undefined);
+    shownInteractions.current.clear();
+    setHistoryReferences([]);
+    setHistorySearchOpen(false);
+  }, [selected, terminalPresent, terminalMode, terminalGeneration, online, setHistoryReferences]);
   const selectedAgent = sessions.find((item) => item.id === selected)?.agent;
   const hasSupportedApproval = live?.approvals.some((item) => item.supported) ?? false;
   const hasSupportedQuestion = live?.questions?.some((item) => item.supported) ?? false;
@@ -1362,6 +1385,7 @@ export function useSessionController({
     live?.status,
     live?.reason,
     live?.executionMode,
+    live?.connectionGeneration,
     live?.sendEnabled,
     live?.stopEnabled,
     hasSupportedApproval,
@@ -1735,22 +1759,27 @@ export function useSessionController({
     !!access.device?.send &&
     live?.stopEnabled === true &&
     !!live.turnId;
+  const terminalReasonText =
+    live?.executionMode === "claude-follower"
+      ? claudeConnectionReason(locale, live.reason)
+      : undefined;
   const liveText =
     live?.reason === "control-outcome-unconfirmed"
       ? t.controlUnconfirmed
-      : live?.activity === "compacting"
-        ? contextUsageCopy[locale].compacting
-        : live?.status === "idle"
-          ? t.idle
-          : live?.questions?.length
-            ? interactionCopy[locale].title
-            : live?.status === "running"
-              ? t.running
-              : live?.status === "awaiting-approval" || live?.status === "waiting-approval"
-                ? t.approval
-                : live?.reason
-                  ? unavailableReasonText(live.reason, t)
-                  : t.unknown;
+      : (terminalReasonText ??
+        (live?.activity === "compacting"
+          ? contextUsageCopy[locale].compacting
+          : live?.status === "idle"
+            ? t.idle
+            : live?.questions?.length
+              ? interactionCopy[locale].title
+              : live?.status === "running"
+                ? t.running
+                : live?.status === "awaiting-approval" || live?.status === "waiting-approval"
+                  ? t.approval
+                  : live?.reason
+                    ? unavailableReasonText(live.reason, t)
+                    : t.unknown));
   function addHistoryReference(reference: ResolvedHistoryReference, targetId: string) {
     if (
       mutating.current ||

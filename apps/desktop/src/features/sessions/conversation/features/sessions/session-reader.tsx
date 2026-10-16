@@ -1,3 +1,4 @@
+import { claudeConnectionCopy } from "./claude-connection-copy";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
@@ -115,7 +116,29 @@ export function SessionReader() {
           ) : (
             <>
               {current?.agent === "claude-code" && (
-                <aside className="info mx-auto mb-5 max-w-3xl">{t.managedResumeInfo}</aside>
+                <aside
+                  className="info mx-auto mb-5 max-w-3xl"
+                  data-execution-mode={live?.executionMode}
+                >
+                  <strong className="block mb-1">
+                    {live?.executionMode === "claude-follower"
+                      ? live.status === "outcome-unknown"
+                        ? t.controlUnconfirmed
+                        : !online ||
+                            live.status === "unsupported" ||
+                            live.reason === "claude-bridge-disconnected"
+                          ? claudeConnectionCopy[locale].history
+                          : claudeConnectionCopy[locale].connected
+                      : live?.executionMode === "claude-managed"
+                        ? claudeConnectionCopy[locale].managed
+                        : claudeConnectionCopy[locale].history}
+                  </strong>
+                  {live?.executionMode === "claude-follower"
+                    ? claudeConnectionCopy[locale].info
+                    : live?.executionMode === "claude-managed"
+                      ? t.managedResumeInfo
+                      : claudeConnectionCopy[locale].disconnected}
+                </aside>
               )}
               {page?.warnings.length ? (
                 <aside className="mx-auto mb-5 max-w-3xl rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-6 text-amber-600">

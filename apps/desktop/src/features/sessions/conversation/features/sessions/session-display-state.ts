@@ -109,6 +109,15 @@ export function sessionDisplayState(state: State): DisplayState {
       tone: "warning",
       loading: !live,
     };
+  if (
+    live?.executionMode === "claude-follower" &&
+    ["claude-terminal-approval", "claude-terminal-question"].includes(live.reason ?? "")
+  )
+    return {
+      label: live.reason === "claude-terminal-question" ? c.question : c.approval,
+      reason: codexReason(locale, live.reason).text,
+      tone: "warning",
+    };
   if (live?.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
   if (
     live?.approvals?.length ||
@@ -122,6 +131,13 @@ export function sessionDisplayState(state: State): DisplayState {
       reason: contextUsageCopy[locale].compactingDetail,
       tone: "active",
     };
+  if (
+    live?.executionMode === "claude-follower" &&
+    ["claude-follower-turn-unconfirmed", "claude-terminal-permission-unconfirmed"].includes(
+      live.reason ?? "",
+    )
+  )
+    return { label: c.running, reason: codexReason(locale, live.reason).text, tone: "warning" };
   if (live?.status === "running") return { label: c.running, reason: c.running, tone: "active" };
   if (busy) return { label: c.busy, reason: c.busy, tone: "active", loading: true };
   if (access?.status !== "approved")

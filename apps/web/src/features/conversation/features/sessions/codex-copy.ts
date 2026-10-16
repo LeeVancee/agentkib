@@ -1,3 +1,4 @@
+import { claudeConnectionReason } from "./claude-connection-copy";
 import { dictionaries, type Locale } from "../../i18n";
 import { unavailableReasonText } from "../../live-status";
 const zh = {
@@ -539,6 +540,8 @@ const claudeStopCodes = [
   "claude-protocol-violation",
 ];
 export function codexReason(locale: Locale, reason?: string): { text: string; technical?: string } {
+  const claudeReason = claudeConnectionReason(locale, reason);
+  if (claudeReason) return { text: claudeReason };
   if (
     reason === "unverified-installation" ||
     reason === "open-in-original-client" ||

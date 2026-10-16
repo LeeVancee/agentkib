@@ -26,8 +26,9 @@
     "benchmark:conversation": "node scripts/benchmark-conversation.mjs",
     "typecheck": "tsc -b --pretty false",
     "relay:stage": "node scripts/stage-frpc.mjs",
-    "backend:build": "vite build --config vite.backend.config.ts && node scripts/stage-backend-native.mjs",
-    "cursor:stage": "node scripts/stage-cursor-bridge.mjs"
+    "backend:build": "pnpm claude:stage && vite build --config vite.backend.config.ts && node scripts/stage-backend-native.mjs",
+    "cursor:stage": "node scripts/stage-cursor-bridge.mjs",
+    "claude:stage": "node scripts/stage-claude-bridge.mjs"
   },
   "dependencies": {
     "@agentkib/agent-identity": "workspace:*",

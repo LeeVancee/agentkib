@@ -4,6 +4,7 @@ import { CodexTools } from "./codex-tools";
 import { ManagedTasks } from "./managed-tasks";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
+import { ClaudeBridgePanel } from "./claude-bridge-panel";
 export function SessionOperations({
   open,
   onOpenChange,
@@ -67,7 +68,12 @@ export function SessionOperations({
           open={open}
           onOpenChange={onOpenChange}
           showTrigger={false}
-          shortcuts={shortcuts}
+          shortcuts={
+            <>
+              <ClaudeBridgePanel active={open} />
+              {shortcuts}
+            </>
+          }
           ownership={ownership}
         />
       )}

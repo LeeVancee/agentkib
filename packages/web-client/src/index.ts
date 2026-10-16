@@ -215,10 +215,13 @@ export interface Live {
   executionMode?:
     | "managed-resume"
     | "claude-managed"
+    | "claude-follower"
     | "acp-managed"
     | "codex-managed"
     | "codex-follower";
   cliVersion?: string;
+  /** Changes when the original Claude terminal binding is replaced or revoked. */
+  connectionGeneration?: string;
   model?: string;
   activity?: "compacting" | null;
   tokenUsage?: unknown;

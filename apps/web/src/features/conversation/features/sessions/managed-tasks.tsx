@@ -570,7 +570,7 @@ export function ManagedTasks({
                       "此会话尚未交给 AgentKib",
                     )}
               </p>
-              {!managed && (
+              {!managed && live?.executionMode !== "claude-follower" && (
                 <label className="flex items-start gap-2 text-sm">
                   <input
                     type="checkbox"
@@ -584,26 +584,30 @@ export function ManagedTasks({
                   )}
                 </label>
               )}
-              <Button
-                aria-describedby={controlBlockReason ? controlHintId : undefined}
-                disabled={
-                  busy ||
-                  uncertain ||
-                  live?.activity === "compacting" ||
-                  !options.available ||
-                  (!managed && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
-                  (!managed && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
-                }
-                onClick={() => void run(managed ? "release" : "adopt")}
-              >
-                {managed
-                  ? managedText(locale, "Return to original client", "交还原客户端")
-                  : managedText(locale, "Hand over to AgentKib", "交给 AgentKib")}
-              </Button>
-              {controlBlockReason && (
-                <p id={controlHintId} role="status" className="text-sm text-muted-foreground">
-                  {managedControlCopy[locale][controlBlockReason]}
-                </p>
+              {live?.executionMode !== "claude-follower" && (
+                <>
+                  <Button
+                    aria-describedby={controlBlockReason ? controlHintId : undefined}
+                    disabled={
+                      busy ||
+                      uncertain ||
+                      live?.activity === "compacting" ||
+                      !options.available ||
+                      (!managed && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
+                      (!managed && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
+                    }
+                    onClick={() => void run(managed ? "release" : "adopt")}
+                  >
+                    {managed
+                      ? managedText(locale, "Return to original client", "交还原客户端")
+                      : managedText(locale, "Hand over to AgentKib", "交给 AgentKib")}
+                  </Button>
+                  {controlBlockReason && (
+                    <p id={controlHintId} role="status" className="text-sm text-muted-foreground">
+                      {managedControlCopy[locale][controlBlockReason]}
+                    </p>
+                  )}
+                </>
               )}
               {managed && (
                 <Button variant="outline" disabled={busy} onClick={() => void run("reconcile")}>

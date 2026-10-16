@@ -1,0 +1,4 @@
+{
+  "description": "AgentKib local session bridge; no model calls or permission overrides.",
+  "modules": ["./register.js"]
+}

@@ -20,6 +20,8 @@ compression: normal
 asarUnpack:
   - dist-electron/native/koffi/**
 extraResources:
+  - from: build/claude-bridge
+    to: claude-bridge
   - from: build/cursor-bridge
     to: cursor-bridge
   - from: ../../LICENSE

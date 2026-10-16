@@ -53,7 +53,7 @@ export function useContextUsage(fallback?: ContextUsage) {
   const { selected, client, access, live, online, usageEpoch } = useSession();
   const authorized =
     access?.device?.accessMode === "full" && access.device.advancedControl === true;
-  const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${authorized}\0${usageEpoch ?? ""}`;
+  const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${authorized}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
   return useObservedContextUsage({
     selected,
     scope,
@@ -203,8 +203,8 @@ export function ContextUsageDetails({
 }
 
 export function ContextUsageGauge({ fallback }: { fallback?: ContextUsage } = {}) {
-  const { selected, locale, access, online, usageEpoch } = useSession();
-  const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}`;
+  const { selected, locale, access, live, online, usageEpoch } = useSession();
+  const scope = `${selected}\0${access?.bootId ?? ""}\0${access?.device?.id ?? ""}\0${usageEpoch ?? ""}\0${live?.connectionGeneration ?? ""}`;
   const view = useContextUsage(fallback);
   return <ContextUsageIndicator scope={scope} locale={locale} online={online} view={view} />;
 }

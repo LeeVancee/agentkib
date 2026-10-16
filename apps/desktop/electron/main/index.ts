@@ -188,6 +188,9 @@ async function startApplication(): Promise<void> {
     AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
     AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
     AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
+    AGENTKIB_CLAUDE_PLUGIN_DIR: app.isPackaged
+      ? path.join(process.resourcesPath, "claude-bridge")
+      : path.resolve(__dirname, "../build/claude-bridge"),
   };
   const typescriptHost = new DesktopRuntimeHost({
     executablePath: path.join(__dirname, "backend.cjs"),

@@ -374,6 +374,20 @@ describe("managed handoff feedback", () => {
     },
   );
   it.each(managementLocales)(
+    "keeps original-terminal connections outside managed handoff in $locale",
+    async (copy) => {
+      session.locale = copy.locale;
+      session.live.executionMode = "claude-follower";
+      render(<ManagedTasks initialOpen />);
+      expect(await screen.findByText(copy.notHandedOver)).toBeVisible();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: copy.handoff })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: copy.release })).not.toBeInTheDocument();
+      expect(screen.queryByText(managedControlCopy[copy.locale].ownership)).not.toBeInTheDocument();
+      expect(mutations()).toEqual([]);
+    },
+  );
+  it.each(managementLocales)(
     "describes handoff ownership without claiming an idle session is running in $locale",
     async (copy) => {
       session.locale = copy.locale;

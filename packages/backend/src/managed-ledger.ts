@@ -314,6 +314,60 @@ export function finishManagedCommand(
   }
 }
 
+/** Add matching native completion evidence without replacing an accepted acknowledgement. */
+export function observeManagedCommandCompletion(
+  dataDir: string,
+  sessionId: string,
+  expectedEvidence: Record<string, string>,
+  result: Record<string, unknown>,
+): void {
+  const database = openManagedLedger(dataDir);
+  if (!database) return;
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    const rows = database
+      .prepare(
+        "SELECT request_id,phase,evidence,result FROM managed_commands WHERE session_id=? AND " +
+          "(phase='dispatched' OR (phase='resolved' AND json_extract(result,'$.accepted')=1 AND json_extract(result,'$.completed') IS NOT 1))",
+      )
+      .all(sessionId) as Array<{
+      request_id: string;
+      phase: string;
+      evidence: string | null;
+      result: string | null;
+    }>;
+    for (const row of rows) {
+      const evidence: unknown = row.evidence === null ? null : JSON.parse(row.evidence);
+      if (
+        !isObject(evidence) ||
+        !Object.entries(expectedEvidence).every(([key, value]) => evidence[key] === value)
+      )
+        continue;
+      const ack: unknown = row.result === null ? null : JSON.parse(row.result);
+      const completed = {
+        ...(row.phase === "resolved" && isObject(ack)
+          ? ack
+          : { ...result, requestId: row.request_id }),
+        completed: true,
+        completionObserved: true,
+      };
+      database
+        .prepare("UPDATE managed_commands SET phase='resolved',result=? WHERE request_id=?")
+        .run(JSON.stringify(completed), row.request_id);
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Keep the native evidence write failure if SQLite ended the transaction.
+    }
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
 export function managedSessionHasUnknownCommands(dataDir: string, sessionId: string): boolean {
   const database = openManagedLedger(dataDir);
   if (!database) return false;

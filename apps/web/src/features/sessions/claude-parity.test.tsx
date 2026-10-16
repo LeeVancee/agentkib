@@ -1,4 +1,12 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   WebClient,
@@ -11,6 +19,7 @@ import { WebApplication } from "@/router";
 import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
 import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
 
 // Exercise the real provider, controller and WebClient against the public API,
 // including revision fencing and the follow-up reads after an accepted mutation.
@@ -60,7 +69,11 @@ class ClaudeEventSource {
 const available = { available: true };
 const unavailable = { available: false };
 const copy = codexCopy["zh-CN"];
-function createHost({ staleSettingsAfterMutation = false, unmanaged = false } = {}) {
+function createHost({
+  staleSettingsAfterMutation = false,
+  unmanaged = false,
+  follower = false,
+} = {}) {
   const settings: SessionSettings = {
     sessionId: "session",
     revision: 1,
@@ -276,6 +289,16 @@ function createHost({ staleSettingsAfterMutation = false, unmanaged = false } = 
     state.features.adopt = available;
     state.features.inspect = available;
   }
+  if (follower) {
+    state.live = {
+      ...state.live,
+      executionMode: "claude-follower",
+      connectionGeneration: "lease-a",
+    };
+    for (const key of Object.keys(state.features)) state.features[key] = unavailable;
+    state.features.send = available;
+    state.features.inspect = available;
+  }
   return { state, fetcher, access };
 }
 async function openSession() {
@@ -366,6 +389,131 @@ describe("Claude history handoff shortcut", () => {
       expect(state.mutations).toEqual([]);
     },
   );
+});
+
+describe("original Claude terminal over Web", () => {
+  it("keeps an original-terminal connection outside managed handoff even with stale adoption capabilities", async () => {
+    const { state } = createHost({ follower: true });
+    state.live = { ...state.live, sendEnabled: false, reason: "handoff-required" };
+    state.features.adopt = available;
+    await openSession();
+    const draft = screen.getByRole("textbox", { name: "发送消息" });
+    fireEvent.change(draft, { target: { value: "Keep original terminal draft" } });
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(draft).toHaveValue("Keep original terminal draft");
+    expect(state.mutations).toEqual([]);
+  });
+
+  it("keeps unverified native sending disabled with a specific reason", async () => {
+    const { state } = createHost({ follower: true });
+    state.live = { ...state.live, sendEnabled: false, reason: "claude-follower-send-unverified" };
+    await openSession();
+    expect(
+      await screen.findByText(
+        "原会话发送尚未开放，请在原终端发送；AgentKib 可同步观察并取消当前轮次。",
+      ),
+    ).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "Keep original terminal draft" },
+    });
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(state.mutations).toEqual([]);
+  });
+
+  it("invalidates the old form when the terminal binding changes and keeps unsent text", async () => {
+    const { state } = createHost({ follower: true });
+    const { result } = renderHook(() => useSessionController({}));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    await act(async () => result.current.choose("session"));
+    await waitFor(() => expect(result.current.live?.connectionGeneration).toBe("lease-a"));
+    act(() => {
+      result.current.setMessage("Keep binding draft");
+      result.current.setModal("metadata");
+      result.current.setHistorySearchOpen(true);
+    });
+    expect(result.current.modal).toBe("metadata");
+    state.live = { ...state.live, revision: 2, connectionGeneration: "lease-b" };
+    act(() => {
+      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+    });
+    await waitFor(() => expect(result.current.modal).toBeUndefined());
+    expect(result.current.historySearchOpen).toBe(false);
+    expect(result.current.message).toBe("Keep binding draft");
+    expect(state.mutations).toEqual([]);
+  });
+  it("sends directly to a connected session once without exposing local pairing or handoff", async () => {
+    const { state } = createHost({ follower: true });
+    await openSession();
+    expect(await screen.findByText("已连接原会话")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成一次性连接码" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+      target: { value: "Continue original terminal" },
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(state.mutations).toHaveLength(1));
+    expect(state.mutations[0]).toMatchObject({
+      path: "send",
+      sessionId: "session",
+      text: "Continue original terminal",
+    });
+    expect(state.mutations.some((request) => request.path === "managed/adopt")).toBe(false);
+  });
+
+  it("keeps the draft but disables sending after the original terminal disconnects", async () => {
+    const { state } = createHost({ follower: true });
+    await openSession();
+    const draft = screen.getByRole("textbox", { name: "发送消息" });
+    fireEvent.change(draft, { target: { value: "Unsent terminal draft" } });
+    state.live = {
+      ...state.live,
+      revision: 2,
+      status: "unsupported",
+      sendEnabled: false,
+      reason: "claude-bridge-disconnected",
+      connectionGeneration: "revoked-a",
+      streamText: "",
+    };
+    act(() => {
+      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
+    expect(draft).toHaveValue("Unsent terminal draft");
+    expect(screen.getByText("仅查看历史")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(state.mutations).toEqual([]);
+  });
+
+  it.each([
+    ["claude-terminal-approval", "awaiting-approval", "正在等待工具审批，请在原终端处理。"],
+    ["claude-terminal-question", "waiting-input", "正在等待问题回答，请在原终端处理。"],
+    [
+      "claude-bridge-event-gap",
+      "unsupported",
+      "事件同步出现缺口，正在重新读取快照和原生历史；恢复前暂停控制。",
+    ],
+    [
+      "claude-follower-turn-unconfirmed",
+      "running",
+      "原终端正在执行，当前轮次身份尚未核实；暂不能取消，请在原终端处理。",
+    ],
+    [
+      "claude-terminal-permission-unconfirmed",
+      "running",
+      "原终端曾请求工具审批，当前授权或执行状态尚未核实，请查看原终端。",
+    ],
+  ])("handles %s in the original terminal", async (reason, status, text) => {
+    const { state } = createHost({ follower: true });
+    state.live = { ...state.live, reason, status, sendEnabled: false };
+    await openSession();
+    expect(await screen.findByText(text)).toBeVisible();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(state.mutations).toEqual([]);
+  });
 });
 
 describe("Claude Remote parity", () => {

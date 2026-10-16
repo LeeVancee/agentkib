@@ -51,6 +51,10 @@ AgentKib 把这些状态汇集到一个本地、可检查的桌面界面中。�
 
 浏览 Codex、Claude Code、Antigravity ACP、OpenCode、OpenClaw、Hermes 和 Grok Build 的本地会话。Codex、Claude Code、Antigravity ACP 与 OpenCode 会话可以生成经过审查的跨 Agent 交接；其余来源保持只读。AgentKib 会保留有用的时间线上下文、遮盖常见敏感值，并在写入或导入交接产物前请求确认。压缩过的 Claude Code 会话默认交接压缩摘要与压缩后的消息，并声明未带上的更早历史；高级选项可带上这部分历史。Antigravity 的原生导入与 Desktop/CLI 互操作限制见[Antigravity 接入边界](docs/ANTIGRAVITY.md)。
 
+### 连接原 Claude Code 会话
+
+macOS 的 Claude Code `2.1.301` 可主动安装第一方 Mods 插件，将原执行会话连接到桌面及获授权的 Web 聊天界面，支持同步观察和取消当前轮次，不另起续接进程。原生接口尚无法保证并发输入时不排队，因此本期不开放原会话发送；审批和问答仍在原终端处理，托管执行保持独立。参见[原会话连接说明](docs/CLAUDE-NATIVE-CONNECTION.md)与[本轮 QA](qa/native-session-connection-2026-10-16.md)。
+
 ### 维护本地工具链
 
 检查 Codex、Claude Code、Antigravity、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build 的安装。AgentKib 会显示每处安装的版本、来源、可执行路径、PATH 默认项和冲突。经过验证且能固定目标版本的包管理器操作可以直接执行；无法固定精确版本、来源不明、需要提权或远程脚本的流程只提供供用户审查的命令或官方文档。

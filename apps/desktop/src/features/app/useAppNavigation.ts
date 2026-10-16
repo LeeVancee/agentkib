@@ -6,12 +6,13 @@ import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
-import type { SettingsSection } from "@/features/settings/SettingsSidebar";
+import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import { refreshAgentTools } from "@/features/settings/agent-tools-query";
 import { requestSessionRefresh } from "@/features/sessions/session-refresh";
 import { withAsyncCleanup } from "@/lib/utils";
 import { createGlobalNavigation } from "./global-navigation";
 import { useWorkspaceTransitions } from "./useWorkspaceTransitions";
+import { usePageMessageScope } from "./usePageMessageScope";
 import {
   parseHistoryRoute,
   type AppSearch,
@@ -37,6 +38,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
   const dialogs = useAppDialogs();
   const navigate = useNavigate();
   const location = useLocation();
+  usePageMessageScope(location.href ?? location.pathname);
   const search = useSearch({ strict: false }) as AppSearch;
   // Route layouts pass the active identity from TanStack matches. The fallback
   // keeps the hook usable in isolated tests and non-route utility surfaces.
@@ -51,6 +53,8 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     data: workspaces = EMPTY_WORKSPACES,
     isPending: workspacesPending,
     error: workspaceLoadError,
+    dataUpdatedAt: workspacesDataAt,
+    errorUpdatedAt: workspacesErrorAt,
   } = useHomeWorkspaces();
   const { data: globalMemories = [] } = useHomeMemories();
   const { data: refreshJobs = [] } = useHomeRefreshJobs();
@@ -79,6 +83,15 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     setBusy,
   } = workspaceStore;
   const workspaceOpenRequest = useRef(0);
+  const missingWorkspaceNotice = useRef<
+    | {
+        path: string;
+        message: string;
+        dataAt: number;
+        errorAt: number;
+      }
+    | undefined
+  >(undefined);
   const navigationLocations = useRef(
     new Map<GlobalPage | "settings", { route: ParsedRoute; search: AppSearch }>(),
   );
@@ -131,9 +144,13 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
   });
 
   const load = async (path = project, draft?: Manifest) => {
-    if (!path) return;
+    if (!path || useWorkspaceStore.getState().applyingChanges || useWorkspaceStore.getState().busy)
+      return;
     const requestId = ++workspaceOpenRequest.current;
     const targetWorkspaceId = selectedWorkspace?.id;
+    const initialManifest = useWorkspaceStore.getState().manifest;
+    const manifestAtStart = JSON.stringify(initialManifest);
+    const targetDraft = initialManifest ?? draft;
     const isCurrentRequest = () =>
       requestId === workspaceOpenRequest.current &&
       useWorkspaceStore.getState().project === path &&
@@ -151,7 +168,12 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
           if (!isCurrentRequest()) return;
           setProject(path);
           setScan(nextScan);
-          setManifest(draft ?? nextManifest);
+          const currentManifest = useWorkspaceStore.getState().manifest;
+          setManifest(
+            JSON.stringify(currentManifest) !== manifestAtStart
+              ? currentManifest
+              : (targetDraft ?? nextManifest),
+          );
           setBaselineManifest(JSON.stringify(nextManifest));
           useAppStore.getState().setRuntime(nextRuntime);
         } catch (error) {
@@ -201,6 +223,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
 
   useEffect(() => {
     if (route.kind !== "workspace") {
+      missingWorkspaceNotice.current = undefined;
       workspaceOpenRequest.current += 1;
       setBusy(false);
     }
@@ -219,21 +242,45 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     )
       return;
     const workspace = workspaces.find((item) => item.id === workspaceRouteId);
-    if (workspace) void openWorkspace(workspace, workspaceRoutePage ?? "overview");
-    else {
-      const notFound = tr("common.notFound");
-      if (message !== notFound) setMessage(notFound);
+    if (workspace) {
+      missingWorkspaceNotice.current = undefined;
+      void openWorkspace(workspace, workspaceRoutePage ?? "overview");
+    } else {
+      const nextMessage = workspaceLoadError
+        ? localizeMessage(workspaceLoadError)
+        : tr("common.notFound");
+      const previous = missingWorkspaceNotice.current;
+      // Closing a notice must not immediately reopen it, but another workspace
+      // or a completed retry is a new result, including when its text is identical.
+      if (
+        previous?.path !== (location.href ?? location.pathname) ||
+        previous.message !== nextMessage ||
+        previous.dataAt !== workspacesDataAt ||
+        previous.errorAt !== workspacesErrorAt
+      ) {
+        missingWorkspaceNotice.current = {
+          path: location.href ?? location.pathname,
+          message: nextMessage,
+          dataAt: workspacesDataAt,
+          errorAt: workspacesErrorAt,
+        };
+        setMessage(nextMessage);
+      }
     }
   }, [
     route.kind,
+    location.href,
     location.pathname,
     workspaceRouteId,
     workspaceRoutePage,
     selectedWorkspace?.id,
     workspaces,
     workspacesPending,
+    workspaceLoadError,
+    workspacesDataAt,
+    workspacesErrorAt,
     openWorkspace,
-    message,
+    localizeMessage,
     tr,
     setMessage,
   ]);
@@ -293,10 +340,10 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
       next();
     }
   };
-  const openSettings = (section?: SettingsSection) => {
+  const openSettings = (section?: SettingsSection, target?: SettingsTarget) => {
     if (useWorkspaceStore.getState().applyingChanges) {
-      void dialogs.notify(tr("dialog.quit.changesApplying"));
-      return;
+      void dialogs.notify(tr("workspace.changesApplying"));
+      return false;
     }
     void navigate({
       to: "/settings",
@@ -308,9 +355,10 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
             section ??
             navigationLocations.current.get("settings")?.search.settingsSection ??
             "general",
-          settingsTarget: undefined,
+          settingsTarget: target,
         }) as never,
     });
+    return true;
   };
 
   useEffect(() => {
@@ -370,6 +418,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
       return;
     }
     if (route.kind === "workspace" && selectedWorkspace && project && manifest) {
+      if (!(await ensureWorkspaceChangeAllowed())) return;
       await load(project, manifest);
       return;
     }

@@ -3,6 +3,7 @@ import type { GitSubview } from "@/features/workspace/WorkspaceGitPage";
 import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import type { AgentKind } from "@/core/types";
 import type { AgentFilter } from "@/components/AppSidebar";
+import type { SkillHubSection } from "@/features/skills/SkillHubPage";
 
 export type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
 export type GlobalPage =
@@ -16,6 +17,8 @@ export type GlobalPage =
 
 export type AppSearch = {
   assetSection?: AssetSection;
+  catalogTarget?: "mcp-network";
+  skillSection?: SkillHubSection;
   settingsSection?: SettingsSection;
   settingsTarget?: SettingsTarget;
   quotaProvider?: string;

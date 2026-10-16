@@ -1,5 +1,19 @@
 export const webSettingsCopy = {
   "zh-CN": {
+    unsaved: "有未保存的更改",
+    saveHint: "此处设置（包括开关）仅在点击“保存设置”后生效。",
+    saving: "正在保存设置…",
+    saved: "设置已保存。",
+    retryLoad: "重新读取设置",
+    generateNeedsService:
+      "Web 服务尚未运行。请先开启远程访问，或在高级设置中启用并保存本机 Web 服务。",
+    generateNeedsLanService: "局域网 Web 服务尚未运行。请先启用服务并保存设置。",
+    generateNeedsConnection: "远程连接就绪后才能生成连接码，请先检查上方连接状态。",
+    accessCodeHint: "授权码由手机浏览器输入，直接按所选档位获得权限，无需再次在桌面确认。",
+    pairingCodeHint: "配对码用于发起浏览器配对，仍需在这台电脑上确认并授予权限。",
+    invitationCodeHint: "邀请码用于将这台电脑登记到远程连接服务，不是浏览器的配对码或授权码。",
+    diagnostics: "连接诊断",
+    connectionApplyHint: "桥接服务地址与程序路径由上方远程访问按钮应用，不随“保存设置”保存。",
     generateAccess: "生成八位授权码",
     codeScope:
       "有效授权码无需桌面再次确认，即按所选档位授权全部 AgentKib 工作区：“只读”可查看会话历史与文件；“完整远控”另含任务控制、审批与上传。授权后可随时在下方调整档位或撤销。仅分享给可信设备。",
@@ -43,10 +57,24 @@ export const webSettingsCopy = {
     loading: "正在读取 Web 设置…",
     unavailable: "Web 设置不可用",
     warning:
-      "实验功能仅在通过验证的主机与会话上可用；停止僅表示中斷目前輪次，不保證背景命令已結束。",
+      "实验功能仅在通过验证的主机与会话上可用；停止仅表示中断当前轮次，不保证后台命令已结束。",
     read: "历史读取",
   },
   "zh-TW": {
+    unsaved: "有尚未儲存的變更",
+    saveHint: "此處設定（包括開關）僅在點選「儲存設定」後生效。",
+    saving: "正在儲存設定…",
+    saved: "設定已儲存。",
+    retryLoad: "重新讀取設定",
+    generateNeedsService:
+      "Web 服務尚未執行。請先開啟遠端存取，或在進階設定中啟用並儲存本機 Web 服務。",
+    generateNeedsLanService: "區域網路 Web 服務尚未執行。請先啟用服務並儲存設定。",
+    generateNeedsConnection: "遠端連線就緒後才能產生連線碼，請先檢查上方連線狀態。",
+    accessCodeHint: "授權碼由手機瀏覽器輸入，直接依所選等級取得權限，無需再次在桌面確認。",
+    pairingCodeHint: "配對碼用於發起瀏覽器配對，仍需在這台電腦上確認並授予權限。",
+    invitationCodeHint: "邀請碼用於將這台電腦登記到遠端連線服務，不是瀏覽器的配對碼或授權碼。",
+    diagnostics: "連線診斷",
+    connectionApplyHint: "橋接服務位址與程式路徑由上方遠端存取按鈕套用，不隨「儲存設定」儲存。",
     generateAccess: "產生八位授權碼",
     codeScope:
       "有效授權碼無需桌面再次確認，即依所選等級授權全部 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整遠端操作」另含任務控制、審批與上傳。授權後可隨時在下方調整等級或撤銷。僅分享給可信裝置。",
@@ -94,6 +122,26 @@ export const webSettingsCopy = {
     read: "歷史讀取",
   },
   "en-US": {
+    unsaved: "Unsaved changes",
+    saveHint:
+      "These settings, including switches, take effect only after choosing “Save settings”.",
+    saving: "Saving settings…",
+    saved: "Settings saved.",
+    retryLoad: "Reload settings",
+    generateNeedsService:
+      "The Web service is not running. Enable remote access above, or enable and save the local Web service in advanced settings.",
+    generateNeedsLanService:
+      "The LAN Web service is not running. Enable it and save settings first.",
+    generateNeedsConnection: "Wait for the remote connection to be ready. Check its status above.",
+    accessCodeHint:
+      "Enter an access code in the phone browser to grant the selected access level without another desktop confirmation.",
+    pairingCodeHint:
+      "A pairing code starts browser pairing. Confirm and grant permissions on this computer afterward.",
+    invitationCodeHint:
+      "An invitation registers this computer with the remote connection service. It is not a browser pairing or access code.",
+    diagnostics: "Connection diagnostics",
+    connectionApplyHint:
+      "Apply bridge service and executable changes using the remote access button above. “Save settings” does not apply them.",
     generateAccess: "Generate 8-digit access code",
     codeScope:
       "A valid access code authorizes all AgentKib workspaces at the selected level without another desktop confirmation. Read-only allows session history and files; full remote access adds task control, approvals and uploads. Change the level or revoke access below at any time. Share only with trusted devices.",
@@ -144,6 +192,25 @@ export const webSettingsCopy = {
     read: "Read history",
   },
   "ja-JP": {
+    unsaved: "未保存の変更があります",
+    saveHint: "スイッチを含むこれらの設定は「設定を保存」を選択した後に反映されます。",
+    saving: "設定を保存中…",
+    saved: "設定を保存しました。",
+    retryLoad: "設定を再読み込み",
+    generateNeedsService:
+      "Web サービスが停止しています。上のリモートアクセスを有効にするか、詳細設定でローカル Web サービスを有効にして設定を保存してください。",
+    generateNeedsLanService: "LAN Web サービスが停止しています。有効にして設定を保存してください。",
+    generateNeedsConnection:
+      "リモート接続の準備が完了するとコードを生成できます。上の接続状態を確認してください。",
+    accessCodeHint:
+      "認証コードをスマートフォンのブラウザーに入力すると、選択したレベルの権限が付与されます。デスクトップでの再確認は不要です。",
+    pairingCodeHint:
+      "ペアリングコードでブラウザーとの接続を申請します。その後、このコンピューターで確認して権限を付与します。",
+    invitationCodeHint:
+      "招待コードはこのコンピューターをリモート接続サービスに登録するためのものです。ブラウザーのペアリングコードや認証コードとは異なります。",
+    diagnostics: "接続の診断",
+    connectionApplyHint:
+      "中継サービスと実行ファイルの変更は、上のリモートアクセスボタンで適用します。「設定を保存」では適用されません。",
     generateAccess: "8 桁の認証コードを生成",
     codeScope:
       "有効な認証コードで、選択したレベルに応じて全 AgentKib ワークスペースへのアクセスを許可します。デスクトップでの再確認は不要です。「閲覧のみ」は会話履歴とファイルの閲覧、「完全なリモートアクセス」はタスク操作・承認・アップロードも含みます。レベルの変更や取り消しは下でいつでも行えます。信頼できる端末にのみ共有してください。",

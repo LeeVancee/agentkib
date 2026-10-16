@@ -79,8 +79,6 @@ export function DesktopConversationPane({
         '[&_.agentkib-conversation_[data-message-role="user"]]:px-1',
         '[&_.agentkib-conversation_[data-message-role="assistant"]]:px-1',
         "[&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:rounded-md [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:border [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:border-border [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:bg-background [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:hover:bg-muted",
-        sessionId &&
-          "[&_.agentkib-conversation>[data-conversation-toolbar]]:h-0 [&_.agentkib-conversation>[data-conversation-toolbar]]:gap-0 [&_.agentkib-conversation>[data-conversation-toolbar]]:overflow-visible [&_.agentkib-conversation>[data-conversation-toolbar]]:border-0 [&_.agentkib-conversation>[data-conversation-toolbar]]:p-0 [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:hidden",
       )}
     >
       {catalogError && (

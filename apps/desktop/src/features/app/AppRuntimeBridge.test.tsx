@@ -46,7 +46,7 @@ describe("AppRuntimeBridge", () => {
   });
 
   it.each([
-    [true, "AgentKib is applying a ChangeSet. Wait for it to finish before quitting.", "OK"],
+    [true, "AgentKib is applying a change plan. Wait for it to finish before quitting.", "OK"],
     [false, "Discard unsaved workspace drafts and quit AgentKib?", "Cancel"],
   ])(
     "uses the new locale for quit prompts without leaking subscriptions (applying: %s)",

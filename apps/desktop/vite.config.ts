@@ -15,6 +15,8 @@ const mcpLatencyTests = [
 const filesystemTests = [
   "test/claude-context-memory.test.ts",
   "test/skill-sync-manager.test.ts",
+  "test/skills-lifecycle.test.ts",
+  "test/skill-target-discovery.test.ts",
   "test/skill-sync-boundaries.test.ts",
   "test/skill-sync-recovery-regressions.test.ts",
   "test/skill-sync-recovery-gate.test.ts",

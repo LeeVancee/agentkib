@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
-import { useState } from "react";
-import { Check, Pencil, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, LoaderCircle, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "cn";
@@ -17,11 +17,35 @@ export function MemoryCard({
     editedContent?: string,
   ) => Promise<void>;
 }) {
-  const { tr, formatDateTime } = useI18n();
+  const { tr, formatDateTime, localizeMessage } = useI18n();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(record.content);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const pending = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const review = async (status: "approved" | "rejected" | "invalidated") => {
+    if (pending.current) return;
+    pending.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await onReview(record.id, status, status === "approved" && editing ? draft : undefined);
+    } catch (reason) {
+      if (alive.current) setError(localizeMessage(reason));
+    } finally {
+      pending.current = false;
+      if (alive.current) setBusy(false);
+    }
+  };
   return (
-    <article>
+    <article aria-busy={busy}>
       <div>
         <span
           className={cn(
@@ -44,23 +68,37 @@ export function MemoryCard({
         <Textarea
           className="min-h-24 resize-y"
           value={draft}
+          disabled={busy}
           onChange={(event) => setDraft(event.target.value)}
         />
       ) : (
         <p>{record.content}</p>
       )}
       {record.source_agent && <small>{tr("memory.source", { source: record.source_agent })}</small>}
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {busy && (
+        <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+          <LoaderCircle size={14} className="animate-spin" />
+          {tr("common.loading")}
+        </p>
+      )}
       {record.status === "pending" && (
         <footer>
           <Button
             className="bg-emerald-600 text-white hover:bg-emerald-700"
-            onClick={() => onReview(record.id, "approved", editing ? draft : undefined)}
+            disabled={busy}
+            onClick={() => void review("approved")}
           >
             <Check size={15} />
             {editing ? tr("memory.saveApprove") : tr("common.approve")}
           </Button>
           <Button
             className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+            disabled={busy}
             onClick={() => setEditing((value) => !value)}
           >
             {editing ? <X size={14} /> : <Pencil size={14} />}
@@ -68,7 +106,8 @@ export function MemoryCard({
           </Button>
           <Button
             className="border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/10"
-            onClick={() => onReview(record.id, "rejected")}
+            disabled={busy}
+            onClick={() => void review("rejected")}
           >
             {tr("common.reject")}
           </Button>
@@ -78,7 +117,8 @@ export function MemoryCard({
         <footer>
           <Button
             className="border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/10"
-            onClick={() => onReview(record.id, "invalidated")}
+            disabled={busy}
+            onClick={() => void review("invalidated")}
           >
             {tr("memory.invalidate")}
           </Button>

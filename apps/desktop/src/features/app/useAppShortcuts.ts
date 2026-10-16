@@ -26,8 +26,9 @@ export interface AppShortcutActions {
 const navigationByShortcut: Partial<Record<ShortcutId, GlobalPage>> = {
   "navigate-home": "home",
   "navigate-workspaces": "workspaces",
-  "navigate-catalog": "catalog",
   "navigate-agents": "agents",
+  "navigate-sessions": "sessions",
+  "navigate-catalog": "catalog",
   "navigate-quota": "quota",
   "navigate-insights": "insights",
 };

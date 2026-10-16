@@ -284,7 +284,7 @@ export function McpImportPanel({
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <McpChoice
-                    aria-label={`${item.key} action`}
+                    aria-label={tr("mcp.manage.importAction", { name: item.key })}
                     disabled={busy || item.status === "blocked"}
                     value={choice.action}
                     onValueChange={(value) =>

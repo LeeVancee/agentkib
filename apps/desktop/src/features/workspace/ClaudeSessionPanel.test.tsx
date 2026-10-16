@@ -1092,3 +1092,210 @@ describe("Claude local owner panel permission mode notice", () => {
     expect(screen.getByLabelText("Message")).toBeEnabled();
   });
 });
+
+describe("Claude local owner panel translated controls", () => {
+  const languages = [
+    {
+      locale: "zh-CN",
+      session: "会话",
+      history: "会话历史",
+      create: "新建 Claude 任务",
+      refresh: "刷新",
+      message: "消息",
+      files: "文件与产物",
+      idle: "空闲",
+      release: "释放给原客户端",
+      send: "发送",
+      prepare: "准备接管",
+      handoff: "交给 AgentKib",
+      confirmation: "我已停止原终端和其他客户端，按原 UUID 继续。",
+      approval: "处理审批",
+      allow: "允许",
+      deny: "拒绝",
+      dismiss: "收起",
+      custom: "自定义回答",
+      submit: "提交回答",
+    },
+    {
+      locale: "zh-TW",
+      session: "對話",
+      history: "對話歷史",
+      create: "新增 Claude 任務",
+      refresh: "重新整理",
+      message: "訊息",
+      files: "檔案與產物",
+      idle: "閒置",
+      release: "釋放給原客戶端",
+      send: "傳送",
+      prepare: "準備接管",
+      handoff: "交給 AgentKib",
+      confirmation: "我已停止原終端機與其他客戶端，使用原 UUID 繼續。",
+      approval: "處理審批",
+      allow: "允許",
+      deny: "拒絕",
+      dismiss: "收合",
+      custom: "自訂回答",
+      submit: "提交回答",
+    },
+    {
+      locale: "en-US",
+      session: "Session",
+      history: "History",
+      create: "New Claude task",
+      refresh: "Refresh",
+      message: "Message",
+      files: "Files and artifacts",
+      idle: "Idle",
+      release: "Release to original client",
+      send: "Send",
+      prepare: "Prepare handoff",
+      handoff: "Hand over to AgentKib",
+      confirmation:
+        "I have stopped the original terminal and other clients. Continue the same UUID.",
+      approval: "Review approval",
+      allow: "Allow",
+      deny: "Deny",
+      dismiss: "Dismiss",
+      custom: "Custom answer",
+      submit: "Submit answers",
+    },
+    {
+      locale: "ja-JP",
+      session: "会話",
+      history: "会話履歴",
+      create: "Claude タスクを新規作成",
+      refresh: "更新",
+      message: "メッセージ",
+      files: "ファイルと成果物",
+      idle: "待機中",
+      release: "元のクライアントに戻す",
+      send: "送信",
+      prepare: "引き渡しを準備",
+      handoff: "AgentKib に引き渡す",
+      confirmation: "元のターミナルと他のクライアントを停止しました。同じ UUID で続けます。",
+      approval: "承認内容を確認",
+      allow: "許可",
+      deny: "拒否",
+      dismiss: "閉じる",
+      custom: "自由回答",
+      submit: "回答を送信",
+    },
+  ] as const;
+
+  it.each(languages)(
+    "renders managed session controls in $locale without dispatching",
+    async (expected) => {
+      locale = expected.locale;
+      mount();
+      await screen.findByText("Synthetic history");
+      expect(screen.getByRole("combobox", { name: expected.session })).toBeVisible();
+      expect(screen.getByLabelText(expected.history)).toBeVisible();
+      expect(screen.getByRole("button", { name: expected.create })).toBeVisible();
+      expect(screen.getByRole("button", { name: expected.refresh })).toBeVisible();
+      expect(await enabled(screen.getByLabelText(expected.message))).toBeVisible();
+      expect(screen.getByText(expected.idle)).toBeVisible();
+      expect(screen.getByRole("button", { name: expected.files })).toBeVisible();
+      expect(screen.getByRole("button", { name: expected.release })).toBeVisible();
+      expect(screen.getByRole("button", { name: expected.send })).toBeDisabled();
+      expect(calls("create")).toHaveLength(0);
+      expect(calls("send")).toHaveLength(0);
+      expect(calls("release")).toHaveLength(0);
+    },
+  );
+
+  it.each(languages)(
+    "translates the handoff confirmation and keeps its gate in $locale",
+    async (expected) => {
+      locale = expected.locale;
+      live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+      mount();
+      await screen.findByText("Synthetic history");
+      fireEvent.click(await enabled(screen.getByRole("button", { name: expected.prepare })));
+      expect(await screen.findByText(expected.confirmation)).toBeVisible();
+      const handoff = screen.getByRole("button", { name: expected.handoff });
+      expect(handoff).toBeDisabled();
+      fireEvent.click(screen.getByRole("checkbox"));
+      expect(handoff).toBeEnabled();
+      expect(calls("adopt")).toHaveLength(0);
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
+
+  it.each(languages)(
+    "translates native approval and custom-answer controls in $locale",
+    async (expected) => {
+      locale = expected.locale;
+      live = {
+        ...live,
+        status: "waiting-approval",
+        sendEnabled: false,
+        turnId: "turn",
+        approvals: [
+          {
+            requestId: "approval",
+            turnId: "turn",
+            method: "claude/can_use_tool",
+            supported: true,
+            availableDecisions: ["allow", "deny"],
+            input: {},
+          },
+        ],
+      };
+      mount();
+      await enabled(await screen.findByRole("button", { name: expected.allow }));
+      expect(screen.getByRole("button", { name: expected.deny })).toBeVisible();
+      expect(screen.getByRole("button", { name: expected.approval })).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: expected.dismiss }));
+      expect(calls("approve")).toHaveLength(0);
+      live = {
+        ...live,
+        status: "waiting-input",
+        revision: 2,
+        approvals: [],
+        questions: [
+          {
+            requestId: "question",
+            turnId: "turn",
+            supported: true,
+            questions: [
+              {
+                id: "answer",
+                question: "Choose a color",
+                options: [{ label: "Blue" }],
+                multiSelect: false,
+                allowCustom: true,
+              },
+            ],
+          },
+        ],
+      };
+      await act(async () => notifyControl());
+      const answer = await enabled(
+        await screen.findByLabelText(`Choose a color ${expected.custom}`),
+      );
+      const submit = screen.getByRole("button", { name: expected.submit });
+      expect(submit).toBeDisabled();
+      fireEvent.change(answer, { target: { value: "Other color" } });
+      expect(submit).toBeEnabled();
+      expect(calls("answer")).toHaveLength(0);
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
+
+  it("updates mounted labels while preserving an unsent draft", async () => {
+    const view = mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("Preserved draft");
+    const message = screen.getByLabelText("Message");
+    locale = "ja-JP";
+    view.rerender(
+      <ClaudeSessionPanel workspaceId="workspace" initialSessionId="session" onClose={vi.fn()} />,
+    );
+    expect(screen.getByLabelText("メッセージ")).toBe(message);
+    expect(message).toHaveValue("Preserved draft");
+    expect(screen.getByRole("button", { name: "送信" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    expect(calls("send")).toHaveLength(0);
+    expect(calls("adopt")).toHaveLength(0);
+  });
+});

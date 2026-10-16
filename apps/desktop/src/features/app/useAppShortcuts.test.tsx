@@ -68,6 +68,33 @@ describe("useAppShortcuts", () => {
     expect(actions.onAddScanRoot).toHaveBeenCalledOnce();
   });
 
+  it.each(["windows", "linux"] as const)(
+    "navigates all seven sidebar destinations on %s",
+    (platform) => {
+      document.documentElement.dataset.platform = platform;
+      const actions = createActions();
+      render(<ShortcutHarness {...actions} />);
+      for (let index = 1; index <= 7; index++) {
+        const event = new KeyboardEvent("keydown", {
+          key: String(index),
+          ctrlKey: true,
+          cancelable: true,
+        });
+        window.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(true);
+      }
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(1, "home");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(2, "workspaces");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(3, "agents");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(4, "sessions");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(5, "catalog");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(6, "quota");
+      expect(actions.onNavigate).toHaveBeenNthCalledWith(7, "insights");
+      expect(actions.onNavigate).toHaveBeenCalledTimes(7);
+      expect(actions.onOpenSettings).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not hijack editable fields, composition, or repeated keys", () => {
     const actions = createActions();
     const { getByRole } = render(<ShortcutHarness {...actions} />);
@@ -76,7 +103,39 @@ describe("useAppShortcuts", () => {
     fireEvent.keyDown(editor, { key: "1", ctrlKey: true });
     fireEvent.keyDown(window, { key: "2", ctrlKey: true, isComposing: true });
     fireEvent.keyDown(window, { key: "3", ctrlKey: true, repeat: true });
+    fireEvent.keyDown(window, { key: "4", ctrlKey: true, isComposing: true });
+    fireEvent.keyDown(window, { key: "4", ctrlKey: true, repeat: true });
+    for (const tag of ["textarea", "select"] as const) {
+      const field = document.createElement(tag);
+      document.body.append(field);
+      fireEvent.keyDown(field, { key: "4", ctrlKey: true });
+      field.remove();
+    }
+    const editable = document.createElement("div");
+    editable.setAttribute("contenteditable", "true");
+    const child = document.createElement("span");
+    editable.append(child);
+    document.body.append(editable);
+    fireEvent.keyDown(child, { key: "4", ctrlKey: true });
+    editable.remove();
 
+    expect(actions.onNavigate).not.toHaveBeenCalled();
+  });
+
+  it("keeps modifier and already-handled-event guards for the new sessions shortcut", () => {
+    const actions = createActions();
+    render(<ShortcutHarness {...actions} />);
+    for (const modifiers of [
+      {},
+      { metaKey: true },
+      { ctrlKey: true, metaKey: true },
+      { ctrlKey: true, shiftKey: true },
+      { ctrlKey: true, altKey: true },
+    ])
+      fireEvent.keyDown(window, { key: "4", ...modifiers });
+    const handled = new KeyboardEvent("keydown", { key: "4", ctrlKey: true, cancelable: true });
+    handled.preventDefault();
+    window.dispatchEvent(handled);
     expect(actions.onNavigate).not.toHaveBeenCalled();
   });
 
@@ -84,7 +143,7 @@ describe("useAppShortcuts", () => {
     const actions = createActions({ helpOpen: true });
     render(<ShortcutHarness {...actions} />);
 
-    fireEvent.keyDown(window, { key: "1", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "4", ctrlKey: true });
 
     expect(actions.onNavigate).not.toHaveBeenCalled();
   });
@@ -95,7 +154,8 @@ describe("useAppShortcuts", () => {
     const actions = createActions();
     render(<ShortcutHarness {...actions} />);
 
-    fireEvent.keyDown(window, { key: "1", metaKey: true });
+    for (let index = 1; index <= 7; index++)
+      fireEvent.keyDown(window, { key: String(index), metaKey: true });
     fireEvent.keyDown(window, { key: "b", metaKey: true });
     fireEvent.keyDown(window, { key: "/", metaKey: true });
     fireEvent.keyDown(window, { key: "[", metaKey: true });

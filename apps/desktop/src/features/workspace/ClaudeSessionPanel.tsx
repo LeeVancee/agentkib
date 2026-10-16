@@ -89,7 +89,8 @@ export function ClaudeSessionPanel({
   onClose: () => void;
 }) {
   const { locale } = useI18n();
-  const text = (zh: string, en: string) => (locale === "en-US" ? en : zh);
+  const text = (zh: string, en: string, tw: string, ja: string) =>
+    ({ "zh-CN": zh, "en-US": en, "zh-TW": tw, "ja-JP": ja })[locale];
   const [filesOpen, setFilesOpen] = useState(false);
   const [sessionId, setSessionId] = useState(initialSessionId ?? "");
   const [observedSessionId, setObservedSessionId] = useState("");
@@ -486,18 +487,18 @@ export function ClaudeSessionPanel({
     capabilities?.sessionId === sessionId &&
     capabilities.features.files?.available === true;
   const statusLabels: Record<string, string> = {
-    idle: text("空闲", "Idle"),
-    starting: text("正在启动", "Starting"),
-    running: text("执行中", "Running"),
-    "waiting-approval": text("等待审批", "Awaiting approval"),
-    "waiting-input": text("等待回答", "Awaiting answer"),
-    "awaiting-approval": text("等待审批", "Awaiting approval"),
-    "awaiting-input": text("等待回答", "Awaiting answer"),
-    "outcome-unknown": text("结果待核对", "Outcome unknown"),
-    released: text("已释放", "Released"),
-    failed: text("执行失败", "Failed"),
-    unavailable: text("不可用", "Unavailable"),
-    readonly: text("只读", "Read only"),
+    idle: text("空闲", "Idle", "閒置", "待機中"),
+    starting: text("正在启动", "Starting", "正在啟動", "起動中"),
+    running: text("执行中", "Running", "執行中", "実行中"),
+    "waiting-approval": text("等待审批", "Awaiting approval", "等待審批", "承認待ち"),
+    "waiting-input": text("等待回答", "Awaiting answer", "等待回答", "回答待ち"),
+    "awaiting-approval": text("等待审批", "Awaiting approval", "等待審批", "承認待ち"),
+    "awaiting-input": text("等待回答", "Awaiting answer", "等待回答", "回答待ち"),
+    "outcome-unknown": text("结果待核对", "Outcome unknown", "結果待核對", "結果の確認が必要"),
+    released: text("已释放", "Released", "已釋放", "解放済み"),
+    failed: text("执行失败", "Failed", "執行失敗", "実行に失敗"),
+    unavailable: text("不可用", "Unavailable", "無法使用", "利用できません"),
+    readonly: text("只读", "Read only", "唯讀", "閲覧のみ"),
   };
   const managed = live?.executionMode === "claude-managed" && live.status !== "released";
   const blocked =
@@ -548,6 +549,8 @@ export function ClaudeSessionPanel({
           {text(
             "沿用主机 CLI 的模型和工具权限。关闭窗口不会停止执行；退出 AgentKib 会停止自有进程。",
             "Uses the host CLI model and tool permissions. Closing this panel does not stop execution; quitting AgentKib stops owned processes.",
+            "沿用主機 CLI 的模型與工具權限。關閉視窗不會停止執行；結束 AgentKib 會停止自有行程。",
+            "ホスト CLI のモデルとツール権限を使用します。このパネルを閉じても実行は停止しません。AgentKib を終了すると、AgentKib が所有するプロセスが停止します。",
           )}
         </p>
         <div className="flex gap-2">
@@ -555,7 +558,12 @@ export function ClaudeSessionPanel({
             disabled={blocked || !options?.available}
             onClick={() => void mutate("create", { workspaceId })}
           >
-            {text("新建 Claude 任务", "New Claude task")}
+            {text(
+              "新建 Claude 任务",
+              "New Claude task",
+              "新增 Claude 任務",
+              "Claude タスクを新規作成",
+            )}
           </Button>
           <Button
             variant="outline"
@@ -565,7 +573,7 @@ export function ClaudeSessionPanel({
               void refresh();
             }}
           >
-            {text("刷新", "Refresh")}
+            {text("刷新", "Refresh", "重新整理", "更新")}
           </Button>
         </div>
         {(live?.model || live?.cliVersion || options?.cliVersion) && (
@@ -576,22 +584,24 @@ export function ClaudeSessionPanel({
         <PermissionModeNotice permission={live?.permission} locale={locale} />
         {!options?.available && options?.reason && <p role="status">{options.reason}</p>}
         <label>
-          {text("会话", "Session")}
+          {text("会话", "Session", "對話", "会話")}
           <Select
             value={sessionId}
             disabled={busy}
             onValueChange={(value) => setSessionId(value ?? "")}
           >
-            <SelectTrigger aria-label={text("会话", "Session")} className="w-full">
-              <SelectValue placeholder={text("选择会话", "Choose a session")}>
+            <SelectTrigger aria-label={text("会话", "Session", "對話", "会話")} className="w-full">
+              <SelectValue
+                placeholder={text("选择会话", "Choose a session", "選擇對話", "会話を選択")}
+              >
                 {sessionId
                   ? catalog?.sessions.find((item) => item.id === sessionId)?.title || "Claude Code"
-                  : text("选择会话", "Choose a session")}
+                  : text("选择会话", "Choose a session", "選擇對話", "会話を選択")}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                <SelectLabel>{text("会话", "Session")}</SelectLabel>
+                <SelectLabel>{text("会话", "Session", "對話", "会話")}</SelectLabel>
                 {catalog?.sessions
                   .filter((item) => item.workspace_id === workspaceId)
                   .map((item) => (
@@ -613,6 +623,8 @@ export function ClaudeSessionPanel({
             {text(
               "结果待核对，正在查询原请求回执；不会自动重发。",
               "Outcome unknown. Checking the original receipt; no command will be replayed.",
+              "結果待核對，正在查詢原請求回執；不會自動重送。",
+              "結果を確認中です。元のリクエストの受領記録を照会しています。コマンドは再送しません。",
             )}
           </p>
         )}
@@ -620,10 +632,11 @@ export function ClaudeSessionPanel({
           <>
             <p role="status">
               {live?.status === "idle" && live.lastOutcome === "cancelled"
-                ? text("已取消", "Cancelled")
+                ? text("已取消", "Cancelled", "已取消", "キャンセル済み")
                 : live?.status
-                  ? statusLabels[live.status] || text("状态待核对", "State unavailable")
-                  : text("正在读取", "Loading")}
+                  ? statusLabels[live.status] ||
+                    text("状态待核对", "State unavailable", "狀態待核對", "状態を確認できません")
+                  : text("正在读取", "Loading", "正在讀取", "読み込み中")}
               {live?.reason ? ` · ${stoppedReason?.text ?? live.reason}` : ""}
               {stoppedReason?.technical && (
                 <span className="block text-xs opacity-70">{stoppedReason.technical}</span>
@@ -636,7 +649,7 @@ export function ClaudeSessionPanel({
                   aria-expanded={filesOpen}
                   onClick={() => setFilesOpen((open) => !open)}
                 >
-                  {text("文件与产物", "Files and artifacts")}
+                  {text("文件与产物", "Files and artifacts", "檔案與產物", "ファイルと成果物")}
                 </Button>
                 {filesOpen && <ClaudeFilesPanel key={sessionId} sessionId={sessionId} />}
               </div>
@@ -644,7 +657,7 @@ export function ClaudeSessionPanel({
             {!managed ? (
               <div className="space-y-2">
                 <Button disabled={blocked} onClick={() => void inspect()}>
-                  {text("准备接管", "Prepare handoff")}
+                  {text("准备接管", "Prepare handoff", "準備接管", "引き渡しを準備")}
                 </Button>
                 {inspection?.handoffFingerprint && (
                   <>
@@ -656,6 +669,8 @@ export function ClaudeSessionPanel({
                       {text(
                         "我已停止原终端和其他客户端，按原 UUID 继续。",
                         "I have stopped the original terminal and other clients. Continue the same UUID.",
+                        "我已停止原終端機與其他客戶端，使用原 UUID 繼續。",
+                        "元のターミナルと他のクライアントを停止しました。同じ UUID で続けます。",
                       )}
                     </label>
                     <Button
@@ -667,7 +682,12 @@ export function ClaudeSessionPanel({
                         })
                       }
                     >
-                      {text("交给 AgentKib", "Hand over to AgentKib")}
+                      {text(
+                        "交给 AgentKib",
+                        "Hand over to AgentKib",
+                        "交給 AgentKib",
+                        "AgentKib に引き渡す",
+                      )}
                     </Button>
                   </>
                 )}
@@ -679,26 +699,31 @@ export function ClaudeSessionPanel({
                   disabled={blocked || compacting}
                   onClick={() => void mutate("release")}
                 >
-                  {text("释放给原客户端", "Release to original client")}
+                  {text(
+                    "释放给原客户端",
+                    "Release to original client",
+                    "釋放給原客戶端",
+                    "元のクライアントに戻す",
+                  )}
                 </Button>
                 <Button
                   variant="outline"
                   disabled={blocked}
                   onClick={() => void mutate("reconcile")}
                 >
-                  {text("核对执行结果", "Reconcile outcome")}
+                  {text("核对执行结果", "Reconcile outcome", "核對執行結果", "実行結果を確認")}
                 </Button>
               </div>
             )}
             <div
               className="max-h-80 overflow-y-auto space-y-3"
-              aria-label={text("会话历史", "History")}
+              aria-label={text("会话历史", "History", "對話歷史", "会話履歴")}
             >
               {history?.events.map((event) => (
                 <article key={event.id}>
                   <strong className="text-xs">
                     {event.kind === "user-message"
-                      ? text("你", "You")
+                      ? text("你", "You", "你", "あなた")
                       : event.tool_name || "Claude"}
                   </strong>
                   <MarkdownContent content={event.content ?? event.tool_status ?? ""} />
@@ -729,18 +754,23 @@ export function ClaudeSessionPanel({
                 }}
               >
                 {"questions" in item
-                  ? text("回答问题", "Answer question")
-                  : text("处理审批", "Review approval")}
+                  ? text("回答问题", "Answer question", "回答問題", "質問に回答")
+                  : text("处理审批", "Review approval", "處理審批", "承認内容を確認")}
               </Button>
             ))}
             {interaction && (
               <section className="rounded border p-3 space-y-2">
                 <Button variant="ghost" onClick={() => setInteraction(undefined)}>
-                  {text("收起", "Dismiss")}
+                  {text("收起", "Dismiss", "收合", "閉じる")}
                 </Button>
                 {!interactionCurrent && (
                   <p role="status">
-                    {text("表单已失效，请刷新。", "This form is no longer current. Refresh.")}
+                    {text(
+                      "表单已失效，请刷新。",
+                      "This form is no longer current. Refresh.",
+                      "表單已失效，請重新整理。",
+                      "このフォームは無効です。更新してください。",
+                    )}
                   </p>
                 )}
                 {"questions" in interaction ? (
@@ -771,7 +801,7 @@ export function ClaudeSessionPanel({
                         ))}
                         {q.allowCustom && (
                           <Input
-                            aria-label={`${q.question} ${text("自定义回答", "Custom answer")}`}
+                            aria-label={`${q.question} ${text("自定义回答", "Custom answer", "自訂回答", "自由回答")}`}
                             type={q.isSecret || q.secret ? "password" : "text"}
                             maxLength={4096}
                             value={custom[q.id] ?? ""}
@@ -799,7 +829,7 @@ export function ClaudeSessionPanel({
                           });
                       }}
                     >
-                      {text("提交回答", "Submit answers")}
+                      {text("提交回答", "Submit answers", "提交回答", "回答を送信")}
                     </Button>
                   </>
                 ) : (
@@ -830,7 +860,9 @@ export function ClaudeSessionPanel({
                               });
                           }}
                         >
-                          {decision === "allow" ? text("允许", "Allow") : text("拒绝", "Deny")}
+                          {decision === "allow"
+                            ? text("允许", "Allow", "允許", "許可")
+                            : text("拒绝", "Deny", "拒絕", "拒否")}
                         </Button>
                       ))}
                   </>
@@ -838,7 +870,7 @@ export function ClaudeSessionPanel({
               </section>
             )}
             <label>
-              {text("消息", "Message")}
+              {text("消息", "Message", "訊息", "メッセージ")}
               <Textarea
                 value={draft}
                 maxLength={16384}
@@ -847,7 +879,12 @@ export function ClaudeSessionPanel({
               />
             </label>
             <label>
-              {text("添加图片或文件", "Add images or files")}
+              {text(
+                "添加图片或文件",
+                "Add images or files",
+                "新增圖片或檔案",
+                "画像やファイルを追加",
+              )}
               <Input
                 type="file"
                 multiple
@@ -880,7 +917,7 @@ export function ClaudeSessionPanel({
                     }
                   }}
                 >
-                  {text("移除", "Remove")}
+                  {text("移除", "Remove", "移除", "削除")}
                 </Button>
               </div>
             ))}
@@ -911,14 +948,14 @@ export function ClaudeSessionPanel({
                   })
                 }
               >
-                {text("发送", "Send")}
+                {text("发送", "Send", "傳送", "送信")}
               </Button>
               <Button
                 variant="destructive"
                 disabled={blocked || !live?.stopEnabled || !live.turnId}
                 onClick={() => void mutate("stop", { turnId: live?.turnId })}
               >
-                {text("停止", "Stop")}
+                {text("停止", "Stop", "停止", "停止")}
               </Button>
             </div>
           </>

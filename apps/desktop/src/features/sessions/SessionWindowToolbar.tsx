@@ -1,16 +1,6 @@
 import { cn } from "cn";
-import { sessionCollection } from "@agentkib/runtime-protocol";
 import { navigationStyles } from "@/components/navigationStyles";
-import { useNavigate } from "@tanstack/react-router";
-import {
-  ArrowUpRight,
-  FolderOpen,
-  LayoutDashboard,
-  ListChecks,
-  MoreHorizontal,
-  Plus,
-  RefreshCw,
-} from "lucide-react";
+import { ArrowUpRight, LayoutDashboard, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -20,33 +10,26 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
-import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 import { displaySessionTitle } from "@/features/workspace/session-title";
-import { useSessionSourceCapability } from "./useSessionSourceCapability";
+import { useHistoryContinuation } from "./useHistoryContinuation";
 import { useSessionHub } from "./SessionHubContext";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useSessionViewStore } from "./session-view-store";
-import { requestConversationPanel } from "./conversation-panel-commands";
 
 export function SessionWindowToolbar() {
   const { tr } = useI18n();
   const hub = useSessionHub();
-  const navigate = useNavigate();
   const selected = hub.selected;
   const workspace = hub.selectedWorkspace;
   const creating = useSessionViewStore((state) => state.creatingConversation);
-  const supportsEmbeddedConversation =
-    hasDesktopConversation() &&
-    !selected?.remote &&
-    selected?.availability === "readable" &&
-    ["codex", "claude-code", "antigravity"].includes(selected.agent);
   const createConversation = () => {
     useSessionViewStore.getState().setCreatingConversation(true);
     hub.select();
   };
-  const historyId = selected?.indexedSessionIds ? selected.indexedSessionIds[0] : selected?.id;
-  const sourceCapability = useSessionSourceCapability(
-    selected && !selected.remote && selected.availability === "readable" ? historyId : undefined,
+  const { canContinue, continueSession } = useHistoryContinuation(
+    selected,
+    workspace,
+    hub.historyRevision,
   );
   if (!selected)
     return (
@@ -67,21 +50,6 @@ export function SessionWindowToolbar() {
         )}
       </div>
     );
-  const canContinue =
-    historyId &&
-    workspace &&
-    !sessionCollection(workspace.id) &&
-    !selected.remote &&
-    selected.availability === "readable" &&
-    canContinueFromHistory(sourceCapability);
-  const continueSession = () => {
-    if (!canContinue) return;
-    void navigate({
-      to: "/workspace/$workspaceId/sessions",
-      params: { workspaceId: workspace.id },
-      search: { sessionId: historyId },
-    });
-  };
   return (
     <div
       className={cn(
@@ -139,18 +107,6 @@ export function SessionWindowToolbar() {
             <MoreHorizontal size={18} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
-            {supportsEmbeddedConversation && (
-              <>
-                <DropdownMenuItem onClick={() => requestConversationPanel("files")}>
-                  <FolderOpen size={15} />
-                  {tr("sessions.filesAndArtifacts")}
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => requestConversationPanel("actions")}>
-                  <ListChecks size={15} />
-                  {tr("sessions.conversationActions")}
-                </DropdownMenuItem>
-              </>
-            )}
             {hasDesktopConversation() && hub.localEnabled && (
               <DropdownMenuItem onClick={createConversation}>
                 <Plus size={15} />

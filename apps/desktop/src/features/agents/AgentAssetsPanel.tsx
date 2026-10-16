@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/select";
 import type { CatalogAsset } from "@/core/types";
 import { AgentSectionFeedback } from "./AgentSectionFeedback";
+import { Button } from "@/components/ui/button";
+import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 
 export function AgentAssetsPanel({
   homeAssets,
@@ -38,6 +40,7 @@ export function AgentAssetsPanel({
   onRetry: () => void;
 }) {
   const { tr } = useI18n();
+  const navigation = useOptionalAppNavigationContext();
   if (loading || error) return <AgentSectionFeedback error={error} onRetry={onRetry} />;
 
   return (
@@ -97,9 +100,30 @@ export function AgentAssetsPanel({
                 {shortPath(asset.path)}
               </small>
             </span>
-            <em className="not-italic text-xs text-muted-foreground">
-              {tr(`status.asset.${asset.kind}`)}
-            </em>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <em className="not-italic text-xs text-muted-foreground">
+                {tr(`status.asset.${asset.kind}`)}
+              </em>
+              {navigation && (asset.kind === "skill" || asset.kind === "connection") && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`${tr(asset.kind === "skill" ? "agents.openSkillManagement" : "agents.openMcpManagement")}: ${asset.name}`}
+                  onClick={() =>
+                    navigation.app.navigateGlobal("catalog", false, {
+                      assetSection: asset.kind === "skill" ? "skills" : "mcp",
+                      catalogTarget: undefined,
+                    })
+                  }
+                >
+                  {tr(
+                    asset.kind === "skill"
+                      ? "agents.openSkillManagement"
+                      : "agents.openMcpManagement",
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
         ))}
         {!visibleAssets.length && <EmptyAssetState hasAssets={homeAssets.length > 0} />}

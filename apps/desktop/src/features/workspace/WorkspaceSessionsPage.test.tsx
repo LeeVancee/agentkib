@@ -54,10 +54,12 @@ const cachedSession = {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe("WorkspaceSessionsPage", () => {
@@ -83,6 +85,75 @@ describe("WorkspaceSessionsPage", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+  });
+
+  it("waits for session indexing to be enabled and prevents duplicate requests", async () => {
+    const pending = deferred<void>();
+    const onRuntimeChanged = vi.fn().mockReturnValue(pending.promise);
+    const props = {
+      workspace,
+      targetAgents: [],
+      onRuntimeChanged,
+      onHandoffPlanned: vi.fn(),
+      onMcpConnectionPlanned: vi.fn(),
+    };
+    const view = render(<WorkspaceSessionsPage {...props} enabled={false} />);
+    const enable = screen.getByRole("button", { name: "Enable" });
+
+    act(() => {
+      fireEvent.click(enable);
+      fireEvent.click(enable);
+    });
+
+    expect(onRuntimeChanged).toHaveBeenCalledExactlyOnceWith(true);
+    expect(screen.getByRole("button", { name: "Enabling…" })).toBeDisabled();
+    expect(enable).toHaveAttribute("aria-busy", "true");
+    expect(api.workspaceSessions).not.toHaveBeenCalled();
+
+    await act(async () => pending.resolve());
+    // The Runtime's state controls indexing; settling the callback alone must not enable it.
+    expect(screen.getByRole("button", { name: "Enable" })).toBeEnabled();
+    expect(api.workspaceSessions).not.toHaveBeenCalled();
+    view.rerender(<WorkspaceSessionsPage {...props} enabled />);
+
+    expect((await screen.findAllByText("Cached continuation")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
+  });
+
+  it("shows an indexing failure in the enable panel and allows a successful retry", async () => {
+    const first = deferred<void>();
+    const retry = deferred<void>();
+    const onRuntimeChanged = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(retry.promise);
+    const props = {
+      workspace,
+      targetAgents: [],
+      onRuntimeChanged,
+      onHandoffPlanned: vi.fn(),
+      onMcpConnectionPlanned: vi.fn(),
+    };
+    const view = render(<WorkspaceSessionsPage {...props} enabled={false} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+    await act(async () => first.reject(new Error("Index settings are read-only")));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Index settings are read-only");
+    expect(screen.getByRole("button", { name: "Enable" })).toBeEnabled();
+    expect(api.workspaceSessions).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+    expect(onRuntimeChanged).toHaveBeenNthCalledWith(2, true);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Enabling…" })).toBeDisabled();
+
+    await act(async () => retry.resolve());
+    view.rerender(<WorkspaceSessionsPage {...props} enabled />);
+
+    expect((await screen.findAllByText("Cached continuation")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onRuntimeChanged).toHaveBeenCalledTimes(2);
   });
 
   it("connects the first Cursor profile in an empty workspace and scans its history only once", async () => {

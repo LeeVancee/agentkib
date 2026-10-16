@@ -2491,7 +2491,7 @@ describe("shared embedded conversation", () => {
       fireEvent.click(screen.getByRole("button", { name: "Pending actions (1)" }));
       expect(
         await screen.findByText(
-          "The last outcome is unknown. Checking its receipt without replaying it.",
+          "The last outcome is unconfirmed. Checking the request status without sending it again.",
         ),
       ).toBeVisible();
       expect(readPending(scope)).toEqual([pending]);
@@ -3189,7 +3189,7 @@ describe("history coverage status", () => {
     render(<HistoryCoverageStatus status={historyStatus} locale="en-US" />);
 
     const sources = screen.getByRole("list", { name: "Source coverage" });
-    expect(sources.textContent).toBe("cursor: Messages Supported · Tool records Not supported");
+    expect(sources.textContent).toBe("Cursor: Messages Supported · Tool records Not supported");
     expect(sources).not.toHaveTextContent("0/1");
     expect(
       screen.getByText(
@@ -3219,7 +3219,7 @@ describe("history coverage status", () => {
       );
 
       const sources = screen.getByRole("list", { name: "Source coverage" });
-      expect(sources.textContent).toBe("cursor: Messages Partial · Tool records Not supported");
+      expect(sources.textContent).toBe("Cursor: Messages Partial · Tool records Not supported");
       expect(sources).not.toHaveTextContent("0/1");
       expect(
         screen.getByText(
@@ -3488,9 +3488,17 @@ describe("history references through the shared conversation provider", () => {
       target: { value: "tools" },
     });
     expect(await screen.findByRole("list", { name: "Source coverage" })).toHaveTextContent(
-      "cursor: Messages Supported · Tool records Not supported",
+      "Cursor: Messages Supported · Tool records Not supported",
     );
-    expect(await screen.findByText("Indexed: 2026-10-08T00:00:00.000Z")).toBeVisible();
+    const indexedAt = "2026-10-08T00:00:00.000Z";
+    const indexedTime = await screen.findByText(new Date(indexedAt).toLocaleString("en-US"), {
+      selector: "time",
+      exact: true,
+      normalizer: (value) => value,
+    });
+    expect(indexedTime).toHaveAttribute("datetime", indexedAt);
+    expect(indexedTime.parentElement).toHaveTextContent("Indexed:");
+    expect(indexedTime).toBeVisible();
     fireEvent.click(await screen.findByRole("button", { name: /Read-only history/ }));
     expect(await screen.findByRole("region", { name: "Source" })).toBeVisible();
     expect(document.querySelector("mark")?.textContent).toBe("private");

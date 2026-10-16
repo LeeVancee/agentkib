@@ -4,7 +4,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
-import { changeLocale, initializeI18n, localizeMessage } from "@/core/i18n";
+import { changeLocale, initializeI18n, localizeMessage, tr } from "@/core/i18n";
 import type { OnboardingState, RuntimeInfo, WorkspaceSummary } from "@/core/types";
 import { GettingStartedCard } from "./GettingStartedCard";
 
@@ -26,6 +26,7 @@ function renderCard(onboarding = baseOnboarding, workspaces: WorkspaceSummary[] 
       workspaces={workspaces}
       doctorSummaries={{}}
       onRuntimeChanged={vi.fn()}
+      onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
       onAddRoot={vi.fn().mockResolvedValue(undefined)}
       onOpenDoctor={vi.fn().mockResolvedValue(undefined)}
     />,
@@ -60,7 +61,7 @@ describe("GettingStartedCard", () => {
 
   it("starts with workspace discovery and advances to Doctor", () => {
     const { rerender } = renderCard();
-    expect(screen.getByRole("button", { name: "Add scan folder" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: tr("onboarding.addWorkspace") })).toBeTruthy();
 
     rerender(
       <GettingStartedCard
@@ -68,6 +69,7 @@ describe("GettingStartedCard", () => {
         workspaces={[workspace]}
         doctorSummaries={{}}
         onRuntimeChanged={vi.fn()}
+        onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
         onAddRoot={vi.fn()}
         onOpenDoctor={vi.fn()}
       />,
@@ -89,6 +91,7 @@ describe("GettingStartedCard", () => {
         workspaces={[workspace]}
         doctorSummaries={{}}
         onRuntimeChanged={vi.fn()}
+        onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
         onAddRoot={vi.fn()}
         onOpenDoctor={onOpenDoctor}
       />,
@@ -109,6 +112,7 @@ describe("GettingStartedCard", () => {
         workspaces={[]}
         doctorSummaries={{}}
         onRuntimeChanged={onRuntimeChanged}
+        onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
         onAddRoot={vi.fn()}
         onOpenDoctor={vi.fn()}
       />,
@@ -124,6 +128,7 @@ describe("GettingStartedCard", () => {
         workspaces={[]}
         doctorSummaries={{}}
         onRuntimeChanged={onRuntimeChanged}
+        onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
         onAddRoot={vi.fn()}
         onOpenDoctor={vi.fn()}
       />,

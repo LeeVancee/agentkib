@@ -69,13 +69,15 @@ function WorkspaceDoctorRoute() {
     if (!project) return;
     const requestId = ++repairRequest.current;
     const targetProject = project;
+    const draftSnapshot = JSON.stringify(useWorkspaceStore.getState().manifest);
     try {
       const currentManifest = await api.manifest(targetProject);
       if (requestId !== repairRequest.current) return;
       const nextChangeSet = await api.plan(targetProject, currentManifest, false);
       if (requestId !== repairRequest.current) return;
       if (useWorkspaceStore.getState().selectedWorkspace?.id !== workspaceId) return;
-      setChangeSet(nextChangeSet);
+      if (JSON.stringify(useWorkspaceStore.getState().manifest) !== draftSnapshot) return;
+      setChangeSet(nextChangeSet, currentManifest);
       setChangeSetOrigin("doctor");
       setHandoffLaunchRequest(undefined);
       void navigate({ to: "/workspace/$workspaceId/changes", params: { workspaceId } });
@@ -89,6 +91,17 @@ function WorkspaceDoctorRoute() {
       onRepair={planRepairs}
       verification={verification}
       onDiagnosed={recordDiagnosis}
+      onOpenIssue={(destination) => {
+        if (destination === "context") {
+          void navigate({ to: "/workspace/$workspaceId/context", params: { workspaceId } });
+          return;
+        }
+        void navigate({
+          to: "/workspace/$workspaceId/assets",
+          params: { workspaceId },
+          search: { workspaceAssetSection: destination } as never,
+        });
+      }}
     />
   );
 }

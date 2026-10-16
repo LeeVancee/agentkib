@@ -1241,7 +1241,15 @@ export interface AppMenuCommandRequest {
   command: AppMenuCommand;
 }
 export interface AppNavigationRequest {
-  page: "home" | "workspaces" | "catalog" | "agents" | "quota" | "insights" | "settings";
+  page:
+    | "home"
+    | "workspaces"
+    | "catalog"
+    | "agents"
+    | "sessions"
+    | "quota"
+    | "insights"
+    | "settings";
   settings_section?: "general" | "discovery" | "integrations" | "privacy" | "diagnostics";
   provider?: string;
   window?: QuotaWindowSelector;

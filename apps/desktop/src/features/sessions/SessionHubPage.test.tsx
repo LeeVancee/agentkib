@@ -4,6 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
 import { api } from "@/core/api";
 import { initializeI18n, tr } from "@/core/i18n";
 import type {
@@ -167,7 +168,7 @@ describe("SessionHubPage", () => {
   it("opens task creation from the existing desktop toolbar", () => {
     Object.defineProperty(window, "desktopConversation", { configurable: true, value: {} });
     render(sessionSurface());
-    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
     expect(screen.getByTestId("desktop-conversation")).toHaveAttribute("data-create", "true");
     expect(hub.select).toHaveBeenCalledWith();
   });
@@ -254,7 +255,10 @@ describe("SessionHubPage", () => {
     expect(screen.getByText(/Saved history, not live agent status/)).toBeTruthy();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /^(send|approve|stop)/i })).toBeNull();
-    fireEvent.click(await screen.findByRole("button", { name: "Continue in workspace" }));
+    const readingContext = screen.getByText("Read-only history").parentElement!;
+    fireEvent.click(
+      await within(readingContext).findByRole("button", { name: "Continue in workspace" }),
+    );
     expect(navigate).toHaveBeenCalledWith({
       to: "/workspace/$workspaceId/sessions",
       params: { workspaceId: workspace.id },
@@ -295,16 +299,76 @@ describe("SessionHubPage", () => {
     expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
   });
 
+  it("keeps a text continuation action in the visible read-only notice", async () => {
+    hub = { ...hub, selected: readable, selectedWorkspace: workspace };
+    render(sessionSurface());
+    const notice = screen.getByText("Read-only history").parentElement!;
+    const continuation = await within(notice).findByRole("button", {
+      name: "Continue in workspace",
+    });
+    expect(continuation).toBeVisible();
+    expect(continuation.textContent).toContain("Continue in workspace");
+    expect(notice.className).not.toMatch(/hidden/);
+    expect(continuation.className).not.toMatch(/hidden/);
+    fireEvent.click(continuation);
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/workspace/$workspaceId/sessions",
+      params: { workspaceId: workspace.id },
+      search: { sessionId: readable.id },
+    });
+  });
+
+  it.each([
+    ["unsupported", "sessions.continuation.unsupported"],
+    ["unverified", "sessions.continuation.unavailable"],
+    ["unavailable", "sessions.continuation.unavailable"],
+  ] as const)(
+    "explains %s source capability without offering continuation",
+    async (status, key) => {
+      vi.mocked(api.sessionSourceCapability).mockResolvedValue({ status, reason: "Source check" });
+      hub = { ...hub, selected: readable, selectedWorkspace: workspace };
+      render(sessionSurface());
+      expect(await screen.findByText(tr(key))).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    },
+  );
+
+  it("shows pending source verification and never enables continuation early", () => {
+    vi.mocked(api.sessionSourceCapability).mockReturnValue(new Promise(() => {}));
+    hub = { ...hub, selected: readable, selectedWorkspace: workspace };
+    render(sessionSurface());
+    expect(screen.getByText(tr("sessions.continuation.checking"))).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+  });
+
+  it.each<[string, ConversationSessionSummary, WorkspaceSummary | undefined]>([
+    ["unindexed", { ...readable, indexedSessionIds: [] }, workspace],
+    ["noWorkspace", readable, undefined],
+    [
+      "collection",
+      { ...readable, workspace_id: SESSION_COLLECTIONS.projectless },
+      { ...workspace, id: SESSION_COLLECTIONS.projectless },
+    ],
+  ])("explains the %s gate without checking a source", (reason, selected, selectedWorkspace) => {
+    hub = { ...hub, selected, selectedWorkspace };
+    render(sessionSurface());
+    expect(screen.getByText(tr(`sessions.continuation.${reason}`))).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    expect(api.sessionSourceCapability).not.toHaveBeenCalled();
+  });
+
   it("explains metadata-only records without reading history or offering continuation", () => {
     hub = { ...hub, selected: metadata, selectedWorkspace: workspace };
     render(sessionSurface());
     expect(
       screen.getByText(
-        "Only session metadata is available. The conversation content cannot be read.",
+        "This record contains session information only. Session content is not available yet.",
       ),
     ).toBeTruthy();
     expect(api.sessionEvents).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    expect(screen.getByText(tr("sessions.continuation.metadata"))).toBeVisible();
+    expect(api.sessionSourceCapability).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
@@ -335,6 +399,8 @@ describe("SessionHubPage", () => {
     expect(readRemoteHistory).toHaveBeenCalledWith(selected);
     expect(api.sessionEvents).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+    expect(screen.getByText(tr("sessions.continuation.remote"))).toBeVisible();
+    expect(api.sessionSourceCapability).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText(/Studio Mac/)).toBeTruthy();
   });

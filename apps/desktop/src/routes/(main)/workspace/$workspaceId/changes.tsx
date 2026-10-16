@@ -23,11 +23,12 @@ import {
   ExternalLink,
   FileCode2,
   GitCompareArrows,
+  LoaderCircle,
   ShieldCheck,
 } from "lucide-react";
 import { cn } from "cn";
 import { withAsyncCleanup } from "@/lib/utils";
-import { diffLines } from "@/features/workspace/diff";
+import { WorkspaceChangeDiff as Diff } from "@/features/workspace/WorkspaceChangeDiff";
 import type { ChangeSet, SessionHandoffLaunchRequest } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import { isClaudeGlobalConfig } from "@/core/claude-global-config";
@@ -56,26 +57,6 @@ function Empty({
     </div>
   );
 }
-function Diff({ before, after }: { before: string; after: string }) {
-  return (
-    <pre className="overflow-auto rounded-lg border border-border bg-muted/30">
-      {diffLines(before, after).map((line, index) => (
-        <div
-          className={cn(
-            "grid grid-cols-[1.5rem_minmax(0,1fr)] px-3 py-0.5",
-            line.type === "added" && "bg-emerald-50 text-emerald-800",
-            line.type === "removed" && "bg-red-50 text-red-800",
-          )}
-          key={`${index}-${line.content}`}
-        >
-          <span>{line.type === "added" ? "+" : line.type === "removed" ? "−" : " "}</span>
-          {line.content || " "}
-        </div>
-      ))}
-    </pre>
-  );
-}
-
 export function Changes({
   changeSet,
   origin,
@@ -90,12 +71,16 @@ export function Changes({
   origin: ChangeSetOrigin;
   launchRequest?: SessionHandoffLaunchRequest;
   onPlanHome: () => void | Promise<void>;
-  onApplied: (keepLaunchRequest?: boolean) => void | Promise<void>;
+  onApplied: (
+    keepLaunchRequest?: boolean,
+    result?: { applied: string[]; backup_dir: string },
+  ) => void | Promise<void>;
   onLaunchCompleted: () => void;
   onRejected: () => void;
   onApplyingChange: (applying: boolean) => void;
 }) {
   const { localizeMessage, tr } = useI18n();
+  const workspaceBusy = useWorkspaceStore((state) => state.busy);
   const [selected, setSelected] = useState(0);
   const [busy, setBusy] = useState(false);
   const [planningHome, setPlanningHome] = useState(false);
@@ -103,8 +88,11 @@ export function Changes({
   const [homeApproved, setHomeApproved] = useState(false);
   const [appliedLaunchFailure, setAppliedLaunchFailure] = useState("");
   const applying = useRef(false);
+  const planning = useRef(false);
   const active = useRef(true);
-  const change = changeSet?.changes[selected];
+  const hasChanges = Boolean(changeSet?.changes.length);
+  const selectedIndex = changeSet?.changes[selected] ? selected : 0;
+  const change = changeSet?.changes[selectedIndex];
   const launchSupported = launchRequest?.capabilities?.interactive_launch.status === "supported";
   const isNativeImport = launchRequest?.mode === "native-import";
   const canApplyAndContinue = Boolean(launchRequest && (launchSupported || isNativeImport));
@@ -116,10 +104,14 @@ export function Changes({
     };
   }, []);
   useEffect(() => {
-    if (changeSet) setAppliedLaunchFailure("");
+    if (changeSet) {
+      setAppliedLaunchFailure("");
+      setSelected(0);
+      setHomeApproved(false);
+    }
   }, [changeSet?.id]);
   const runLocked = async (operation: () => Promise<void>) => {
-    if (applying.current) return;
+    if (applying.current || planning.current || useWorkspaceStore.getState().busy) return;
     applying.current = true;
     setBusy(true);
     setError("");
@@ -156,7 +148,7 @@ export function Changes({
         </div>
         <Button
           className="bg-primary text-primary-foreground hover:bg-primary/90"
-          disabled={busy}
+          disabled={busy || workspaceBusy}
           onClick={() =>
             void runLocked(async () => {
               await api.launchSessionHandoff(launchRequest);
@@ -188,17 +180,31 @@ export function Changes({
       />
     );
   const apply = async () => {
+    if (!hasChanges) return;
     await runLocked(async () => {
-      await api.apply(
+      const result = await api.apply(
         changeSet,
         homeApproved,
         launchRequest?.mode === "native-import" ? launchRequest : undefined,
       );
-      if (active.current) await onApplied(false);
+      const report = result && typeof result === "object" ? result : undefined;
+      // A missing report must not turn a completed write into a retryable failure.
+      const applied =
+        report &&
+        "applied" in report &&
+        Array.isArray(report.applied) &&
+        report.applied.every((target): target is string => typeof target === "string")
+          ? report.applied
+          : changeSet.changes.map((change) => change.target);
+      const backupDir =
+        report && "backup_dir" in report && typeof report.backup_dir === "string"
+          ? report.backup_dir
+          : "";
+      if (active.current) await onApplied(false, { applied, backup_dir: backupDir });
     });
   };
   const applyAndContinue = async () => {
-    if (!launchRequest || !canApplyAndContinue) return;
+    if (!hasChanges || !launchRequest || !canApplyAndContinue) return;
     await runLocked(async () => {
       let result;
       try {
@@ -223,14 +229,27 @@ export function Changes({
     });
   };
   const planHome = async () => {
-    if (busy || planningHome) return;
+    if (applying.current || planning.current || useWorkspaceStore.getState().busy) return;
+    planning.current = true;
     setPlanningHome(true);
-    await withAsyncCleanup(onPlanHome, () => {
-      if (active.current) setPlanningHome(false);
-    });
+    setError("");
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await onPlanHome();
+        } catch (value) {
+          if (active.current) setError(localizeMessage(value));
+        }
+      },
+      () => {
+        planning.current = false;
+        if (active.current) setPlanningHome(false);
+      },
+    );
   };
   const disabled =
     busy ||
+    workspaceBusy ||
     planningHome ||
     !changeSet.changes.length ||
     (changeSet.requires_home_approval && !homeApproved);
@@ -239,13 +258,14 @@ export function Changes({
       <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
         <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-4">
           <div>
-            <h2>ChangeSet</h2>
+            <h2>{tr("changes.title")}</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{tr("changes.explanation")}</p>
             <p>
               {changeSet.id.slice(0, 8)} · {changeSet.changes.length} {tr("common.files")}
             </p>
           </div>
         </div>
-        {origin === "handoff" && (
+        {hasChanges && origin === "handoff" && (
           <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700">
             <CircleAlert size={14} />
             {tr(isNativeImport ? "handoff.nativeImportWarning" : "handoff.changeSetWarning")}
@@ -265,7 +285,7 @@ export function Changes({
             variant="bare"
             size="content"
             key={file.target}
-            className={index === selected ? "bg-muted text-foreground" : ""}
+            className={index === selectedIndex ? "bg-muted text-foreground" : ""}
             onClick={() => setSelected(index)}
           >
             <FileCode2 size={16} />
@@ -293,13 +313,15 @@ export function Changes({
             <Button
               className="border border-transparent bg-transparent text-foreground hover:bg-muted"
               onClick={() => void planHome()}
-              disabled={busy || planningHome}
+              disabled={busy || planningHome || workspaceBusy}
+              aria-busy={planningHome}
             >
+              {planningHome && <LoaderCircle size={14} className="animate-spin" />}
               {tr("changes.includeHome")}
             </Button>
           </div>
         )}
-        {changeSet.requires_home_approval && (
+        {hasChanges && changeSet.requires_home_approval && (
           <Label className="flex items-center gap-2 border-t border-border p-4 text-xs text-muted-foreground">
             <Checkbox checked={homeApproved} onCheckedChange={setHomeApproved} />
             {tr(isNativeImport ? "handoff.nativeImportApproval" : "changes.homeApproval")}
@@ -332,27 +354,39 @@ export function Changes({
             <Diff before={change.before} after={change.after} />
           </>
         ) : (
-          <Empty icon={Check} title={tr("changes.synced")} text={tr("changes.syncedText")} />
+          <Empty
+            icon={Check}
+            title={tr("changes.noFileChanges")}
+            text={tr("changes.noFileChangesText")}
+          />
         )}
         {error && (
-          <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <div
+            role="alert"
+            className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          >
             {error}
           </div>
         )}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border p-4">
-          <div>
-            <ShieldCheck size={17} />
-            <span>{tr("changes.hashValidation")}</span>
-          </div>
+          {hasChanges && (
+            <div>
+              <ShieldCheck size={17} />
+              <span>{tr("changes.hashValidation")}</span>
+            </div>
+          )}
           <div className="">
             <Button
               className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-              onClick={onRejected}
-              disabled={busy}
+              onClick={() => {
+                if (!applying.current && !planning.current && !useWorkspaceStore.getState().busy)
+                  onRejected();
+              }}
+              disabled={busy || planningHome || workspaceBusy}
             >
-              {tr("changes.reject")}
+              {tr(hasChanges ? "changes.reject" : "common.back")}
             </Button>
-            {origin === "handoff" && launchSupported && !isNativeImport && (
+            {hasChanges && origin === "handoff" && launchSupported && !isNativeImport && (
               <Button
                 className="border border-transparent bg-transparent text-foreground hover:bg-muted"
                 onClick={() => void apply()}
@@ -361,24 +395,28 @@ export function Changes({
                 {tr("handoff.applyOnly")}
               </Button>
             )}
-            <Button
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
-              onClick={() =>
-                void (origin === "handoff" && canApplyAndContinue ? applyAndContinue() : apply())
-              }
-              disabled={disabled}
-            >
-              {origin === "handoff" && canApplyAndContinue ? (
-                <>
-                  <ExternalLink size={15} />
-                  {tr(busy ? "changes.applying" : "handoff.applyAndContinue", {
-                    agent: targetAgentName,
-                  })}
-                </>
-              ) : (
-                tr(busy ? "changes.applying" : "changes.apply", { count: changeSet.changes.length })
-              )}
-            </Button>
+            {hasChanges && (
+              <Button
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
+                onClick={() =>
+                  void (origin === "handoff" && canApplyAndContinue ? applyAndContinue() : apply())
+                }
+                disabled={disabled}
+              >
+                {origin === "handoff" && canApplyAndContinue ? (
+                  <>
+                    <ExternalLink size={15} />
+                    {tr(busy ? "changes.applying" : "handoff.applyAndContinue", {
+                      agent: targetAgentName,
+                    })}
+                  </>
+                ) : (
+                  tr(busy ? "changes.applying" : "changes.apply", {
+                    count: changeSet.changes.length,
+                  })
+                )}
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -395,6 +433,7 @@ function WorkspaceChangesRoute() {
   const {
     project,
     changeSet,
+    changeSetManifest,
     changeSetOrigin,
     handoffLaunchRequest,
     manifest,
@@ -402,10 +441,10 @@ function WorkspaceChangesRoute() {
     setHandoffLaunchRequest,
     setApplyingChanges,
     setScan,
-    setManifest,
-    setBaselineManifest,
+    acceptAppliedManifest,
     setProject,
     setMessage,
+    setAppliedChanges,
   } = useWorkspaceStore();
   const homePlanRequest = useRef(0);
   const reloadRequest = useRef(0);
@@ -471,22 +510,21 @@ function WorkspaceChangesRoute() {
   if (!project) return <WorkspaceChangesSkeleton />;
   if (!enteredWithActiveFlow) return <WorkspaceChangesSkeleton />;
   const planHome = async () => {
-    if (!manifest) return;
+    if (!manifest || !changeSet) return;
     const requestId = ++homePlanRequest.current;
     const targetProject = project;
     const targetManifest = manifest;
+    const targetChangeSetId = changeSet.id;
     const isCurrentRequest = () =>
       requestId === homePlanRequest.current &&
       useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
-      useWorkspaceStore.getState().project === targetProject;
-    try {
-      const nextChangeSet = await api.plan(targetProject, targetManifest, true);
-      if (isCurrentRequest()) setChangeSet(nextChangeSet);
-    } catch (error) {
-      if (isCurrentRequest()) setMessage(localizeMessage(error));
-    }
+      useWorkspaceStore.getState().project === targetProject &&
+      useWorkspaceStore.getState().changeSet?.id === targetChangeSetId &&
+      JSON.stringify(useWorkspaceStore.getState().manifest) === JSON.stringify(targetManifest);
+    const nextChangeSet = await api.plan(targetProject, targetManifest, true);
+    if (isCurrentRequest()) setChangeSet(nextChangeSet, targetManifest);
   };
-  const reload = async () => {
+  const reload = async (plannedManifest?: string, draftAtApply?: string) => {
     const requestId = ++reloadRequest.current;
     const targetProject = project;
     const isCurrentRequest = () =>
@@ -501,8 +539,7 @@ function WorkspaceChangesRoute() {
     if (!isCurrentRequest()) return undefined;
     setProject(targetProject);
     setScan(scan);
-    setManifest(manifest);
-    setBaselineManifest(JSON.stringify(manifest));
+    acceptAppliedManifest(manifest, plannedManifest, draftAtApply);
     return runtime;
   };
   return (
@@ -510,12 +547,21 @@ function WorkspaceChangesRoute() {
       changeSet={changeSet}
       origin={changeSetOrigin}
       launchRequest={handoffLaunchRequest}
-      onPlanHome={() => void planHome()}
-      onApplied={async (keepLaunchRequest) => {
+      onPlanHome={planHome}
+      onApplied={async (keepLaunchRequest, result) => {
         const targetProject = project;
         const appliedDoctorRepair = changeSetOrigin === "doctor";
         const appliedHandoffSetup = changeSetOrigin === "handoff-setup";
         const returnPage = changesReturnPage(changeSetOrigin);
+        if (result && changeSet) {
+          setAppliedChanges({
+            workspaceId,
+            project: targetProject,
+            changeSet,
+            applied: result.applied,
+            backupDir: result.backup_dir,
+          });
+        }
         setChangeSet(undefined);
         if (!keepLaunchRequest) setHandoffLaunchRequest(undefined);
         if (appliedDoctorRepair) {
@@ -528,7 +574,7 @@ function WorkspaceChangesRoute() {
         await withAsyncCleanup(
           async () => {
             try {
-              const runtime = await reload();
+              const runtime = await reload(changeSetManifest, JSON.stringify(manifest));
               if (runtime) await queryClient.invalidateQueries({ queryKey: homeKeys.all });
             } catch (error) {
               if (

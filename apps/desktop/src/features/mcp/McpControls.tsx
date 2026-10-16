@@ -41,14 +41,23 @@ export function McpDisclosure({
   children,
   className,
   defaultOpen,
+  open,
+  onOpenChange,
 }: {
   title: ReactNode;
   children: ReactNode;
   className?: string;
   defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
-    <Collapsible className={className} defaultOpen={defaultOpen}>
+    <Collapsible
+      className={className}
+      defaultOpen={defaultOpen}
+      open={open}
+      onOpenChange={onOpenChange}
+    >
       <CollapsibleTrigger render={<Button variant="outline" className="w-full justify-start" />}>
         {title}
       </CollapsibleTrigger>

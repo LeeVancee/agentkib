@@ -329,6 +329,26 @@ describe("Claude Code scope precedence", () => {
     for (const leak of LEAKS) expect(text).not.toContain(leak);
   });
 
+  it("keeps local services and disable rules beyond 10,000 project entries", () => {
+    const f = fixture();
+    const projects: Record<string, unknown> = {};
+    for (let index = 0; index < 10_001; index++) projects[`/other/${index}`] = {};
+    projects[f.project] = {
+      mcpServers: { quiet: http("local") },
+      disabledMcpServers: ["quiet"],
+      hasTrustDialogAccepted: true,
+    };
+    const config = { mcpServers: { quiet: http("home") }, projects };
+    expect(Buffer.byteLength(JSON.stringify(config))).toBeLessThan(1024 * 1024);
+    f.writeGlobal(config);
+    const candidates = f.claude(f.scan());
+    expect(candidates.filter((item) => item.name === "quiet")).toHaveLength(2);
+    for (const item of candidates.filter((candidate) => candidate.name === "quiet"))
+      expect(codes(item)).toContain("native_disabled_for_project");
+    const serialized = JSON.stringify(candidates);
+    expect(serialized).not.toContain("/other/");
+  });
+
   it("does not apply another project's disabled list", () => {
     const f = fixture();
     f.writeGlobal({

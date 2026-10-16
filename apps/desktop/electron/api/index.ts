@@ -115,6 +115,15 @@ import type {
   PrepareSkillDeploymentRequest,
   SkillDeploymentPreview,
   SkillDeploymentReport,
+  SkillSyncState,
+  SkillSyncPolicy,
+  SaveSkillSyncPolicyRequest,
+  PrepareSkillSyncRequest,
+  SkillSyncPreview,
+  SkillSyncReport,
+  SkillSyncRuns,
+  SkillSyncCoordinatorState,
+  SkillSyncComparison,
   ObsidianWorkspaceLink,
   GitIdentitySummary,
 } from "../../src/core/types";
@@ -161,6 +170,9 @@ export interface DesktopApi {
     onQuitRequested(listener: () => void): DesktopEventUnsubscribe;
     onThemeChanged(listener: (theme: EffectiveTheme) => void): DesktopEventUnsubscribe;
     onRefreshState(listener: (status: RefreshJobStatus) => void): DesktopEventUnsubscribe;
+    onSkillSyncState(
+      listener: (status: SkillSyncCoordinatorState) => void,
+    ): DesktopEventUnsubscribe;
     onQuotaUpdated(listener: (snapshot: QuotaSnapshot) => void): DesktopEventUnsubscribe;
     onNavigate(listener: (request: AppNavigationRequest) => void): DesktopEventUnsubscribe;
     onMenuCommand(listener: (request: AppMenuCommandRequest) => void): DesktopEventUnsubscribe;
@@ -227,10 +239,18 @@ export interface DesktopApi {
       path: string,
       targetId?: string,
       itemId?: string,
+      comparison?: SkillSyncComparison,
     ): Promise<SkillPreviewFile>;
     listDeployments(): Promise<SkillDeployment[]>;
     prepareDeployment(request: PrepareSkillDeploymentRequest): Promise<SkillDeploymentPreview>;
     applyDeployment(token: string, approveHome: boolean): Promise<SkillDeploymentReport>;
+    syncState(): Promise<SkillSyncState>;
+    syncPolicy(): Promise<SkillSyncPolicy>;
+    prepareSync(request: PrepareSkillSyncRequest): Promise<SkillSyncPreview>;
+    applySync(token: string, approveHome: boolean): Promise<SkillSyncReport>;
+    saveSyncPolicy(request: SaveSkillSyncPolicyRequest): Promise<SkillSyncPolicy>;
+    syncRuns(limit?: number): Promise<SkillSyncRuns>;
+    recoverSync(operationId: string, approveHome: boolean): Promise<SkillSyncReport>;
   };
   mcp: {
     previewMigration(request: {

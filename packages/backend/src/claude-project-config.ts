@@ -10,10 +10,6 @@
 // the launch directory outside git); for the MCP entry it is not stated, so callers pass both
 // the repository root and the workspace root and the first key that matches wins.
 
-const MAX_PROJECTS = 10_000;
-const MAX_DISABLED = 1024;
-const MAX_NAME_LENGTH = 256;
-
 export interface ClaudeProjectEntry {
   /** The raw `mcpServers` object, when the entry has one. */
   mcpServers?: Record<string, unknown>;
@@ -52,8 +48,9 @@ export function readClaudeProjectEntry(
 ): ClaudeProjectEntry | undefined {
   const projects = isObject(root) ? root.projects : undefined;
   if (!isObject(projects)) return undefined;
+  // The caller bounds the entire native configuration before parsing it. A second
+  // display-count limit here must not silently discard this project's disable rules.
   const entries = Object.entries(projects);
-  if (entries.length > MAX_PROJECTS) return undefined;
   for (const key of keys) {
     const wanted = claudeProjectKeyForm(key, platform);
     for (const [candidate, value] of entries) {
@@ -69,11 +66,10 @@ function pick(entry: Record<string, unknown>): ClaudeProjectEntry {
   return {
     trusted: entry.hasTrustDialogAccepted === true,
     ...(isObject(entry.mcpServers) ? { mcpServers: entry.mcpServers } : {}),
-    disabledMcpServers:
-      Array.isArray(disabled) && disabled.length <= MAX_DISABLED
-        ? disabled.filter(
-            (name): name is string => typeof name === "string" && name.length <= MAX_NAME_LENGTH,
-          )
-        : [],
+    // Callers already bound the configuration file before parsing it. Keep every valid name:
+    // a display limit must not turn a disabled server into an apparently active one.
+    disabledMcpServers: Array.isArray(disabled)
+      ? disabled.filter((name): name is string => typeof name === "string")
+      : [],
   };
 }

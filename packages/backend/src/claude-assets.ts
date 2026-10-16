@@ -1,6 +1,7 @@
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { claudeConfigFiles, resolveClaudeConfig, type ClaudeConfig } from "./claude-config";
+import { claudeProjectKeyForm } from "./claude-project-config";
 import {
   redactText,
   summarizeHooks,
@@ -12,6 +13,7 @@ import {
   flavor,
   isInside,
   isNetworkOrDevicePath,
+  pathKey,
   probe,
   walkRules,
   type ClaudeIo,
@@ -27,8 +29,9 @@ import { userHome } from "./mcp-config-read";
 //   `installPath` and `version`. Whether a plugin is on comes from `enabledPlugins` in settings.
 // - plugins/components: a plugin has `.claude-plugin/plugin.json` and the default places
 //   `commands/`, `agents/`, `skills/`, `output-styles/`, `hooks/hooks.json` and `.mcp.json`.
-//   A manifest path for commands, agents or output styles replaces the default folder; hooks and
-//   MCP servers declared in the manifest merge into the default file.
+//   A manifest path for commands, agents or output styles replaces the default folder; skills
+//   supplement the default folder, while hooks and MCP servers merge into the default file.
+//   plugins-reference: MCP definitions merge in declaration order, with later names winning.
 // - claude-directory: `commands/`, `agents/`, `output-styles/` and `workflows/` exist in the
 //   project's `.claude` and in the configuration folder.
 //
@@ -98,10 +101,11 @@ export interface ClaudeAssetsOptions {
   sensitive?: (written: string, real: string) => boolean;
   /** Skip the project and user folders: only the plugins are wanted. */
   pluginsOnly?: boolean;
+  /** Global scans have no project, even when `root` happens to be the user's home. */
+  withoutProject?: boolean;
 }
 
 const MAX_PLUGINS = 64;
-const MAX_INSTALL_RECORDS = 8;
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_RECORD_BYTES = 1024 * 1024;
 const FRONT_MATTER_BYTES = 16 * 1024;
@@ -119,7 +123,7 @@ const text = (value: unknown, limit = MAX_DESCRIPTION): string | undefined => {
       ? value
       : undefined;
   if (raw === undefined || raw.trim() === "") return undefined;
-  const flat = redactText(raw.replace(/\s+/g, " ").trim());
+  const flat = redactText(raw).replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
 };
 
@@ -145,11 +149,17 @@ export function parseFrontMatter(content: string): Record<string, unknown> {
 class Reader {
   readonly p: typeof path.posix;
   readonly context: ProbeContext;
+  readonly projectKey: string | undefined;
   limited = false;
   constructor(readonly options: ClaudeAssetsOptions) {
     const platform = options.platform ?? process.platform;
     this.p = flavor(platform);
     this.context = { io: options.io ?? defaultIo, platform };
+    if (!options.withoutProject) {
+      const root = probe(options.root, null, this.context);
+      if (root.kind === "dir")
+        this.projectKey = claudeProjectKeyForm(this.p.normalize(root.real), platform);
+    }
   }
   get platform() {
     return this.context.platform;
@@ -226,13 +236,13 @@ function pluginParts(id: string): { name: string; origin: string } {
 }
 
 /** A path from a plugin manifest: relative, inside the plugin, without `..` or backslashes. */
-function manifestPaths(value: unknown): string[] | undefined {
+function manifestPaths(value: unknown, allowRoot = false): string[] | undefined {
   const items = typeof value === "string" ? [value] : Array.isArray(value) ? value : undefined;
   if (!items) return undefined;
   return items
     .filter((item): item is string => typeof item === "string")
     .filter((item) => !item.includes("\\") && !item.split("/").includes(".."))
-    .map((item) => item.replace(/^\.\//, ""))
+    .map((item) => (allowRoot && item === "./" ? "." : item.replace(/^\.\//, "")))
     .filter((item) => item !== "" && !path.posix.isAbsolute(item))
     .slice(0, 16);
 }
@@ -252,6 +262,90 @@ function resolvePluginsRoot(
   )
     return configured;
   return claudeConfigFiles(config, reader.platform).plugins;
+}
+
+function applicableInstalls(reader: Reader, records: unknown): Record<string, unknown>[] {
+  return (Array.isArray(records) ? records : []).filter(
+    (record): record is Record<string, unknown> => {
+      if (!isObject(record) || typeof record.installPath !== "string") return false;
+      if (record.scope === "user" || record.scope === "managed") return true;
+      if (record.scope !== "project" && record.scope !== "local") return false;
+      const project = record.projectPath;
+      if (
+        reader.projectKey === undefined ||
+        typeof project !== "string" ||
+        project.length > 4096 ||
+        !reader.p.isAbsolute(project) ||
+        project.split(/[\\/]+/).includes("..") ||
+        isNetworkOrDevicePath(project, reader.platform)
+      )
+        return false;
+      // Match the canonical workspace exactly. Do not probe other projects or guess that an
+      // unresolved alias belongs here. The JSON is already size-bounded; filter all its records
+      // before choosing an install so unrelated projects cannot consume a prefix budget.
+      return (
+        claudeProjectKeyForm(reader.p.normalize(project), reader.platform) === reader.projectKey
+      );
+    },
+  );
+}
+
+/** Skills may be declared as a collection directory or as an individual skill directory. */
+function pluginSkills(reader: Reader, home: string, declared: unknown): string[] {
+  const { p } = reader;
+  const names: string[] = [];
+  const seenFiles = new Set<string>();
+  const seenFolders = new Set<string>();
+  let remaining = FILE_LIMITS.entries;
+  let full = false;
+  const add = (directory: string): boolean => {
+    const file = p.join(directory, "SKILL.md");
+    const found = probe(file, null, reader.context);
+    if (
+      found.kind !== "file" ||
+      found.size > MAX_JSON_BYTES ||
+      !isInside(found.real, home, reader.platform) ||
+      reader.refused(file, found.real)
+    )
+      return false;
+    const key = pathKey(found.real, reader.platform);
+    if (seenFiles.has(key)) return true;
+    seenFiles.add(key);
+    if (names.length === MAX_LISTED) {
+      reader.limited = full = true;
+      return true;
+    }
+    names.push(text(p.basename(directory), 80) ?? "");
+    return true;
+  };
+  for (const relative of ["skills", ...(manifestPaths(declared, true) ?? [])]) {
+    const target = p.join(home, ...relative.split("/"));
+    const top = probe(target, null, reader.context);
+    if (
+      top.kind !== "dir" ||
+      !isInside(top.real, home, reader.platform) ||
+      reader.refused(target, top.real)
+    )
+      continue;
+    const key = pathKey(top.real, reader.platform);
+    if (seenFolders.has(key)) continue;
+    seenFolders.add(key);
+    if (!add(target)) {
+      try {
+        const entries = reader.context.io.readdir(top.real).sort();
+        if (entries.length > remaining) reader.limited = true;
+        for (const entry of entries.slice(0, remaining)) {
+          remaining--;
+          add(p.join(target, entry));
+          if (full) break;
+        }
+      } catch {
+        // An unreadable collection contributes no skills.
+      }
+    }
+    if (full) break;
+  }
+  return names;
 }
 
 function readPlugin(
@@ -275,10 +369,7 @@ function readPlugin(
     hooks: [],
     mcp: [],
   };
-  const candidates = (Array.isArray(records) ? records : [])
-    .slice(0, MAX_INSTALL_RECORDS)
-    .filter((record): record is Record<string, unknown> => isObject(record))
-    .filter((record) => typeof record.installPath === "string");
+  const candidates = applicableInstalls(reader, records);
   // The user's own and organization installs first; project and local ones are for one project.
   candidates.sort(
     (left, right) =>
@@ -321,7 +412,13 @@ function readPlugin(
       const target = p.join(home, ...relative.split("/"));
       if (relative.endsWith(".md")) {
         const found = probe(target, null, reader.context);
-        if (found.kind !== "file" || !isInside(found.real, home, reader.platform)) return [];
+        if (
+          found.kind !== "file" ||
+          found.size > MAX_JSON_BYTES ||
+          !isInside(found.real, home, reader.platform) ||
+          reader.refused(target, found.real)
+        )
+          return [];
         let data: Record<string, unknown> = {};
         try {
           data = parseFrontMatter(
@@ -358,23 +455,7 @@ function readPlugin(
       : listMarkdown(folder(declared.commands, "commands"));
   info.agents = listMarkdown(folder(declared.agents, "agents"));
   info.outputStyles = listMarkdown(folder(declared.outputStyles, "output-styles"));
-  const skills = probe(p.join(home, "skills"), null, reader.context);
-  if (skills.kind === "dir" && isInside(skills.real, home, reader.platform)) {
-    try {
-      info.skills = reader.context.io
-        .readdir(skills.real)
-        .sort()
-        .slice(0, MAX_LISTED)
-        .filter(
-          (entry) =>
-            probe(p.join(skills.real, entry, "SKILL.md"), skills.real, reader.context).kind ===
-            "file",
-        )
-        .map((entry) => text(entry, 80) ?? "");
-    } catch {
-      // No skills listed.
-    }
-  }
+  info.skills = pluginSkills(reader, home, declared.skills);
 
   // Hooks and MCP servers merge: the default file first, then what the manifest declares.
   const hookSources: unknown[] = [reader.json(p.join(home, "hooks", "hooks.json"), null, home)];
@@ -408,10 +489,33 @@ function readPlugin(
         `plugin:${id}`,
       ),
     );
+  const mergedMcp = new Map<string, { file: string; server: unknown }>();
   for (const { file, value } of mcpSources) {
-    const servers = isObject(value) && isObject(value.mcpServers) ? value.mcpServers : undefined;
-    if (servers && Object.keys(servers).length) info.mcp.push({ plugin: id, file, servers });
+    // Plugin files accept either a server map or the usual mcpServers wrapper. A present
+    // but malformed wrapper must not become a server named "mcpServers" (or expose siblings).
+    const servers = !isObject(value)
+      ? undefined
+      : Object.hasOwn(value, "mcpServers")
+        ? isObject(value.mcpServers)
+          ? value.mcpServers
+          : undefined
+        : value;
+    for (const [name, server] of Object.entries(servers ?? {}))
+      mergedMcp.set(name, { file, server });
   }
+  // Resolve overrides before the MCP scanner assigns identities and deduplicates candidates.
+  // Keep each winning definition's source so the view points to the effective configuration.
+  const byFile = new Map<string, Array<[string, unknown]>>();
+  for (const [name, { file, server }] of mergedMcp) {
+    const entries = byFile.get(file) ?? [];
+    entries.push([name, server]);
+    byFile.set(file, entries);
+  }
+  info.mcp = [...byFile].map(([file, entries]) => ({
+    plugin: id,
+    file,
+    servers: Object.fromEntries(entries),
+  }));
   return info;
 }
 
@@ -454,6 +558,7 @@ export function readClaudeAssets(options: ClaudeAssetsOptions): ClaudeAssets {
   result.marketplaces = isObject(known) ? Object.keys(known).length : 0;
   const enabledMap = options.settings.enabledPlugins();
   const wanted = [...enabledMap].filter(([, state]) => state.enabled).map(([id]) => id);
+  const wantedIds = new Set(wanted);
   for (const id of wanted.slice(0, MAX_PLUGINS)) {
     const state = enabledMap.get(id)!;
     result.plugins.push(
@@ -468,7 +573,7 @@ export function readClaudeAssets(options: ClaudeAssetsOptions): ClaudeAssets {
   }
   if (wanted.length > MAX_PLUGINS) reader.limited = true;
   result.installedOnly = Object.keys(records)
-    .filter((id) => !wanted.includes(id))
+    .filter((id) => !wantedIds.has(id) && applicableInstalls(reader, records[id]).length > 0)
     .slice(0, MAX_LISTED)
     .map((id) => text(id, 80) ?? "");
 

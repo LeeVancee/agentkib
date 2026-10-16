@@ -8,6 +8,8 @@ import type {
   AppUpdateProgress,
   QuotaSnapshot,
   RefreshJobStatus,
+  SkillSyncCoordinatorState,
+  SkillSyncComparison,
 } from "../../src/core/types";
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
@@ -37,6 +39,8 @@ const desktopApi = Object.freeze({
       subscribe("agentkib:theme-changed", listener),
     onRefreshState: (listener: (status: RefreshJobStatus) => void) =>
       subscribe("agentkib:electron-refresh-state", listener),
+    onSkillSyncState: (listener: (status: SkillSyncCoordinatorState) => void) =>
+      subscribe("agentkib:skills:sync-state-changed", listener),
     onQuotaUpdated: (listener: (snapshot: QuotaSnapshot) => void) =>
       subscribe("agentkib:quota-updated", listener),
     onNavigate: (listener: (request: AppNavigationRequest) => void) =>
@@ -120,13 +124,36 @@ const desktopApi = Object.freeze({
     prepareImports: (observationIds: string[]) =>
       ipcRenderer.invoke("agentkib:skills:prepare-imports", observationIds),
     applyImports: (token: string) => ipcRenderer.invoke("agentkib:skills:apply-imports", token),
-    readPreviewFile: (token: string, path: string, targetId?: string, itemId?: string) =>
-      ipcRenderer.invoke("agentkib:skills:read-preview-file", token, path, targetId, itemId),
+    readPreviewFile: (
+      token: string,
+      path: string,
+      targetId?: string,
+      itemId?: string,
+      comparison?: SkillSyncComparison,
+    ) =>
+      ipcRenderer.invoke(
+        "agentkib:skills:read-preview-file",
+        token,
+        path,
+        targetId,
+        itemId,
+        comparison,
+      ),
     listDeployments: () => ipcRenderer.invoke("agentkib:skills:list-deployments"),
     prepareDeployment: (request: unknown) =>
       ipcRenderer.invoke("agentkib:skills:prepare-deployment", request),
     applyDeployment: (token: string, approveHome: boolean) =>
       ipcRenderer.invoke("agentkib:skills:apply-deployment", token, approveHome),
+    syncState: () => ipcRenderer.invoke("agentkib:skills:sync-state"),
+    syncPolicy: () => ipcRenderer.invoke("agentkib:skills:sync-policy"),
+    prepareSync: (request: unknown) => ipcRenderer.invoke("agentkib:skills:prepare-sync", request),
+    applySync: (token: string, approveHome: boolean) =>
+      ipcRenderer.invoke("agentkib:skills:apply-sync", token, approveHome),
+    saveSyncPolicy: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:save-sync-policy", request),
+    syncRuns: (limit?: number) => ipcRenderer.invoke("agentkib:skills:sync-runs", limit),
+    recoverSync: (operationId: string, approveHome: boolean) =>
+      ipcRenderer.invoke("agentkib:skills:recover-sync", operationId, approveHome),
   }),
   mcp: Object.freeze({
     previewMigration: (request: unknown) =>

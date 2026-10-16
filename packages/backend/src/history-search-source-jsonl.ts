@@ -219,6 +219,9 @@ export async function readJsonlSearchSource(
     chain = new Set<string>();
     for (const segment of lineage.segments) for (const uuid of segment.uuids) chain.add(uuid);
   }
+  const selectedLines = lineage?.segments.some((segment) => segment.boundary)
+    ? new Set(lineage.segments.flatMap((segment) => [...segment.lines]))
+    : null;
   // Legacy branch controls lack SQLite's verified active projection. Do not index siblings as active history.
   if (legacyBranch) sink.limit("legacy-branch-history");
   const second = await lines(file, sink, async ({ line, offset, value }) => {
@@ -297,6 +300,7 @@ export async function readJsonlSearchSource(
       if (
         value.isSidechain === true ||
         value.isCompactSummary === true ||
+        (selectedLines && !selectedLines.has(line)) ||
         (chain && (!text(value.uuid) || !chain.has(String(value.uuid))))
       )
         return;

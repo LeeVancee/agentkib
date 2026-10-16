@@ -1,5 +1,4 @@
-import { chmodSync } from "node:fs";
-import path from "node:path";
+import { chmodSync, existsSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { importPath } from "../../../packages/backend/src/context-claude";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
@@ -43,6 +42,18 @@ describe("where an import is resolved", () => {
     expect((await preview(f)).content).toEqual(["alpha\n\n"]);
   });
 
+  it("keeps a differently cased local import available over MCP on a case-insensitive disk", async ({
+    skip,
+  }) => {
+    const f = fixture();
+    f.write("CLAUDE.md", "@../PROJECT/docs/local.md\n");
+    f.write("docs/local.md", "local instructions\n");
+    if (!existsSync(f.at("..", "PROJECT", "docs", "local.md"))) skip();
+    const result = await f.mcp();
+    expect(result.sections.map((section) => section.content)).toEqual(["local instructions\n\n"]);
+    expect(result.warnings).toEqual([]);
+  });
+
   it("expands ~/ to the home directory instead of reporting the file as missing", async () => {
     const f = fixture();
     f.write(f.inHome("notes", "personal.md"), "personal notes\n");
@@ -67,24 +78,22 @@ describe("the home directory shorthand", () => {
   // `~/` is the home directory everywhere. `~\` is Windows-only: on Linux and macOS it is an
   // ordinary file name character, and the documentation does not say that it is expanded.
   const environment = { HOME: "/home/alice" };
-  const containing = path.join(path.sep, "work", "CLAUDE.md");
+  const containing = "/work/CLAUDE.md";
 
-  it.each(["linux", "darwin", "win32"] as const)("expands ~/ on %s", (platform) => {
+  it.each(["linux", "darwin"] as const)("expands ~/ on %s", (platform) => {
     expect(importPath(containing, "~/notes.md", environment, platform)).toBe(
-      path.join("/home/alice", "notes.md"),
+      "/home/alice/notes.md",
     );
   });
 
-  it("expands ~\\ on Windows", () => {
-    expect(importPath(containing, "~\\notes.md", environment, "win32")).toBe(
-      path.join("/home/alice", "notes.md"),
+  it.each(["~/notes.md", "~\\notes.md"])("expands %s on Windows", (written) => {
+    expect(importPath("C:\\work\\CLAUDE.md", written, { HOME: "C:\\Users\\alice" }, "win32")).toBe(
+      "C:\\Users\\alice\\notes.md",
     );
   });
 
   it.each(["linux", "darwin"] as const)("leaves ~\\ alone on %s", (platform) => {
-    expect(importPath(containing, "~\\notes.md", environment, platform)).toBe(
-      path.resolve(path.dirname(containing), "~\\notes.md"),
-    );
+    expect(importPath(containing, "~\\notes.md", environment, platform)).toBe("/work/~\\notes.md");
   });
 
   it.skipIf(process.platform === "win32")(

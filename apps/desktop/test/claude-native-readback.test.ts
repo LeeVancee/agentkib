@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import spawn from "cross-spawn";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { claudeProjectKey } from "../../../packages/backend/src/claude-project-path";
+import { verifyClaudeTranscript } from "../../../packages/backend/src/claude-native-verify";
+import * as claudeSessionProbe from "../../../packages/backend/src/claude-session-probe";
 import {
   launchPreparedHandoff,
   verifyNativeSession,
@@ -15,8 +18,16 @@ import {
 } from "../../../packages/backend/src/session-handoff-plan";
 import type { SessionDocument } from "../../../packages/backend/src/session-model";
 
+vi.mock("cross-spawn", () => ({
+  default: vi.fn(() => {
+    throw new Error("terminal dispatch reached");
+  }),
+}));
+
 const roots: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.clearAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -35,7 +46,7 @@ const document = {
 type Record_ = Record<string, unknown>;
 
 /** A session written by the real renderer into a synthetic projects directory. */
-function written() {
+function written(source = document) {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-readback-")));
   roots.push(root);
   const workspace = path.join(root, "work space");
@@ -46,7 +57,7 @@ function written() {
   const sessionId = randomUUID();
   const file = path.join(directory, `${sessionId}.jsonl`);
   const records = renderNative(
-    document,
+    source,
     "claude-code",
     sessionId,
     workspace,
@@ -79,6 +90,74 @@ describe("Claude native import read-back", () => {
     const w = written();
     w.put(w.records);
     expect(() => verifyNativeSession(w.file, "claude-code")).toThrow(/expectation is missing/);
+  });
+
+  it("round-trips Unicode, consecutive roles, tools and inline attachments", () => {
+    const w = written({
+      ...document,
+      turns: [
+        {
+          id: "user",
+          role: "user",
+          blocks: [{ type: "text", text: "中文🙂 e\u0301\n/path/项目" }],
+        },
+        {
+          id: "tool-call",
+          role: "assistant",
+          blocks: [
+            { type: "text", text: "读取合成内容" },
+            { type: "tool-call", call_id: "call-1", name: "Read", input: '{"path":"测试"}' },
+          ],
+        },
+        {
+          id: "assistant",
+          role: "assistant",
+          blocks: [{ type: "text", text: "同角色的下一条" }],
+        },
+        {
+          id: "tool-result",
+          role: "tool",
+          blocks: [
+            { type: "tool-result", call_id: "call-1", output: "合成输出", is_error: false },
+            {
+              type: "attachment",
+              kind: "document",
+              media_type: "text/plain",
+              filename: "记录.txt",
+              inline_base64: Buffer.from("合成附件").toString("base64"),
+            },
+            {
+              type: "attachment",
+              kind: "image",
+              media_type: "image/png",
+              inline_base64: Buffer.from("synthetic binary fixture").toString("base64"),
+            },
+          ],
+        },
+      ],
+    });
+    w.put(w.records);
+    expect(() => verifyNativeSession(w.file, "claude-code", w.expected)).not.toThrow();
+  });
+
+  it("accepts a complete string message without dropping its whitespace or Unicode", () => {
+    const w = written();
+    (w.records[2]!.message as Record_).content = "  完整正文🙂\n下一行  ";
+    w.put(w.records);
+    expect(() => verifyNativeSession(w.file, "claude-code", w.expected)).not.toThrow();
+  });
+
+  it("rejects a disk snapshot whose role differs from the strictly checked text", () => {
+    const w = written();
+    w.put(w.records);
+    const checkedText = readFileSync(w.file, "utf8");
+    // Same byte length as "assistant": comparing size alone must not pass.
+    (w.records[2]!.message as Record_).role = "developer";
+    w.put(w.records);
+    // The tolerant history reader derives the role from record.type, not message.role.
+    expect(() => verifyClaudeTranscript(w.file, checkedText, w.expected)).toThrow(
+      /transcript changed during read-back/,
+    );
   });
 
   const message = (records: Record_[], index = 1) => records[index]!;
@@ -152,11 +231,97 @@ describe("Claude native import read-back", () => {
       },
     ],
     [
-      "a probe-rejected first record",
-      /format probe rejected/,
+      "a malformed first record",
+      /no valid message/,
       (w) => {
         // The chain and identity stay valid; only the record shape the CLI expects is gone.
         delete message(w.records, 0).message;
+        return w.put(w.records);
+      },
+    ],
+    ...[1, 2, 3].map((index): (typeof corruptions)[number] => [
+      `a missing message on record ${index + 1}`,
+      /no valid message/,
+      (w) => {
+        delete message(w.records, index).message;
+        return w.put(w.records);
+      },
+    ]),
+    [
+      "a later null message",
+      /no valid message/,
+      (w) => {
+        message(w.records, 2).message = null;
+        return w.put(w.records);
+      },
+    ],
+    [
+      "a later message without content",
+      /no valid message content/,
+      (w) => {
+        delete (message(w.records, 2).message as Record_).content;
+        return w.put(w.records);
+      },
+    ],
+    [
+      "a later message role mismatch",
+      /mismatched message role/,
+      (w) => {
+        (message(w.records, 2).message as Record_).role = "user";
+        return w.put(w.records);
+      },
+    ],
+    [
+      "a later message with a missing text field",
+      /invalid text/,
+      (w) => {
+        (message(w.records, 2).message as Record_).content = [{ type: "text" }];
+        return w.put(w.records);
+      },
+    ],
+    [
+      "a later message with an unsupported block",
+      /unsupported content block/,
+      (w) => {
+        (message(w.records, 2).message as Record_).content = [
+          { type: "text", text: "retained" },
+          { type: "unknown", text: "would be silently dropped" },
+        ];
+        return w.put(w.records);
+      },
+    ],
+    [
+      "a later message hidden as a sidechain",
+      /not an ordinary main-session message/,
+      (w) => {
+        message(w.records, 2).isSidechain = true;
+        return w.put(w.records);
+      },
+    ],
+    [
+      "a later message hidden as a compaction summary",
+      /not an ordinary main-session message/,
+      (w) => {
+        message(w.records, 3).isCompactSummary = true;
+        return w.put(w.records);
+      },
+    ],
+    [
+      "a later text block hidden as CLI echo",
+      /loses message content/,
+      (w) => {
+        (message(w.records, 2).message as Record_).content = [
+          { type: "text", text: "retained" },
+          { type: "text", text: "<command-name>hidden</command-name>" },
+        ];
+        return w.put(w.records);
+      },
+    ],
+    [
+      "a later record beyond the full reader's line limit",
+      /complete history reader changed or omitted/,
+      (w) => {
+        (message(w.records, 2).message as Record_).content = "x".repeat(4 * 1024 * 1024);
         return w.put(w.records);
       },
     ],
@@ -212,8 +377,9 @@ describe("Claude native import read-back", () => {
     it("reaches the terminal step for a sound session", async () => {
       const w = written();
       w.put(w.records);
-      // Only the nonexistent stub terminal stops it, after the read-back passed.
-      await expect(launch(w)).rejects.toThrow(/ENOENT|spawn/);
+      // The stub records dispatch without starting a terminal or CLI.
+      await expect(launch(w)).rejects.toThrow(/terminal dispatch reached/);
+      expect(spawn).toHaveBeenCalledTimes(1);
     });
 
     it("stops before any terminal is opened when the read-back fails", async () => {
@@ -221,7 +387,75 @@ describe("Claude native import read-back", () => {
       w.records[2]!.parentUuid = randomUUID();
       w.put(w.records);
       await expect(launch(w)).rejects.toThrow(/Claude session read-back failed/);
+      expect(spawn).not.toHaveBeenCalled();
     });
+
+    it("rejects a role change between the probe and full reader before dispatching", async () => {
+      const w = written();
+      w.put(w.records);
+      const probe = claudeSessionProbe.probeClaudeSessionFile;
+      vi.spyOn(claudeSessionProbe, "probeClaudeSessionFile").mockImplementationOnce((file) => {
+        const result = probe(file);
+        (w.records[2]!.message as Record_).role = "user";
+        w.put(w.records);
+        return result;
+      });
+      await expect(launch(w)).rejects.toThrow(/transcript changed during read-back/);
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        "missing message",
+        /no valid message/,
+        (row: Record_) => {
+          delete row.message;
+        },
+      ],
+      [
+        "null message",
+        /no valid message/,
+        (row: Record_) => {
+          row.message = null;
+        },
+      ],
+      [
+        "missing content",
+        /no valid message content/,
+        (row: Record_) => {
+          delete (row.message as Record_).content;
+        },
+      ],
+      [
+        "mismatched role",
+        /mismatched message role/,
+        (row: Record_) => {
+          (row.message as Record_).role = "user";
+        },
+      ],
+      [
+        "incomplete full read-back",
+        /complete history reader changed or omitted/,
+        (row: Record_) => {
+          (row.message as Record_).content = "x".repeat(4 * 1024 * 1024);
+        },
+      ],
+    ] as const)(
+      "refuses %s on reopen before dispatching any process",
+      async (_name, reason, corrupt) => {
+        const w = written();
+        w.put(w.records);
+        await expect(launch(w)).rejects.toThrow(/terminal dispatch reached/);
+        expect(spawn).toHaveBeenCalledTimes(1);
+        vi.mocked(spawn).mockClear();
+
+        // Reopen does not apply a ChangeSet again. The completed import must be re-read fully.
+        corrupt(w.records[2]!);
+        w.put(w.records);
+        await expect(launch(w)).rejects.toThrow(reason);
+        expect(spawn).not.toHaveBeenCalled();
+      },
+    );
 
     it("stops when the workspace's project directory cannot be derived", async () => {
       const w = written();

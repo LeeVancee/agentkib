@@ -134,12 +134,97 @@ export function preservedSegmentSession() {
   ];
 }
 
+/** The retained C→D chain is rewritten after the summary but still links to A→B before it. */
+export function retainedRewriteSession() {
+  return [
+    user("a", null, "alpha-question"),
+    assistant("b", "a", "bravo-answer"),
+    user("c", "b", "charlie-question"),
+    assistant("d", "c", "delta-answer"),
+    boundary("bd1", { logicalParentUuid: "d", head: "c", trigger: "auto" }),
+    summary("s1", "bd1", "SUMMARY-ONE"),
+    user("c", "s1", "charlie-question"),
+    assistant("d", "c", "delta-answer"),
+    user("e", "d", "echo-question"),
+  ];
+}
+
+/** Each boundary needs its own snapshot; neither the first nor last version suffices. */
+export function twiceRetainedRewriteSession() {
+  return [
+    ...retainedRewriteSession(),
+    boundary("bd2", { logicalParentUuid: "e", head: "c", trigger: "manual" }),
+    summary("s2", "bd2", "SUMMARY-TWO"),
+    user("c", "s2", "charlie-question"),
+    assistant("d", "c", "delta-answer"),
+    user("f", "d", "foxtrot-question"),
+    user("e", null, "UNRELATED-LATE-REWRITE"),
+    lastPrompt("f"),
+  ];
+}
+
+/** A small file can repeatedly retain a long chain, requiring a shared traversal budget. */
+export function heavilyRetainedSession(retained = 1000, compactions = 300) {
+  const records: Array<Record<string, unknown>> = [user("a", null, "unrecovered-original")];
+  for (let index = 0; index < retained; index++)
+    records.push(user(`r${index}`, index === 0 ? "a" : `r${index - 1}`, `retained-${index}`));
+  for (let index = 1; index <= compactions; index++)
+    records.push(
+      boundary(`bd${index}`, { logicalParentUuid: `r${retained - 1}` }),
+      summary(`s${index}`, `bd${index}`, `SUMMARY-${index}`),
+      user("r0", `s${index}`, "retained-0"),
+    );
+  records.push(lastPrompt(`r${retained - 1}`));
+  return records;
+}
+
+/** A future logical parent is a separate branch, even when its chain reaches a valid root. */
+export function futureLogicalParentSession(head: string | null = "b") {
+  return [
+    user("a", null, "alpha-question"),
+    assistant("b", "a", "bravo-answer"),
+    boundary("bd", { logicalParentUuid: "future", head: head ?? undefined }),
+    summary("sm", "bd", SUMMARY_TEXT),
+    assistant("leaf", "sm", "latest-answer"),
+    user("future", null, "UNRELATED-FUTURE-BRANCH"),
+    lastPrompt("leaf"),
+  ];
+}
+
+/** Both tool records survive compaction with the same UUIDs and the same call ID. */
+export function retainedToolRewriteSession() {
+  const call = {
+    ...assistant("call", "a", ""),
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "tool-1", name: "Read", input: { file: "original.txt" } }],
+    },
+  };
+  const result = {
+    ...user("result", "call", ""),
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "tool-1", content: "original output" }],
+    },
+  };
+  return [
+    user("a", null, "Read the original file"),
+    call,
+    result,
+    boundary("bd", { logicalParentUuid: "result", head: "call" }),
+    summary("sm", "bd", SUMMARY_TEXT),
+    { ...call, parentUuid: "sm" },
+    result,
+    assistant("leaf", "result", "after compaction"),
+  ];
+}
+
 /**
  * Three compactions in one file. The uuid `a1` appears twice with different parents: its first
  * row sits in the second segment, its last row points at a summary of the newest segment (as a
  * rewritten copy would). Following "last occurrence" parents from the second segment therefore
  * runs into the newest segment and stops; "first occurrence" parents reach the start of the file.
- * The stray copy has no content, so it never becomes a timeline entry of its own.
+ * The stray copy has real content: selecting records by UUID alone would emit it a second time.
  */
 export function duplicateUuidSession() {
   return [
@@ -155,9 +240,44 @@ export function duplicateUuidSession() {
     assistant("b2", "a2", "two-b"),
     boundary("bd3", { logicalParentUuid: "b2", trigger: "auto" }),
     summary("s3", "bd3", "SUMMARY-THREE"),
-    { ...user("a1", "s3", ""), message: { role: "user", content: [] } },
+    user("a1", "s3", "REWRITTEN-COPY-MUST-NOT-BE-IMPORTED"),
     user("a3", "s3", "three-a"),
     assistant("b3", "a3", "three-b"),
+  ];
+}
+
+/** A rewritten tool call must not duplicate its execution record or replace the original input. */
+export function duplicateToolUuidSession() {
+  const call = {
+    ...assistant("call", "a", ""),
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "tool-1", name: "Read", input: { file: "original.txt" } }],
+    },
+  };
+  return [
+    user("a", null, "Read the original file"),
+    call,
+    {
+      ...user("result", "call", ""),
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tool-1", content: "original output" }],
+      },
+    },
+    boundary("bd", { logicalParentUuid: "result" }),
+    summary("sm", "bd", SUMMARY_TEXT),
+    {
+      ...call,
+      parentUuid: "sm",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Read", input: { file: "rewritten.txt" } },
+        ],
+      },
+    },
+    assistant("leaf", "sm", "after compaction"),
   ];
 }
 

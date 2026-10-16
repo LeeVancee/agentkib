@@ -1,13 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   scanNativeMcp,
   type NativeMcpCandidate,
 } from "../../../packages/backend/src/mcp-native-scan";
 import { canonicalize } from "../../../packages/backend/src/paths";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { defaultIo } from "../../../packages/backend/src/context-claude-sources";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -95,6 +96,270 @@ const by = (items: NativeMcpCandidate[], name: string, scope?: string) =>
     .filter((item) => item.name === name && (!scope || item.scope === scope))
     .map((item) => [item.scope, codes(item)]);
 
+describe("incomplete settings coverage", () => {
+  const writeDropIn = (f: ReturnType<typeof fixture>, name: string, value: unknown) => {
+    const directory = path.join(f.managed, "managed-settings.d");
+    mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, name);
+    writeFileSync(file, JSON.stringify(value));
+    return file;
+  };
+  const assertUnknown = (items: NativeMcpCandidate[]) => {
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      expect(codes(item)).toContain("native_config_unavailable");
+      expect(codes(item)).not.toContain("native_project_approved");
+      expect(codes(item)).not.toContain("native_policy_denied");
+      expect(codes(item)).not.toContain("native_policy_not_allowed");
+      expect(codes(item)).not.toContain("native_plugin_duplicate");
+      expect(codes(item).some((code) => code.startsWith("native_overridden"))).toBe(false);
+      expect(item.warnings.join("\n")).toContain("settings coverage is incomplete");
+    }
+  };
+
+  it.each(["denied", "allowed"])(
+    "does not claim approval or precedence when the 65th drop-in could change %s policy",
+    (kind) => {
+      const f = fixture();
+      const settings = withSettings(f);
+      settings.user({ enableAllProjectMcpServers: true });
+      settings.projectServers({ subject: http("project") });
+      f.writeGlobal({ mcpServers: { subject: http("user") } });
+      for (let index = 1; index <= 63; index++)
+        writeDropIn(f, `${String(index).padStart(3, "0")}.json`, {});
+      writeDropIn(
+        f,
+        "065-policy.json",
+        kind === "denied"
+          ? { deniedMcpServers: [{ serverName: "subject" }] }
+          : { allowedMcpServers: [{ serverName: "other" }], allowManagedMcpServersOnly: true },
+      );
+      const before = f.claude(f.scan());
+      expect(by(before, "subject", "project").flat(2)).toContain(
+        kind === "denied" ? "native_policy_denied" : "native_policy_not_allowed",
+      );
+      writeDropIn(f, "064.json", {});
+      const after = f.claude(f.scan());
+      assertUnknown(after);
+      expect(after.map((item) => [item.scope, item.supported])).toEqual(
+        before.map((item) => [item.scope, item.supported]),
+      );
+    },
+  );
+
+  it("does not infer managed overrides or plugin replacement from a partial policy", () => {
+    const f = fixture();
+    const settings = withSettings(f);
+    const install = path.join(f.home, ".claude", "plugins", "cache", "market", "tool", "1");
+    mkdirSync(install, { recursive: true });
+    writeFileSync(path.join(install, ".mcp.json"), JSON.stringify({ plugin: http("same") }));
+    writeFileSync(
+      path.join(f.home, ".claude", "plugins", "installed_plugins.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: { "tool@market": [{ scope: "user", installPath: install, version: "1" }] },
+      }),
+    );
+    settings.user({ enabledPlugins: { "tool@market": true } });
+    settings.managed({ managedMcpServers: { subject: http("same") } });
+    f.writeGlobal({ mcpServers: { subject: http("other") } });
+    const before = f.claude(f.scan());
+    expect(by(before, "subject", "home").flat(2)).toContain("native_overridden_by_managed_setting");
+    expect(by(before, "plugin").flat(2)).toContain("native_plugin_duplicate");
+    for (let index = 0; index < 65; index++) writeDropIn(f, `${index}.json`, {});
+    const after = f.claude(f.scan());
+    expect(after.map((item) => [item.scope, item.name])).toEqual(
+      before.map((item) => [item.scope, item.name]),
+    );
+    assertUnknown(after);
+  });
+
+  it.each(["directory", "drop-in", "base", "user"])(
+    "does not infer loading when a known %s settings source cannot be read",
+    (source) => {
+      const f = fixture();
+      const settings = withSettings(f);
+      settings.user({ enableAllProjectMcpServers: true });
+      settings.managed({ deniedMcpServers: [{ serverName: "subject" }] });
+      settings.projectServers({ subject: http("project") });
+      const dropIn = writeDropIn(f, "policy.json", { disabledMcpjsonServers: ["subject"] });
+      const target =
+        source === "directory"
+          ? path.dirname(dropIn)
+          : source === "drop-in"
+            ? dropIn
+            : source === "base"
+              ? path.join(f.managed, "managed-settings.json")
+              : path.join(f.home, ".claude", "settings.json");
+      const fail = () => {
+        throw Object.assign(new Error("fixture cannot read"), { code: "EACCES" });
+      };
+      const originalRead = defaultIo.readFile;
+      const originalList = defaultIo.readdir;
+      const mock =
+        source === "directory"
+          ? vi.spyOn(defaultIo, "readdir").mockImplementation((file) =>
+              file === target ? fail() : originalList(file),
+            )
+          : vi.spyOn(defaultIo, "readFile").mockImplementation((file, limit) =>
+              file === target ? fail() : originalRead(file, limit),
+            );
+      try {
+        assertUnknown(f.claude(f.scan()));
+      } finally {
+        mock.mockRestore();
+      }
+    },
+  );
+});
+
+describe("plugin server identity", () => {
+  function installPlugin(
+    f: ReturnType<typeof fixture>,
+    servers: Record<string, unknown>,
+    settings: Record<string, unknown> = {},
+  ) {
+    const install = path.join(f.home, ".claude", "plugins", "cache", "market", "tool", "1");
+    mkdirSync(install, { recursive: true });
+    writeFileSync(path.join(install, ".mcp.json"), JSON.stringify({ mcpServers: servers }));
+    writeFileSync(
+      path.join(f.home, ".claude", "plugins", "installed_plugins.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: { "tool@market": [{ scope: "user", installPath: install, version: "1" }] },
+      }),
+    );
+    withSettings(f).user({ enabledPlugins: { "tool@market": true }, ...settings });
+  }
+
+  it("compares complete stdio argument arrays instead of executable labels", () => {
+    const f = fixture();
+    installPlugin(f, {
+      same: { command: "npx", args: ["-y", "same-server"] },
+      other: { command: "npx", args: ["-y", "other-server"] },
+      joined: { command: "node", args: ["a b"] },
+      split: { command: "node", args: ["a", "b"] },
+      noArgs: { command: "fixture-command" },
+    });
+    f.writeGlobal({
+      projects: {
+        [f.project]: {
+          mcpServers: {
+            direct: { command: "npx", args: ["-y", "same-server"] },
+            array: { command: "node", args: ["a", "b"] },
+            empty: { command: "fixture-command", args: [] },
+          },
+        },
+      },
+    });
+    const items = f.claude(f.scan(), "plugin");
+    for (const name of ["same", "split", "noArgs"])
+      expect(by(items, name).flat(2)).toContain("native_plugin_duplicate");
+    for (const name of ["other", "joined"])
+      expect(by(items, name).flat(2)).not.toContain("native_plugin_duplicate");
+  });
+
+  it("does not let an unrelated local name override or disable a plugin server", () => {
+    const f = fixture();
+    installPlugin(
+      f,
+      { shared: http("plugin"), blocked: http("blocked"), stopped: http("stop") },
+      {
+        deniedMcpServers: [{ serverName: "shared" }, { serverName: "plugin:tool:blocked" }],
+      },
+    );
+    f.writeGlobal({
+      projects: {
+        [f.project]: {
+          mcpServers: { shared: http("local") },
+          disabledMcpServers: ["shared", "plugin:tool:stopped"],
+        },
+      },
+    });
+    const items = f.claude(f.scan());
+    expect(by(items, "shared", "local").flat(2)).toContain("native_policy_denied");
+    const shared = by(items, "shared", "plugin").flat(2);
+    expect(shared).not.toContain("native_overridden_by_local");
+    expect(shared).not.toContain("native_disabled_for_project");
+    expect(shared).not.toContain("native_policy_denied");
+    expect(shared).not.toContain("native_plugin_duplicate");
+    expect(by(items, "blocked", "plugin").flat(2)).toContain("native_policy_denied");
+    expect(by(items, "stopped", "plugin").flat(2)).toContain("native_disabled_for_project");
+  });
+
+  it("uses the namespaced name for allowlists while retaining display labels", () => {
+    const f = fixture();
+    installPlugin(
+      f,
+      { allowed: http("one"), other: http("two") },
+      {
+        allowedMcpServers: [{ serverName: "plugin:tool:allowed" }],
+      },
+    );
+    const items = f.claude(f.scan(), "plugin");
+    expect(items.map((item) => item.name)).toEqual(["allowed", "other"]);
+    expect(by(items, "allowed").flat(2)).not.toContain("native_policy_not_allowed");
+    expect(by(items, "other").flat(2)).toContain("native_policy_not_allowed");
+  });
+
+  it("normalizes remote host and port without conflating queries or unsafe credentials", () => {
+    const f = fixture();
+    const url = "https://example.test/mcp?token=";
+    installPlugin(f, {
+      same: { type: "http", url: "HTTPS://EXAMPLE.TEST:443/mcp/" },
+      otherPath: http("different"),
+      otherQuery: { type: "http", url: "https://example.test/mcp?project=other" },
+      sameToken: { type: "http", url: `${url}PRIVATE-ONE` },
+      otherToken: { type: "http", url: `${url}PRIVATE-TWO` },
+    });
+    f.writeGlobal({
+      mcpServers: {
+        direct: { type: "http", url: "https://example.test/mcp" },
+        credential: { type: "http", url: `${url}PRIVATE-ONE` },
+      },
+    });
+    const items = f.claude(f.scan(), "plugin");
+    expect(by(items, "same").flat(2)).toContain("native_plugin_duplicate");
+    for (const name of ["otherPath", "otherQuery", "sameToken", "otherToken"])
+      expect(by(items, name).flat(2)).not.toContain("native_plugin_duplicate");
+    for (const name of ["sameToken", "otherToken"]) {
+      expect(items.find((item) => item.name === name)?.endpoint).toBe("unavailable");
+      expect(by(items, name).flat(2)).toContain("native_review_configuration");
+    }
+    expect(JSON.stringify(items)).not.toMatch(/PRIVATE-ONE|PRIVATE-TWO/);
+  });
+
+  it.each(["disabled", "denied", "overridden", "pending", "rejected"])(
+    "does not mark a plugin duplicate of a %s direct definition",
+    (state) => {
+      const f = fixture();
+      installPlugin(
+        f,
+        { plugin: http("same") },
+        {
+          ...(state === "denied" ? { deniedMcpServers: [{ serverName: "direct" }] } : {}),
+          ...(state === "rejected" ? { disabledMcpjsonServers: ["direct"] } : {}),
+        },
+      );
+      if (state === "pending" || state === "rejected")
+        withSettings(f).projectServers({ direct: http("same") });
+      else
+        f.writeGlobal({
+          mcpServers: { direct: http("same") },
+          projects: {
+            [f.project]: {
+              ...(state === "disabled" ? { disabledMcpServers: ["direct"] } : {}),
+              ...(state === "overridden" ? { mcpServers: { direct: http("other") } } : {}),
+            },
+          },
+        });
+      expect(by(f.claude(f.scan(), "plugin"), "plugin").flat(2)).not.toContain(
+        "native_plugin_duplicate",
+      );
+    },
+  );
+});
+
 describe("approval of .mcp.json servers", () => {
   it("is pending until a settings file approves the server", () => {
     const f = fixture();
@@ -116,6 +381,51 @@ describe("approval of .mcp.json servers", () => {
     const again = f.claude(f.scan());
     expect(by(again, "one")).toEqual([["project", ["native_project_approved"]]]);
     expect(by(again, "two")).toEqual([["project", ["native_project_pending"]]]);
+  });
+
+  it.each([1023, 1024, 1025, 4097])(
+    "retains /mcp disabled diagnostics across a %i-item list without changing approval or files",
+    (count) => {
+      const f = fixture();
+      const s = withSettings(f);
+      const disabled = Array.from({ length: count }, (_, index) => `disabled-${index}`);
+      const names = [disabled[0]!, disabled[Math.floor(count / 2)]!, disabled.at(-1)!];
+      s.projectServers(Object.fromEntries([...names, "enabled"].map((name) => [name, http(name)])));
+      s.user({ enableAllProjectMcpServers: true });
+      f.writeGlobal({
+        projects: {
+          [f.project]: { disabledMcpServers: disabled },
+          [path.join(f.root, "unrelated")]: { disabledMcpServers: ["enabled"] },
+        },
+      });
+      const files = [
+        f.globalFile,
+        path.join(f.project, ".mcp.json"),
+        path.join(f.home, ".claude/settings.json"),
+      ];
+      const before = files.map((file) => readFileSync(file));
+      const items = f.claude(f.scan());
+      for (const name of names)
+        expect(by(items, name)).toEqual([
+          ["project", ["native_project_approved", "native_disabled_for_project"]],
+        ]);
+      expect(by(items, "enabled")).toEqual([["project", ["native_project_approved"]]]);
+      expect(files.map((file) => readFileSync(file))).toEqual(before);
+    },
+  );
+
+  it("matches a complete disabled name instead of applying a display length cap", () => {
+    const f = fixture();
+    const s = withSettings(f);
+    const name = `disabled-${"x".repeat(256)}`;
+    s.projectServers({ [name]: http("long-name"), enabled: http("enabled") });
+    s.user({ enableAllProjectMcpServers: true });
+    f.writeGlobal({ projects: { [f.project]: { disabledMcpServers: [name] } } });
+    const items = f.claude(f.scan());
+    expect(by(items, name)).toEqual([
+      ["project", ["native_project_approved", "native_disabled_for_project"]],
+    ]);
+    expect(by(items, "enabled")).toEqual([["project", ["native_project_approved"]]]);
   });
 
   it("depends on the trust decision when only the project or local file approves it", () => {
@@ -209,6 +519,33 @@ describe("approval of .mcp.json servers", () => {
 });
 
 describe("allow and deny lists", () => {
+  it.each([
+    ["https://example.test/mcp", "https://example.test/mcp", true],
+    ["https://example.test/mcp", "https://example.test/mcp/extra", false],
+    ["https://example.test/*", "https://example.test/", true],
+    ["https://example.test/*", "https://other.test/mcp", false],
+    ["*/mcp", "https://example.test/mcp", true],
+    ["*/mcp", "https://example.test/mcp/extra", false],
+    ["https://*/a**b*c", "https://example.test/ab-middle-c", true],
+    ["https://*/a*b*c", "https://example.test/acb", false],
+    ["https://example.test/a*a", "https://example.test/a", false],
+    ["https://example.test/*ababac*", "https://example.test/ababababac/end", true],
+    ["https://example.test/*?x=[a]+(b).$", "https://example.test/mcp?x=[a]+(b).$", true],
+    ["https://example.test/*?x=[a]+(b).$", "https://example.test/mcp?x=abZ", false],
+    ["https://example.test/*你好*😀", "https://example.test/路径你好/😀", true],
+    ["***", "https://example.test/mcp", true],
+  ])("matches only literal URL runs and stars: %s against %s", (pattern, url, matches) => {
+    const f = fixture();
+    f.writeGlobal({ mcpServers: { subject: { type: "http", url } } });
+    withSettings(f).user({
+      allowedMcpServers: [{ serverUrl: pattern }],
+      deniedMcpServers: [{ serverUrl: pattern }],
+    });
+    const warnings = codes(f.claude(f.scan(), "home")[0]!);
+    expect(warnings.includes("native_policy_denied")).toBe(matches);
+    expect(warnings.includes("native_policy_not_allowed")).toBe(!matches);
+  });
+
   it("block a server by name, URL pattern or exact command", () => {
     const f = fixture();
     const s = withSettings(f);

@@ -107,6 +107,24 @@ const historyRequests = [
   },
 ];
 
+describe("RuntimeRouter Skill ownership", () => {
+  it.each(Object.values(RUNTIME_METHODS).filter((method) => method.startsWith("skills.")))(
+    "forwards %s through the real router exactly once",
+    async (method) => {
+      const host = new Host();
+      const router = new RuntimeRouter(host);
+      await router.start();
+      const params = { marker: method };
+      const result = { accepted: method };
+      const received = vi.fn(() => result);
+      host.handler = received;
+      expect(await router.request(method, params)).toBe(result);
+      expect(received).toHaveBeenCalledExactlyOnceWith(method, params);
+      await router.stop();
+    },
+  );
+});
+
 describe("RuntimeRouter history search ownership", () => {
   it.each(historyRequests)(
     "forwards $method and its exact parameters once",

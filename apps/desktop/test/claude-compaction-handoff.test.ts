@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,16 @@ import { planSessionHandoff } from "../../../packages/backend/src/session-handof
 import type { DocumentOptions } from "../../../packages/backend/src/session-model";
 import { BackendStore } from "../../../packages/backend/src/store";
 import type { CursorBridge } from "../../../packages/backend/src/cursor-bridge";
-import { jsonlLines, specificationSession } from "./fixtures/claude-compaction-session";
+import {
+  duplicateUuidSession,
+  futureLogicalParentSession,
+  heavilyRetainedSession,
+  jsonlLines,
+  retainedRewriteSession,
+  retainedToolRewriteSession,
+  specificationSession,
+  twiceRetainedRewriteSession,
+} from "./fixtures/claude-compaction-session";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -30,13 +39,16 @@ type Draft = {
   source_fingerprint: string;
   include_pre_compaction_history: boolean;
   losses: Loss[];
+  native_capability: { supported: boolean; reason?: string };
 };
 
 /**
  * A registered workspace plus a hand-built compacted Claude transcript. `sessions.document` reads
  * that transcript with the real provider and records the options it was asked to apply.
  */
-function fixture(target: "codex" | "claude-code" | "cursor" = "codex") {
+function fixture(
+  target: "codex" | "claude-code" | "cursor" | "opencode" | "open-claw" | "hermes" = "codex",
+) {
   const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "claude-compaction-handoff-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const project = path.join(root, "project"),
@@ -172,7 +184,7 @@ function fixture(target: "codex" | "claude-code" | "cursor" = "codex") {
       commands,
       target === "cursor" ? bridge : undefined,
     );
-  return { project, claudeHome, requested, prepare, plan };
+  return { project, claudeHome, transcript, requested, prepare, plan, commands };
 }
 
 describe("compacted Claude session handoff", () => {
@@ -223,6 +235,172 @@ describe("compacted Claude session handoff", () => {
       { includePreCompactionHistory: true },
       { includePreCompactionHistory: true },
     ]);
+  });
+
+  it("prepares and plans each selected rewrite occurrence only once", async () => {
+    const f = fixture("claude-code");
+    writeFileSync(f.transcript, jsonlLines(duplicateUuidSession()));
+    const draft = await f.prepare({ include_pre_compaction_history: true });
+    expect(draft.losses).toEqual([]);
+    expect(draft.content.match(/one-a/g)).toHaveLength(1);
+    expect(draft.content).not.toContain("REWRITTEN-COPY-MUST-NOT-BE-IMPORTED");
+    const planned = await f.plan(draft, { includePreCompactionHistory: true, acceptLosses: false });
+    const native = planned.change_set.changes[0]!.after;
+    expect(native.match(/one-a/g)).toHaveLength(1);
+    expect(native).not.toContain("REWRITTEN-COPY-MUST-NOT-BE-IMPORTED");
+    expect((await f.prepare()).losses).toEqual([{ code: "compacted-history", count: 6 }]);
+  });
+
+  it.each([retainedRewriteSession, twiceRetainedRewriteSession, futureLogicalParentSession])(
+    "allows complete native import after resolving boundary-relative versions (%#)",
+    async (records) => {
+      const f = fixture("claude-code");
+      writeFileSync(f.transcript, jsonlLines(records()));
+      const draft = await f.prepare({ include_pre_compaction_history: true });
+      expect(draft.losses).toEqual([]);
+      expect(draft.mode).toBe("native-session");
+      expect(draft.native_capability.supported).toBe(true);
+      const planned = await f.plan(draft, {
+        includePreCompactionHistory: true,
+        acceptLosses: false,
+      });
+      const native = planned.change_set.changes[0]!.after;
+      expect(native.match(/alpha-question/g)).toHaveLength(1);
+      expect(native.match(/bravo-answer/g)).toHaveLength(1);
+      expect(native).not.toContain("UNRELATED");
+      expect(planned.launch_request.mode).toBe("native-session");
+      const latest = await f.prepare();
+      expect(latest.content).not.toContain("alpha-question");
+      expect(latest.losses.map((loss) => loss.code)).toEqual(["compacted-history"]);
+      await expect(f.plan(latest, { acceptLosses: false })).rejects.toThrow(
+        "Continuation losses must be acknowledged",
+      );
+    },
+  );
+
+  it("plans retained tool calls and results without duplication or orphan losses", async () => {
+    const f = fixture("claude-code");
+    writeFileSync(f.transcript, jsonlLines(retainedToolRewriteSession()));
+    const draft = await f.prepare({ include_pre_compaction_history: true });
+    expect(draft.losses).toEqual([]);
+    const planned = await f.plan(draft, { includePreCompactionHistory: true, acceptLosses: false });
+    const native = planned.change_set.changes[0]!.after;
+    expect(native.match(/"type":"tool_use"/g)).toHaveLength(1);
+    expect(native.match(/"type":"tool_result"/g)).toHaveLength(1);
+    expect(native).toContain("Read the original file");
+  });
+
+  it.each([null, "future"])(
+    "rejects native import when both boundary candidates lack earlier versions (%s)",
+    async (head) => {
+      const f = fixture("claude-code");
+      writeFileSync(f.transcript, jsonlLines(futureLogicalParentSession(head)));
+      const draft = await f.prepare({ include_pre_compaction_history: true });
+      expect(draft.losses).toEqual([{ code: "compaction-link-unavailable", count: 1 }]);
+      expect(draft.native_capability).toMatchObject({
+        supported: false,
+        reason: "compaction-link-unavailable",
+      });
+      expect(draft.mode).toBe("handoff-file");
+      expect(draft.content).not.toContain("UNRELATED");
+      await expect(
+        f.plan(draft, { includePreCompactionHistory: true, acceptLosses: false }),
+      ).rejects.toThrow("Continuation losses must be acknowledged");
+      await expect(
+        f.plan(draft, { includePreCompactionHistory: true, mode: "native-session" }),
+      ).rejects.toThrow("Native import requires complete pre-compaction history");
+      expect(f.commands.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects complete native import after exhausting the historical traversal budget", async () => {
+    const f = fixture("claude-code");
+    writeFileSync(f.transcript, jsonlLines(heavilyRetainedSession()));
+    const draft = await f.prepare({ include_pre_compaction_history: true });
+    expect(draft.losses).toContainEqual({ code: "compaction-link-unavailable", count: 1 });
+    expect(draft.native_capability).toMatchObject({
+      supported: false,
+      reason: "compaction-link-unavailable",
+    });
+    expect(draft.mode).toBe("handoff-file");
+    await expect(
+      f.plan(draft, { includePreCompactionHistory: true, acceptLosses: false }),
+    ).rejects.toThrow("Continuation losses must be acknowledged");
+    await expect(
+      f.plan(draft, { includePreCompactionHistory: true, mode: "native-session" }),
+    ).rejects.toThrow("Native import requires complete pre-compaction history");
+    expect(f.commands.run).not.toHaveBeenCalled();
+  });
+
+  it.each(["claude-code", "cursor", "opencode", "open-claw", "hermes"] as const)(
+    "requires loss confirmation for a broken earlier chain and rejects native %s even when accepted",
+    async (target) => {
+      const f = fixture(target);
+      const records = specificationSession();
+      records[0] = { ...records[0]!, parentUuid: "missing-parent" };
+      const bytes = jsonlLines(records);
+      writeFileSync(f.transcript, bytes);
+      const draft = await f.prepare({
+        include_pre_compaction_history: true,
+        ...(target === "cursor" ? { target_surface: "cursor-ide", binding_id: cursorBinding } : {}),
+      });
+      expect(draft.losses).toEqual([{ code: "compaction-link-unavailable", count: 1 }]);
+      expect(draft.native_capability).toMatchObject({
+        supported: false,
+        reason: "compaction-link-unavailable",
+      });
+      expect(draft.mode).toBe("handoff-file");
+      await expect(
+        f.plan(draft, { includePreCompactionHistory: true, acceptLosses: false }),
+      ).rejects.toThrow("Continuation losses must be acknowledged");
+      await expect(
+        f.plan(draft, { includePreCompactionHistory: true, mode: "native-session" }),
+      ).rejects.toThrow("Native import requires complete pre-compaction history");
+      expect(readFileSync(f.transcript, "utf8")).toBe(bytes);
+      expect(existsSync(path.join(f.project, ".agentkib"))).toBe(false);
+      if (target === "claude-code") expect(f.commands.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a complete preview if an earlier parent disappears before planning", async () => {
+    const f = fixture("claude-code");
+    const draft = await f.prepare({ include_pre_compaction_history: true });
+    expect(draft.mode).toBe("native-session");
+    writeFileSync(f.transcript, jsonlLines(specificationSession().slice(1)));
+    const before = readFileSync(f.transcript, "utf8");
+    const probes = vi.mocked(f.commands.run).mock.calls.length;
+    await expect(
+      f.plan(draft, { includePreCompactionHistory: true, acceptLosses: false }),
+    ).rejects.toThrow("Conversation changed after the continuation preview was prepared");
+    expect(vi.mocked(f.commands.run).mock.calls).toHaveLength(probes);
+    expect(readFileSync(f.transcript, "utf8")).toBe(before);
+    expect(existsSync(path.join(f.project, ".agentkib"))).toBe(false);
+  });
+
+  it("preserves explicit context-file handoff and the acknowledged latest-summary mode", async () => {
+    const f = fixture("claude-code");
+    const records = specificationSession();
+    records[0] = { ...records[0]!, parentUuid: "missing-parent" };
+    writeFileSync(f.transcript, jsonlLines(records));
+    const full = await f.prepare({ include_pre_compaction_history: true });
+    const file = await f.plan(full, { includePreCompactionHistory: true, mode: "handoff-file" });
+    expect(file.launch_request.mode).toBe("handoff-file");
+    expect(
+      file.change_set.changes.find((change) => change.target.endsWith(".md"))!.after,
+    ).toContain("alpha-question");
+    const latest = await f.prepare();
+    expect(latest.mode).toBe("native-session");
+    expect(latest.losses).toEqual([
+      { code: "compacted-history", count: 3 },
+      { code: "compaction-link-unavailable", count: 1 },
+    ]);
+    await expect(f.plan(latest, { acceptLosses: false })).rejects.toThrow(
+      "Continuation losses must be acknowledged",
+    );
+    const native = await f.plan(latest);
+    expect(native.launch_request.mode).toBe("native-session");
+    expect(native.change_set.changes[0]!.after).toContain("SUMMARY-BODY");
+    expect(native.change_set.changes[0]!.after).not.toContain("alpha-question");
   });
 
   it("rejects a plan whose history choice differs from the reviewed preview", async () => {

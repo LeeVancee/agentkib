@@ -151,14 +151,14 @@ describe("Claude native import capability", () => {
     expect(f.run).not.toHaveBeenCalled();
   });
 
-  it("reports a Claude home that cannot be written safely", async () => {
+  it("rejects a session root that is a file before claiming its format is verified", async () => {
     const f = fixture();
     rmSync(f.projects, { recursive: true });
     writeFileSync(f.projects, "not a directory");
     expect(await claude(f)).toEqual({
       supported: false,
       beta: true,
-      reason: "agent-home-not-writable",
+      reason: "session-format-unverified",
     });
   });
 

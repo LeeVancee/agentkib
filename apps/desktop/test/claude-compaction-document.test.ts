@@ -17,13 +17,19 @@ import {
   assistant,
   attachment,
   boundary,
+  duplicateToolUuidSession,
   duplicateUuidSession,
+  futureLogicalParentSession,
+  heavilyRetainedSession,
   jsonlLines,
   lastPrompt,
   preservedSegmentSession,
+  retainedRewriteSession,
+  retainedToolRewriteSession,
   specificationSession,
   summary,
   twoCompactionSession,
+  twiceRetainedRewriteSession,
   user,
 } from "./fixtures/claude-compaction-session";
 
@@ -145,6 +151,73 @@ describe("claudeLineage", () => {
     ]);
   });
 
+  it("walks the older parents of retained UUIDs without assigning them to two segments", () => {
+    const lineage = claudeLineage(rowsOf(retainedRewriteSession()), false)!;
+    expect(lineage.unlinked).toBe(false);
+    expect(lineage.segments.map((segment) => sorted(segment.uuids))).toEqual([
+      ["a", "b"],
+      ["bd1", "c", "d", "e", "s1"],
+    ]);
+    expect(lineage.segments.map((segment) => [...segment.lines].sort((a, b) => a - b))).toEqual([
+      [1, 2],
+      [5, 6, 7, 8, 9],
+    ]);
+  });
+
+  it("uses the last version before each boundary across repeated compactions", () => {
+    const lineage = claudeLineage(rowsOf(twiceRetainedRewriteSession()), false)!;
+    expect(lineage.unlinked).toBe(false);
+    expect(lineage.segments.map((segment) => sorted(segment.uuids))).toEqual([
+      ["a", "b"],
+      ["bd1", "e", "s1"],
+      ["bd2", "c", "d", "f", "s2"],
+    ]);
+    expect(lineage.segments.map((segment) => segment.boundary?.line ?? null)).toEqual([
+      null,
+      5,
+      10,
+    ]);
+    expect(lineage.segments.map((segment) => [...segment.lines].sort((a, b) => a - b))).toEqual([
+      [1, 2],
+      [5, 6, 9],
+      [10, 11, 12, 13, 14],
+    ]);
+  });
+
+  it("rejects a future logical parent even if it roots a complete unrelated branch", () => {
+    const lineage = claudeLineage(rowsOf(futureLogicalParentSession()), false)!;
+    expect(lineage.unlinked).toBe(false);
+    expect(sorted(lineage.segments[0]!.uuids)).toEqual(["a", "b"]);
+    for (const head of [null, "future"])
+      expect(claudeLineage(rowsOf(futureLogicalParentSession(head)), false)!.unlinked).toBe(true);
+  });
+
+  it("rejects future ancestors and falls back to a complete preserved head", () => {
+    const records = [
+      user("a", null, "alpha-question"),
+      assistant("b", "a", "bravo-answer"),
+      user("broken", "future", "old fragment"),
+      boundary("bd", { logicalParentUuid: "broken", head: "b" }),
+      summary("sm", "bd", SUMMARY_TEXT),
+      assistant("leaf", "sm", "latest-answer"),
+      user("future", null, "UNRELATED-FUTURE-BRANCH"),
+      lastPrompt("leaf"),
+    ];
+    expect(sorted(claudeLineage(rowsOf(records), false)!.segments[0]!.uuids)).toEqual(["a", "b"]);
+    records[3] = boundary("bd", { logicalParentUuid: "broken" });
+    const partial = claudeLineage(rowsOf(records), false)!;
+    expect(partial.unlinked).toBe(true);
+    expect(sorted(partial.segments[0]!.uuids)).toEqual(["broken"]);
+  });
+
+  it("does not bypass cycles hidden in older versions of retained records", () => {
+    const records = retainedRewriteSession();
+    records[2] = user("c", "d", "charlie-question");
+    const lineage = claudeLineage(rowsOf(records), false)!;
+    expect(lineage.unlinked).toBe(true);
+    expect(lineage.segments).toHaveLength(1);
+  });
+
   it.each([
     [
       "the logical parent follows the boundary and there is no preserved segment",
@@ -232,6 +305,30 @@ describe("claudeLineage", () => {
     expect(claudeLineage(rowsOf(records), false)!.segments[0]!.uuids.has("a0")).toBe(true);
   });
 
+  it("retains the known part of an earlier segment and marks its missing parent", () => {
+    const records = specificationSession();
+    records[0] = user("a", "missing-parent", "alpha-question");
+    const lineage = claudeLineage(rowsOf(records), false)!;
+    expect(lineage.unlinked).toBe(true);
+    expect(lineage.segments.map((segment) => sorted(segment.uuids))).toEqual([
+      ["a", "b", "c"],
+      ["bd", "d", "e", "sm"],
+    ]);
+  });
+
+  it("prefers a complete preserved head over a logical parent with a missing ancestor", () => {
+    const records = [
+      user("broken", "missing-parent", "not complete"),
+      user("complete", null, "complete earlier history"),
+      boundary("bd", { logicalParentUuid: "broken", head: "complete" }),
+      summary("sm", "bd", SUMMARY_TEXT),
+      user("leaf", "sm", "latest"),
+    ];
+    const lineage = claudeLineage(rowsOf(records), false)!;
+    expect(lineage.unlinked).toBe(false);
+    expect(sorted(lineage.segments[0]!.uuids)).toEqual(["complete"]);
+  });
+
   it("stops linking at 1024 segments and reports the rest as unlinked", () => {
     const records: Array<Record<string, unknown>> = [user("m0", null, "t0")];
     for (let index = 1; index <= 1030; index++)
@@ -244,6 +341,75 @@ describe("claudeLineage", () => {
     expect(lineage.segments).toHaveLength(1024);
     expect(lineage.unlinked).toBe(true);
   });
+
+  it("bounds shared historical work when every compaction retains the same long chain", () => {
+    const rows = rowsOf(heavilyRetainedSession());
+    let parentReads = 0;
+    for (const row of rows) {
+      const parent = row.value.parentUuid;
+      Object.defineProperty(row.value, "parentUuid", {
+        get: () => {
+          parentReads++;
+          return parent;
+        },
+      });
+    }
+    const lineage = claudeLineage(rows, false)!;
+    // The historical budget is separate from the 1,002 records in the current active chain.
+    expect(parentReads).toBe(250_000 + 1002);
+    expect(lineage.unlinked).toBe(true);
+    expect(lineage.segments).toHaveLength(250);
+    expect(lineage.segments[0]!.boundary?.value.uuid).toBe("bd51");
+    const latest = lineage.segments.at(-1)!;
+    expect(latest.uuids.size).toBe(1002);
+    expect(latest.uuids.has("r0")).toBe(true);
+    expect(latest.uuids.has("r999")).toBe(true);
+    expect(latest.uuids.has("s300")).toBe(true);
+    expect(latest.uuids.has("bd300")).toBe(true);
+    expect(lineage.segments.some((segment) => segment.uuids.has("a"))).toBe(false);
+  });
+
+  it.each(["cycle", "missing"])(
+    "charges failed %s candidates and preserved-head retries to the same budget",
+    (failure) => {
+      const records: Array<Record<string, unknown>> = [user("leaf0", null, "original")];
+      for (let index = 0; index < 1000; index++)
+        records.push(
+          user(
+            `failed${index}`,
+            index === 999 ? (failure === "cycle" ? "failed0" : "missing") : `failed${index + 1}`,
+            "failed candidate",
+          ),
+        );
+      for (let index = 1; index <= 300; index++)
+        records.push(
+          boundary(`bd${index}`, { logicalParentUuid: "failed0", head: `leaf${index - 1}` }),
+          summary(`s${index}`, `bd${index}`, "summary"),
+          user(`leaf${index}`, `s${index}`, "accepted"),
+        );
+      const rows = rowsOf(records);
+      let parentReads = 0;
+      for (const row of rows) {
+        const parent = row.value.parentUuid;
+        Object.defineProperty(row.value, "parentUuid", {
+          get: () => {
+            parentReads++;
+            return parent;
+          },
+        });
+      }
+      const lineage = claudeLineage(rows, false)!;
+      expect(parentReads).toBeLessThanOrEqual(250_000 + 3);
+      expect(lineage.unlinked).toBe(true);
+      expect(lineage.segments).toHaveLength(250);
+      expect(lineage.segments[0]!.boundary?.value.uuid).toBe("bd51");
+      expect(
+        lineage.segments.some((segment) =>
+          [...segment.uuids].some((uuid) => uuid.startsWith("failed")),
+        ),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("compacted Claude documents", () => {
@@ -339,6 +505,112 @@ describe("compacted Claude documents", () => {
     expect(included.losses).toEqual([]);
   });
 
+  it("recovers history before rewritten retained records while preserving the default context", () => {
+    const records = retainedRewriteSession();
+    const defaults = documentFor(records);
+    expect(timeline(defaults).map(({ id, text }) => [id, text])).toEqual([
+      ["summary-6", summaryBlock("SUMMARY-ONE")],
+      ["turn-7", "charlie-question"],
+      ["turn-8", "delta-answer"],
+      ["turn-9", "echo-question"],
+    ]);
+    expect(defaults.losses).toEqual([{ code: "compacted-history", count: 2 }]);
+    const included = documentFor(records, INCLUDE);
+    expect(included.losses).toEqual([]);
+    expect(timeline(included).map(({ id }) => id)).toEqual([
+      "turn-1",
+      "turn-2",
+      "boundary-5",
+      "summary-6",
+      "turn-7",
+      "turn-8",
+      "turn-9",
+    ]);
+    expect(included.turns.slice(3)).toEqual(defaults.turns);
+  });
+
+  it("keeps intermediate boundaries and distinct equal text through several retained rewrites", () => {
+    const records = [...twiceRetainedRewriteSession(), user("g", "f", "alpha-question")];
+    records.push(lastPrompt("g"));
+    const included = documentFor(records, INCLUDE);
+    expect(included.losses).toEqual([]);
+    expect(timeline(included).map(({ kind, text }) => kind ?? text)).toEqual([
+      "alpha-question",
+      "bravo-answer",
+      "compaction-boundary",
+      "context-summary",
+      "echo-question",
+      "compaction-boundary",
+      "context-summary",
+      "charlie-question",
+      "delta-answer",
+      "foxtrot-question",
+      "alpha-question",
+    ]);
+    expect(
+      included.turns.filter((turn) => turn.kind === "compaction-boundary").map(textOf),
+    ).toEqual([boundaryNote(1, 2, "auto"), boundaryNote(2, 2, "manual")]);
+    const defaults = documentFor(records);
+    expect(defaults.turns).toEqual(included.turns.slice(6));
+    expect(defaults.losses).toEqual([{ code: "compacted-history", count: 3 }]);
+  });
+
+  it("recovers ancestors while emitting retained tool calls and results exactly once", () => {
+    const document = documentFor(retainedToolRewriteSession(), INCLUDE);
+    expect(document.losses).toEqual([]);
+    expect(document.turns[0]!.blocks).toEqual([{ type: "text", text: "Read the original file" }]);
+    const tools = document.turns
+      .flatMap((turn) => turn.blocks)
+      .filter((block) => block.type.startsWith("tool-"));
+    expect(tools).toEqual([
+      { type: "tool-call", call_id: "tool-1", name: "Read", input: '{"file":"original.txt"}' },
+      { type: "tool-result", call_id: "tool-1", output: "original output", is_error: false },
+    ]);
+    expect(documentFor(retainedToolRewriteSession()).losses).toEqual([
+      { code: "compacted-history", count: 1 },
+    ]);
+  });
+
+  it("marks budget-limited history incomplete while keeping the latest summary and retained messages", () => {
+    const records = heavilyRetainedSession();
+    const included = documentFor(records, INCLUDE);
+    expect(included.losses).toEqual([{ code: "compaction-link-unavailable", count: 1 }]);
+    expect(included.turns.filter((turn) => turn.kind === "compaction-boundary")).toHaveLength(250);
+    expect(textOf(included.turns[0]!)).toBe(unlinkedNote(1, 250));
+    expect(included.turns.map(textOf)).not.toContain("unrecovered-original");
+    const latest = documentFor(records);
+    expect(latest.losses).toEqual([{ code: "compaction-link-unavailable", count: 1 }]);
+    expect(latest.turns).toHaveLength(1001);
+    expect(textOf(latest.turns[0]!)).toBe(summaryBlock("SUMMARY-300"));
+    expect(latest.turns.slice(1).map(textOf).sort()).toEqual(
+      Array.from({ length: 1000 }, (_, index) => `retained-${index}`).sort(),
+    );
+  });
+
+  it("uses only a pre-boundary preserved head when the logical parent belongs to the future", () => {
+    const included = documentFor(futureLogicalParentSession(), INCLUDE);
+    expect(included.losses).toEqual([]);
+    expect(timeline(included).map(({ kind, text }) => kind ?? text)).toEqual([
+      "alpha-question",
+      "bravo-answer",
+      "compaction-boundary",
+      "context-summary",
+      "latest-answer",
+    ]);
+    expect(documentFor(futureLogicalParentSession()).losses).toEqual([
+      { code: "compacted-history", count: 2 },
+    ]);
+    for (const head of [null, "future"]) {
+      const unlinked = documentFor(futureLogicalParentSession(head), INCLUDE);
+      expect(unlinked.losses).toEqual([{ code: "compaction-link-unavailable", count: 1 }]);
+      expect(timeline(unlinked).map(({ kind, text }) => kind ?? text)).toEqual([
+        "compaction-boundary",
+        "context-summary",
+        "latest-answer",
+      ]);
+    }
+  });
+
   it.each([
     ["without any pointer", [boundary("bd")]],
     ["with a dangling pointer", [boundary("bd", { logicalParentUuid: "gone", head: "gone-too" })]],
@@ -400,6 +672,54 @@ describe("compacted Claude documents", () => {
     // zero-a, zero-b, one-a, one-b, two-a, two-b: earlier summaries are not timeline entries.
     expect(defaults.losses).toEqual([{ code: "compacted-history", count: 6 }]);
   });
+
+  it("selects the newest occurrence in the active segment and retains genuine repeated text", () => {
+    const records = [
+      ...duplicateUuidSession(),
+      assistant("b3", "a3", "active-replacement"),
+      user("a4", "b3", "one-a"),
+      assistant("b4", "a4", "one-b"),
+    ];
+    const included = documentFor(records, INCLUDE);
+    const text = timeline(included).map((turn) => turn.text);
+    expect(text).not.toContain("three-b");
+    expect(text).not.toContain("REWRITTEN-COPY-MUST-NOT-BE-IMPORTED");
+    expect(text.filter((value) => value === "one-a")).toHaveLength(2);
+    expect(text.filter((value) => value === "one-b")).toHaveLength(2);
+    expect(text.slice(-4)).toEqual(["three-a", "active-replacement", "one-a", "one-b"]);
+    expect(included.losses).toEqual([]);
+    expect(documentFor(records).losses).toEqual([{ code: "compacted-history", count: 6 }]);
+  });
+
+  it("keeps the original tool input and its associated output without the rewritten call", () => {
+    const document = documentFor(duplicateToolUuidSession(), INCLUDE);
+    const tools = document.turns
+      .flatMap((turn) => turn.blocks)
+      .filter((block) => block.type !== "text");
+    expect(tools).toEqual([
+      { type: "tool-call", call_id: "tool-1", name: "Read", input: '{"file":"original.txt"}' },
+      { type: "tool-result", call_id: "tool-1", output: "original output", is_error: false },
+    ]);
+    expect(document.losses).toEqual([]);
+    expect(documentFor(duplicateToolUuidSession()).losses).toEqual([
+      { code: "compacted-history", count: 3 },
+    ]);
+  });
+
+  it.each([0, 1])(
+    "reports an earlier missing parent at record %s without claiming completeness",
+    (index) => {
+      const records = specificationSession();
+      records[index] = { ...records[index]!, parentUuid: "missing-parent" };
+      expect(documentFor(records).losses).toEqual([
+        { code: "compacted-history", count: 3 - index },
+        { code: "compaction-link-unavailable", count: 1 },
+      ]);
+      const included = documentFor(records, INCLUDE);
+      expect(included.losses).toEqual([{ code: "compaction-link-unavailable", count: 1 }]);
+      expect(timeline(included).at(-1)?.text).toBe("echo-question");
+    },
+  );
 
   it("numbers consecutive compactions and carries the newest summary by default", () => {
     const included = documentFor(twoCompactionSession(), INCLUDE);
@@ -487,6 +807,169 @@ describe("compacted Claude documents", () => {
       ["turn-5", undefined],
       ["turn-6", undefined],
     ]);
+  });
+
+  describe("compaction summary versions", () => {
+    const summaries = (document: SessionDocument) =>
+      document.turns.filter((turn) => turn.kind === "context-summary").map(textOf);
+
+    it.each([undefined, INCLUDE])("uses the latest off-chain summary for options %j", (options) => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd", { logicalParentUuid: "a" }),
+        summary("sm", "bd", "OLD-SUMMARY"),
+        summary("sm", "bd", "CURRENT-SUMMARY"),
+        assistant("leaf", "bd", "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      const document = documentFor(records, options);
+      expect(summaries(document)).toEqual([summaryBlock("CURRENT-SUMMARY")]);
+      expect(document.turns.map(textOf)).not.toContain(summaryBlock("OLD-SUMMARY"));
+    });
+
+    it.each([
+      ["a regular message", user("sm", "bd", "no longer a summary")],
+      ["another parent", summary("sm", "another-boundary", "belongs elsewhere")],
+      ["a sidechain", { ...summary("sm", "bd", "sidechain rewrite"), isSidechain: true }],
+    ])("does not resurrect a summary replaced by %s", (_name, replacement) => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd", { logicalParentUuid: "a" }),
+        summary("sm", "bd", "STALE-SUMMARY"),
+        replacement,
+        assistant("leaf", "bd", "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      expect(summaries(documentFor(records))).toEqual([]);
+      expect(documentFor(records, INCLUDE).turns.map(textOf)).toContain(noSummaryNote(1, 1));
+    });
+
+    it.each(["bd", "side-sm"])("filters sidechain summaries when the leaf follows %s", (parent) => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd", { logicalParentUuid: "a" }),
+        { ...summary("side-sm", "bd", "SIDECHAIN-SUMMARY"), isSidechain: true },
+        summary("main-sm", "bd", "MAIN-SUMMARY"),
+        assistant("leaf", parent, "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      expect(summaries(documentFor(records))).toEqual([summaryBlock("MAIN-SUMMARY")]);
+      expect(summaries(documentFor(records, INCLUDE))).toEqual([summaryBlock("MAIN-SUMMARY")]);
+      expect(summaries(documentFor(records, undefined, true))).toEqual([
+        summaryBlock("SIDECHAIN-SUMMARY"),
+      ]);
+    });
+
+    it("prefers the summary selected by the active chain over other boundary children", () => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd", { logicalParentUuid: "a" }),
+        summary("other-sm", "bd", "OFF-CHAIN-SUMMARY"),
+        summary("sm", "bd", "OLD-SUMMARY"),
+        summary("sm", "bd", "ACTIVE-SUMMARY"),
+        assistant("leaf", "sm", "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      expect(summaries(documentFor(records))).toEqual([summaryBlock("ACTIVE-SUMMARY")]);
+    });
+
+    it("selects each historical summary before its next linked compaction", () => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd1", { logicalParentUuid: "a" }),
+        summary("sm1", "bd1", "OLD-ONE"),
+        assistant("b", "bd1", "first answer"),
+        boundary("unrelated", { logicalParentUuid: "a" }),
+        summary("sm1", "bd1", "CURRENT-ONE"),
+        boundary("bd2", { logicalParentUuid: "b" }),
+        summary("sm2", "bd2", "OLD-TWO"),
+        summary("sm1", "bd1", "FUTURE-ONE"),
+        summary("sm2", "bd2", "CURRENT-TWO"),
+        assistant("c", "bd2", "second answer"),
+        boundary("bd3", { logicalParentUuid: "c" }),
+        summary("sm2", "bd2", "FUTURE-TWO"),
+        summary("sm3", "bd3", "CURRENT-THREE"),
+        assistant("leaf", "bd3", "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      expect(summaries(documentFor(records, INCLUDE))).toEqual(
+        ["CURRENT-ONE", "CURRENT-TWO", "CURRENT-THREE"].map(summaryBlock),
+      );
+      expect(summaries(documentFor(records))).toEqual([summaryBlock("CURRENT-THREE")]);
+    });
+
+    it("keeps reused boundary and summary UUIDs in their own historical windows", () => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd", { logicalParentUuid: "a" }),
+        summary("sm", "bd", "FIRST-SUMMARY"),
+        assistant("b", "bd", "first answer"),
+        boundary("bd", { logicalParentUuid: "b" }),
+        summary("sm", "bd", "SECOND-SUMMARY"),
+        assistant("leaf", "bd", "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      expect(summaries(documentFor(records, INCLUDE))).toEqual(
+        ["FIRST-SUMMARY", "SECOND-SUMMARY"].map(summaryBlock),
+      );
+      expect(summaries(documentFor(records))).toEqual([summaryBlock("SECOND-SUMMARY")]);
+    });
+
+    it("does not use a later summary to fill an earlier segment with no summary", () => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd1", { logicalParentUuid: "a" }),
+        assistant("b", "bd1", "first answer"),
+        boundary("bd2", { logicalParentUuid: "b" }),
+        summary("late-sm", "bd1", "LATE-SUMMARY"),
+        summary("sm2", "bd2", "CURRENT-SUMMARY"),
+        assistant("leaf", "bd2", "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      const document = documentFor(records, INCLUDE);
+      expect(summaries(document)).toEqual([summaryBlock("CURRENT-SUMMARY")]);
+      expect(document.turns.map(textOf)).toContain(noSummaryNote(1, 2));
+    });
+
+    it("does not associate a summary with a later occurrence of its boundary UUID", () => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd", { logicalParentUuid: "a" }),
+        summary("old-sm", "bd", "OTHER-BOUNDARY-VERSION"),
+        boundary("bd", { logicalParentUuid: "a" }),
+        assistant("leaf", "bd", "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      expect(summaries(documentFor(records))).toEqual([]);
+      records.splice(4, 0, summary("sm", "bd", "CURRENT-BOUNDARY-SUMMARY"));
+      expect(summaries(documentFor(records))).toEqual([summaryBlock("CURRENT-BOUNDARY-SUMMARY")]);
+    });
+
+    it.each([undefined, null, "", 42])("ignores a fallback summary with invalid UUID %j", (uuid) => {
+      const records = [
+        user("a", null, "earlier"),
+        boundary("bd", { logicalParentUuid: "a" }),
+        { ...summary("sm", "bd", "INVALID-SUMMARY"), uuid },
+        assistant("leaf", "bd", "latest answer"),
+        lastPrompt("leaf"),
+      ];
+      expect(summaries(documentFor(records))).toEqual([]);
+    });
+
+    it.each(["bd", "future-sm"])(
+      "ignores invalid boundary references with leaf parent %s",
+      (parent) => {
+        const records = [
+          user("a", null, "earlier"),
+          summary("future-sm", "bd", "BEFORE-BOUNDARY"),
+          boundary("bd", { logicalParentUuid: "a" }),
+          summary("other-sm", "other-boundary", "UNRELATED-BOUNDARY"),
+          assistant("leaf", parent, "latest answer"),
+          lastPrompt("leaf"),
+        ];
+        expect(summaries(documentFor(records))).toEqual([]);
+      },
+    );
   });
 
   it("carries only the summary when nothing follows the boundary", () => {

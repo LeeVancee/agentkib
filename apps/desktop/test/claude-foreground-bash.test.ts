@@ -89,12 +89,17 @@ describe("foreground Bash contract on the main thread (behavior that must not ch
     const state = turn();
     state.frame(assistantWith([bashUse("bash-1")]));
     expect([...state.bashToolIds]).toEqual(["bash-1"]);
+    const revision = state.revision;
     state.frame(taskStarted("task-1", "bash-1"));
     expect([...state.foregroundTasks]).toEqual([["task-1", "bash-1"]]);
+    expect(state.revision).toBe(revision + 1);
     state.frame(noBackgroundTasks);
+    expect(state.revision).toBe(revision + 1);
     state.frame(taskUpdated("task-1", { status: "completed", is_backgrounded: false }));
+    expect(state.revision).toBe(revision + 2);
     expect(state.status).toBe("running");
     state.frame(taskDone("task-1", "bash-1"));
+    expect(state.revision).toBe(revision + 3);
     expect(state.foregroundTasks.size).toBe(0);
     expect(state.status).toBe("running");
     state.frame(finished);
@@ -326,6 +331,7 @@ describe("foreground Bash contract inside a sub-agent (observed, never fatal)", 
 
   it("observes a sub-agent's foreground Bash task from start to notification", () => {
     const state = tracked();
+    const revision = state.revision;
     state.frame(assistantWith([bashUse("sub-bash-1")], SPAWN));
     state.frame(taskStarted("sub-task-1", "sub-bash-1", { owned_by_subagent: true }));
     expect([...state.subagentTasks]).toEqual([["sub-task-1", "sub-bash-1"]]);
@@ -335,6 +341,7 @@ describe("foreground Bash contract inside a sub-agent (observed, never fatal)", 
     expect(state.subagentTasks.size).toBe(0);
     expect([...state.foregroundTasks]).toEqual([["task-1", "bash-1"]]);
     expect(state.status).toBe("running");
+    expect(state.revision).toBe(revision);
   });
 
   it("takes the owner from the Bash call when the task carries no owner flag", () => {

@@ -1,7 +1,7 @@
-import { statSync } from "node:fs";
 import path from "node:path";
+import { readdirSync } from "node:fs";
 import { z } from "zod";
-import { canonicalProject, within, withinLexical } from "./files";
+import { canonicalProject, within } from "./files";
 import { canonicalize } from "./paths";
 import { loadManifest, manifestPath, type Manifest } from "./manifest";
 import { agentSchema, parameters } from "./rpc";
@@ -18,7 +18,14 @@ import {
   loadImports,
   TOTAL_CHARS,
 } from "./context-files";
-import type { ClaudeIo } from "./context-claude-sources";
+import {
+  defaultIo,
+  isInside,
+  isNetworkOrDevicePath,
+  pathKey,
+  probe,
+  type ClaudeIo,
+} from "./context-claude-sources";
 import {
   deepseekRoot,
   deepseekSections,
@@ -27,6 +34,7 @@ import {
   type Section,
 } from "./context-special";
 import { userHome, visibleMcpNames } from "./mcp-config-read";
+import { SkillManager } from "./skill-manager";
 export interface ContextOptions {
   /**
    * Whether the contents of Claude Code sources outside the workspace are returned: imports
@@ -129,12 +137,19 @@ export class Context {
       agent !== "claude-code" && options.externalBodies === false,
       this.environment,
     );
+    // Discovery also reads activation rules and instruction configuration. Apply the same
+    // check there and to nested imports, before any of those reads can affect the preview.
+    const skipPersonal = (file: string) => personal.skips(file);
     if (agent === "deepseek-harness")
-      sections = deepseekSections(contextRoot, dirs, warnings, this.environment);
+      sections = deepseekSections(contextRoot, dirs, warnings, this.environment, skipPersonal);
     else if (agent === "grok-build")
-      sections = personal.filter(
-        await grokSections(root, dirs, warnings, this.environment, this.commands),
+      sections = await grokSections(
+        root,
+        dirs,
         warnings,
+        this.environment,
+        this.commands,
+        skipPersonal,
       );
     else if (agent === "claude-code")
       sections = await claudeSections({
@@ -158,8 +173,8 @@ export class Context {
     else {
       const files =
           agent === "antigravity"
-            ? antigravitySources(dirs, warnings, this.environment)
-            : sources(agent, dirs, warnings, this.environment),
+            ? antigravitySources(dirs, warnings, this.environment, skipPersonal)
+            : sources(agent, dirs, warnings, this.environment, skipPersonal),
         budget = { remaining: TOTAL_CHARS };
       for (const source of files) {
         if (!budget.remaining) {
@@ -174,7 +189,15 @@ export class Context {
         } catch {}
         const start = warnings.length;
         try {
-          const content = loadImports(source, externalRoot ?? root, budget, warnings);
+          const content = loadImports(
+            source,
+            externalRoot ?? root,
+            budget,
+            warnings,
+            new Set(),
+            0,
+            skipPersonal,
+          );
           sections.push({
             source,
             scope: external ? "agent-home" : path.relative(root, path.dirname(source)),
@@ -188,6 +211,19 @@ export class Context {
           for (let i = start; i < warnings.length; i++) warnings[i] = `Agent home: ${warnings[i]}`;
       }
     }
+    const legacyDeclaredSkills =
+      manifest?.skills
+        .filter(
+          (skill) =>
+            !skill.targets.length || skill.targets.includes(agent as z.infer<typeof agentSchema>),
+        )
+        .map((skill) => skill.name) ?? [];
+    const skills =
+      agent === "deepseek-harness"
+        ? deepseekSkills(contextRoot, this.environment, skipPersonal)
+        : options.externalBodies === false || options.includeOutsideSources === false
+          ? workspaceSkillNames(contextRoot, dirs, agent, this.environment, skipPersonal, warnings)
+          : await nativeSkillNames(contextRoot, dirs, agent, this.environment, warnings);
     personal.report(warnings);
     const hasProject = sections.some((section) => isProjectScope(agent, section.scope));
     if (!hasProject) warnings.push("No project instruction file was found for this Agent");
@@ -222,16 +258,8 @@ export class Context {
       project: contextRoot,
       cwd,
       sections,
-      visible_skills:
-        agent === "deepseek-harness"
-          ? deepseekSkills(contextRoot, this.environment)
-          : (manifest?.skills
-              .filter(
-                (skill) =>
-                  !skill.targets.length ||
-                  skill.targets.includes(agent as z.infer<typeof agentSchema>),
-              )
-              .map((skill) => skill.name) ?? []),
+      visible_skills: skills,
+      legacy_declared_skills: legacyDeclaredSkills,
       visible_connections:
         agent === "deepseek-harness"
           ? []
@@ -248,53 +276,244 @@ export class Context {
   }
 }
 
+async function nativeSkillNames(
+  root: string,
+  directories: string[],
+  agent: string,
+  environment: NodeJS.ProcessEnv,
+  warnings: string[],
+): Promise<string[]> {
+  const library =
+    environment.AGENTKIB_HOME ??
+    path.join(
+      userHome(environment),
+      environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev" ? ".agentkib-dev" : ".agentkib",
+    );
+  try {
+    const inventory = await new SkillManager(library, environment, () =>
+      directories.map((directory, index) => ({ id: `context-${index}`, path: directory })),
+    ).inventory();
+    const names = inventory.observations
+      .filter((observation) => {
+        if (!observation.agents.includes(agent as (typeof observation.agents)[number]))
+          return false;
+        if (
+          ["broken-link", "native-restricted", "pending-trust", "unverified"].includes(
+            observation.status,
+          )
+        )
+          return false;
+        // Shared roots retain a common status; native restrictions remain Agent-specific
+        // diagnostics, including Hermes profile trust and OpenClaw per-Agent allowlists.
+        if (agent === "hermes") {
+          const conditions = observation.diagnostics.filter((line) =>
+            /^Hermes(?::| profile )/.test(line),
+          );
+          return (
+            !conditions.some(
+              (line) =>
+                (line.startsWith("Hermes:") &&
+                  /no Git root|not this nested project directory/.test(line)) ||
+                /: project discovery is disabled in config.yaml$|: project trust is unknown because config.yaml could not be read$/.test(
+                  line,
+                ),
+            ) &&
+            !(
+              conditions.length > 0 &&
+              conditions.every((line) =>
+                line.endsWith(
+                  ": Git root is not trusted; run hermes skills trust yourself before native loading",
+                ),
+              )
+            )
+          );
+        }
+        if (agent === "open-claw") {
+          const conditions = observation.diagnostics.filter((line) => line.startsWith("OpenClaw"));
+          if (
+            conditions.some(
+              (line) =>
+                line.startsWith("OpenClaw:") &&
+                /: this Skill name is disabled|not discoverable|is unknown/.test(line),
+            )
+          )
+            return false;
+          const agents = conditions.filter((line) => line.startsWith("OpenClaw Agent "));
+          return (
+            !agents.length ||
+            !agents.every((line) =>
+              line.endsWith(
+                ": excluded by its effective skills allowlist (per-Agent settings replace defaults)",
+              ),
+            )
+          );
+        }
+        const prefix = (
+          { codex: "Codex:", opencode: "OpenCode:", "grok-build": "Grok:" } as Record<
+            string,
+            string
+          >
+        )[agent];
+        return (
+          !prefix ||
+          !observation.diagnostics.some(
+            (diagnostic) =>
+              diagnostic.startsWith(prefix) && /disabled|deny|restrict|unknown/.test(diagnostic),
+          )
+        );
+      })
+      .map((observation) => observation.name);
+    return [...new Set(names)].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  } catch {
+    warnings.push(
+      "Note: Native Skill visibility could not be verified; legacy declarations are listed separately.",
+    );
+    return [];
+  }
+}
+
+/** Restricted context never initializes the full inventory, which can read other tools' homes. */
+function workspaceSkillNames(
+  root: string,
+  directories: string[],
+  agent: string,
+  environment: NodeJS.ProcessEnv,
+  skipSource: (file: string) => boolean,
+  warnings: string[],
+): string[] {
+  const roots: Record<string, string[]> = {
+    codex: [".agents/skills"],
+    "claude-code": [".claude/skills"],
+    cursor: [".cursor/skills", ".agents/skills", ".claude/skills"],
+    opencode: [".opencode/skills", ".opencode/skill", ".agents/skills", ".claude/skills"],
+    "open-claw": ["skills", ".agents/skills"],
+    hermes: [".hermes/skills", ".agents/skills"],
+    "grok-build": [".grok/skills", ".agents/skills", ".claude/skills", ".cursor/skills"],
+    antigravity: [".agents/skills"],
+  };
+  const names = new Set<string>();
+  const personalRestrictions = ["codex", "opencode", "open-claw", "hermes", "grok-build"].includes(
+    agent,
+  );
+  let discovered = 0;
+  const enabled = (key: string) => ["1", "true"].includes(environment[key]?.toLowerCase() ?? "");
+  const locations = (roots[agent] ?? []).filter((relative) => {
+    if (agent !== "opencode") return true;
+    if (
+      relative === ".claude/skills" &&
+      (enabled("OPENCODE_DISABLE_CLAUDE_CODE") || enabled("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"))
+    )
+      return false;
+    if (relative.startsWith(".opencode/") && enabled("OPENCODE_DISABLE_PROJECT_CONFIG"))
+      return false;
+    return !enabled("OPENCODE_DISABLE_EXTERNAL_SKILLS") || relative.startsWith(".opencode/");
+  });
+  let inspected = 0;
+  const visit = (directory: string, nested: boolean, depth: number): void => {
+    if (depth > 32 || inspected >= 1024) return;
+    try {
+      if (!isInside(defaultIo.realpath(directory), root, process.platform)) return;
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (++inspected > 1024) break;
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        const candidate = path.join(directory, entry.name);
+        const entrypoint = path.join(candidate, "SKILL.md");
+        const found = probe(entrypoint, null, { io: defaultIo, platform: process.platform });
+        if (
+          found.kind === "file" &&
+          isInside(found.real, root, process.platform) &&
+          !skipSource(entrypoint)
+        ) {
+          discovered++;
+          // A package directory proves presence, not native enablement. These Agents can
+          // restrict it in personal policy, which this preview deliberately does not read.
+          if (!personalRestrictions) names.add(entry.name);
+        }
+        if (nested && entry.isDirectory()) visit(candidate, true, depth + 1);
+      }
+    } catch {
+      // Missing or externally linked locations are outside this restricted view.
+    }
+  };
+  for (const directory of directories)
+    for (const relative of locations)
+      visit(
+        path.join(directory, relative),
+        agent === "opencode" && /\.(agents|claude)\//.test(relative),
+        0,
+      );
+  if (discovered)
+    warnings.push(
+      "Note: Skill visibility in this restricted preview covers workspace package directories; personal and custom-config sources were not inspected.",
+    );
+  if (discovered && personalRestrictions)
+    warnings.push(
+      "Note: Native Skill visibility could not be verified in this restricted preview; personal and custom-config restrictions were not inspected.",
+    );
+  return [...names].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+}
+
 const FOLDER = ".claude";
 /** Files in `~/.claude` that an Agent other than Claude Code reads, held back from the MCP tool. */
 class PersonalClaudeFiles {
-  readonly #folders: string[];
+  readonly #folders: string[] = [];
   readonly #files = new Map<string, number>();
+  readonly #skipped = new Set<string>();
+  #unknownFolder = false;
+  #unverified = false;
   constructor(
     readonly active: boolean,
     environment: NodeJS.ProcessEnv,
   ) {
-    const home = userHome(environment);
-    let real = home;
-    try {
-      real = canonicalize(home);
-    } catch {
-      // The written spelling is all there is.
-    }
+    if (!active) return;
     // The literal folder: these Agents read `~/.claude` themselves and know nothing of
     // CLAUDE_CONFIG_DIR, so this is deliberately not taken from claude-config.
-    this.#folders = [...new Set([path.join(home, FOLDER), path.join(real, FOLDER)])];
+    const folder = path.join(userHome(environment), FOLDER);
+    this.#folders.push(folder);
+    const found = this.#probe(folder);
+    if (found.kind === "dir") this.#folders.push(found.real);
+    // With an inaccessible identity we cannot prove an apparent Agent-owned path is not an
+    // alias of the personal directory. Leave its body out rather than guessing ownership.
+    else if (found.kind !== "missing") this.#unknownFolder = true;
   }
-  #personal(file: string) {
-    return this.active && this.#folders.some((folder) => withinLexical(file, folder));
+  #probe(file: string) {
+    if (isNetworkOrDevicePath(file, process.platform)) return { kind: "network" } as const;
+    const found = probe(file, null, { io: defaultIo, platform: process.platform });
+    if (found.kind !== "file" && found.kind !== "dir") return found;
+    try {
+      // Normalize the filesystem's spelling too: macOS can discover CLAUDE.md and Claude.md
+      // as the same file even when no symbolic link is involved.
+      return { ...found, real: defaultIo.realpath(found.real) };
+    } catch {
+      return { kind: "unreadable" } as const;
+    }
   }
   /** True for a source that is held back (and counted); nothing of it is read. */
   skips(file: string): boolean {
-    if (!this.#personal(file)) return false;
-    let size = 0;
-    try {
-      size = statSync(file).size;
-    } catch {
-      // Counted without a size.
-    }
-    this.#files.set(file, size);
+    if (!this.active) return false;
+    const found = this.#probe(file);
+    const personal = this.#folders.some(
+      (folder) =>
+        isInside(file, folder, process.platform) ||
+        (found.kind === "file" && isInside(found.real, folder, process.platform)),
+    );
+    if ((found.kind === "file" || found.kind === "missing") && !personal && !this.#unknownFolder)
+      return false;
+    if (found.kind === "file" && personal)
+      this.#files.set(pathKey(found.real, process.platform), found.size);
+    else if (found.kind !== "missing") this.#unverified = true;
+    this.#skipped.add(file);
     return true;
   }
-  filter(sections: Section[], warnings: string[]): Section[] {
-    if (!this.active) return sections;
-    const kept = sections.filter((section) => !this.skips(section.source));
-    // Warnings about a held-back file would name its path.
-    if (kept.length !== sections.length) {
-      const names = [...this.#files.keys()];
-      for (let index = warnings.length - 1; index >= 0; index--)
-        if (names.some((name) => warnings[index]!.includes(name))) warnings.splice(index, 1);
-    }
-    return kept;
-  }
   report(warnings: string[]): void {
+    // Discovery warnings must not disclose the names of sources subsequently held back.
+    const names = [...this.#skipped, ...this.#files.keys()];
+    for (let index = warnings.length - 1; index >= 0; index--)
+      if (names.some((name) => warnings[index]!.includes(name))) warnings.splice(index, 1);
+    if (this.#unverified)
+      warnings.push(
+        `${CONTEXT_NOTE_PREFIX}Some instruction sources could not be checked against Claude Code's personal directory; their content is not included in this result.`,
+      );
     if (!this.#files.size) return;
     const bytes = [...this.#files.values()].reduce((sum, size) => sum + size, 0);
     warnings.push(

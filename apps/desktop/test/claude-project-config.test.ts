@@ -78,7 +78,7 @@ describe("readClaudeProjectEntry", () => {
     expect(readClaudeProjectEntry(value, ["/work/current"], "linux")).toBeUndefined();
   });
 
-  it("ignores servers that are not an object and bounds the disabled list", () => {
+  it("ignores malformed servers and disabled entries without dropping valid names", () => {
     const entry = (value: unknown) =>
       readClaudeProjectEntry({ projects: { "/p": value } }, ["/p"], "linux");
     expect(entry({ mcpServers: [1], disabledMcpServers: "x" })).toEqual({
@@ -87,17 +87,33 @@ describe("readClaudeProjectEntry", () => {
     });
     expect(
       entry({ disabledMcpServers: ["ok", 3, "x".repeat(257), "also-ok"] })?.disabledMcpServers,
-    ).toEqual(["ok", "also-ok"]);
-    expect(
-      entry({ disabledMcpServers: Array.from({ length: 1025 }, () => "n") })?.disabledMcpServers,
-    ).toEqual([]);
+    ).toEqual(["ok", "x".repeat(257), "also-ok"]);
   });
 
-  it("gives up on a table of more than 10,000 projects", () => {
+  it.each([1023, 1024, 1025, 4097])("keeps every disabled name in a %i-item list", (count) => {
+    const disabled = Array.from({ length: count }, (_, index) => `server-${index}`);
+    const entry = readClaudeProjectEntry(
+      { projects: { "/p": { disabledMcpServers: disabled } } },
+      ["/p"],
+      "linux",
+    );
+    expect(entry?.disabledMcpServers).toEqual(disabled);
+  });
+
+  it("keeps the current project in a bounded file with more than 10,000 projects", () => {
     const projects: Record<string, unknown> = {};
     for (let index = 0; index <= 10_000; index++) projects[`/p/${index}`] = {};
-    projects["/work/current"] = { mcpServers: server("mine") };
-    expect(readClaudeProjectEntry({ projects }, ["/work/current"], "linux")).toBeUndefined();
+    projects["/work/current"] = {
+      mcpServers: server("mine"),
+      disabledMcpServers: ["off"],
+      hasTrustDialogAccepted: true,
+    };
+    expect(Buffer.byteLength(JSON.stringify({ projects }))).toBeLessThan(1024 * 1024);
+    expect(readClaudeProjectEntry({ projects }, ["/work/current"], "linux")).toEqual({
+      mcpServers: server("mine"),
+      disabledMcpServers: ["off"],
+      trusted: true,
+    });
   });
 
   it("is not confused by a __proto__ key", () => {

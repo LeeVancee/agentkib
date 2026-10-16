@@ -7,6 +7,8 @@ import {
   useSkillLibrary,
   useSkillInventory,
   useSkillDeployments,
+  useSkillSyncState,
+  useSkillSyncStatus,
   type SkillLibrary,
 } from "./skills-query";
 import {
@@ -57,6 +59,7 @@ import type {
   SkillDetailRequest,
   SkillSource,
   WorkspaceSummary,
+  PrepareSkillSyncRequest,
 } from "@/core/types";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
 import { cn } from "cn";
@@ -72,6 +75,7 @@ import {
 } from "./SkillManagerPanels";
 import { SkillImportDialog } from "./SkillImportDialog";
 import { SkillVersionDialog } from "./SkillVersionDialog";
+import { SkillSyncDialog, SkillSyncPolicyDialog, SkillSyncRunsDialog } from "./SkillSyncPanels";
 
 type SkillHubSection = "library" | "workspace" | "discover";
 const noInstalledSkills: InstalledSkill[] = [];
@@ -161,6 +165,17 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   const catalog = catalogQuery.data;
   const inventoryQuery = useSkillInventory();
   const deploymentsQuery = useSkillDeployments();
+  const syncQuery = useSkillSyncState();
+  const syncStatus = useSkillSyncStatus();
+  const pendingSyncCount =
+    syncQuery.data?.deployments.filter(
+      (item) =>
+        (item.lifecycle_status ?? item.status) !== "inactive" &&
+        ["incoming", "conflict", "missing", "blocked", "unverified"].includes(item.sync_state),
+    ).length ?? 0;
+  const [syncRequest, setSyncRequest] = useState<PrepareSkillSyncRequest>();
+  const [syncPolicyOpen, setSyncPolicyOpen] = useState(false);
+  const [syncRunsOpen, setSyncRunsOpen] = useState(false);
   const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
   const [url, setUrl] = useState("");
   const [query, setQuery] = useState("");
@@ -193,6 +208,7 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
         inventoryQuery.error,
         deploymentsQuery.error,
         catalogQuery.error,
+        syncQuery.error,
       ].filter(Boolean),
     ]),
   ];
@@ -248,6 +264,7 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
       onReload(),
       inventoryQuery.refetch({ throwOnError: true }),
       deploymentsQuery.refetch({ throwOnError: true }),
+      syncQuery.refetch({ throwOnError: true }),
     ]);
     const refreshErrors = refreshResults.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
@@ -301,6 +318,14 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
     run("check-updates", async () => {
       const checked = await api.checkSkillUpdates();
       setInstalled(() => checked);
+      setOperationWarnings(
+        checked
+          .filter((skill) => skill.update_check === "failed")
+          .map(
+            (skill) =>
+              `${skill.display_name}: ${tr("skills.sync.checkFailed")} · ${skill.update_error ?? ""}`,
+          ),
+      );
     });
 
   const rollback = async (skill: InstalledSkill) => {
@@ -426,6 +451,27 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
         <p className="text-xs text-muted-foreground">{tr("skills.libraryLocation")}</p>
       </div>
 
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {pendingSyncCount > 0 && (
+          <Badge variant="outline" className="border-amber-500/40 text-amber-700">
+            {tr("skills.sync.pending", { count: pendingSyncCount })}
+          </Badge>
+        )}
+        <Button variant="outline" size="sm" onClick={() => setSyncPolicyOpen(true)}>
+          {tr("skills.sync.policy")}
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => setSyncRunsOpen(true)}>
+          {tr("skills.sync.history")}
+        </Button>
+      </div>
+      {syncStatus.data?.state === "failed" && (
+        <p
+          role="alert"
+          className="rounded-xl border border-amber-500/30 p-3 text-sm text-amber-700"
+        >
+          {tr("skills.sync.checkFailed")} · {syncStatus.data.error}
+        </p>
+      )}
       {error && (
         <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <CircleAlert className="mt-0.5 shrink-0" size={16} />
@@ -498,6 +544,8 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
             onImport={(id) => void prepareImport(id)}
             onAction={setDeploymentAction}
             onOpen={onOpen}
+            syncState={syncQuery.data}
+            onSync={setSyncRequest}
           />
         </div>
       )}
@@ -628,9 +676,20 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="truncate font-semibold">{skill.display_name}</h3>
-                        <Badge variant="outline" className={statusClass(skill.status)}>
-                          {statusLabel(skill.status, tr)}
-                        </Badge>
+                        <Badge variant="outline">AgentKib</Badge>
+                        {syncQuery.data?.library.find((item) => item.library_id === skill.name)
+                          ?.locally_customized && (
+                          <Badge variant="outline">{tr("skills.sync.customized")}</Badge>
+                        )}
+                        {skill.update_check === "failed" ? (
+                          <Badge variant="outline" className="border-amber-500/40 text-amber-700">
+                            {tr("skills.sync.checkFailed")}
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className={statusClass(skill.status)}>
+                            {statusLabel(skill.status, tr)}
+                          </Badge>
+                        )}
                       </div>
                       <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
                         {skill.description || tr("skills.noDescription")}
@@ -924,6 +983,28 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
         </div>
       )}
 
+      {syncRequest && (
+        <SkillSyncDialog
+          key={JSON.stringify(syncRequest)}
+          request={syncRequest}
+          state={syncQuery.data}
+          onClose={() => setSyncRequest(undefined)}
+          onChanged={refreshAfterMutation}
+        />
+      )}
+      {syncPolicyOpen && (
+        <SkillSyncPolicyDialog
+          state={syncQuery.data}
+          onClose={() => setSyncPolicyOpen(false)}
+          onChanged={refreshAfterMutation}
+        />
+      )}
+      {syncRunsOpen && (
+        <SkillSyncRunsDialog
+          onClose={() => setSyncRunsOpen(false)}
+          onChanged={refreshAfterMutation}
+        />
+      )}
       <SkillPreviewDialog
         preview={preview}
         busy={Boolean(busy?.startsWith("apply:") || busy === "discard-preview")}

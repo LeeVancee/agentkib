@@ -513,13 +513,57 @@ describe("P7, P7b, P8: task frames", () => {
       const before = watched(state);
       for (const frame of agentFrames) expect(() => state.frame(frame)).not.toThrow();
       state.frame(tasksChanged("local_agent", "local_agent"));
-      expect(watched(state).replace(/"revision":\d+/, "")).toBe(
-        before.replace(/"revision":\d+/, ""),
-      );
+      expect(watched(state)).toBe(before);
       expect(state.diagnostics.snapshot().observedTaskTypes?.local_agent).toBeGreaterThan(0);
       // The sub-agent never blocks the end of the turn.
       state.frame(finished);
       expect(state.status).toBe("idle");
+    },
+  );
+
+  it.each(["approval", "question"] as const)(
+    "keeps a pending %s usable after observation-only task frames",
+    (interaction) => {
+      for (const contract of [true, false]) {
+        const state = turn(contract);
+        state.frame(
+          canUse(
+            "req-pending",
+            interaction === "question"
+              ? {
+                  tool_name: "AskUserQuestion",
+                  input: {
+                    questions: [
+                      {
+                        question: "Which one?",
+                        header: "Pick",
+                        options: [{ label: "A" }, { label: "B" }],
+                        multiSelect: false,
+                      },
+                    ],
+                  },
+                }
+              : {},
+          ),
+        );
+        const before = watched(state);
+        const revision = state.revision;
+        for (const frame of [...agentFrames, tasksChanged(), tasksChanged("local_agent")]) {
+          state.frame(frame);
+          expect(watched(state)).toBe(before);
+        }
+        const submit = () =>
+          interaction === "approval"
+            ? state.approve("req-pending", state.turnId, "allow", revision)
+            : state.answer("req-pending", state.turnId, { "Which one?": ["A"] }, revision);
+        expect(submit()).toMatchObject({
+          response: { request_id: "req-pending", response: { behavior: "allow" } },
+        });
+        expect(state.status).toBe("running");
+        expect(state.approvals).toEqual([]);
+        expect(state.questions).toEqual([]);
+        expect(() => submit()).toThrow(/stale Claude/);
+      }
     },
   );
 

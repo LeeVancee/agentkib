@@ -18,7 +18,11 @@ import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import type { BackendStore } from "./store";
 import { Commands } from "./commands";
-import { continuationMcpAvailable, nativeImportCapability } from "./session-continuation";
+import {
+  continuationMcpAvailable,
+  nativeHistoryIncomplete,
+  nativeImportCapability,
+} from "./session-continuation";
 import { resolveWorkspaceIdentity, requireUniqueContinuationWorkspace } from "./workspace-identity";
 import { isReparseOrSymlink } from "./native-files";
 import { inspectNativeImportTarget, planNativeImport } from "./session-native-import-owner";
@@ -280,6 +284,11 @@ export async function planSessionHandoff(
     throw new Error("Conversation changed after the continuation preview was prepared");
   if (document.losses.some((loss) => loss.code !== "reasoning-excluded") && !request.acceptLosses)
     throw new Error("Continuation losses must be acknowledged");
+  if (
+    request.mode === "native-session" &&
+    nativeHistoryIncomplete(document, includePreCompactionHistory)
+  )
+    throw new Error("Native import requires complete pre-compaction history");
   const archiveId: string = request.archiveId ?? randomUUID();
   const window = await readHandoff(
     "window",

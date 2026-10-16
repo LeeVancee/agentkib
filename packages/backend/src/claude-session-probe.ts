@@ -48,8 +48,9 @@ export type ClaudeSessionProbe =
 
 /** Judge the format of the most recently modified main session below `<config>/projects`. */
 export function probeClaudeSessionFormat(projectsRoot: string): ClaudeSessionProbe {
-  const file = latestMainSession(projectsRoot);
-  if (file === null) return { ok: true, file };
+  const discovered = latestMainSession(projectsRoot);
+  if (!discovered.ok || discovered.file === null) return discovered;
+  const { file } = discovered;
   const reason = inspectOpening(file);
   return reason === null ? { ok: true, file } : { ok: false, file, reason };
 }
@@ -60,13 +61,21 @@ export function probeClaudeSessionFile(file: string): ClaudeSessionProbeFailure 
 }
 
 /** Only `projects/<project>/<uuid>.jsonl`: never `<uuid>/subagents/*.jsonl` or `agent-*.jsonl`. */
-function latestMainSession(root: string): string | null {
+function latestMainSession(root: string): ClaudeSessionProbe {
   let latest: { file: string; modified: number } | null = null;
   let projects: Dirent[];
   try {
+    const metadata = lstatSync(root);
+    if (!metadata.isDirectory() || isReparseOrSymlink(root, metadata))
+      return { ok: false, file: root, reason: "unreadable" };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, file: null };
+    return { ok: false, file: root, reason: "unreadable" };
+  }
+  try {
     projects = readdirSync(root, { withFileTypes: true });
   } catch {
-    return null;
+    return { ok: false, file: root, reason: "unreadable" };
   }
   for (const project of projects) {
     const directory = path.join(root, project.name);
@@ -76,7 +85,7 @@ function latestMainSession(root: string): string | null {
       if (!metadata.isDirectory() || isReparseOrSymlink(directory, metadata)) continue;
       entries = readdirSync(directory, { withFileTypes: true });
     } catch {
-      continue;
+      return { ok: false, file: directory, reason: "unreadable" };
     }
     for (const entry of entries) {
       if (!mainSessionFile.test(entry.name)) continue;
@@ -86,10 +95,12 @@ function latestMainSession(root: string): string | null {
         if (!metadata.isFile() || isReparseOrSymlink(file, metadata)) continue;
         if (!latest || metadata.mtimeMs > latest.modified)
           latest = { file, modified: metadata.mtimeMs };
-      } catch {}
+      } catch {
+        return { ok: false, file, reason: "unreadable" };
+      }
     }
   }
-  return latest === null ? null : latest.file;
+  return { ok: true, file: latest?.file ?? null };
 }
 
 /** `null` means a conforming record was found inside the window. */

@@ -1,7 +1,14 @@
 import path from "node:path";
 import { lstatSync, statSync } from "node:fs";
-import { isFile, readText } from "./files";
-import { entries, lines, readContext, FILE_CHARS } from "./context-files";
+import { isFile } from "./files";
+import {
+  checkedPrefix,
+  entries,
+  lines,
+  readContext,
+  readContextText,
+  FILE_CHARS,
+} from "./context-files";
 import { ruleFiles } from "./context-sources";
 import { userHome } from "./mcp-config-read";
 interface Plugin {
@@ -14,7 +21,7 @@ function object(value: unknown): Record<string, unknown> | null {
     ? (value as Record<string, unknown>)
     : null;
 }
-function manifest(root: string, cli: boolean): Plugin {
+function manifest(root: string, cli: boolean, skipSource: (file: string) => boolean): Plugin {
   const file = path.join(root, "plugin.json");
   let metadata;
   try {
@@ -26,7 +33,7 @@ function manifest(root: string, cli: boolean): Plugin {
     throw new Error("plugin.json must be a bounded regular file");
   let value: unknown;
   try {
-    value = JSON.parse(readText(file, FILE_CHARS * 4, false));
+    value = JSON.parse(readContextText(file, FILE_CHARS * 4, skipSource));
   } catch {
     throw new Error("plugin.json is not valid JSON");
   }
@@ -51,7 +58,12 @@ function manifest(root: string, cli: boolean): Plugin {
     throw new Error("plugin name does not match ^[a-zA-Z0-9-_]+$");
   return { root, name, disabled: record.disabled === true };
 }
-function discover(root: string, cli: boolean, warnings: string[]): Plugin[] {
+function discover(
+  root: string,
+  cli: boolean,
+  warnings: string[],
+  skipSource: (file: string) => boolean,
+): Plugin[] {
   return entries(root)
     .filter((file) => {
       try {
@@ -62,8 +74,9 @@ function discover(root: string, cli: boolean, warnings: string[]): Plugin[] {
     })
     .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
     .flatMap((root) => {
+      if (skipSource(path.join(root, "plugin.json"))) return [];
       try {
-        return [manifest(root, cli)];
+        return [manifest(root, cli, skipSource)];
       } catch (error) {
         warnings.push(
           `Invalid Antigravity plugin manifest; rules were excluded: ${root} (${(error as Error).message})`,
@@ -72,7 +85,10 @@ function discover(root: string, cli: boolean, warnings: string[]): Plugin[] {
       }
     });
 }
-function overrides(file: string): Map<string, boolean | null> {
+function overrides(
+  file: string,
+  skipSource: (file: string) => boolean,
+): Map<string, boolean | null> {
   let metadata;
   try {
     metadata = statSync(file);
@@ -84,7 +100,7 @@ function overrides(file: string): Map<string, boolean | null> {
     throw new Error("config.json must be a bounded regular file");
   let value: unknown;
   try {
-    value = JSON.parse(readText(file, FILE_CHARS * 4, false));
+    value = JSON.parse(readContextText(file, FILE_CHARS * 4, skipSource));
   } catch {
     throw new Error("config.json is not valid JSON");
   }
@@ -100,12 +116,18 @@ function overrides(file: string): Map<string, boolean | null> {
     }),
   );
 }
-function staged(root: string, config: string, warnings: string[]): Plugin[] {
-  const plugins = discover(root, true, warnings);
+function staged(
+  root: string,
+  config: string,
+  warnings: string[],
+  skipSource: (file: string) => boolean,
+): Plugin[] {
+  const plugins = discover(root, true, warnings, skipSource);
   if (!plugins.length) return [];
+  if (skipSource(config)) return [];
   let states: Map<string, boolean | null>;
   try {
-    states = overrides(config);
+    states = overrides(config, skipSource);
   } catch (error) {
     warnings.push(
       `Antigravity CLI plugin overrides could not be verified; staged rules were excluded: ${config} (${(error as Error).message})`,
@@ -124,10 +146,15 @@ function staged(root: string, config: string, warnings: string[]): Plugin[] {
     return false;
   });
 }
-function activation(file: string): "always" | "conditional" | "unknown" {
+function activation(
+  file: string,
+  skipSource: (file: string) => boolean,
+): "always" | "conditional" | "unknown" {
   let content: string[];
   try {
-    content = lines(readContext(file).content);
+    content = lines(
+      readContext(file, (source, limit) => checkedPrefix(source, limit, skipSource)).content,
+    );
   } catch {
     return "unknown";
   }
@@ -161,10 +188,17 @@ function activation(file: string): "always" | "conditional" | "unknown" {
   }
   return ended ? (active ?? "always") : "unknown";
 }
-function collect(root: string, output: string[], warnings: string[], shadowed?: Set<string>): void {
+function collect(
+  root: string,
+  output: string[],
+  warnings: string[],
+  skipSource: (file: string) => boolean,
+  shadowed?: Set<string>,
+): void {
   for (const file of ruleFiles(root)) {
     if (shadowed?.has(path.relative(root, file))) continue;
-    const mode = activation(file);
+    if (skipSource(file)) continue;
+    const mode = activation(file, skipSource);
     if (mode === "always") output.push(file);
     else
       warnings.push(
@@ -178,6 +212,7 @@ export function antigravitySources(
   dirs: string[],
   warnings: string[],
   environment: NodeJS.ProcessEnv,
+  skipSource: (file: string) => boolean = () => false,
 ): string[] {
   const result: string[] = [],
     plugins: Plugin[] = [],
@@ -185,11 +220,16 @@ export function antigravitySources(
     cli = path.join(home, "antigravity-cli"),
     global = path.join(home, "GEMINI.md");
   if (isFile(global)) result.push(global);
-  collect(path.join(cli, "rules"), result, warnings);
+  collect(path.join(cli, "rules"), result, warnings, skipSource);
   plugins.push(
-    ...discover(path.join(home, "config/plugins"), false, warnings),
-    ...staged(path.join(cli, "plugins"), path.join(home, "config/config.json"), warnings),
-    ...discover(path.join(dirs[0]!, ".agents/plugins"), false, warnings),
+    ...discover(path.join(home, "config/plugins"), false, warnings, skipSource),
+    ...staged(
+      path.join(cli, "plugins"),
+      path.join(home, "config/config.json"),
+      warnings,
+      skipSource,
+    ),
+    ...discover(path.join(dirs[0]!, ".agents/plugins"), false, warnings, skipSource),
   );
   const names = new Map<string, Plugin[]>();
   for (const plugin of plugins) {
@@ -216,11 +256,12 @@ export function antigravitySources(
   for (const dir of dirs) {
     result.push(...["AGENTS.md", "GEMINI.md"].map((name) => path.join(dir, name)).filter(isFile));
     const current = path.join(dir, ".agents/rules");
-    collect(current, result, warnings);
+    collect(current, result, warnings, skipSource);
     collect(
       path.join(dir, ".agent/rules"),
       result,
       warnings,
+      skipSource,
       new Set(ruleFiles(current).map((file) => path.relative(current, file))),
     );
   }

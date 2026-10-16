@@ -31,6 +31,9 @@ import type {
   SkillVersionSelector,
   SkillDetailRequest,
   PrepareSkillDeploymentRequest,
+  PrepareSkillSyncRequest,
+  SaveSkillSyncPolicyRequest,
+  SkillSyncComparison,
   MemoryStatus,
   MemoryType,
   OnboardingEvent,
@@ -183,13 +186,28 @@ export const api = {
   prepareSkillImports: (observationIds: string[]) =>
     desktopApi().skills.prepareImports(observationIds),
   applySkillImports: (token: string) => desktopApi().skills.applyImports(token),
-  readSkillPreviewFile: (token: string, path: string, targetId?: string, itemId?: string) =>
-    desktopApi().skills.readPreviewFile(token, path, targetId, itemId),
+  readSkillPreviewFile: (
+    token: string,
+    path: string,
+    targetId?: string,
+    itemId?: string,
+    comparison?: SkillSyncComparison,
+  ) => desktopApi().skills.readPreviewFile(token, path, targetId, itemId, comparison),
   skillDeployments: () => desktopApi().skills.listDeployments(),
   prepareSkillDeployment: (request: PrepareSkillDeploymentRequest) =>
     desktopApi().skills.prepareDeployment(request),
   applySkillDeployment: (token: string, approveHome: boolean) =>
     desktopApi().skills.applyDeployment(token, approveHome),
+  skillSyncState: () => desktopApi().skills.syncState(),
+  skillSyncPolicy: () => desktopApi().skills.syncPolicy(),
+  prepareSkillSync: (request: PrepareSkillSyncRequest) => desktopApi().skills.prepareSync(request),
+  applySkillSync: (token: string, approveHome: boolean) =>
+    desktopApi().skills.applySync(token, approveHome),
+  saveSkillSyncPolicy: (request: SaveSkillSyncPolicyRequest) =>
+    desktopApi().skills.saveSyncPolicy(request),
+  skillSyncRuns: (limit?: number) => desktopApi().skills.syncRuns(limit),
+  recoverSkillSync: (operationId: string, approveHome: boolean) =>
+    desktopApi().skills.recoverSync(operationId, approveHome),
   nativeMcpCandidates: (project?: string) => desktopApi().mcp.scanNative(project),
   planMcpMigration: (project: string, candidateIds: string[]) =>
     desktopApi().mcp.planMigration(project, candidateIds),

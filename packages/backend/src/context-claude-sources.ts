@@ -35,7 +35,8 @@ export const defaultIo: ClaudeIo = {
   readlink: (file) => readlinkSync(file),
   realpath: (file) => canonicalize(file),
   readdir: (directory) => readdirSync(directory),
-  readFile: (file, maxBytes) => prefix(file, maxBytes),
+  // Discovery supplies the resolved target; a later link must not change its authorization.
+  readFile: (file, maxBytes) => prefix(file, maxBytes, true),
 };
 export interface ProbeContext {
   io: ClaudeIo;
@@ -60,8 +61,6 @@ export const WORKSPACE_RULE_LIMITS: RuleLimits = { files: 256, depth: 16, entrie
 const MAX_HOPS = 8;
 const MAX_RULE_FOLDERS = 512;
 const FRONT_MATTER_WINDOW = 64 * 1024;
-const MAX_PATH_PATTERNS = 64;
-const MAX_PATTERN_CHARS = 256;
 
 export const flavor = (platform: NodeJS.Platform) =>
   platform === "win32" ? path.win32 : path.posix;
@@ -116,7 +115,10 @@ interface Located {
 }
 export type FileProbe = Located & { kind: "file" };
 export type DirProbe = Located & { kind: "dir" };
-export type ProbeResult = { kind: "missing" | "unreadable" | "network" } | FileProbe | DirProbe;
+export type ProbeResult =
+  | { kind: "missing" | "unreadable" | "network" | "outside" }
+  | FileProbe
+  | DirProbe;
 
 const absent = (error: unknown) =>
   ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
@@ -132,11 +134,18 @@ const absent = (error: unknown) =>
  * was reached without following a link is never judged, so a workspace that lives on a network
  * share keeps working.
  */
-export function probe(target: string, base: string | null, context: ProbeContext): ProbeResult {
+export function probe(
+  target: string,
+  base: string | null,
+  context: ProbeContext,
+  /** When given, stop before any IO outside this canonical directory. */
+  scope?: string,
+): ProbeResult {
   const { io, platform } = context;
   const p = flavor(platform);
   const split = (value: string) =>
     value.split(platform === "win32" ? /[\\/]+/ : /\/+/).filter((part) => part !== "");
+  if (scope !== undefined && !isInside(target, scope, platform)) return { kind: "outside" };
   let resolved: string;
   let queue: string[];
   if (base === null) {
@@ -160,6 +169,7 @@ export function probe(target: string, base: string | null, context: ProbeContext
     }
     const next = p.join(resolved, part);
     if (followed && isNetworkPath(next, platform)) return { kind: "network" };
+    if (scope !== undefined && !isInside(next, scope, platform)) return { kind: "outside" };
     let entry: ProbeStat;
     try {
       entry = io.lstat(next);
@@ -181,18 +191,34 @@ export function probe(target: string, base: string | null, context: ProbeContext
     followed = true;
     link ??= next;
     if (p.isAbsolute(text)) {
-      resolved = p.parse(text).root;
-      if (isNetworkPath(resolved, platform)) return { kind: "network" };
-      queue = [...split(text.slice(resolved.length)), ...queue];
+      // The scope is already canonical. An absolute link inside it need not inspect any of
+      // its parent directories. Keep the suffix unnormalized: a later link followed by `..`
+      // must still be examined component by component.
+      const scopePrefix = scope === undefined ? null : scope.replace(/[\\/]+$/, "") + p.sep;
+      if (scope !== undefined && pathKey(text, platform) === pathKey(scope, platform)) {
+        resolved = scope;
+      } else if (
+        scopePrefix !== null &&
+        pathKey(text, platform).startsWith(pathKey(scopePrefix, platform))
+      ) {
+        resolved = scope!;
+        queue = [...split(text.slice(scopePrefix.length)), ...queue];
+      } else {
+        resolved = p.parse(text).root;
+        if (isNetworkPath(resolved, platform)) return { kind: "network" };
+        queue = [...split(text.slice(resolved.length)), ...queue];
+      }
       stat = null;
     } else queue = [...split(text), ...queue];
   }
   if (followed && isNetworkPath(resolved, platform)) return { kind: "network" };
+  if (scope !== undefined && !isInside(resolved, scope, platform)) return { kind: "outside" };
   let real = resolved;
   try {
     if (followed) {
       real = io.realpath(resolved);
       if (isNetworkPath(real, platform)) return { kind: "network" };
+      if (scope !== undefined && !isInside(real, scope, platform)) return { kind: "outside" };
     }
     stat ??= io.lstat(real);
   } catch (error) {
@@ -390,9 +416,8 @@ export function parseRule(text: string): RuleText {
       : Array.isArray(raw)
         ? raw.filter((item): item is string => typeof item === "string")
         : [];
-  const paths = listed
-    .map((item) => item.trim())
-    .filter((item) => item !== "" && item.length <= MAX_PATTERN_CHARS)
-    .slice(0, MAX_PATH_PATTERNS);
+  // Display limits must not turn a valid conditional rule into a startup instruction.
+  // The file reader bounds the input; patternList separately bounds the displayed rows.
+  const paths = listed.map((item) => item.trim()).filter((item) => item !== "");
   return { body, paths: paths.length ? paths : null };
 }

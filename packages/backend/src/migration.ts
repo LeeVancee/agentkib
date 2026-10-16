@@ -184,6 +184,23 @@ export const TYPESCRIPT_SKILL_METHODS = new Set<string>([
   RUNTIME_METHODS.listRemovedSkills,
   RUNTIME_METHODS.restoreSkill,
   RUNTIME_METHODS.readSkillFile,
+  RUNTIME_METHODS.skillInventory,
+  RUNTIME_METHODS.skillTargets,
+  RUNTIME_METHODS.skillDetail,
+  RUNTIME_METHODS.readSkillDetailFile,
+  RUNTIME_METHODS.prepareSkillImport,
+  RUNTIME_METHODS.readSkillPreviewFile,
+  RUNTIME_METHODS.listSkillDeployments,
+  RUNTIME_METHODS.prepareSkillDeployment,
+  RUNTIME_METHODS.applySkillDeployment,
+  RUNTIME_METHODS.skillSyncState,
+  RUNTIME_METHODS.prepareSkillSync,
+  RUNTIME_METHODS.applySkillSync,
+  RUNTIME_METHODS.skillSyncPolicy,
+  RUNTIME_METHODS.saveSkillSyncPolicy,
+  RUNTIME_METHODS.skillSyncRuns,
+  RUNTIME_METHODS.recoverSkillSync,
+  RUNTIME_METHODS.runDueSkillSync,
 ]);
 
 export const TYPESCRIPT_AGENT_TOOL_METHODS = new Set<string>([

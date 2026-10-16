@@ -2,6 +2,10 @@ import type { HistoryRecordKind } from "@agentkib/runtime-protocol";
 import type { CursorBridgeContext } from "./cursor-bridge";
 import type { SessionStore } from "./session-store";
 
+// Shared by persisted caches and source fingerprints. Bump when common redaction changes,
+// so startup rejects old text before source discovery or background rebuilding can run.
+export const HISTORY_SEARCH_SANITIZER_VERSION = "2";
+
 /** A whole snapshot failed; it must not replace a previously committed generation. */
 export class HistorySourceSnapshotError extends Error {
   constructor(readonly limitation: "damaged-record" | "source-byte-limit") {

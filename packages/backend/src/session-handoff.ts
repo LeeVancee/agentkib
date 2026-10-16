@@ -104,7 +104,7 @@ function sanitizeText(value: string, count: { value: number }): string {
     const marker = line
       .trim()
       .toUpperCase()
-      .match(/^-----BEGIN (.+PRIVATE KEY)-----$/);
+      .match(/^-----BEGIN (.*PRIVATE KEY)-----$/);
     if (marker) {
       lines.push("[REDACTED PRIVATE KEY]");
       privateKeyEnd = `-----END ${marker[1]}-----`;

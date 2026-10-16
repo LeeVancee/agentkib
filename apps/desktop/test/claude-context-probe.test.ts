@@ -282,7 +282,16 @@ describe("probe", () => {
       });
       for (const mode of [undefined, "metadata", "none"] as const) {
         const { sections, warnings } = await run(fs, "/w", mode);
-        expect(sections.map((section) => section.content)).toEqual(["agents\n"]);
+        expect(sections.map((section) => section.content)).toEqual(
+          mode === undefined
+            ? ["agents\n", expect.stringContaining("Settings coverage is incomplete")]
+            : ["agents\n"],
+        );
+        if (mode === undefined) expect(sections[1]!.scope).toBe("settings");
+        if (mode === "metadata")
+          expect(warnings.join("\n")).toContain(
+            "Claude Code settings, project layer: skipped (network path)",
+          );
         expect(JSON.stringify(warnings)).not.toContain("NETWORK-BODY");
       }
       // Only the link itself was ever looked at below /w/.claude, and nothing below the share.

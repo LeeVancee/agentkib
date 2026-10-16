@@ -34,28 +34,30 @@ function fake(plan: FakeClaudePlan = {}) {
   cleanups.push(() => rmSync(f.root, { recursive: true, force: true }));
   return f;
 }
-type Event = { type: string; payload: Record<string, any> };
+type Event = { type: string; payload: Record<string, any>; revision: number };
 function runnerFor(
   f: Fake,
   options: ClaudeRunnerOptions = {},
   environment: NodeJS.ProcessEnv = f.environment,
 ) {
   const events: Event[] = [];
+  const snapshots: Array<ReturnType<ClaudeRunnerState["snapshot"]>> = [];
   const runner = new ClaudeManagedRunnerProcess(
     f.workspace,
     randomUUID(),
     true,
     0,
     environment,
-    () => undefined,
+    (snapshot) => snapshots.push(snapshot),
     true,
-    (type, payload) => events.push({ type, payload }),
+    (type, payload, snapshot) =>
+      events.push({ type, payload: structuredClone(payload), revision: snapshot.revision }),
     options,
   );
   cleanups.push(async () => {
     await runner.shutdown().catch(() => undefined);
   });
-  return { runner, events };
+  return { runner, events, snapshots };
 }
 const send = (f: Fake, runner: ClaudeManagedRunnerProcess) =>
   runner.send(f.executable, "synthetic turn", randomUUID(), runner.snapshot().revision);
@@ -219,6 +221,266 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       ]);
     }, 30_000);
 
+    it.each(["approval", "question"] as const)(
+      "accepts the original pending %s revision after task observations from the CLI",
+      async (interaction) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const input =
+          interaction === "question"
+            ? {
+                questions: [
+                  {
+                    question: "Which one?",
+                    header: "Pick",
+                    options: [{ label: "A" }, { label: "B" }],
+                    multiSelect: false,
+                  },
+                ],
+              }
+            : { file_path: "a.txt" };
+        const f = fake({
+          onUser: [
+            {
+              type: "control_request",
+              request_id: "req-pending",
+              request: {
+                subtype: "can_use_tool",
+                tool_name: interaction === "question" ? "AskUserQuestion" : "Write",
+                input,
+              },
+            },
+            {
+              type: "system",
+              subtype: "task_started",
+              task_type: "local_agent",
+              task_id: "subagent",
+              is_backgrounded: false,
+            },
+            { type: "system", subtype: "task_updated", task_id: "old-task", patch: {} },
+            {
+              type: "system",
+              subtype: "background_tasks_changed",
+              tasks: [{ task_type: "local_agent" }],
+            },
+            {
+              type: "system",
+              subtype: "task_notification",
+              task_id: "old-task",
+              tool_use_id: "old-tool",
+              status: "completed",
+            },
+            { __wait: "req-pending" },
+          ],
+        });
+        const { runner, snapshots } = runnerFor(f, { cliVersion: "2.1.296 (Claude Code)" });
+        await send(f, runner);
+        await expect
+          .poll(() => runner.protocolDiagnostics.observedTaskTypes?.untracked_task_notification)
+          .toBe(1);
+        const waitingStatus = interaction === "question" ? "waiting-input" : "waiting-approval";
+        const pending = snapshots.find((snapshot) => snapshot.status === waitingStatus)!;
+        expect(pending).toBeDefined();
+        expect(runner.snapshot()).toEqual(pending);
+        expect(answers(f)).toEqual([]);
+        if (interaction === "question")
+          await runner.answer(
+            "req-pending",
+            pending.turnId,
+            { "Which one?": ["A"] },
+            pending.revision,
+          );
+        else await runner.approve("req-pending", pending.turnId, "allow", pending.revision);
+        await settle(runner, "idle");
+        expect(answers(f)).toEqual([
+          {
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: "req-pending",
+              response: {
+                behavior: "allow",
+                updatedInput:
+                  interaction === "question" ? { ...input, answers: { "Which one?": "A" } } : input,
+              },
+            },
+          },
+        ]);
+        expect(runner.snapshot()).toMatchObject({ lastOutcome: "succeeded", reason: null });
+      },
+      30_000,
+    );
+
+    it.each(["approval", "question"] as const)(
+      "ignores unattributed tool frames without changing the pending %s or conversation",
+      async (interaction) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const parents = ["", {}, 7, false, [], "x".repeat(257), "界".repeat(86)];
+        const mainToolId = "toolu_main";
+        const messageId = randomUUID();
+        const input =
+          interaction === "question"
+            ? {
+                questions: [
+                  {
+                    question: "Which one?",
+                    header: "Pick",
+                    options: [{ label: "A" }, { label: "B" }],
+                    multiSelect: false,
+                  },
+                ],
+              }
+            : { file_path: "a.txt" };
+        const f = fake({
+          onUser: [
+            mainBash(mainToolId),
+            {
+              type: "stream_event",
+              event: {
+                type: "content_block_start",
+                index: 0,
+                content_block: { type: "text", text: "main prefix" },
+              },
+            },
+            {
+              type: "control_request",
+              request_id: "req-pending",
+              request: {
+                subtype: "can_use_tool",
+                tool_name: interaction === "question" ? "AskUserQuestion" : "Write",
+                input,
+              },
+            },
+            ...parents.flatMap((parent, index) => [
+              {
+                type: "stream_event",
+                parent_tool_use_id: parent,
+                event: {
+                  type: "message_start",
+                  message: { model: "stray-model", usage: { input_tokens: 999 } },
+                },
+              },
+              {
+                type: "stream_event",
+                parent_tool_use_id: parent,
+                event: {
+                  type: "content_block_delta",
+                  index: 0,
+                  delta: { type: "text_delta", text: "stray stream" },
+                },
+              },
+              cliFrame({
+                parent_tool_use_id: parent,
+                uuid: randomUUID(),
+                message: {
+                  content: [
+                    { type: "text", text: "stray assistant" },
+                    {
+                      type: "tool_use",
+                      id: `toolu_stray_${index}`,
+                      name: "Bash",
+                      input: { command: "echo stray" },
+                    },
+                    { type: "tool_use", id: mainToolId, name: "Read", input: {} },
+                  ],
+                },
+              }),
+              {
+                type: "user",
+                parent_tool_use_id: parent,
+                uuid: randomUUID(),
+                message: {
+                  content: [
+                    { type: "text", text: "stray user" },
+                    {
+                      type: "tool_result",
+                      tool_use_id: mainToolId,
+                      content: "stray result",
+                      is_error: index % 2 === 1,
+                    },
+                  ],
+                },
+              },
+            ]),
+            { __wait: "req-pending" },
+            {
+              type: "user",
+              message: {
+                content: [{ type: "tool_result", tool_use_id: mainToolId, content: "done" }],
+              },
+            },
+            cliFrame({
+              uuid: messageId,
+              message: { content: [{ type: "text", text: "main prefix continued" }] },
+            }),
+          ],
+        });
+        const { runner, snapshots, events } = runnerFor(f);
+        await send(f, runner);
+        await expect
+          .poll(() => runner.protocolDiagnostics.unattributedFrames?.user)
+          .toBe(parents.length);
+        const waitingStatus = interaction === "question" ? "waiting-input" : "waiting-approval";
+        const pendingIndex = snapshots.findIndex((snapshot) => snapshot.status === waitingStatus);
+        expect(pendingIndex).toBeGreaterThanOrEqual(0);
+        const pending = snapshots[pendingIndex]!;
+        expect(runner.snapshot()).toEqual(pending);
+        expect(
+          snapshots.slice(pendingIndex).every((snapshot) => snapshot.revision === pending.revision),
+        ).toBe(true);
+        expect(runner.protocolDiagnostics.unattributedFrames).toEqual({
+          stream_event: parents.length * 2,
+          assistant: parents.length,
+          user: parents.length,
+        });
+        expect(events.filter((event) => event.revision >= pending.revision)).toEqual([]);
+        expect(events.filter((event) => event.type === "item-upsert")).toMatchObject([
+          { payload: { id: mainToolId, tool_name: "Bash", tool_status: "running" } },
+        ]);
+        expect(answers(f)).toEqual([]);
+        if (interaction === "question")
+          await runner.answer(
+            "req-pending",
+            pending.turnId,
+            { "Which one?": ["A"] },
+            pending.revision,
+          );
+        else await runner.approve("req-pending", pending.turnId, "allow", pending.revision);
+        await settle(runner, "idle");
+        expect(answers(f)).toEqual([
+          {
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: "req-pending",
+              response: {
+                behavior: "allow",
+                updatedInput:
+                  interaction === "question" ? { ...input, answers: { "Which one?": "A" } } : input,
+              },
+            },
+          },
+        ]);
+        const items = events.flatMap(({ type, payload }) =>
+          type === "item-upsert" ? [payload] : type === "snapshot" ? (payload.items ?? []) : [],
+        );
+        expect(items.filter((item) => item.kind === "tool-summary")).toMatchObject([
+          { id: mainToolId, tool_name: "Bash", tool_status: "running" },
+          { id: mainToolId, tool_name: "Bash", tool_status: "completed" },
+        ]);
+        expect(items).toContainEqual(
+          expect.objectContaining({
+            id: messageId,
+            kind: "agent-message",
+            content: "main prefix continued",
+          }),
+        );
+        expect(JSON.stringify(events)).not.toContain("stray");
+        expect(runner.snapshot()).toMatchObject({ lastOutcome: "succeeded", reason: null });
+        expect(runner.hasWorker).toBe(true);
+      },
+      30_000,
+    );
+
     it("starts the CLI with background tasks off, over a value in the user's environment", async () => {
       const f = fake();
       const { runner } = runnerFor(
@@ -234,71 +496,74 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames()[0]).toMatchObject({ env: { background: "1" } });
     }, 30_000);
 
-    it("keeps a sub-agent's prompt out of the conversation and still shows its tool calls", async () => {
-      vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      const promptId = randomUUID();
-      const spawn = "toolu_agent";
-      const f = fake({
-        onUser: [
-          cliFrame({
-            message: { content: [{ type: "tool_use", id: spawn, name: "Agent", input: {} }] },
-          }),
-          {
-            type: "user",
-            parent_tool_use_id: spawn,
-            uuid: promptId,
-            message: { role: "user", content: "the prompt that drives the sub-agent" },
-          },
-          cliFrame({
-            parent_tool_use_id: spawn,
-            uuid: randomUUID(),
-            message: {
-              id: randomUUID(),
-              content: [
-                { type: "text", text: "sub-agent narration" },
-                { type: "tool_use", id: "toolu_sub_read", name: "Read", input: {} },
-              ],
+    it.each(["toolu_agent", `${"界".repeat(85)}a`])(
+      "keeps a sub-agent's prompt out of the conversation and still shows its tool calls (%s)",
+      async (spawn) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const promptId = randomUUID();
+        const f = fake({
+          onUser: [
+            cliFrame({
+              message: { content: [{ type: "tool_use", id: spawn, name: "Agent", input: {} }] },
+            }),
+            {
+              type: "user",
+              parent_tool_use_id: spawn,
+              uuid: promptId,
+              message: { role: "user", content: "the prompt that drives the sub-agent" },
             },
-          }),
-          {
-            type: "user",
-            parent_tool_use_id: spawn,
-            message: {
-              role: "user",
-              content: [{ type: "tool_result", tool_use_id: "toolu_sub_read", content: "ok" }],
+            cliFrame({
+              parent_tool_use_id: spawn,
+              uuid: randomUUID(),
+              message: {
+                id: randomUUID(),
+                content: [
+                  { type: "text", text: "sub-agent narration" },
+                  { type: "tool_use", id: "toolu_sub_read", name: "Read", input: {} },
+                ],
+              },
+            }),
+            {
+              type: "user",
+              parent_tool_use_id: spawn,
+              message: {
+                role: "user",
+                content: [{ type: "tool_result", tool_use_id: "toolu_sub_read", content: "ok" }],
+              },
             },
-          },
-          {
-            type: "user",
-            parent_tool_use_id: null,
-            message: {
-              role: "user",
-              content: [{ type: "tool_result", tool_use_id: spawn, content: "done" }],
+            {
+              type: "user",
+              parent_tool_use_id: null,
+              message: {
+                role: "user",
+                content: [{ type: "tool_result", tool_use_id: spawn, content: "done" }],
+              },
             },
-          },
-        ],
-      });
-      const { runner, events } = runnerFor(f);
-      await send(f, runner);
-      await settle(runner, "idle");
-      const items = events.flatMap(({ type, payload }) =>
-        type === "item-upsert" ? [payload] : type === "snapshot" ? (payload.items ?? []) : [],
-      ) as Array<Record<string, any>>;
-      expect(items.some((item) => item.kind === "user-message")).toBe(false);
-      expect(items.some((item) => JSON.stringify(item).includes("sub-agent narration"))).toBe(
-        false,
-      );
-      expect(items.filter((item) => item.id === "toolu_sub_read").at(-1)).toMatchObject({
-        kind: "tool-summary",
-        tool_name: "Read",
-        tool_status: "completed",
-      });
-      expect(items.filter((item) => item.id === spawn).at(-1)).toMatchObject({
-        tool_name: "Agent",
-        tool_status: "completed",
-      });
-      expect(runner.snapshot()).toMatchObject({ lastOutcome: "succeeded", streamText: "" });
-    }, 30_000);
+          ],
+        });
+        const { runner, events } = runnerFor(f);
+        await send(f, runner);
+        await settle(runner, "idle");
+        const items = events.flatMap(({ type, payload }) =>
+          type === "item-upsert" ? [payload] : type === "snapshot" ? (payload.items ?? []) : [],
+        ) as Array<Record<string, any>>;
+        expect(items.some((item) => item.kind === "user-message")).toBe(false);
+        expect(items.some((item) => JSON.stringify(item).includes("sub-agent narration"))).toBe(
+          false,
+        );
+        expect(items.filter((item) => item.id === "toolu_sub_read").at(-1)).toMatchObject({
+          kind: "tool-summary",
+          tool_name: "Read",
+          tool_status: "completed",
+        });
+        expect(items.filter((item) => item.id === spawn).at(-1)).toMatchObject({
+          tool_name: "Agent",
+          tool_status: "completed",
+        });
+        expect(runner.snapshot()).toMatchObject({ lastOutcome: "succeeded", streamText: "" });
+      },
+      30_000,
+    );
   },
 );
 
@@ -414,6 +679,137 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       },
       40_000,
     );
+
+    it.each([
+      {
+        label: "an unrequested turn after success",
+        preceding: [result],
+        invalid: cliFrame({ message: { content: [{ type: "text", text: "unrequested" }] } }),
+        reason: "claude-unrequested-turn: Claude assistant frame outside an active turn",
+        results: [true],
+      },
+      {
+        label: "a malformed frame during the turn",
+        preceding: [],
+        invalid: { type: "control_request", request_id: "bad", request: { subtype: 7 } },
+        reason: "claude-protocol-violation: invalid Claude control request",
+        results: [],
+      },
+      {
+        label: "a failed terminal result",
+        preceding: [],
+        invalid: {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: ["synthetic failure"],
+        },
+        reason: "Claude turn failed: synthetic failure",
+        results: [false],
+      },
+    ])(
+      "discards every already queued frame after $label",
+      async (scenario) => {
+        // One write queues the later text/result before the invalid frame is handled.
+        const f = fake({
+          noResult: true,
+          onUser: [
+            {
+              __raw: [
+                ...scenario.preceding,
+                scenario.invalid,
+                cliFrame({
+                  uuid: randomUUID(),
+                  message: { content: [{ type: "text", text: "must not publish" }] },
+                }),
+                result,
+              ]
+                .map((frame) => JSON.stringify(frame))
+                .join("\n"),
+            },
+          ],
+        });
+        const completed: boolean[] = [];
+        const { runner, snapshots, events } = runnerFor(f, {
+          onResult: (value) => completed.push(value.success),
+        });
+        await send(f, runner);
+        await expect.poll(() => runner.hasWorker, { timeout: 10_000 }).toBe(false);
+        expect(runner.snapshot()).toMatchObject({
+          status: "outcome-unknown",
+          reason: scenario.reason,
+          sendEnabled: false,
+          stopEnabled: false,
+          lastOutcome: null,
+        });
+        const failed = snapshots.findIndex((snapshot) => snapshot.status === "outcome-unknown");
+        expect(failed).toBeGreaterThanOrEqual(0);
+        expect(snapshots.slice(failed).every((snapshot) => !snapshot.sendEnabled)).toBe(true);
+        expect(completed).toEqual(scenario.results);
+        expect(JSON.stringify(events)).not.toContain("must not publish");
+        await expect(send(f, runner)).rejects.toThrow();
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+      },
+      30_000,
+    );
+
+    it("discards queued frames during cancellation and accepts the replacement worker", async () => {
+      const f = fake({
+        noResult: true,
+        onUser: [
+          {
+            __raw: [
+              cliFrame({
+                uuid: randomUUID(),
+                message: { content: [{ type: "text", text: "cancel now" }] },
+              }),
+              result,
+            ]
+              .map((frame) => JSON.stringify(frame))
+              .join("\n"),
+          },
+        ],
+      });
+      let stopping: Promise<void> | undefined;
+      const completed: boolean[] = [];
+      const runner = new ClaudeManagedRunnerProcess(
+        f.workspace,
+        randomUUID(),
+        true,
+        0,
+        f.environment,
+        (snapshot) => {
+          if (snapshot.status === "running" && snapshot.streamText === "cancel now")
+            stopping ??= runner.stop(snapshot.turnId, snapshot.revision);
+        },
+        true,
+        undefined,
+        { onResult: (value) => completed.push(value.success) },
+      );
+      cleanups.push(() => runner.shutdown());
+      await send(f, runner);
+      await expect.poll(() => stopping !== undefined).toBe(true);
+      await stopping;
+      expect(runner.snapshot()).toMatchObject({
+        status: "idle",
+        lastOutcome: "cancelled",
+        reason: null,
+      });
+      expect(completed).toEqual([]);
+      expect(runner.hasWorker).toBe(false);
+      f.setPlan({});
+      await send(f, runner);
+      await settle(runner, "idle");
+      expect(runner.snapshot()).toMatchObject({ lastOutcome: "succeeded", reason: null });
+      expect(completed).toEqual([true]);
+      expect(f.frames().filter((frame) => frame.args)).toHaveLength(2);
+      await expect(runner.retireIfInactive()).resolves.toBe(true);
+      await send(f, runner);
+      await settle(runner, "idle");
+      expect(runner.snapshot()).toMatchObject({ lastOutcome: "succeeded", reason: null });
+      expect(completed).toEqual([true, true]);
+      expect(f.frames().filter((frame) => frame.args)).toHaveLength(3);
+    }, 30_000);
 
     it("gives an error nobody classified the protocol-violation code, whatever throws it", async () => {
       const original = ClaudeRunnerState.prototype.frame;

@@ -22,7 +22,6 @@ const ASK_FIRST =
   "Claude Code asks for approval before loading external imports, so this content may not be in effect.";
 const AGENTS_APPROVED =
   "Claude Code loads external imports from AGENTS.md only if you already approved external imports for this project, and does not ask again, so this content may not be in effect.";
-const OMITTED = "Its content is not included in this result.";
 const note = (written: string, source: string, tail = ASK_FIRST) =>
   `Note: External import (outside the working directory): ${written} (source: ${source}). ${tail}`;
 const sensitiveSkip = (resolved: string, source: string) =>
@@ -281,7 +280,9 @@ describe("the MCP tool", () => {
     const result = await call(f);
     expect(JSON.stringify(result)).not.toContain("EXTERNAL-BODY");
     expect(result.sections[0]!.content).toBe("@../shared/team.md\ninside body\n\n");
-    expect(result.warnings).toEqual([note("../shared/team.md", f.at("CLAUDE.md"), OMITTED)]);
+    expect(result.warnings).toEqual([
+      "Note: External instruction sources exist (1 file, 14 bytes); its content is not included in this result.",
+    ]);
   });
 
   it("does not expand the imports of an external file either", async () => {
@@ -294,7 +295,9 @@ describe("the MCP tool", () => {
     expect(JSON.stringify(result)).not.toContain("EXTERNAL-BODY");
     // The file itself stays, with the import left as written and one note about it.
     expect(result.sections.map((section) => section.content)).toEqual(["@../shared/hub.md\n"]);
-    expect(result.warnings).toEqual([note("../shared/hub.md", f.at("CLAUDE.md"), OMITTED)]);
+    expect(result.warnings).toEqual([
+      "Note: External instruction sources exist (1 file, 25 bytes); its content is not included in this result.",
+    ]);
   });
 
   it("returns the same external contents to the app", async () => {
@@ -311,16 +314,22 @@ describe("the MCP tool", () => {
     f.write("CLAUDE.md", "@docs/linked.md\n");
     const result = await call(f);
     expect(JSON.stringify(result)).not.toContain("EXTERNAL-BODY");
-    expect(result.warnings).toEqual([note("docs/linked.md", f.at("CLAUDE.md"), OMITTED)]);
+    expect(result.warnings).toEqual([
+      "Note: External instruction sources exist (1 file, 14 bytes); its content is not included in this result.",
+    ]);
   });
 
-  it("still names a sensitive external file as skipped", async () => {
+  it("counts a sensitive external file as skipped without naming it", async () => {
     const f = fixture();
     f.write(f.inHome(".npmrc"), "TOP-SECRET-BODY\n");
     f.write("CLAUDE.md", "@~/.npmrc\n");
     const result = await call(f);
     expect(JSON.stringify(result)).not.toContain("TOP-SECRET-BODY");
-    expect(result.warnings).toEqual([sensitiveSkip(f.inHome(".npmrc"), f.at("CLAUDE.md"))]);
+    expect(JSON.stringify(result)).not.toContain(f.home);
+    expect(result.sections[0]!.content).toBe("@~/.npmrc\n");
+    expect(result.warnings).toEqual([
+      "Note: External instruction sources exist (0 files, 0 bytes, 1 skipped); its content is not included in this result.",
+    ]);
   });
 });
 

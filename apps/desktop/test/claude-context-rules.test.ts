@@ -102,6 +102,36 @@ describe("the rules folder", () => {
 });
 
 describe("rules with a paths field", () => {
+  it.each(["scalar", "array"])(
+    "keeps a long %s path conditional in real Context",
+    async (shape) => {
+      const f = fixture();
+      const pattern = `${"a".repeat(257)}/**`;
+      const paths = shape === "array" ? `\n  - '${pattern}'` : `'${pattern}'`;
+      const text = `---\npaths: ${paths}\n---\nCONDITIONAL-LONG-PATH-BODY\n`;
+      expect(parseRule(text).paths).toEqual([pattern]);
+      f.write(".claude/rules/long.md", text);
+      const preview = await f.resolve();
+      expect(preview.sections).toEqual([
+        expect.objectContaining({ scope: "conditional", content: `paths:\n- ${pattern}\n` }),
+      ]);
+      expect(JSON.stringify(preview)).not.toContain("CONDITIONAL-LONG-PATH-BODY");
+      expect(JSON.stringify(await f.mcp())).not.toContain("CONDITIONAL-LONG-PATH-BODY");
+    },
+  );
+
+  it("retains all bounded paths while limiting only their displayed rows", async () => {
+    const f = fixture();
+    const patterns = Array.from({ length: 70 }, (_, index) => `src/${index}/**`);
+    const text = `---\npaths:\n${patterns.map((item) => `  - '${item}'`).join("\n")}\n---\nMANY-PATHS-CONDITIONAL-BODY\n`;
+    expect(parseRule(text).paths).toEqual(patterns);
+    f.write(".claude/rules/many.md", text);
+    const preview = await f.resolve();
+    expect(preview.sections[0]?.scope).toBe("conditional");
+    expect(preview.sections[0]?.content).toContain("more)");
+    expect(JSON.stringify(preview)).not.toContain("MANY-PATHS-CONDITIONAL-BODY");
+  });
+
   it("are listed by their patterns, apart from the rules that load at startup", async () => {
     const f = fixture();
     f.write("CLAUDE.md", "main\n");

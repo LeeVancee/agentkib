@@ -6,6 +6,12 @@ import type {
   SkillVersionListRequest,
 } from "../../../src/core/types";
 import { requireObject, requireString } from "./validation";
+import type {
+  PrepareSkillSyncRequest,
+  SaveSkillSyncPolicyRequest,
+  SkillSyncPolicy,
+} from "@agentkib/runtime-protocol";
+import { requireBoolean } from "./validation";
 
 function fields(value: unknown, allowed: string[]) {
   const input = requireObject(value, "Skill request");
@@ -154,5 +160,119 @@ export function skillDeploymentRequest(value: unknown): PrepareSkillDeploymentRe
   return {
     operation: input.operation as "update" | "undeploy" | "rollback",
     deployment_id: skillIdentity(input.deployment_id, "deployment_id"),
+  };
+}
+
+export function skillSyncRequest(value: unknown): PrepareSkillSyncRequest {
+  const input = fields(value, [
+    "operation",
+    "deployment_id",
+    "observation_id",
+    "library_id",
+    "resolution",
+  ]);
+  if (
+    !["adopt", "pull", "push", "fork", "detach", "restore", "bind"].includes(
+      String(input.operation),
+    )
+  )
+    throw new TypeError("Unsupported Skill synchronization operation");
+  if (
+    input.resolution !== undefined &&
+    input.resolution !== "library" &&
+    input.resolution !== "deployment"
+  )
+    throw new TypeError("Invalid Skill conflict resolution");
+  const result: PrepareSkillSyncRequest = {
+    operation: input.operation as PrepareSkillSyncRequest["operation"],
+  };
+  for (const key of ["deployment_id", "observation_id", "library_id"] as const)
+    if (input[key] !== undefined) result[key] = skillIdentity(input[key], key);
+  if (input.resolution !== undefined) result.resolution = input.resolution;
+  return result;
+}
+
+export function skillSyncPolicyRequest(
+  value: unknown,
+): SaveSkillSyncPolicyRequest & { confirmed: true } {
+  const input = fields(value, ["policy", "revision", "approve_home"]);
+  const policy = fields(input.policy, [
+    "schema_version",
+    "revision",
+    "enabled",
+    "interval_hours",
+    "default_mode",
+    "libraries",
+    "deployments",
+    "updated_at",
+  ]);
+  const revision = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+      throw new TypeError("Invalid Skill policy revision");
+    return value;
+  };
+  if (policy.schema_version !== 1 || !["check", "manual"].includes(String(policy.default_mode)))
+    throw new TypeError("Invalid Skill synchronization policy");
+  if (typeof policy.interval_hours !== "number" || ![0, 1, 6, 24].includes(policy.interval_hours))
+    throw new TypeError("Skill synchronization interval must be 0, 1, 6 or 24 hours");
+  const libraries: SkillSyncPolicy["libraries"] = {};
+  const deployments: SkillSyncPolicy["deployments"] = {};
+  const libraryInput = requireObject(policy.libraries, "libraries");
+  const deploymentInput = requireObject(policy.deployments, "deployments");
+  if (Object.keys(libraryInput).length > 4096 || Object.keys(deploymentInput).length > 4096)
+    throw new TypeError("Too many Skill synchronization policies");
+  for (const [id, value] of Object.entries(libraryInput)) {
+    skillIdentity(id, "library_id");
+    if (["__proto__", "constructor", "prototype"].includes(id))
+      throw new TypeError("Invalid Skill policy identity");
+    const entry = fields(value, ["mode", "owner_key", "source_key"]);
+    if (!["manual", "check", "auto_update"].includes(String(entry.mode)))
+      throw new TypeError("Invalid Skill library policy");
+    libraries[id] = {
+      mode: entry.mode as "manual" | "check" | "auto_update",
+      ...(entry.owner_key === undefined
+        ? {}
+        : { owner_key: skillIdentity(entry.owner_key, "owner_key") }),
+      ...(entry.source_key === undefined
+        ? {}
+        : { source_key: skillIdentity(entry.source_key, "source_key") }),
+    };
+    if (entry.mode === "auto_update" && (!entry.owner_key || !entry.source_key))
+      throw new TypeError("Automatic Skill updates require a verified source identity");
+  }
+  for (const [id, value] of Object.entries(deploymentInput)) {
+    skillIdentity(id, "deployment_id");
+    if (["__proto__", "constructor", "prototype"].includes(id))
+      throw new TypeError("Invalid Skill policy identity");
+    const entry = fields(value, ["mode", "approve_home", "owner_key", "target_key"]);
+    if (!["manual", "follow", "pinned"].includes(String(entry.mode)))
+      throw new TypeError("Invalid Skill deployment policy");
+    deployments[id] = {
+      mode: entry.mode as "manual" | "follow" | "pinned",
+      approve_home: requireBoolean(entry.approve_home, "approve_home"),
+      owner_key: skillIdentity(entry.owner_key, "owner_key"),
+      target_key: skillIdentity(entry.target_key, "target_key"),
+    };
+  }
+  if (
+    policy.updated_at !== null &&
+    (typeof policy.updated_at !== "string" || !Number.isFinite(Date.parse(policy.updated_at)))
+  )
+    throw new TypeError("Invalid Skill policy timestamp");
+  return {
+    confirmed: true,
+    revision: revision(input.revision),
+    approve_home:
+      input.approve_home === undefined ? false : requireBoolean(input.approve_home, "approve_home"),
+    policy: {
+      schema_version: 1,
+      revision: revision(policy.revision),
+      enabled: requireBoolean(policy.enabled, "enabled"),
+      interval_hours: policy.interval_hours,
+      default_mode: policy.default_mode as "check" | "manual",
+      libraries,
+      deployments,
+      updated_at: policy.updated_at as string | null,
+    },
   };
 }

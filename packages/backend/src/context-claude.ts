@@ -1,6 +1,4 @@
 import path from "node:path";
-import { isFile, within } from "./files";
-import { canonicalize } from "./paths";
 import {
   CLAUDE_CONFIG_DIR_VARIABLE,
   claudeConfigFiles,
@@ -11,7 +9,7 @@ import {
 import { MEMORY_BYTES, MEMORY_LINES, autoMemoryLocation } from "./claude-memory";
 import { describeAssets, readClaudeAssets } from "./claude-assets";
 import { readClaudeSettings, type ClaudeSettings } from "./claude-settings";
-import { globMatches } from "./context-glob";
+import { GlobMatchBudget, GlobMatchBudgetExceeded, globMatches } from "./context-glob";
 import { supportsClaudeVersion } from "./claude-version";
 import {
   ANCESTOR_LAYERS,
@@ -21,7 +19,10 @@ import {
   ancestorDirs,
   defaultIo,
   flavor,
+  isAutomountRoot,
   isInside,
+  isNetworkOrDevicePath,
+  isNetworkPath,
   parseRule,
   pathKey,
   probe,
@@ -90,6 +91,9 @@ const AUTO_MEMORY_OFF = note(
 const LOAD_SWITCHES = note(
   "An environment variable that turns off CLAUDE.md loading (CLAUDE_CODE_DISABLE_CLAUDE_MDS, CLAUDE_CODE_SAFE_MODE or CLAUDE_CODE_SIMPLE) is set in AgentKib's environment. Claude Code started with it loads fewer instruction files than listed here; AgentKib does not model this.",
 );
+const EXCLUSION_BUDGET_EXCEEDED = note(
+  "claudeMdExcludes could not be fully evaluated within the matching budget; remaining instruction sources are retained and may be excluded by Claude Code.",
+);
 const HOME_FILE_NOTE = note(
   "~/.claude/CLAUDE.md is listed as a parent-directory file because CLAUDE_CONFIG_DIR points to another folder. AgentKib does not count it when deciding on the AGENTS.md fallback; whether Claude Code does is not verified.",
 );
@@ -146,6 +150,9 @@ interface Shared {
   environment: NodeJS.ProcessEnv;
   warnings: string[];
   externalBodies: boolean;
+  outside: OutsideMode;
+  /** External import metadata, keyed internally by path; paths never reach the result. */
+  importMetadata: Map<string, number | null>;
   io: ClaudeIo;
   platform: NodeJS.Platform;
   /** Warnings already emitted, so repeated imports of one file do not repeat a warning. */
@@ -484,9 +491,10 @@ export function importPath(
   platform: NodeJS.Platform = process.platform,
 ) {
   if (written.length > MAX_TOKEN_CHARS) return null;
+  const p = flavor(platform);
   const home = written.startsWith("~/") || (platform === "win32" && written.startsWith("~\\"));
-  const expanded = home ? path.join(userHome(environment), written.slice(2)) : written;
-  return path.resolve(path.dirname(containing), expanded);
+  const expanded = home ? p.join(userHome(environment), written.slice(2)) : written;
+  return p.resolve(p.dirname(containing), expanded);
 }
 
 /**
@@ -501,9 +509,57 @@ function resolveImport(
 ): string | null {
   const { shared } = source;
   const holder = here.canonical;
-  const tell = (text: string) => warn(shared, text, source.note);
   const resolved = importPath(holder, token.written, shared.environment, shared.platform);
-  if (resolved === null || !isFile(resolved)) {
+  const inside = resolved !== null && isInside(resolved, shared.root, shared.platform);
+  let privateDiagnostic = here.external || (resolved !== null && !inside);
+  const count = (size: number | null, canonical = resolved) => {
+    const key = pathKey(canonical ?? `${holder}:${token.written}`, shared.platform);
+    if (!shared.importMetadata.has(key)) shared.importMetadata.set(key, size);
+  };
+  // Error paths are subject to the same boundary as successful imports. In particular, an
+  // expanded `~/` path must not reveal the host's home through a missing-file diagnostic.
+  const tell = (text: string) => {
+    if (shared.outside === "metadata" && privateDiagnostic) count(null);
+    else warn(shared, text, source.note);
+  };
+  const omitted = () =>
+    tell(
+      `${CONTEXT_NOTE_PREFIX}External import (outside the working directory): ${token.written} (source: ${holder}). ${OMITTED}`,
+    );
+  const inNetworkWorkspace =
+    inside &&
+    isNetworkPath(shared.root, shared.platform) &&
+    !isAutomountRoot(shared.root, shared.platform);
+  // Import text can name an automount host directly, and a local path can hide a link to one.
+  // Reject the former before any IO, then inspect every component of the latter through probe.
+  // A workspace already on a share keeps its own ordinary imports readable.
+  const found =
+    resolved === null
+      ? { kind: "missing" as const }
+      : !inNetworkWorkspace && isNetworkOrDevicePath(resolved, shared.platform)
+        ? { kind: "network" as const }
+        : probe(
+            resolved,
+            inside ? shared.root : null,
+            shared,
+            shared.outside === "none" ? shared.root : undefined,
+          );
+  if (found.kind === "outside") {
+    omitted();
+    return null;
+  }
+  if (found.kind === "network") {
+    privateDiagnostic = true;
+    tell(`Instruction import skipped (network path): ${resolved} (source: ${holder})`);
+    return null;
+  }
+  if (found.kind === "file" || found.kind === "dir")
+    privateDiagnostic ||= !isInside(found.real, shared.root, shared.platform);
+  if (found.kind === "unreadable") {
+    tell(`Instruction import could not be read: ${resolved} (source: ${holder})`);
+    return null;
+  }
+  if (resolved === null || found.kind !== "file") {
     // Only a line that is nothing but an import is reported: elsewhere an @ may well be an
     // email address or a package name, so a missing file is not worth a warning.
     if (standalone)
@@ -522,11 +578,14 @@ function resolveImport(
   source.imports++;
   let target: string;
   try {
-    target = canonicalize(resolved);
+    // Probe resolves links safely; realpath also restores disk casing for ordinary paths.
+    // Scope and cycle checks must use that spelling on case-insensitive file systems.
+    target = found.linked ? found.real : shared.io.realpath(found.real);
   } catch {
     tell(`Instruction import could not be read: ${resolved} (source: ${holder})`);
     return null;
   }
+  privateDiagnostic ||= !isInside(target, shared.root, shared.platform);
   if (here.stack.has(target)) {
     tell(`Instruction import skipped (circular reference): ${resolved} (source: ${holder})`);
     return null;
@@ -539,7 +598,7 @@ function resolveImport(
   }
   // Two boundaries: outside the project decides filtering and redaction, outside the working
   // directory only decides the note, because that is what Claude Code asks about.
-  const outsideProject = here.external || !within(target, shared.root);
+  const outsideProject = here.external || !isInside(target, shared.root, shared.platform);
   const external = `${CONTEXT_NOTE_PREFIX}External import (outside the working directory): ${token.written} (source: ${holder}).`;
   if (outsideProject) {
     if (isSensitiveExternalPath(resolved, target)) {
@@ -547,15 +606,19 @@ function resolveImport(
       return null;
     }
     if (!shared.externalBodies) {
-      tell(`${external} ${OMITTED}`);
+      if (shared.outside === "metadata") count(found.size, target);
+      else omitted();
       return null;
     }
   }
   // Claude Code trusts what the user's own files import and does not ask first.
-  if (!source.trusted && !within(target, shared.cwd))
+  if (!source.trusted && !isInside(target, shared.cwd, shared.platform))
     tell(`${external} ${source.kind === "agents" ? APPROVED_EARLIER : ASKS_FIRST}`);
   try {
-    return expand(source, resolved, target, here.depth + 1, here.stack, outsideProject);
+    // An outside alias can point back into the workspace. Its body is safe to include, but a
+    // truncation warning from expand must name only the canonical workspace file over MCP.
+    const displayed = shared.outside === "metadata" && privateDiagnostic ? target : resolved;
+    return expand(source, displayed, target, here.depth + 1, here.stack, outsideProject);
   } catch {
     tell(`Instruction import could not be read: ${resolved} (source: ${holder})`);
     return null;
@@ -669,6 +732,11 @@ class Assembly {
   readonly settings: ClaudeSettings;
   readonly choice: ReturnType<ClaudeSettings["instructionFiles"]>;
   readonly excludes: string[];
+  // Share one limit across the entire preview, not one limit per pattern or source. Cache
+  // proven decisions because discovery checks the same path again when adding its content.
+  readonly exclusionBudget = new GlobMatchBudget(500_000);
+  readonly exclusionMatches = new Map<string, boolean>();
+  exclusionLimited = false;
   /** Instruction files left out by `claudeMdExcludes`, and links whose real path alone matches. */
   excluded = { listed: 0, hidden: 0, maybe: 0 };
   /** "Project instructions" is claude-md-and-agents-md: AGENTS.md is read next to CLAUDE.md. */
@@ -707,7 +775,11 @@ class Assembly {
       cwd: options.cwd,
       environment: options.environment,
       warnings: options.warnings,
-      externalBodies: options.externalBodies,
+      // The outside-source restriction also applies to imports reached through project files.
+      // In particular, the Doctor sets `outside: none` without setting `externalBodies`.
+      externalBodies: this.mode === "full" && options.externalBodies,
+      outside: this.mode,
+      importMetadata: new Map(),
       io: this.context.io,
       platform: this.platform,
       emitted: new Set(options.warnings),
@@ -726,8 +798,25 @@ class Assembly {
     if (!this.excludes.length) return null;
     const windows = this.platform === "win32";
     const norm = (value: string) => (windows ? value.replaceAll("\\", "/").toLowerCase() : value);
-    const matches = (target: string) =>
-      this.excludes.some((pattern) => globMatches(norm(pattern), target));
+    const matches = (target: string): boolean | null => {
+      const cached = this.exclusionMatches.get(target);
+      if (cached !== undefined) return cached;
+      if (this.exclusionLimited) return null;
+      try {
+        const matched = this.excludes.some((pattern) =>
+          globMatches(norm(pattern), target, this.exclusionBudget),
+        );
+        this.exclusionMatches.set(target, matched);
+        return matched;
+      } catch (error) {
+        if (!(error instanceof GlobMatchBudgetExceeded)) throw error;
+        this.exclusionLimited = true;
+        // This warning deliberately contains neither patterns nor paths: MCP previews also
+        // evaluate private settings but may return only metadata about those sources.
+        this.warn(EXCLUSION_BUDGET_EXCEEDED);
+        return null;
+      }
+    };
     const written = norm(file);
     if (matches(written)) return "written";
     return norm(real) !== written && matches(norm(real)) ? "real" : null;
@@ -1343,6 +1432,7 @@ class Assembly {
 
   async finish(fallback: boolean): Promise<Section[]> {
     const { mode, options } = this;
+    for (const size of this.shared.importMetadata.values()) this.tally("external", size);
     for (const [label, entry] of [...this.tallies].sort(
       ([left], [right]) => Object.keys(LABELS).indexOf(left) - Object.keys(LABELS).indexOf(right),
     )) {

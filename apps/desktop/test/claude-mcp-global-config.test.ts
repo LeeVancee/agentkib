@@ -39,11 +39,16 @@ function fixture() {
   const server = (name: string) =>
     JSON.stringify({ mcpServers: { [name]: { url: `https://example.test/${name}` } } });
   const scan = (variable?: string) =>
-    scanNativeMcp({ project }, store, {
-      HOME: home,
-      USERPROFILE: home,
-      ...(variable === undefined ? {} : { CLAUDE_CONFIG_DIR: variable }),
-    });
+    scanNativeMcp(
+      { project },
+      store,
+      {
+        HOME: home,
+        USERPROFILE: home,
+        ...(variable === undefined ? {} : { CLAUDE_CONFIG_DIR: variable }),
+      },
+      { managedDir: null },
+    );
   const claudeHome = (candidates: NativeMcpCandidate[]) =>
     candidates.filter((item) => item.agent === "claude-code" && item.scope === "home");
   return { root, home, defaults, custom, project, server, scan, claudeHome };
@@ -136,7 +141,7 @@ describe("Claude global config file in the native MCP scan", () => {
     expect(candidate!.warning_messages).toEqual([{ key: unusable }]);
   });
 
-  it("leaves candidates from other files and other agents untouched when the gate is closed", () => {
+  it("preserves project importability and other agents when global loading is unknown", () => {
     const f = fixture();
     writeFileSync(path.join(f.home, ".claude.json"), f.server("alpha"));
     writeFileSync(path.join(f.defaults, ".config.json"), "{}");
@@ -149,11 +154,14 @@ describe("Claude global config file in the native MCP scan", () => {
       ["claude-code", "project", true],
       ["cursor", "home", true],
     ]);
-    // The project's .mcp.json server is only waiting for approval; the gate changes nothing else.
+    // Approval remains readable, but the uncertain global file may hide local or disabled entries.
     for (const item of others)
       expect(item.warning_messages).toEqual(
         item.agent === "claude-code"
-          ? [{ key: "mcp.manage.diagnostic.native_project_pending" }]
+          ? [
+              { key: "mcp.manage.diagnostic.native_project_pending" },
+              { key: "mcp.manage.diagnostic.native_claude_loading_unverified" },
+            ]
           : [],
       );
   });

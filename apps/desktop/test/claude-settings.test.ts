@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readClaudeSettings, redactText } from "../../../packages/backend/src/claude-settings";
 import { claudeSections } from "../../../packages/backend/src/context-claude";
+import { defaultIo } from "../../../packages/backend/src/context-claude-sources";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 import { virtualIo } from "./fixtures/claude-virtual-io";
 
@@ -281,6 +282,240 @@ describe("secrets", () => {
     expect(redactText("npm run build -- --watch")).toBe("npm run build -- --watch");
     expect(redactText("x".repeat(500)).length).toBeLessThanOrEqual(201);
   });
+
+  const secretArguments = [
+    '--password "canary-prefix"canary-suffix',
+    "--token 'canary-prefix'canary-suffix",
+    "--api-key=canary-prefix'canary-suffix'",
+    "--secret canary-prefix\\ canary-suffix",
+    '--credential "canary-prefix\\\"canary-suffix"',
+    "--token \\\n  canary-prefix\\\ncanary-suffix",
+    "--password \\\r\n  canary-prefix\\\r\ncanary-suffix",
+    '--token="canary-prefix\ncanary-suffix"',
+    'TOKEN="canary-prefix"canary-suffix',
+    "API_KEY='canary-prefix'canary-suffix",
+    "MY_SECRET=canary-prefix\\ canary-suffix",
+    "PASSWORD=canary-prefix\\\ncanary-suffix",
+    "PASSWORD=canary-prefix\\\r\ncanary-suffix",
+    "MY_CREDENTIAL = \\\n 'canary-prefix'canary-suffix",
+  ];
+
+  it.each(secretArguments)("redacts the entire secret argument in %s", (argument) => {
+    const output = redactText(`run ${argument}; echo visible-after`);
+    expect(output).toContain("[REDACTED]");
+    expect(output).not.toContain("canary-prefix");
+    expect(output).not.toContain("canary-suffix");
+    expect(output).toContain("; echo visible-after");
+  });
+
+  it.each(secretArguments)("keeps secret fragments out of real Context: %s", async (argument) => {
+    const f = fixture();
+    const command = `run ${argument}; echo visible-after`;
+    project(f, {
+      statusLine: { type: "command", command },
+      hooks: { Stop: [{ hooks: [{ type: "command", command }] }] },
+      permissions: { allow: [`Bash(${command})`] },
+    });
+    const preview = await f.request();
+    const output = everything(preview);
+    expect(output).not.toContain("canary-prefix");
+    expect(output).not.toContain("canary-suffix");
+    expect(settingsSection(preview)!.content.match(/; echo visible-after/g)).toHaveLength(3);
+    expect(settingsSection(preview)!.content.match(/\[REDACTED\]/g)).toHaveLength(3);
+  });
+
+  it("keeps adjacent ordinary arguments when a credential uses a quoted shell separator", () => {
+    const command = `run --token 'canary;prefix'"canary|suffix" --format json; echo ready`;
+    expect(redactText(command)).toBe("run --token [REDACTED] --format json; echo ready");
+    expect(redactText('run --output "plain"-text --format a\\ b')).toBe(
+      'run --output "plain"-text --format a\\ b',
+    );
+    expect(redactText("DISPLAY_NAME='plain'-text run --mode safe")).toBe(
+      "DISPLAY_NAME='plain'-text run --mode safe",
+    );
+    expect(redactText("run --password private --format json; echo ready")).toBe(
+      "run --password [REDACTED] --format json; echo ready",
+    );
+    expect(redactText("run --api-key=private --format json; echo ready")).toBe(
+      "run --api-key=[REDACTED] --format json; echo ready",
+    );
+    expect(redactText("TOKEN=private run --mode safe")).toBe("TOKEN=[REDACTED] run --mode safe");
+  });
+
+  it("does not treat text already containing a private-use marker as a protected argument", () => {
+    expect(redactText("echo \ue0000\ue000; run --token 'canary-prefix'canary-suffix")).toBe(
+      "echo \ue0000\ue000; run --token [REDACTED]",
+    );
+  });
+
+  const dynamicCredentials = [
+    "run --token $(printf canary-first)canary-last; echo visible",
+    "run --token $(printf $(printf canary-first))canary-last; echo visible",
+    "run --token `printf canary-first`canary-last; echo visible",
+    'run --token "canary-first$(printf nested)"canary-last; echo visible',
+    "run --token $(printf \\\n canary-first)canary-last; echo visible",
+    "run --token $(printf \\\r\n canary-first)canary-last; echo visible",
+    "TOKEN=$(printf canary-first)canary-last run",
+    "TOKEN=`printf canary-first`canary-last run",
+    "run --token ${NAME:-canary-first}canary-last; echo visible",
+    "curl --user $(printf canary-first:password)canary-last https://host",
+    "curl -su `printf canary-first:password`canary-last https://host",
+    "curl --user 'account:private' -su $(printf canary-first)canary-last https://host",
+    "curl $(printf -s) -su user:canary-first https://host",
+    "curl `printf -s` -sU user:canary-last https://host",
+    'run --token "canary-first canary-last',
+    "TOKEN='canary-first canary-last",
+    'curl -H "Authorization: canary-first canary-last',
+    "curl -H $(printf canary-first)canary-last https://host",
+  ];
+
+  it.each(dynamicCredentials)(
+    "hides the remainder for an uncertain credential word: %s",
+    async (command) => {
+      expect(redactText(command)).not.toContain("canary");
+      const f = fixture();
+      project(f, { statusLine: { type: "command", command } });
+      const output = everything(await f.request());
+      expect(output).not.toContain("canary");
+      expect(output).toContain("[REDACTED]");
+    },
+  );
+
+  it.each([
+    '-H "Authorization: Bearer canary-first"canary-last',
+    '--header="X-API-Key: canary-first"canary-last',
+    "--proxy-header 'Cookie: canary-first'canary-last",
+    '-H "Author"ization:" canary-first"canary-last',
+    "-H Authorization:\\ canary-first\\ canary-last",
+    '-H "Authorization: canary-first\\\ncanary-last"',
+    '-H "Authorization: canary-first\\\r\ncanary-last"',
+  ])("hides the entire sensitive header word in Context: %s", async (argument) => {
+    const command = `curl ${argument} https://host; echo visible`;
+    const output = redactText(command);
+    expect(output).not.toContain("canary");
+    expect(output).toContain("https://host; echo visible");
+    const f = fixture();
+    project(f, { hooks: { Stop: [{ hooks: [{ type: "command", command }] }] } });
+    expect(everything(await f.request())).not.toContain("canary");
+  });
+
+  it("keeps ordinary headers and arguments, including literal quoted substitution syntax", () => {
+    for (const command of [
+      "curl -H 'Accept: application/json' https://host",
+      'curl --header="X-Ordinary: first"last https://host',
+      "run --output $(printf ordinary)tail; echo visible",
+      "run --output `printf ordinary`tail; echo visible",
+    ])
+      expect(redactText(command)).toBe(command);
+    expect(redactText("run --token 'literal $(printf secret)'tail; echo visible")).toBe(
+      "run --token [REDACTED]; echo visible",
+    );
+  });
+
+  it.each([
+    "-u reviewer:short-canary",
+    "-ureviewer:short-canary",
+    '-u "reviewer:short canary"',
+    "-u 'reviewer:short canary'",
+    "-u reviewer:short\\ canary",
+    "--user reviewer:short-canary",
+    "--user=reviewer:short-canary",
+    '--user="reviewer:short canary"',
+    "--user='reviewer':'short canary'",
+    "--proxy-user reviewer:short-canary",
+    "--proxy-user='reviewer:short canary'",
+    "-U reviewer:short-canary",
+    "-Ureviewer:short-canary",
+  ])("redacts the complete credential argument in %s", (argument) => {
+    const output = redactText(`curl ${argument} https://hooks.example; echo done`);
+    expect(output).toContain("[REDACTED]");
+    for (const value of ["reviewer", "short", "canary"]) expect(output).not.toContain(value);
+    expect(output).toContain("https://hooks.example; echo done");
+  });
+
+  it("preserves ordinary arguments and text that are not credential options", () => {
+    for (const command of [
+      "python -u script.py",
+      "curl --user reviewer https://hooks.example",
+      "curl --user-agent 'AgentKib: diagnostic' https://hooks.example",
+      "echo docs/example-u:usage",
+      "tool --users reviewer:group",
+      "tool -su reviewer:group",
+      "echo curl -su reviewer:group",
+      "printf 'curl -su reviewer:group'",
+      "curl -du reviewer:group",
+      "curl -Ku reviewer:group",
+    ]) {
+      expect(redactText(command)).toBe(command);
+    }
+  });
+
+  it.each([
+    "curl --user \\\n  reviewer:short-canary https://hooks.example",
+    "curl --user reviewer:short-\\\ncanary https://hooks.example",
+    "curl --user \\\n  reviewer:short-\\\ncanary https://hooks.example",
+    "curl --user \\\r\n  reviewer:short-\\\r\ncanary https://hooks.example",
+    "curl --proxy-user \\\n  'reviewer:short canary' https://hooks.example",
+    "curl -su reviewer:short-canary https://hooks.example",
+    "curl -sU reviewer:short-canary https://hooks.example",
+    "curl -sSfu'reviewer:short canary' https://hooks.example",
+    "curl -sU \\\n  reviewer:short-\\\ncanary https://hooks.example",
+    "curl -sU \\\r\n  reviewer:short-\\\r\ncanary https://hooks.example",
+    "/usr/bin/curl -su reviewer:short-canary https://hooks.example",
+    "curl.exe -sU reviewer:short-canary https://hooks.example",
+    "echo ready && curl -su reviewer:short-canary https://hooks.example",
+    "curl --user-agent 'semi;colon' -su reviewer:short-canary https://hooks.example",
+  ])("hides continued and combined curl credentials in Context: %s", async (command) => {
+    const f = fixture();
+    project(f, { statusLine: { type: "command", command } });
+    const output = everything(await f.request());
+    expect(output).toContain("[REDACTED]");
+    expect(output).toContain("https://hooks.example");
+    for (const value of ["reviewer", "short", "canary"]) expect(output).not.toContain(value);
+  });
+
+  it("redacts account credentials in Context commands and keeps commands hidden over MCP", async () => {
+    const f = fixture();
+    project(f, {
+      statusLine: {
+        type: "command",
+        command: "curl -u status-account:status-canary https://status.example",
+      },
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command:
+                  "curl --user='hook-account:hook canary' --proxy-user proxy-account:proxy-canary https://hooks.example",
+              },
+              { type: "command", command: "npm run verify-context" },
+            ],
+          },
+        ],
+      },
+    });
+    const preview = await f.request();
+    const output = everything(preview);
+    for (const secret of ["status-canary", "hook canary", "proxy-canary"])
+      expect(output).not.toContain(secret);
+    const text = settingsSection(preview)!.content;
+    expect(text).toContain("curl -u [REDACTED] https://status.example");
+    expect(text).toContain("curl --user=[REDACTED] --proxy-user [REDACTED]");
+    expect(text).toContain("npm run verify-context");
+    for (const agent of ["claude-code", "codex"]) {
+      const mcpOutput = everything(await f.mcp(f.project, agent));
+      for (const hidden of [
+        "curl",
+        "verify-context",
+        "status-canary",
+        "hook canary",
+        "proxy-canary",
+      ])
+        expect(mcpOutput).not.toContain(hidden);
+    }
+  });
 });
 
 describe("over MCP", () => {
@@ -393,6 +628,143 @@ describe("for the Doctor", () => {
 });
 
 describe("the reader", () => {
+  it.each(["unreadable", "disappeared"])(
+    "shows incomplete coverage when the only settings file is %s",
+    async (failure) => {
+      let failedFile = "";
+      const f = fixture({
+        io: {
+          ...defaultIo,
+          lstat(file) {
+            if (failure === "disappeared" && file === failedFile)
+              throw Object.assign(new Error("fixture disappeared"), { code: "ENOENT" });
+            return defaultIo.lstat(file);
+          },
+          readFile(file, limit) {
+            if (file === failedFile)
+              throw Object.assign(new Error("fixture denied"), { code: "EACCES" });
+            return defaultIo.readFile(file, limit);
+          },
+        },
+      });
+      f.write("CLAUDE.md", "workspace\n");
+      failedFile = managed(
+        f,
+        { deniedMcpServers: [{ serverName: "SYNTHETIC-BLOCKED-SERVER" }] },
+        "managed-settings.d/policy.json",
+      );
+      const owner = await f.request();
+      expect(settingsSection(owner)?.content).toContain("Settings coverage is incomplete");
+      const metadata = await f.mcp();
+      expect(metadata.warnings.join("\n")).toContain(
+        "Claude Code settings, managed layer: could not be read",
+      );
+      expect(everything(metadata)).not.toContain(f.managedDir);
+      expect(everything(metadata)).not.toContain("SYNTHETIC-BLOCKED-SERVER");
+    },
+  );
+
+  it.each(["deniedMcpServers", "allowedMcpServers"])(
+    "keeps %s at the 64-file boundary and exposes incomplete coverage at 65",
+    (policyKey) => {
+      const directory = "/m/managed-settings.d";
+      const fake = virtualIo({
+        "/w/project": { dir: true },
+        [`${directory}/065-policy.json`]: json({ [policyKey]: [{ serverName: "subject" }] }),
+      });
+      for (let index = 1; index <= 63; index++)
+        fake.add(`${directory}/${String(index).padStart(3, "0")}.json`, "{}");
+      const read = () =>
+        readClaudeSettings({
+          root: "/w/project",
+          cwd: "/w/project",
+          environment: { HOME: "/h" },
+          mode: "full",
+          managedDir: "/m",
+          platform: "linux",
+          io: fake.io,
+        });
+      const withinBudget = read();
+      expect(withinBudget.mcpPolicy().complete).toBe(true);
+      expect(
+        policyKey === "deniedMcpServers"
+          ? withinBudget.mcpPolicy().denied
+          : withinBudget.mcpPolicy().allowed,
+      ).toEqual([{ serverName: "subject" }]);
+      fake.add(`${directory}/064.json`, "{}");
+      fake.calls.length = 0;
+      const beyondBudget = read();
+      expect(beyondBudget.mcpPolicy().complete).toBe(false);
+      expect(fake.below(directory).filter((call) => call.call === "readFile")).toHaveLength(64);
+      expect(fake.calls.some((call) => call.path.endsWith("065-policy.json"))).toBe(false);
+      expect(beyondBudget.describe("full")).toContain("64-file read limit");
+      expect(beyondBudget.describe("full")).not.toContain("Effective values");
+      expect(beyondBudget.metadataLines().join("\n")).toContain("drop-ins are incomplete");
+      expect(beyondBudget.metadataLines().join("\n")).not.toContain(directory);
+    },
+  );
+
+  it.each(["directory-read", "directory-probe", "file-read", "file-disappeared"])(
+    "does not treat a %s failure as complete settings",
+    (failure) => {
+      const directory = "/m/managed-settings.d";
+      const file = `${directory}/policy.json`;
+      const fake = virtualIo({
+        "/w/project": { dir: true },
+        [file]: json({ deniedMcpServers: [{ serverName: "subject" }] }),
+      });
+      const denied = () => {
+        throw Object.assign(new Error("fixture cannot read"), { code: "EACCES" });
+      };
+      const settings = readClaudeSettings({
+        root: "/w/project",
+        cwd: "/w/project",
+        environment: { HOME: "/h" },
+        mode: "full",
+        managedDir: "/m",
+        platform: "linux",
+        io: {
+          ...fake.io,
+          readdir: (target) =>
+            failure === "directory-read" && target === directory
+              ? denied()
+              : fake.io.readdir(target),
+          lstat: (target) => {
+            if (failure === "directory-probe" && target === directory) return denied();
+            if (failure === "file-disappeared" && target === file)
+              throw Object.assign(new Error("fixture disappeared"), { code: "ENOENT" });
+            return fake.io.lstat(target);
+          },
+          readFile: (target, limit) =>
+            failure === "file-read" && target === file ? denied() : fake.io.readFile(target, limit),
+        },
+      });
+      expect(settings.mcpPolicy().complete).toBe(false);
+      expect(settings.anyFile).toBe(true);
+      expect(settings.describe("full")).toContain("Settings coverage is incomplete");
+      if (failure.startsWith("directory")) {
+        expect(settings.anyFile).toBe(true);
+        expect(settings.metadataLines().join("\n")).toContain("directory could not be read");
+      } else expect(settings.files.find((entry) => entry.file === file)?.status).toBe("unreadable");
+    },
+  );
+
+  it("keeps absent optional files and drop-in folders complete", () => {
+    const fake = virtualIo({ "/w/project": { dir: true } });
+    const settings = readClaudeSettings({
+      root: "/w/project",
+      cwd: "/w/project",
+      environment: { HOME: "/h" },
+      mode: "full",
+      managedDir: "/m",
+      platform: "linux",
+      io: fake.io,
+    });
+    expect(settings.mcpPolicy().complete).toBe(true);
+    expect(settings.anyFile).toBe(false);
+    expect(settings.metadataLines()).toEqual([]);
+  });
+
   it("shows the user layer from the configured folder", async () => {
     const f = fixture();
     const config = f.outside("elsewhere");

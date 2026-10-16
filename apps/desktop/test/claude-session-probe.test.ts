@@ -1,8 +1,35 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const discoveryFault = vi.hoisted(() => ({ operation: "", path: "", code: "" }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const fail = (operation: string, file: unknown) => {
+    if (discoveryFault.operation === operation && String(file) === discoveryFault.path)
+      throw Object.assign(new Error("Synthetic session discovery failure"), {
+        code: discoveryFault.code,
+      });
+  };
+  return {
+    ...actual,
+    default: actual,
+    readdirSync: ((...args: Parameters<typeof actual.readdirSync>) => {
+      fail("readdir", args[0]);
+      return actual.readdirSync(...args);
+    }) as typeof actual.readdirSync,
+    lstatSync: ((...args: Parameters<typeof actual.lstatSync>) => {
+      fail("lstat", args[0]);
+      return actual.lstatSync(...args);
+    }) as typeof actual.lstatSync,
+  };
+});
+
+import * as commandResolution from "../../../packages/backend/src/command-resolution";
+import { Commands } from "../../../packages/backend/src/commands";
+import { nativeImportCapability } from "../../../packages/backend/src/session-continuation";
 import {
   PROBE_MAX_BYTES,
   PROBE_MAX_RECORDS,
@@ -18,11 +45,15 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
+  discoveryFault.operation = "";
+  discoveryFault.path = "";
+  discoveryFault.code = "";
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 function fixture() {
-  const root = mkdtempSync(path.join(os.tmpdir(), "claude-session-probe-"));
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "claude-session-probe-")));
   roots.push(root);
   const projects = path.join(root, "projects");
   const directory = path.join(projects, "-synthetic-project");
@@ -192,6 +223,15 @@ describe("probeClaudeSessionFormat: which file is judged", () => {
     });
   });
 
+  it("passes when the only transcripts belong to subagents", () => {
+    const f = fixture();
+    writeTranscript(path.join(f.directory, randomUUID(), "subagents"), "not a main transcript\n", {
+      name: "agent-example.jsonl",
+    });
+    writeTranscript(f.directory, "not a main transcript\n", { name: "agent-example.jsonl" });
+    expect(probeClaudeSessionFormat(f.projects)).toEqual({ ok: true, file: null });
+  });
+
   it.skipIf(process.platform === "win32")("does not follow symbolic links", () => {
     const f = fixture();
     const outside = path.join(f.root, "outside");
@@ -199,6 +239,119 @@ describe("probeClaudeSessionFormat: which file is judged", () => {
     symlinkSync(outside, path.join(f.projects, "-linked-project"), "dir");
     symlinkSync(target, path.join(f.directory, `${randomUUID()}.jsonl`));
     expect(probeClaudeSessionFormat(f.projects)).toEqual({ ok: true, file: null });
+  });
+});
+
+describe("Claude native import session discovery failures", () => {
+  const capability = async (f: ReturnType<typeof fixture>) => {
+    vi.spyOn(commandResolution, "resolveCommand").mockReturnValue(path.join(f.root, "bin/claude"));
+    const commands = new Commands();
+    const run = vi.spyOn(commands, "run").mockResolvedValue({
+      bytes: Buffer.from("2.1.299 (Claude Code)\n"),
+      success: true,
+      error: "",
+      exitCode: 0,
+      truncated: false,
+    });
+    try {
+      const result = await nativeImportCapability(
+        "claude-code",
+        commands,
+        { HOME: f.root, USERPROFILE: f.root, CLAUDE_CONFIG_DIR: f.root, PATH: "" },
+        f.root,
+      );
+      expect(run).toHaveBeenCalledExactlyOnceWith(
+        expect.any(String),
+        ["--version"],
+        expect.any(Object),
+      );
+      return result;
+    } finally {
+      commands.close();
+    }
+  };
+
+  it.each([
+    ["projects", "lstat", "EACCES"],
+    ["projects", "readdir", "EACCES"],
+    ["projects", "readdir", "ENOENT"],
+    ["project", "readdir", "EACCES"],
+    ["project", "readdir", "ENOENT"],
+    ["project", "lstat", "EACCES"],
+    ["project", "lstat", "ENOENT"],
+    ["candidate", "lstat", "EACCES"],
+    ["candidate", "lstat", "ENOENT"],
+  ])(
+    "closes capability for %s %s failure %s instead of accepting an older readable session",
+    async (subject, operation, code) => {
+      const f = fixture();
+      writeTranscript(path.join(f.projects, "-readable-project"), jsonl([userRecord(f.id)]), {
+        modified: 1_700_000_000,
+      });
+      const incompatible = f.session("incompatible native format\n", 1_800_000_000);
+      const file =
+        subject === "projects" ? f.projects : subject === "project" ? f.directory : incompatible;
+      Object.assign(discoveryFault, { operation, path: file, code });
+      expect(probeClaudeSessionFormat(f.projects)).toEqual({
+        ok: false,
+        file,
+        reason: "unreadable",
+      });
+      expect(await capability(f)).toMatchObject({
+        supported: false,
+        reason: "session-format-unverified",
+      });
+    },
+  );
+
+  it.each(["fresh-install", "empty", "subagent-only"])(
+    "retains native import support for %s",
+    async (state) => {
+      const f = fixture();
+      if (state === "fresh-install") rmSync(f.projects, { recursive: true });
+      if (state === "subagent-only")
+        writeTranscript(
+          path.join(f.directory, randomUUID(), "subagents"),
+          "not a main transcript\n",
+          { name: "agent-example.jsonl" },
+        );
+      expect(probeClaudeSessionFormat(f.projects)).toEqual({ ok: true, file: null });
+      expect(await capability(f)).toEqual({ supported: true, beta: true });
+    },
+  );
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each(["project", "projects"])(
+    "rejects a real unlistable %s directory",
+    async (subject) => {
+      const f = fixture();
+      f.session("incompatible native format\n");
+      const directory = subject === "projects" ? f.projects : f.directory;
+      chmodSync(directory, 0o300);
+      try {
+        expect(probeClaudeSessionFormat(f.projects)).toEqual({
+          ok: false,
+          file: directory,
+          reason: "unreadable",
+        });
+        expect(await capability(f)).toMatchObject({
+          supported: false,
+          reason: "session-format-unverified",
+        });
+      } finally {
+        chmodSync(directory, 0o700);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("does not follow a linked projects root", async () => {
+    const f = fixture();
+    const linked = path.join(f.root, "linked-projects");
+    symlinkSync(f.projects, linked, "dir");
+    expect(probeClaudeSessionFormat(linked)).toEqual({
+      ok: false,
+      file: linked,
+      reason: "unreadable",
+    });
   });
 });
 

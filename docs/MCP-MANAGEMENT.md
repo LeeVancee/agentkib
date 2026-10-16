@@ -20,7 +20,17 @@ OpenCode 显式 OAuth 配置（包括 `oauth: false`）暂不支持等价收录�
 Claude Code 的全局配置文件（`user` 作用域所在）：未设置 `CLAUDE_CONFIG_DIR` 时是 `~/.claude.json`；设置了该变量时，Claude 的全局配置文件位于 `<配置目录>/.claude.json`（官方）。AgentKib 只认自己进程环境里的这个变量，且值必须是不含 `..` 的绝对路径；值不合法时按未设置读取默认位置，该文件里的条目只作展示，不能收录或迁移。`<配置目录>/.config.json` 存在时（不论是否设置了变量），AgentKib 无法确定 Claude Code 实际读取哪个全局文件，该文件里的条目同样只作展示。迁移写回的是扫描到的同一个文件。
 迁移会改写 Claude Code 的全局配置文件（`.claude.json`，位置见上）：把选中的服务从 `mcpServers` 里移走并加入 `agentkib` 网关。运行中的 Claude Code 在内存里保留着这个文件的副本，之后可能整份写回，覆盖这次改动，所以预览与 ChangeSet 审查界面凡是写这个文件，都会提示先关闭正在运行的 Claude Code 会话。AgentKib 在写入前后校验文件内容（内容哈希与可解析性）；它不检测 Claude Code 进程（各平台的进程列表不同，也分不清终端、编辑器扩展与桌面应用，答错只会误报或漏报），也不改用 `claude mcp add/remove`（那会绕开 ChangeSet 的差异审查）。迁移成功后，AgentKib 在数据目录的 `claude-global-writes.json` 里只记下文件路径、被迁出的服务名、时间和写入内容的哈希（不含任何服务定义或取值，保留 30 天）；下一次扫描时，如果这些服务又回到文件里，而文件已不是 AgentKib 写入的内容，对应条目会标注“可能被正在运行的 Claude 覆盖”，此时请先关闭 Claude Code 再重新迁移。迁移仍整文件重写，只改 `mcpServers` 子树、其余键字节不变属于后续改进。
 
-Claude Code 的「从应用读取」按 Claude Code 自己的作用域读取四处：项目根的 `.mcp.json`（`project`）、全局配置文件顶层的 `mcpServers`（`user`，界面显示为 `home`）、同一全局文件里当前项目条目的 `projects["<项目路径>"].mcpServers`（`local`，`claude mcp add` 的默认作用域），以及组织策略目录里的 `managed-mcp.json`（`managed`；macOS `/Library/Application Support/ClaudeCode/`，Linux 与 WSL `/etc/claude-code/`，Windows `C:\Program Files\ClaudeCode\`）。`local` 与 `managed` 只读展示：不能收录、不能迁移，AgentKib 也不会写入这两处。`local` 只取当前工作区对应的条目，全局文件里其他项目的路径与服务器一概不读出、不显示；项目路径依次尝试仓库根与工作区根（官方只对工作区信任写明了键是仓库根，MCP 条目用哪个键官方未写明，属未验证），比较时忽略末尾分隔符，Windows 另外忽略大小写与斜杠方向。同名服务按 Claude Code 的优先级 managed、local、project、user 决定哪个生效，列表里仍显示被覆盖的条目并注明原因：被 local 覆盖；若 `.mcp.json` 里的同名服务已获批准则被覆盖（批准状态按 settings 文件判断，见下）；`managed-mcp.json` 存在时组织独占控制，其余作用域的条目标为未加载（该文件能解析才下此结论，空的 `mcpServers` 表示全部禁用）；项目在 `/mcp` 中停用的服务也会标出。`.mcp.json` 的批准状态与 managed 策略读取 settings 文件（只读，优先级沿用 Claude Code）：`enableAllProjectMcpServers` 或 `enabledMcpjsonServers` 批准、`disabledMcpjsonServers` 在任何文件里都会拒绝；用户与 managed 设置里的批准立即生效，项目或 local 设置里的批准要等你信任该文件夹后 Claude Code 才应用，AgentKib 只读全局文件里匹配当前工作区的那一个条目的 `hasTrustDialogAccepted`（仅严格为 `true` 才算已信任；键沿用上述仓库根优先的顺序，只信任父目录不算），已信任则显示为已批准，找不到该文件夹的信任记录时标为“信任后生效”；没有任何文件批准的显示“待批准”。managed 设置的 `managedMcpServers` 作为 `managed` 服务只读列出，并覆盖其他作用域里的同名服务；`deniedMcpServers` 命中的服务和不在 `allowedMcpServers` 列表里的服务会被标注（`managed-mcp.json` 的服务不受允许列表约束，拒绝列表仍适用；managed 设置里设了 `allowManagedMcpServersOnly` 时只认 managed 的允许列表）。`serverUrl` 按字面通配符匹配，不做 URL 规范化（未验证）。已启用插件（settings 的 `enabledPlugins` 为 true，且 `installed_plugins.json` 有安装记录）在 `.mcp.json` 或插件清单里声明的 MCP 服务作为 `plugin` 来源只读列出，标明由哪个插件提供，与其他条目一样不显示私密值，也不能收录或迁移；优先级低于 local、project、user，且按端点（而不是名字）匹配：指向同一端点的插件服务会标为由你直接配置的服务取代，`deniedMcpServers` 与 `allowedMcpServers` 同样适用于它们。以下内容在这里**不可见**，不是没有：claude.ai 的连接器，以及经 MDM、Windows 注册表、claude.ai 控制台下发的策略或通过 `--settings` 传入的设置。`env`、请求头、URL 凭据等私密值与其他原生条目一样不显示，只标出是否含有私密值。全局配置文件超过 1 MiB、无法解析，或位置不可信（见上）时，`user` 与 `local` 一起显示为配置不可用或只作展示。
+Claude Code 的「从应用读取」按 Claude Code 自己的作用域读取四处：项目根的 `.mcp.json`（`project`）、全局配置文件顶层的 `mcpServers`（`user`，界面显示为 `home`）、同一全局文件里当前项目条目的 `projects["<项目路径>"].mcpServers`（`local`，`claude mcp add` 的默认作用域），以及组织策略目录里的 `managed-mcp.json`（`managed`；macOS `/Library/Application Support/ClaudeCode/`，Linux 与 WSL `/etc/claude-code/`，Windows `C:\Program Files\ClaudeCode\`）。`local` 与 `managed` 只读展示：不能收录、不能迁移，AgentKib 也不会写入这两处。`local` 只取当前工作区对应的条目，全局文件里其他项目的路径与服务器一概不读出、不显示；项目路径依次尝试仓库根与工作区根（官方只对工作区信任写明了键是仓库根，MCP 条目用哪个键官方未写明，属未验证），比较时忽略末尾分隔符，Windows 另外忽略大小写与斜杠方向。同名服务按 Claude Code 的优先级 managed、local、project、user 决定哪个生效，列表里仍显示被覆盖的条目并注明原因：被 local 覆盖；若 `.mcp.json` 里的同名服务已获批准则被覆盖（批准状态按 settings 文件判断，见下）；`managed-mcp.json` 存在时组织独占控制，其余作用域的条目标为未加载（该文件能解析才下此结论，空的 `mcpServers` 表示全部禁用）；项目在 `/mcp` 中停用的服务也会标出，使用现有配置文件读取预算内的完整有效名称列表，不因条目超过 1024 项而丢掉停用状态。`.mcp.json` 的批准状态与 managed 策略读取 settings 文件（只读，优先级沿用 Claude Code）：`enableAllProjectMcpServers` 或 `enabledMcpjsonServers` 批准、`disabledMcpjsonServers` 在任何文件里都会拒绝；用户与 managed 设置里的批准立即生效，项目或 local 设置里的批准要等你信任该文件夹后 Claude Code 才应用，AgentKib 只读全局文件里匹配当前工作区的那一个条目的 `hasTrustDialogAccepted`（仅严格为 `true` 才算已信任；键沿用上述仓库根优先的顺序，只信任父目录不算），已信任则显示为已批准，找不到该文件夹的信任记录时标为“信任后生效”；没有任何文件批准的显示“待批准”。managed 设置的 `managedMcpServers` 作为 `managed` 服务只读列出，并覆盖其他作用域里的同名服务；`deniedMcpServers` 命中的服务和不在 `allowedMcpServers` 列表里的服务会被标注（`managed-mcp.json` 的服务不受允许列表约束，拒绝列表仍适用；managed 设置里设了 `allowManagedMcpServersOnly` 时只认 managed 的允许列表）。`serverUrl` 按字面通配符匹配，不做 URL 规范化（未验证）。已启用插件（settings 的 `enabledPlugins` 为 true，且 `installed_plugins.json` 有安装记录）在 `.mcp.json` 或插件清单里声明的 MCP 服务作为 `plugin` 来源只读列出，标明由哪个插件提供，与其他条目一样不显示私密值，也不能收录或迁移；优先级低于 local、project、user，且按端点（而不是名字）匹配：指向同一端点的插件服务会标为由你直接配置的服务取代，`deniedMcpServers` 与 `allowedMcpServers` 同样适用于它们。以下内容在这里**不可见**，不是没有：claude.ai 的连接器，以及经 MDM、Windows 注册表、claude.ai 控制台下发的策略或通过 `--settings` 传入的设置。`env`、请求头、URL 凭据等私密值与其他原生条目一样不显示，只标出是否含有私密值。全局配置文件超过 1 MiB、无法解析，或位置不可信（见上）时，`user` 与 `local` 一起显示为配置不可用或只作展示。
+
+插件 `.mcp.json` 和清单引用的 JSON 同时支持 `mcpServers` 包装与直接服务器映射；后声明的同名定义仍覆盖前一项。插件去重使用完整启动命令及参数，或规范化的远程端点，只有可确认生效的直接配置才会使插件条目标为重复；待批准、已禁用或被策略阻止的条目不会作为替代依据。插件在策略和停用列表中的名称为 `plugin:<插件名>:<服务名>`，与普通作用域中的同名服务分开判断；界面保留原有服务简称与插件来源标注。这些均为配置解释，不代表已连接或探测成功。
+
+全局配置位置不可确认，或内容无法读取、损坏、超限时，可读的 `user`／`local` 条目保留只读展示，但不提供信任、停用、同名覆盖或插件替代证据。独立 settings 中的批准事实仍可显示；项目与插件服务同时标注实际加载未验证，因为未知全局文件仍可能包含 local 覆盖或项目停用记录，不能据此认定项目端点替代了插件。已解析 managed 配置的独占、同名覆盖及完整 settings 的允许／拒绝策略继续按已知证据显示，managed 服务本身不受项目停用名单影响。确认不存在的可选全局文件保持正常缺省行为。
+
+Claude 设置的列表在现有文件读取上限内完整合并，界面展示数量的限制不截断实际批准、拒绝或上下文排除规则。`serverUrl` 仅把 `*` 当作通配符，其余字符按字面匹配；重复通配符不会触发正则回溯或阻塞扫描。
+
+当前工作区的 local 配置、停用名单及信任状态按同一份有界全局文件读取，不因其他项目数量超过 10,000 项而静默丢弃，也不返回其他项目的配置内容。
+
+`managed-settings.d` 按文件名字母顺序最多读取 64 份非隐藏 JSON 文件。超过该上限、目录无法读取，或发现的 settings 文件无法读取／解析时，会明确标注设置覆盖不完整；仍展示已经读取的候选，但不据此声称服务已批准加载、被其他作用域覆盖或由直接配置替代插件，也不把残缺允许／拒绝列表当作完整策略。原生 MCP 列表沿用“配置不可用或超过读取限制”的诊断，Context 说明具体读取限制。这仅影响 Claude 原生加载诊断，不更改 Hub 服务授权或收录支持范围；不存在的可选文件或目录保持正常缺省行为。
 
 运行实例按当前作用域展示，重启只作用于该实例所属作用域。「停止该服务的全部实例」保留原有行为，会停止同一服务在所有作用域中的实例。
 
@@ -32,14 +42,14 @@ Claude Code 的「从应用读取」按 Claude Code 自己的作用域读取四�
 
 选择「补齐到 Agent」，明确指定工作区，以及一个、多个或全部支持的 Agent。全局页面不会替你选择第一个工作区。检查结果会列出安装情况、配置文件和项目／用户级范围。
 
-| 检查结果 | 处理 |
-| --- | --- |
-| 缺少 `agentkib` | 添加 Hub 连接 |
-| 已正确绑定 | 跳过，无额外写入 |
-| 同工作区的旧端口或无歧义旧别名 | 修复；保留用户停用状态 |
-| 其他工作区 | 默认跳过；单独选择改绑并重新预览 |
-| 未知同名、身份歧义、损坏配置 | 拒绝该项 |
-| 未安装 | 跳过，不安装、不创建其配置目录 |
+| 检查结果                       | 处理                             |
+| ------------------------------ | -------------------------------- |
+| 缺少 `agentkib`                | 添加 Hub 连接                    |
+| 已正确绑定                     | 跳过，无额外写入                 |
+| 同工作区的旧端口或无歧义旧别名 | 修复；保留用户停用状态           |
+| 其他工作区                     | 默认跳过；单独选择改绑并重新预览 |
+| 未知同名、身份歧义、损坏配置   | 拒绝该项                         |
+| 未安装                         | 跳过，不安装、不创建其配置目录   |
 
 审阅集中差异后确认。Hermes/OpenClaw 等用户级配置需要单独同意 Home 写入，其绑定可能影响其他工作区。后端保留真实快照，页面只看到脱敏差异；每个文件合并为一份计划，共享 manifest 的哈希一并更新。应用前再次检查注册身份、规范路径、端口、profile、安装情况与文件哈希。
 
@@ -47,7 +57,7 @@ Claude Code 的「从应用读取」按 Claude Code 自己的作用域读取四�
 
 「从应用读取」中的迁移是另一项操作：只允许迁移已经收录、显式启用、目标分配正确且当前配置已完成探测的服务。迁移预览与应用重新验证原生来源；只调整原应用接入配置，不覆盖已收录定义。粘贴条目不会按名称猜测原文件。
 
-公开配置与迁移预览均限制脱敏处理量。重复或重叠的私密值只匹配原始文本，不继续处理已生成的遮罩；保存前先检查合并后的有效配置，超限时不写入公开或私密文件。迁移预览中，配置中的大量重复嵌套凭据或过多替换工作超限时，整次预览会被拒绝，且不会生成可应用的迁移回执或修改原配置；请简化相关配置后重新预览。系统不会返回只完成部分脱敏的差异。
+公开配置与迁移预览均限制脱敏处理量。重复或重叠的私密值只匹配原始文本，不继续处理已生成的遮罩；保存前先检查合并后的有效配置，超限时不写入公开或私密文件。迁移预览中，配置中的大量重复嵌套凭据或过多替换工作超限时，整次预览会被拒绝，且不会生成可应用的迁移回执或修改原配置；请简化相关配置后重新预览。系统不会返回只完成部分脱敏的差异。Claude 设置命令与 command 元数据同样先完整脱敏、再截断展示；无法可靠拆解的包装命令含凭据迹象时保守隐藏，不执行命令。长参数名、URL 或连续分隔符使用顺序扫描，避免同步脱敏长时间阻塞后台请求。
 
 ## 分配具体工具
 

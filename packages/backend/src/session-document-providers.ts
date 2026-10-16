@@ -150,91 +150,120 @@ function loss(losses: Map<LossCode, number>, code: LossCode, count = 1): void {
 export interface LineageSegment {
   /** Always disjoint from every other segment of the same lineage. */
   uuids: Set<string>;
+  /** The occurrences whose parent pointers built this segment, not every row sharing a uuid. */
+  lines: Set<number>;
   /** The `compact_boundary` record at the root of this segment, or null at the start of the file. */
   boundary: RecordLine | null;
 }
 export interface Lineage {
   /** Oldest first; the last one is the segment the leaf belongs to. */
   segments: LineageSegment[];
-  /** A boundary at the oldest end could not be joined to the history it compacted. */
+  /** Earlier history is missing or its traversal limit was reached, so the lineage is incomplete. */
   unlinked: boolean;
 }
 const MAX_LINEAGE_SEGMENTS = 1024;
+// Repeatedly retained chains can otherwise cost records × compactions, even in a small file.
+const MAX_HISTORICAL_LINEAGE_VISITS = 250_000;
+interface LineageBudget {
+  remaining: number;
+  exhausted: boolean;
+}
+
+/** The last record index strictly before this line in an ordered snapshot. */
+function lastIndexBefore(versions: RecordLine[], before: number): number {
+  let low = 0;
+  let high = versions.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (versions[middle]!.line < before) low = middle + 1;
+    else high = middle;
+  }
+  return low - 1;
+}
+
+/** The last version of a UUID strictly before this compaction, never a later rewrite. */
+function occurrenceBefore(versions: RecordLine[] | undefined, before: number): RecordLine | null {
+  return versions?.[lastIndexBefore(versions, before)] ?? null;
+}
 
 /**
- * Walk `parentUuid` pointers from `start` to a record without a usable parent. Reaching a record
- * that is already part of an accepted segment, or this walk's own records again (a cycle), means
- * the history cannot be separated from the part that is already taken, so the walk fails.
+ * Walk one historical snapshot. A UUID already emitted by a newer segment can still carry an
+ * older parent here, so output deduplication must not stop traversal. Cycles within this snapshot
+ * remain invalid; absent parents leave an explicitly incomplete fragment.
  */
 function walkFrom(
   start: string,
-  parents: Map<string, string | null>,
-  visited: Set<string>,
-): { uuids: Set<string>; root: string } | null {
-  const uuids = new Set<string>();
+  occurrences: Map<string, RecordLine[]>,
+  before: number,
+  budget: LineageBudget,
+): { rows: RecordLine[]; root: RecordLine; missingParent: boolean } | null {
   let cursor = start;
+  const rows: RecordLine[] = [];
+  const visited = new Set<string>();
   for (;;) {
-    if (visited.has(cursor) || uuids.has(cursor)) return null;
-    uuids.add(cursor);
-    const parent = parents.get(cursor);
-    if (!parent || !parents.has(parent)) return { uuids, root: cursor };
+    if (budget.remaining === 0) {
+      budget.exhausted = true;
+      return null;
+    }
+    budget.remaining--;
+    if (visited.has(cursor)) return null;
+    const current = occurrenceBefore(occurrences.get(cursor), before);
+    if (!current) return rows.length ? { rows, root: rows.at(-1)!, missingParent: true } : null;
+    visited.add(cursor);
+    rows.push(current);
+    const parent = current.value.parentUuid;
+    if (typeof parent !== "string" || !parent) return { rows, root: current, missingParent: false };
     cursor = parent;
   }
 }
 
 /**
- * A boundary has no `parentUuid`; the history it compacted is reached through
- * `logicalParentUuid`, or through the head of the segment Claude Code preserved. The first
- * candidate that joins wins, so a boundary whose logical parent was written after it (a preserved
- * segment) is still connected through its head.
+ * Prefer the first complete pre-boundary chain, falling back to the preserved head or the first
+ * readable incomplete fragment. Neither a candidate nor its ancestors may come from the future.
  */
 function linkEarlier(
   boundary: RecordLine,
-  parents: Map<string, string | null>,
-  visited: Set<string>,
-): { uuids: Set<string>; root: string } | null {
+  occurrences: Map<string, RecordLine[]>,
+  budget: LineageBudget,
+): ReturnType<typeof walkFrom> {
   const candidates = new Set<unknown>([
     boundary.value.logicalParentUuid,
     get(boundary.value, "compactMetadata", "preservedSegment", "headUuid"),
   ]);
+  let partial: ReturnType<typeof walkFrom> = null;
   for (const start of candidates) {
-    if (typeof start !== "string" || !parents.has(start)) continue;
-    const found = walkFrom(start, parents, visited);
-    if (found) return found;
+    if (typeof start !== "string") continue;
+    const found = walkFrom(start, occurrences, boundary.line, budget);
+    // Discard this unfinished candidate; only previously accepted segments are trusted.
+    if (budget.exhausted) return null;
+    if (found && !found.missingParent) return found;
+    partial ??= found;
   }
-  return null;
+  return partial;
 }
 
 /**
- * The records of the conversation Claude Code is (or was last) in, split at each compaction.
- * The newest segment is the chain `parentUuid` alone reaches from the leaf, built from the last
- * occurrence of each uuid exactly as the single-chain reader always did. Older segments are
- * reached through boundaries and built from the first occurrence, because a record that was later
- * rewritten can carry a different parent that no longer belongs to its original segment.
+ * The active chain keeps the last occurrence of each UUID. At each compaction, reconstruct the
+ * chain as it existed just before that boundary. Retained records may have been rewritten across
+ * several compactions: each snapshot needs its own versions, including intermediate ones.
+ * UUIDs belong to their newest accepted segment only, but their older versions still link ancestry.
  * Returns null when there is no leaf, so callers keep treating the file as unfiltered.
  */
 export function claudeLineage(rows: RecordLine[], includeSidechain: boolean): Lineage | null {
-  const lastParents = new Map<string, string | null>();
-  const firstParents = new Map<string, string | null>();
-  const lastBoundaries = new Map<string, RecordLine>();
-  const firstBoundaries = new Map<string, RecordLine>();
-  const sidechains = new Map<string, boolean>();
+  const occurrences = new Map<string, RecordLine[]>();
+  const lastRecords = new Map<string, RecordLine>();
   let lastLeaf: string | undefined;
   for (const row of rows) {
     const { value } = row;
     if (typeof value.uuid !== "string") continue;
-    const sidechain = value.isSidechain === true;
-    const parent = typeof value.parentUuid === "string" ? value.parentUuid : null;
-    const boundary = !parent && value.type === "system" && value.subtype === "compact_boundary";
-    if (!firstParents.has(value.uuid)) {
-      firstParents.set(value.uuid, parent);
-      if (boundary) firstBoundaries.set(value.uuid, row);
-    }
-    lastParents.set(value.uuid, parent);
-    if (boundary) lastBoundaries.set(value.uuid, row);
-    else lastBoundaries.delete(value.uuid);
-    sidechains.set(value.uuid, sidechain);
-    if (["user", "assistant"].includes(value.type) && (includeSidechain || !sidechain))
+    const versions = occurrences.get(value.uuid) ?? [];
+    versions.push(row);
+    occurrences.set(value.uuid, versions);
+    lastRecords.set(value.uuid, row);
+    if (
+      ["user", "assistant"].includes(value.type) &&
+      (includeSidechain || value.isSidechain !== true)
+    )
       lastLeaf = value.uuid;
   }
   let explicitLeaf: string | undefined;
@@ -242,8 +271,8 @@ export function claudeLineage(rows: RecordLine[], includeSidechain: boolean): Li
     const leaf = rows[index]!.value.leafUuid;
     if (
       typeof leaf === "string" &&
-      lastParents.has(leaf) &&
-      (includeSidechain || !sidechains.get(leaf))
+      lastRecords.has(leaf) &&
+      (includeSidechain || lastRecords.get(leaf)!.value.isSidechain !== true)
     ) {
       explicitLeaf = leaf;
       break;
@@ -252,34 +281,50 @@ export function claudeLineage(rows: RecordLine[], includeSidechain: boolean): Li
   let current = explicitLeaf ?? lastLeaf;
   if (!current) return null;
   const newest = new Set<string>();
-  let root: string | null = null;
+  const newestLines = new Set<number>();
+  let root: RecordLine | null = null;
   while (!newest.has(current)) {
     newest.add(current);
-    const parent = lastParents.get(current);
-    if (!parent) {
-      root = current;
+    const record = lastRecords.get(current);
+    if (record) newestLines.add(record.line);
+    const parent = record?.value.parentUuid;
+    if (typeof parent !== "string" || !parent) {
+      root = record ?? null;
       break;
     }
     current = parent;
   }
-  const segments: LineageSegment[] = [{ uuids: newest, boundary: null }];
+  const segments: LineageSegment[] = [{ uuids: newest, lines: newestLines, boundary: null }];
   const visited = new Set(newest);
-  let oldest = { segment: segments[0]!, root, boundaries: lastBoundaries };
+  // Share the budget across boundaries and failed logical-parent/preserved-head attempts.
+  // The latest active chain above retains its existing behavior independently of this limit.
+  const budget: LineageBudget = { remaining: MAX_HISTORICAL_LINEAGE_VISITS, exhausted: false };
+  let oldest = { segment: segments[0]!, root };
   let unlinked = false;
   while (oldest.root !== null) {
-    const boundary = oldest.boundaries.get(oldest.root);
-    if (!boundary) break;
+    const boundary = oldest.root;
+    if (boundary.value.type !== "system" || boundary.value.subtype !== "compact_boundary") break;
     oldest.segment.boundary = boundary;
     const earlier =
-      segments.length < MAX_LINEAGE_SEGMENTS ? linkEarlier(boundary, firstParents, visited) : null;
+      segments.length < MAX_LINEAGE_SEGMENTS ? linkEarlier(boundary, occurrences, budget) : null;
     if (!earlier) {
       unlinked = true;
       break;
     }
-    for (const id of earlier.uuids) visited.add(id);
-    const segment: LineageSegment = { uuids: earlier.uuids, boundary: null };
+    const segment: LineageSegment = { uuids: new Set(), lines: new Set(), boundary: null };
+    for (const row of earlier.rows) {
+      const id = row.value.uuid as string;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      segment.uuids.add(id);
+      segment.lines.add(row.line);
+    }
     segments.push(segment);
-    oldest = { segment, root: earlier.root, boundaries: firstBoundaries };
+    if (earlier.missingParent) {
+      unlinked = true;
+      break;
+    }
+    oldest = { segment, root: earlier.root };
   }
   return { segments: segments.reverse(), unlinked };
 }
@@ -446,19 +491,39 @@ export function rowTurn(
 const SUMMARY_NOTICE =
   "[AgentKib: context summary generated by Claude Code when it compacted this conversation. It summarizes earlier turns and is not a message written by the user.]";
 
-/** The compaction summary of a segment: the first summary record in it, else a child of the boundary. */
+/** Prefer the segment's selected summary, then a direct child in the same boundary snapshot. */
 function findSummary(
   segmentRows: RecordLine[],
   boundary: RecordLine,
   rows: RecordLine[],
+  before: number,
+  includeSidechain: boolean,
 ): RecordLine | null {
-  const isSummary = ({ value }: RecordLine) =>
-    value.type === "user" && value.isCompactSummary === true;
+  const id = boundary.value.uuid;
+  if (typeof id !== "string" || !id) return null;
+  const isSummary = ({ line, value }: RecordLine) =>
+    line > boundary.line &&
+    line < before &&
+    typeof value.uuid === "string" &&
+    value.uuid.length > 0 &&
+    value.type === "user" &&
+    value.isCompactSummary === true &&
+    (includeSidechain || value.isSidechain !== true);
   const inside = segmentRows.find(isSummary);
   if (inside) return inside;
-  const id = boundary.value.uuid;
-  if (typeof id !== "string") return null;
-  return rows.find((row) => isSummary(row) && row.value.parentUuid === id) ?? null;
+  const seen = new Set<string>();
+  let selected: RecordLine | null = null;
+  // Read newest first so a later non-summary, sidechain or reparented version also supersedes
+  // an old summary. The window excludes other occurrences of this boundary and future rewrites.
+  for (let index = lastIndexBefore(rows, before); index >= 0; index--) {
+    const row = rows[index]!;
+    if (row.line <= boundary.line) break;
+    const uuid = row.value.uuid;
+    if (typeof uuid !== "string" || !uuid || seen.has(uuid)) continue;
+    seen.add(uuid);
+    if (isSummary(row) && row.value.parentUuid === id) selected = row;
+  }
+  return selected;
 }
 
 function summaryTurn({ line, value }: RecordLine): Turn | null {
@@ -539,12 +604,12 @@ export function readClaudeDocument(
     }
     return finishDocument(source, turns, losses);
   }
-  const owner = new Map<string, number>();
+  const owner = new Map<number, number>();
   for (const [index, segment] of lineage.segments.entries())
-    for (const id of segment.uuids) owner.set(id, index);
+    for (const line of segment.lines) owner.set(line, index);
   const buckets: RecordLine[][] = lineage.segments.map(() => []);
   for (const row of snapshot.rows) {
-    const index = typeof row.value.uuid === "string" ? owner.get(row.value.uuid) : undefined;
+    const index = owner.get(row.line);
     if (index !== undefined) buckets[index]!.push(row);
   }
   const withHistory = options.includePreCompactionHistory === true;
@@ -565,7 +630,13 @@ export function readClaudeDocument(
     }
     if (segment.boundary) {
       ordinal++;
-      const summarized = findSummary(rows, segment.boundary, snapshot.rows);
+      const summarized = findSummary(
+        rows,
+        segment.boundary,
+        snapshot.rows,
+        lineage.segments[index + 1]?.boundary?.line ?? Infinity,
+        includeSidechain,
+      );
       const summary = summarized ? summaryTurn(summarized) : null;
       if (withHistory)
         turns.push(

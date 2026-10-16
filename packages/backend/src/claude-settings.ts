@@ -155,50 +155,505 @@ const isObject = (value: unknown): value is Obj =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const own = (value: Obj, key: string) => Object.hasOwn(value, key);
 const strings = (value: unknown): string[] =>
-  Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string").slice(0, MAX_ENTRIES)
-    : [];
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
 // ---- redaction -------------------------------------------------------------------------------
 
 const SECRET_WORD = "(?:token|key|secret|passw(?:or)?d|passwd|auth|credential|bearer|cookie|sig)";
+const SHELL_SPACING = String.raw`(?:\s|\\\r?\n)`;
+const SECRET_NAME = new RegExp(SECRET_WORD, "i");
+const ACCOUNT_ARGUMENT = new RegExp(
+  `(^|[\\s(;&|])(?:--(?:proxy-)?user(?:=|${SHELL_SPACING}+)|-[uU]${SHELL_SPACING}*)`,
+  "g",
+);
+const HEADER_ARGUMENT = new RegExp(
+  `(^|[\\s(;&|])(?:--(?:proxy-)?header(?:=|${SHELL_SPACING}+)|-H${SHELL_SPACING}*)`,
+  "g",
+);
+// Only curl's argument-free short options may precede u/U in a combined option. An option
+// such as -d consumes the rest of its word as data and must not turn it into a credential.
+const CURL_ACCOUNT =
+  /^(--(?:proxy-)?user(?:=|$)|-[aBqfGgIiJkLlMnNOpRjsSvVZ012346#]*[uU])([\s\S]*)$/;
+const CURL_HEADER = /^(--(?:proxy-)?header(?:=|$)|-[aBqfGgIiJkLlMnNOpRjsSvVZ012346#]*H)([\s\S]*)$/;
+const SECRET_HEADER =
+  /^\s*(?:authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie|set-cookie)\s*:/i;
 
-/**
- * Text that may be a command, a rule or a URL, made safe to show: the shared session redaction
- * first (known prefixes, `Bearer`, secret-looking `key=value`), then rules for what that one
- * does not know (flags such as `--token x`, `NAME_KEY=x`, header lines, URL credentials, long
- * opaque blobs). Shortened last, so that a cut can never leave half a secret.
- */
-export function redactText(text: string): string {
-  let output = Array.from(text, (character) => {
+/** Only literal shell words are interpreted. Dynamic or incomplete words hide the remainder:
+ * matching substitutions would require a shell parser (including nesting, heredocs and case
+ * patterns), and guessing their closing delimiter could expose part of the credential. */
+function shellArgument(text: string, start: number): { end: number; literal: string | null } {
+  let quote: "'" | '"' | undefined;
+  const literal: string[] = [];
+  let at = start;
+  for (; at < text.length; at++) {
+    const character = text[at]!;
+    if (quote === "'") {
+      if (character === "'") quote = undefined;
+      else literal.push(character);
+    } else if (character === "\\") {
+      if (++at === text.length) return { end: text.length, literal: null };
+      if (text[at] === "\r" && text[at + 1] === "\n") at++;
+      else if (text[at] !== "\n") literal.push(text[at]!);
+    } else if (
+      character === "`" ||
+      (character === "$" &&
+        (["(", "{", "[", "'", '"'].includes(text[at + 1]!) ||
+          /[A-Za-z0-9_@*#?$!-]/.test(text[at + 1] ?? "")))
+    ) {
+      return { end: text.length, literal: null };
+    } else if (quote === '"') {
+      if (character === '"') quote = undefined;
+      else literal.push(character);
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/[\s;&|()<>]/.test(character)) {
+      break;
+    } else literal.push(character);
+  }
+  return { end: at, literal: quote ? null : literal.join("") };
+}
+function shellSpacingEnd(text: string, start: number): number {
+  let at = start;
+  while (at < text.length) {
+    if (/\s/.test(text[at]!)) at++;
+    else if (text[at] === "\\" && text[at + 1] === "\n") at += 2;
+    else if (text[at] === "\\" && text[at + 1] === "\r" && text[at + 2] === "\n") at += 3;
+    else break;
+  }
+  return at;
+}
+function cleanControls(text: string): string {
+  return Array.from(text, (character) => {
     const code = character.charCodeAt(0);
     return (code < 0x20 && code !== 0x09 && code !== 0x0a) || (code >= 0x7f && code <= 0x9f)
       ? " "
       : character;
   }).join("");
+}
+function redactUrlAccounts(text: string): string {
+  const schemes = /[a-z0-9+.-]+/gi;
+  const pieces: string[] = [];
+  let copied = 0;
+  for (let match = schemes.exec(text); match; match = schemes.exec(text)) {
+    const end = match.index + match[0].length;
+    if (!text.startsWith("://", end) || !/[a-z]/i.test(match[0])) continue;
+    const start = end + 3;
+    let at = start;
+    let accountEnd = -1;
+    while (at < text.length && !/[\s/'"]/.test(text[at]!)) {
+      if (text[at] === "@" && accountEnd < 0) accountEnd = at;
+      at++;
+    }
+    if (accountEnd >= start) {
+      pieces.push(text.slice(copied, start), "[REDACTED]");
+      copied = accountEnd;
+    }
+    schemes.lastIndex = at;
+  }
+  pieces.push(text.slice(copied));
+  return pieces.join("");
+}
+function redactQueryValues(text: string): string {
+  const prefixes = /[?&#;]([^=?&\s'"#;]*)=/g;
+  const pieces: string[] = [];
+  let copied = 0;
+  for (let match = prefixes.exec(text); match; match = prefixes.exec(text)) {
+    if (!SECRET_NAME.test(match[1]!)) continue;
+    const start = prefixes.lastIndex;
+    let end = start;
+    while (end < text.length && !/[&\s'"#;]/.test(text[end]!)) end++;
+    if (end === start) continue;
+    pieces.push(text.slice(copied, start), "[REDACTED]");
+    copied = end;
+    prefixes.lastIndex = end;
+  }
+  pieces.push(text.slice(copied));
+  return pieces.join("");
+}
+
+/**
+ * Text that may be a command, a rule or a URL, made safe to show. Complete secret arguments
+ * must be hidden before the shared line-oriented redaction or control-character cleanup:
+ * both can split escaped spaces, joined quotes and continued values and leave a suffix behind.
+ * URL, header and opaque-value rules follow. Shortened last, never through a raw secret.
+ */
+export function redactText(text: string): string {
+  return redactCommandText(text, 0);
+}
+function redactCommandText(text: string, depth: number): string {
+  // Protect already-redacted arguments from broad header/line rules. For example, applying
+  // those rules to `--api-key=[REDACTED]; echo ok` would also remove the ordinary command.
+  // Escape input markers first, so restoration always uses a fixed-size delimiter. Growing a
+  // delimiter to exceed a malicious run would make the final pattern repeatedly rescan it.
+  const marker = "\ue000";
+  const argumentsHidden: string[] = [];
+  const restore = (value: string) =>
+    value.replace(
+      /\ue000(\d+)\ue000/g,
+      (_match, index: string) => argumentsHidden[Number(index)] ?? "[REDACTED]",
+    );
+  const protect = (safe: string): string => {
+    // A nested script/prefix may already contain protected literal markers from this pass.
+    argumentsHidden.push(restore(safe));
+    return `${marker}${argumentsHidden.length - 1}${marker}`;
+  };
+  text = text.replaceAll(marker, () => protect(marker));
+  const hideArgument = (prefix: string): string => {
+    return protect(`${cleanControls(prefix)}[REDACTED]`);
+  };
+  const hideNamedArguments = (input: string, assignment: boolean): string => {
+    // Consume each complete name once, then inspect it. Secret words must not sit between
+    // overlapping unbounded character groups: long near-matches otherwise take quadratic time.
+    const names = assignment ? /[a-z0-9_]+/gi : /[-a-z0-9_]+/gi;
+    const pieces: string[] = [];
+    let copied = 0;
+    for (let match = names.exec(input); match; match = names.exec(input)) {
+      const offset = assignment ? 0 : match[0].indexOf("-");
+      if (offset < 0 || !SECRET_NAME.test(match[0].slice(offset))) continue;
+      const end = match.index + match[0].length;
+      let start = shellSpacingEnd(input, end);
+      if (input[start] === "=") start = shellSpacingEnd(input, start + 1);
+      else if (assignment || start === end) continue;
+      const argument = shellArgument(input, start);
+      if (argument.end === start) continue;
+      const prefix = match.index + offset;
+      pieces.push(input.slice(copied, prefix), hideArgument(input.slice(prefix, start)));
+      copied = argument.end;
+      names.lastIndex = copied;
+    }
+    pieces.push(input.slice(copied));
+    return pieces.join("");
+  };
+  const hideArguments = (
+    input: string,
+    pattern: RegExp,
+    sensitive: (literal: string | null, index: number) => boolean = () => true,
+  ): string => {
+    pattern.lastIndex = 0;
+    let output = "";
+    let copied = 0;
+    for (let match = pattern.exec(input); match; match = pattern.exec(input)) {
+      const start = match.index + match[0].length;
+      const argument = shellArgument(input, start);
+      // Even a plain argument was fully inspected. Do not rescan option-looking text inside
+      // that same quoted word after the sensitivity check rejects it.
+      pattern.lastIndex = argument.end;
+      if (argument.end === start || !sensitive(argument.literal, match.index)) continue;
+      const boundary = /^[\s(;&|]+/.exec(match[0])?.[0] ?? "";
+      output +=
+        input.slice(copied, match.index) + boundary + hideArgument(match[0].slice(boundary.length));
+      copied = argument.end;
+      pattern.lastIndex = copied;
+    }
+    return output + input.slice(copied);
+  };
+  const accountSensitive = (literal: string | null) => literal === null || literal.includes(":");
+  const headerSensitive = (literal: string | null) =>
+    literal === null || SECRET_HEADER.test(literal);
+  type Word = { start: number; end: number; literal: string | null };
+  // Walk literal words and the wrappers whose argument boundaries are known. Unknown
+  // execution contexts with credential-looking curl text are opaque, not assumed safe.
+  // Quoted separators remain data, so `echo curl -su name:group` is not treated as curl.
+  const shellCommands = (input: string): string => {
+    const patches: { start: number; end: number; text: string }[] = [];
+    let hiddenRemainder = false;
+    const hideRest = (start: number) => {
+      patches.push({ start, end: input.length, text: hideArgument("") });
+      hiddenRemainder = true;
+    };
+    const hideWord = (word: Word) => {
+      patches.push({ start: word.start, end: word.end, text: hideArgument("") });
+      if (word.literal === null) hiddenRemainder = true;
+    };
+    const hideUncertain = (words: Word[], start: number) => {
+      const remaining = words.slice(start);
+      const decoded = remaining
+        .map((word) => word.literal ?? input.slice(word.start, word.end))
+        .join(" ");
+      // An opaque wrapper may execute a quoted argument as another script. Collapse quote/
+      // escape syntax only for conservative detection, never to infer an execution boundary.
+      const inspection = decoded.replace(/\\\r?\n/g, "").replace(/['"\\]/g, "");
+      const curl = /\bcurl(?:\.exe)?\b/.test(inspection);
+      const account =
+        /(?:^|[\s'"])(?:--(?:proxy-)?user(?:[=\s]|$)|-[aBqfGgIiJkLlMnNOpRjsSvVZ012346#]*[uU])/.test(
+          inspection,
+        );
+      const uncertain = remaining.some((word) => word.literal === null);
+      const dynamic = uncertain || /[$`]/.test(decoded);
+      const secretOption = [...inspection.matchAll(/--?[-a-z0-9_]+/gi)].some((match) =>
+        SECRET_NAME.test(match[0]),
+      );
+      const header =
+        /(?:^|\s)(?:--(?:proxy-)?header(?:[=\s]|$)|-[aBqfGgIiJkLlMnNOpRjsSvVZ012346#]*H)/.test(
+          inspection,
+        );
+      const secretHeader = /(?:authorization|api-key|x-auth-token|cookie)\s*:/i.test(inspection);
+      if (
+        (curl && (account || dynamic)) ||
+        (curl && header && secretHeader) ||
+        (uncertain && (secretOption || header)) ||
+        (dynamic && (account || (inspection.includes(":") && /(?:^|\s)-/.test(inspection))))
+      ) {
+        hideRest(words[start]!.start);
+      }
+    };
+    const literalArguments = (words: Word[]) => {
+      for (let index = 0; index < words.length; index++) {
+        const word = words[index]!;
+        if (word.literal === null) {
+          // The spelling of a dynamic option cannot establish whether it is sensitive.
+          // An ordinary dynamic argument remains available to the command/wrapper check.
+          const spelling = input.slice(word.start, word.end).replace(/['"\\]/g, "");
+          if (spelling.startsWith("-")) {
+            hideRest(word.start);
+            return;
+          }
+          continue;
+        }
+        const assignment = /^([a-z_][a-z0-9_]*=)([\s\S]+)$/i.exec(word.literal);
+        if ((assignment && SECRET_NAME.test(assignment[1]!)) || SECRET_HEADER.test(word.literal)) {
+          const prefix = assignment?.[1] ?? "";
+          patches.push({
+            start: word.start,
+            end: word.end,
+            text: hideArgument(input.startsWith(prefix, word.start) ? prefix : ""),
+          });
+          continue;
+        }
+        const named = /^(-[-a-z0-9_]+)(=|$)/i.exec(word.literal);
+        const header = /^(--(?:proxy-)?header=|-H)([\s\S]+)$/.exec(word.literal);
+        const separateHeader = /^(?:--(?:proxy-)?header|-H)$/.test(word.literal);
+        const secret = named !== null && SECRET_NAME.test(named[1]!);
+        if (secret || header || separateHeader) {
+          const prefix = header?.[1] ?? (named?.[2] === "=" ? `${named[1]}=` : undefined);
+          if (prefix) {
+            const value = word.literal.slice(prefix.length);
+            if (value && (secret || headerSensitive(value)))
+              patches.push({
+                start: word.start,
+                end: word.end,
+                text: hideArgument(input.startsWith(prefix, word.start) ? prefix : ""),
+              });
+          } else {
+            const value = words[index + 1];
+            if (value && (secret || headerSensitive(value.literal))) hideWord(value);
+            // A header value remains one argument even when it happens to look like a flag.
+            if (value) index++;
+          }
+          continue;
+        }
+        // Reconstruct only words whose decoded URL contains a credential. Safe literal words
+        // retain their original quoting/escaping; raw-only URL scans miss joined query names.
+        const safeUrl = redactQueryValues(redactUrlAccounts(word.literal));
+        if (safeUrl !== word.literal)
+          patches.push({ start: word.start, end: word.end, text: safeUrl });
+      }
+    };
+    const command = (words: Word[]) => {
+      literalArguments(words);
+      if (hiddenRemainder) return;
+      let at = 0;
+      while (at < words.length) {
+        const word = words[at]!;
+        if (word.literal === null) {
+          // A dynamic assignment or executable can hide the true command boundary. Preserve
+          // ordinary dynamic text, but never show a remaining credential-looking curl call.
+          hideUncertain(words, at);
+          return;
+        }
+        if (/^[a-zA-Z_][a-zA-Z0-9_]*=/.test(word.literal)) {
+          at++;
+          continue;
+        }
+        const executable = word.literal.replace(/^.*[/\\]/, "").replace(/\.exe$/, "");
+        if (executable === "env" || executable === "command") {
+          at++;
+          while (at < words.length) {
+            const option = words[at]!.literal;
+            if (option === "--") {
+              at++;
+              break;
+            }
+            if (
+              (executable === "command" && option === "-p") ||
+              (executable === "env" &&
+                (option === "-i" ||
+                  option === "--ignore-environment" ||
+                  (option !== null && /^--(?:unset|chdir)=/.test(option))))
+            ) {
+              at++;
+              continue;
+            }
+            if (executable === "env" && ["-u", "--unset", "-C", "--chdir"].includes(option!)) {
+              const argument = words[at + 1];
+              if (!argument) return;
+              if (argument.literal === null) {
+                hideRest(argument.start);
+                return;
+              }
+              at += 2;
+              continue;
+            }
+            // env -S and shell expansions can synthesize arbitrary options. Do not guess
+            // where a credential ends in such a command: hide its remaining words.
+            if (option === null || (executable === "env" && option.startsWith("-"))) {
+              hideUncertain(words, at);
+              return;
+            }
+            if (option.startsWith("-")) {
+              // command -v/-V only reports a command; other unsupported options are opaque.
+              if (option !== "-v" && option !== "-V") hideUncertain(words, at);
+              return;
+            }
+            break;
+          }
+          continue;
+        }
+        if (["sh", "bash", "zsh", "dash", "ksh"].includes(executable)) {
+          let scriptHandled = false;
+          for (let index = at + 1; index < words.length; index++) {
+            const option = words[index]!.literal;
+            if (option === null) {
+              hideRest(words[index]!.start);
+              break;
+            }
+            if (!/^-[a-z]+$/.test(option)) break;
+            if (!option.includes("c")) continue;
+            const script = words[index + 1];
+            if (!script) break;
+            scriptHandled = true;
+            if (script.literal === null || depth >= 4) {
+              hideWord(script);
+            } else {
+              const sanitized = redactCommandText(script.literal, depth + 1);
+              // The outer pass must not interpret a script's closing quote as the start of
+              // a credential word (for example `sh -c 'python -u script.py'`). Only keep a
+              // fragment here after its full redaction pass, including URL/header rules.
+              const protectedScript = protect(
+                sanitized === script.literal
+                  ? input.slice(script.start, script.end)
+                  : `'${sanitized.replace(/'/g, "'\\''")}'`,
+              );
+              patches.push({
+                start: script.start,
+                end: script.end,
+                text: protectedScript,
+              });
+            }
+            break;
+          }
+          if (!scriptHandled && !hiddenRemainder) hideUncertain(words, at);
+          return;
+        }
+        if (executable !== "curl") {
+          // Literal echo/printf descriptions and escaped parameter names are data. Expansions
+          // in their arguments can still execute a command and must pass the opaque check.
+          const literalText =
+            executable === "echo" || executable === "printf" || executable.includes("$");
+          if (!literalText || words.some((item) => item.literal === null)) hideUncertain(words, at);
+          return;
+        }
+        for (let index = at + 1; index < words.length; index++) {
+          const argument = words[index]!;
+          if (argument.literal === null) {
+            hideRest(argument.start);
+            break;
+          }
+          const combined = CURL_ACCOUNT.exec(argument.literal);
+          const header = CURL_HEADER.exec(argument.literal);
+          if (header) {
+            if (header[2]) {
+              if (headerSensitive(header[2]))
+                patches.push({
+                  start: argument.start,
+                  end: argument.end,
+                  text: hideArgument(
+                    input.startsWith(header[1]!, argument.start) ? header[1]! : "",
+                  ),
+                });
+            } else {
+              const value = words[index + 1];
+              if (value && headerSensitive(value.literal)) hideWord(value);
+              if (value) index++;
+            }
+            continue;
+          }
+          if (!combined) continue;
+          if (combined[2]) {
+            if (accountSensitive(combined[2]))
+              patches.push({
+                start: argument.start,
+                end: argument.end,
+                text: hideArgument(
+                  input.startsWith(combined[1]!, argument.start) ? combined[1]! : "",
+                ),
+              });
+          } else {
+            const credential = words[index + 1];
+            if (!credential || !accountSensitive(credential.literal)) continue;
+            hideWord(credential);
+            if (credential.literal === null) break;
+            index++;
+          }
+        }
+        return;
+      }
+    };
+    let words: Word[] = [];
+    for (let at = 0; at < input.length;) {
+      const character = input[at]!;
+      if (/[;&|()<>\n\r]/.test(character)) {
+        command(words);
+        words = [];
+        // An opaque wrapper hid the remainder. Do not parse it again or duplicate patches.
+        if (hiddenRemainder) break;
+        at++;
+      } else if (character === "\\" && input[at + 1] === "\n") at += 2;
+      else if (character === "\\" && input[at + 1] === "\r" && input[at + 2] === "\n") at += 3;
+      else if (/\s/.test(character)) at++;
+      else {
+        const argument = shellArgument(input, at);
+        words.push({ start: at, ...argument });
+        at = argument.end;
+      }
+    }
+    if (words.length && !hiddenRemainder) command(words);
+    let output = "";
+    let copied = 0;
+    const byStart = new Map<number, (typeof patches)[number]>();
+    for (const patch of patches) {
+      const previous = byStart.get(patch.start);
+      if (!previous || patch.end > previous.end) byStart.set(patch.start, patch);
+    }
+    // Two inspections can redact the same word (for example a curl header). Apply spans in
+    // input order without sorting or revisiting bytes covered by an enclosing opaque span.
+    for (let at = 0; at < input.length;) {
+      const patch = byStart.get(at);
+      if (!patch) at++;
+      else {
+        output += input.slice(copied, at) + patch.text;
+        copied = patch.end;
+        at = patch.end;
+      }
+    }
+    return output + input.slice(copied);
+  };
+  let output = shellCommands(text);
+  output = hideNamedArguments(output, false);
+  output = hideNamedArguments(output, true);
+  // Curl account options do not contain a secret keyword. Match one complete shell argument,
+  // including joined quotes and escaped spaces, so a quoted password cannot leak its suffix.
+  // Require user:password syntax: unrelated flags (such as python -u) keep their plain values.
+  output = hideArguments(output, ACCOUNT_ARGUMENT, accountSensitive);
+  output = hideArguments(output, HEADER_ARGUMENT, headerSensitive);
+  output = cleanControls(output);
   output = sanitizeSessionText(output, { value: 0 });
-  output = output.replace(
-    /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:'"]*(?::[^\s/@'"]*)?@/gi,
-    "$1[REDACTED]@",
-  );
-  output = output.replace(
-    new RegExp(`([?&#;][^=&\\s'"#;]*${SECRET_WORD}[^=&\\s'"#;]*=)[^&\\s'"#;]+`, "gi"),
-    "$1[REDACTED]",
-  );
-  output = output.replace(
-    new RegExp(
-      `(--?[a-z0-9_-]*${SECRET_WORD}[a-z0-9_-]*(?:=|\\s+))("[^"]*"|'[^']*'|[^\\s'"]+)`,
-      "gi",
-    ),
-    "$1[REDACTED]",
-  );
-  output = output.replace(
-    new RegExp(
-      `(\\b[a-z_][a-z0-9_]*${SECRET_WORD}[a-z0-9_]*\\s*=\\s*)("[^"]*"|'[^']*'|[^\\s'"]+)`,
-      "gi",
-    ),
-    "$1[REDACTED]",
-  );
+  // Scan maximal scheme/parameter names before inspecting their delimiters. A failed URL or
+  // query match must not retry the same long name at every punctuation/secret-word boundary.
+  output = redactUrlAccounts(output);
+  // Ordinary values can contain nested URLs. Leave them in the scan; consume a complete
+  // value only when its own parameter name is sensitive.
+  output = redactQueryValues(output);
   output = output.replace(
     /\b(authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie|set-cookie)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\n"']+)/gi,
     "$1$2[REDACTED]",
@@ -213,6 +668,7 @@ export function redactText(text: string): string {
     /(?<![A-Za-z0-9_\-+/=])[A-Za-z0-9+]{16,}\/[A-Za-z0-9+/=]{16,}(?![A-Za-z0-9_\-+/=])/g,
     (blob) => (/[a-z]/.test(blob) && /[A-Z]/.test(blob) && /\d/.test(blob) ? "[REDACTED]" : blob),
   );
+  output = restore(output);
   return output.length > MAX_TEXT_CHARS ? `${output.slice(0, MAX_TEXT_CHARS)}…` : output;
 }
 
@@ -236,7 +692,8 @@ function unionList(base: unknown[], over: unknown[]): unknown[] {
     seen.add(key);
     output.push(item);
   }
-  return output.slice(0, MAX_ENTRIES);
+  // File byte limits bound input; display limits must never remove effective policy.
+  return output;
 }
 /** `over` wins for single values, lists are combined, nested blocks merge key by key. */
 function merge(base: Obj, over: Obj, top = true, depth = 0): Obj {
@@ -299,6 +756,7 @@ interface Loaded {
   file: SettingsFile;
   data?: Obj;
 }
+type ManagedDropInsIssue = "limited" | "unreadable" | "network";
 
 function readFileLayer(
   layer: SettingsLayerId,
@@ -368,6 +826,7 @@ export function readClaudeSettings(options: ClaudeSettingsOptions): ClaudeSettin
   const home = userHome(options.environment);
   const config = options.config ?? resolveClaudeConfig(options.environment, home, platform);
   const loaded: Loaded[] = [];
+  let managedDropInsIssue: ManagedDropInsIssue | undefined;
   const layers = new Map<SettingsLayerId, Obj>();
   const origins = new Map<string, string>();
   const fold = (layer: SettingsLayerId, items: Loaded[]) => {
@@ -394,15 +853,21 @@ export function readClaudeSettings(options: ClaudeSettingsOptions): ClaudeSettin
       try {
         names = context.io.readdir(directory.real);
       } catch {
-        // An unreadable drop-in folder shows up as the missing files it holds.
+        managedDropInsIssue = "unreadable";
       }
       names = names
         .filter((name) => name.endsWith(".json") && !name.startsWith("."))
-        .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
-        .slice(0, MAX_DROP_INS);
-      for (const name of names)
-        items.push(readFileLayer("managed", p.join(directory.real, name), null, options, context));
-    }
+        .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+      if (names.length > MAX_DROP_INS) managedDropInsIssue = "limited";
+      for (const name of names.slice(0, MAX_DROP_INS)) {
+        const item = readFileLayer("managed", p.join(directory.real, name), null, options, context);
+        // A name returned by readdir is known to exist. Losing it before the read is an
+        // incomplete snapshot, unlike an optional settings file that was absent throughout.
+        if (item.file.status === "missing") item.file.status = "unreadable";
+        items.push(item);
+      }
+    } else if (directory.kind !== "missing")
+      managedDropInsIssue = directory.kind === "network" ? "network" : "unreadable";
     fold("managed", items);
   }
 
@@ -415,12 +880,13 @@ export function readClaudeSettings(options: ClaudeSettingsOptions): ClaudeSettin
       loaded.map((item) => item.file),
       layers,
       origins,
+      managedDropInsIssue,
     );
   }
   // local: the repository root's file wins over the working directory's older copy.
   const repository = resolveRepoRoot(options.cwd, context).base;
   const localDirs =
-    platform === "win32" || pathKey(repository, platform) === pathKey(home, platform)
+    pathKey(repository, platform) === pathKey(home, platform)
       ? [options.cwd]
       : pathKey(repository, platform) === pathKey(options.cwd, platform)
         ? [options.cwd]
@@ -448,6 +914,7 @@ export function readClaudeSettings(options: ClaudeSettingsOptions): ClaudeSettin
     loaded.map((item) => item.file),
     layers,
     origins,
+    managedDropInsIssue,
   );
 }
 
@@ -474,17 +941,20 @@ export class ClaudeSettings {
   #layers: Map<SettingsLayerId, Obj>;
   #origins: Map<string, string>;
   #platform: NodeJS.Platform;
+  #managedDropInsIssue?: ManagedDropInsIssue;
 
   constructor(
     platform: NodeJS.Platform,
     files: SettingsFile[],
     layers: Map<SettingsLayerId, Obj>,
     origins: Map<string, string>,
+    managedDropInsIssue?: ManagedDropInsIssue,
   ) {
     this.#platform = platform;
     this.files = files;
     this.#layers = layers;
     this.#origins = origins;
+    this.#managedDropInsIssue = managedDropInsIssue;
   }
 
   /** At least one settings file was found and parsed. */
@@ -492,11 +962,28 @@ export class ClaudeSettings {
     return this.#layers.size > 0;
   }
   /**
-   * At least one settings file exists, parsed or not. A path that was not followed (a link to a
-   * network share) or could not be looked at does not count: Claude Code would not read it either.
+   * A settings file exists or the scan is incomplete. Failed reads must keep diagnostics visible
+   * even when no other settings file was available; absent optional files alone remain silent.
    */
   get anyFile(): boolean {
-    return this.files.some((file) => !["missing", "network", "unreadable"].includes(file.status));
+    return !this.complete || this.files.some((file) => file.status !== "missing");
+  }
+  /** Whether every discovered settings source was read within the local scan's limits. */
+  get complete(): boolean {
+    return (
+      this.#managedDropInsIssue === undefined &&
+      this.files.every((file) => file.status === "ok" || file.status === "missing")
+    );
+  }
+  #dropInsCoverage(): string | undefined {
+    switch (this.#managedDropInsIssue) {
+      case "limited":
+        return `Managed settings drop-ins are incomplete: the ${MAX_DROP_INS}-file read limit was reached; additional files were not read.`;
+      case "network":
+        return "Managed settings drop-ins are incomplete: the directory is a network path and was not read.";
+      case "unreadable":
+        return "Managed settings drop-ins are incomplete: the directory could not be read.";
+    }
   }
   /** Layers that hold data, highest precedence first. */
   #present(): SettingsLayerId[] {
@@ -522,7 +1009,8 @@ export class ClaudeSettings {
   /** `claudeMdExcludes` patterns: arrays merge across every layer. */
   claudeMdExcludes(): string[] {
     const value = this.#merged().claudeMdExcludes;
-    return strings(value).filter((pattern) => pattern !== "" && pattern.length <= 1024);
+    // Settings reads bound the input bytes; the shared matcher budget decides long rules.
+    return strings(value).filter((pattern) => pattern !== "");
   }
   /** The `claudeMd` text. Honored in managed settings only. */
   managedClaudeMd(): { text: string; file: string } | null {
@@ -632,6 +1120,8 @@ export class ClaudeSettings {
    * only one. `deniedMcpServers` always merges.
    */
   mcpPolicy(): {
+    /** False means these partial values cannot establish loading or precedence. */
+    complete: boolean;
     allowed?: McpPolicyEntry[];
     denied: McpPolicyEntry[];
     managedOnly: boolean;
@@ -657,6 +1147,7 @@ export class ClaudeSettings {
     const servers =
       managed && isObject(managed.managedMcpServers) ? managed.managedMcpServers : fresh();
     return {
+      complete: this.complete,
       ...(Array.isArray(source) ? { allowed: entries(source) } : {}),
       denied: entries(merged.deniedMcpServers),
       managedOnly,
@@ -673,7 +1164,8 @@ export class ClaudeSettings {
     for (const layer of [...LAYER_ORDER].reverse()) {
       const plugins = this.#layers.get(layer)?.enabledPlugins;
       if (!isObject(plugins)) continue;
-      for (const id of Object.keys(plugins).slice(0, MAX_ENTRIES))
+      // File byte/read limits bound input. Display limits must not discard effective switches.
+      for (const id of Object.keys(plugins))
         if (typeof plugins[id] === "boolean") output.set(id, { enabled: plugins[id], layer });
     }
     return output;
@@ -730,12 +1222,24 @@ export class ClaudeSettings {
           : "";
       lines.push(`- ${file.layer}: ${shown} - ${describeStatus(file)}${keys}`);
     }
+    if (view === "full") {
+      const dropInsCoverage = this.#dropInsCoverage();
+      if (dropInsCoverage) lines.push(dropInsCoverage);
+      if (!this.complete)
+        lines.push(
+          "Settings coverage is incomplete; MCP loading and precedence cannot be determined.",
+        );
+    }
     const layers =
       view === "full" ? this.#present() : this.#present().filter((layer) => layer === "project");
     if (!layers.length) return lines.join("\n");
     lines.push(
       "",
-      view === "full" ? "Effective values (highest precedence first):" : "Values in this layer:",
+      view === "full"
+        ? this.complete
+          ? "Effective values (highest precedence first):"
+          : "Values from readable files (settings coverage is incomplete):"
+        : "Values in this layer:",
     );
     lines.push(...this.#valueLines(view, layers));
     return lines.join("\n");
@@ -746,13 +1250,17 @@ export class ClaudeSettings {
    * key names. No path, no value: this is what the MCP tool says about files it must not show.
    */
   metadataLines(except: readonly SettingsLayerId[] = []): string[] {
-    return this.files
+    const lines = this.files
       .filter((file) => file.status !== "missing" && !except.includes(file.layer))
       .map((file) => {
         const keys =
           file.status === "ok" && file.keys.length ? ` (${file.keys.slice(0, 40).join(", ")})` : "";
         return `Claude Code settings, ${file.layer} layer: ${describeStatus(file)}${keys}. The values are not included in this result.`;
       });
+    const dropInsCoverage = this.#dropInsCoverage();
+    if (dropInsCoverage && !except.includes("managed"))
+      lines.push(`Claude Code settings, managed layer: ${dropInsCoverage}`);
+    return lines;
   }
 
   #valueLines(view: View, layers: readonly SettingsLayerId[]): string[] {
@@ -794,21 +1302,21 @@ export class ClaudeSettings {
           `permissions.defaultMode = ${JSON.stringify(redactText((this.#layers.get(mode)!.permissions as Obj).defaultMode as string))} (${mode})`,
         );
       for (const list of ["allow", "ask", "deny", "additionalDirectories"] as const) {
-        const rules: string[] = [];
+        const rules = new Set<string>();
         const from: SettingsLayerId[] = [];
         for (const layer of permissionLayers) {
           const items = strings((this.#layers.get(layer)!.permissions as Obj)[list]);
           if (items.length) from.push(layer);
-          for (const item of items) if (!rules.includes(item)) rules.push(item);
+          for (const item of items) rules.add(item);
         }
-        if (!rules.length) continue;
+        if (!rules.size) continue;
         lines.push(
-          `permissions.${list}: ${rules.length} ${rules.length === 1 ? "entry" : "entries"} (${from.join(", ")})`,
+          `permissions.${list}: ${rules.size} ${rules.size === 1 ? "entry" : "entries"} (${from.join(", ")})`,
         );
         // Rules can contain commands and URLs, so only the app gets to see them, redacted.
         if (full)
-          for (const rule of rules.slice(0, MAX_LIST)) lines.push(`  - ${redactText(rule)}`);
-        if (full && rules.length > MAX_LIST) lines.push(`  … (+${rules.length - MAX_LIST} more)`);
+          for (const rule of [...rules].slice(0, MAX_LIST)) lines.push(`  - ${redactText(rule)}`);
+        if (full && rules.size > MAX_LIST) lines.push(`  … (+${rules.size - MAX_LIST} more)`);
       }
     }
 

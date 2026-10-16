@@ -1,5 +1,8 @@
 import { sanitizeSessionText } from "./session-handoff";
-import type { HistorySourceInput } from "./history-search-source-types";
+import {
+  HISTORY_SEARCH_SANITIZER_VERSION,
+  type HistorySourceInput,
+} from "./history-search-source-types";
 import type { NativeSession } from "./session-store";
 
 /**
@@ -15,6 +18,7 @@ export function historySourceIdentity(
   return JSON.stringify({
     // Parser/redaction changes must rebuild old cache generations and invalidate locators.
     version: 7,
+    sanitizerVersion: HISTORY_SEARCH_SANITIZER_VERSION,
     sessionId: input.sessionId,
     agent: input.summary.agent,
     // Labels are part of the reviewed send text, even when native message bytes are unchanged.
@@ -26,7 +30,7 @@ export function historySourceIdentity(
     workspace: resolved.workspace,
     native: resolved.native.native_ref,
     profiles: input.profiles,
-    // Claude Code transcripts are now indexed across compaction boundaries.
-    ...(input.summary.agent === "claude-code" ? { claudeLineage: 1 } : {}),
+    // Rebuild Claude generations with boundary-relative lineage versions and pre-boundary ancestry.
+    ...(input.summary.agent === "claude-code" ? { claudeLineage: 3 } : {}),
   });
 }

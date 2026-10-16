@@ -655,11 +655,21 @@ export class ClaudeRunnerState {
           this.#staleUsage();
         }
         if (
-          ["task_started", "background_tasks_changed"].includes(frame.subtype) ||
-          (this.foregroundBashContract &&
-            ["task_updated", "task_notification"].includes(frame.subtype))
-        )
-          this.#taskFrame(frame);
+          [
+            "task_started",
+            "background_tasks_changed",
+            "task_updated",
+            "task_notification",
+          ].includes(frame.subtype)
+        ) {
+          if (
+            !this.foregroundBashContract &&
+            ["task_updated", "task_notification"].includes(frame.subtype)
+          )
+            return null;
+          // Observing another task must not invalidate an outstanding approval or question.
+          if (!this.#taskFrame(frame)) return null;
+        }
         break;
       case "user": {
         const origin = frameOrigin(frame);
@@ -986,18 +996,21 @@ export class ClaudeRunnerState {
    * Bash command, or a task of any kind this version does not know, is an OS-level or unbounded
    * lifetime that the turn cannot supervise, so it stops the session with a stated reason.
    */
-  #taskFrame(frame: JsonObject): void {
+  #taskFrame(frame: JsonObject): boolean {
     const subtype = typeof frame.subtype === "string" ? frame.subtype : "";
-    if (subtype === "background_tasks_changed") return this.#backgroundTasksChanged(frame);
+    if (subtype === "background_tasks_changed") {
+      this.#backgroundTasksChanged(frame);
+      return false;
+    }
     if (subtype === "task_started") return this.#taskStarted(frame);
     // task_updated and task_notification, with the contract on.
-    if (this.#observeSubagentTask(frame, subtype)) return;
+    if (this.#observeSubagentTask(frame, subtype)) return false;
     const task = frame.task_id;
     // A task this turn never saw start (an earlier process's task closed on resume, or a frame
     // outside a turn) has nothing to track: observe it.
     if (typeof task !== "string" || !this.foregroundTasks.has(task)) {
       this.diagnostics.record("observedTaskTypes", `untracked_${subtype}`);
-      return;
+      return false;
     }
     if (subtype === "task_updated") {
       if (!object(frame.patch)) throw new Error("unknown Claude foreground task");
@@ -1010,7 +1023,7 @@ export class ClaudeRunnerState {
         )
       )
         throw new Error("invalid Claude task status");
-      return;
+      return true;
     }
     if (subtype === "task_notification") {
       if (
@@ -1019,16 +1032,16 @@ export class ClaudeRunnerState {
       )
         throw new Error("unverified Claude task completion");
       this.foregroundTasks.delete(task);
-      return;
+      return true;
     }
     throw new Error("unsupported Claude task update");
   }
 
-  #taskStarted(frame: JsonObject): void {
+  #taskStarted(frame: JsonObject): boolean {
     const type = frame.task_type;
     if (type === "local_agent") {
       this.diagnostics.record("observedTaskTypes", type);
-      return;
+      return false;
     }
     if (type !== "local_bash") {
       this.diagnostics.record("observedTaskTypes", type);
@@ -1040,7 +1053,7 @@ export class ClaudeRunnerState {
     // Below 2.1.285 a Bash task frame cannot be told apart from a background one.
     if (!this.foregroundBashContract)
       throw new ClaudeProtocolError("claude-protocol-violation", BACKGROUND_REFUSED);
-    if (this.#observeSubagentTask(frame, "task_started")) return;
+    if (this.#observeSubagentTask(frame, "task_started")) return false;
     if (
       !this.initialized ||
       !["running", "waiting-approval", "waiting-input"].includes(this.status)
@@ -1062,6 +1075,7 @@ export class ClaudeRunnerState {
     )
       throw new Error(UNVERIFIED_START);
     this.foregroundTasks.set(task, tool);
+    return true;
   }
 
   #backgroundTasksChanged(frame: JsonObject): void {
@@ -1596,27 +1610,31 @@ export class ClaudeManagedRunnerProcess {
     });
     // A process can fail while stdin's first write is still pending.
     void this.#initializing.catch(() => undefined);
-    child.stdout?.on("data", (chunk: Buffer) => this.#data(chunk));
+    child.stdout?.on("data", (chunk: Buffer) => this.#data(child, chunk));
     child.stdout?.on("end", () => {
+      if (!this.#acceptsFrames(child)) return;
       if (this.#bufferLength) {
         const final = Buffer.concat(this.#fragments, this.#bufferLength);
         this.#fragments = [];
         this.#bufferLength = 0;
-        this.#enqueueFrame(final);
+        this.#enqueueFrame(child, final);
       }
-      if (!this.#intentional.has(child))
-        void this.#frameChain.finally(() => this.#fail("Claude stream closed"));
+      void this.#frameChain.finally(() => {
+        if (this.#acceptsFrames(child)) this.#fail("Claude stream closed");
+      });
     });
     child.stdin?.on("error", (error) => {
-      if (!this.#intentional.has(child)) this.#fail("Claude stdin write failed");
+      if (!this.#acceptsFrames(child)) return;
+      this.#fail("Claude stdin write failed");
       this.#rejectInitialization?.(error instanceof Error ? error : new Error(String(error)));
     });
     child.on("error", (error) => {
+      if (!this.#acceptsFrames(child)) return;
       this.#rejectInitialization?.(error);
-      if (!this.#intentional.has(child)) this.#fail(error.message);
+      this.#fail(error.message);
     });
     child.on("close", (code) => {
-      if (!this.#intentional.has(child)) this.#fail(`Claude process exited (${code ?? "unknown"})`);
+      if (this.#acceptsFrames(child)) this.#fail(`Claude process exited (${code ?? "unknown"})`);
     });
     return child;
   }
@@ -1650,7 +1668,17 @@ export class ClaudeManagedRunnerProcess {
     lease.release();
   }
 
-  #data(chunk: Buffer): void {
+  #acceptsFrames(child: ChildProcess): boolean {
+    return (
+      child === this.#child &&
+      !this.#closed &&
+      !this.#intentional.has(child) &&
+      this.state.status !== "outcome-unknown"
+    );
+  }
+
+  #data(child: ChildProcess, chunk: Buffer): void {
+    if (!this.#acceptsFrames(child)) return;
     let offset = 0;
     while (offset < chunk.length) {
       const newline = chunk.indexOf(10, offset);
@@ -1675,16 +1703,19 @@ export class ClaudeManagedRunnerProcess {
         this.#fail("Claude frame exceeds 25 MiB", "claude-protocol-violation");
         return;
       }
-      this.#enqueueFrame(line);
+      this.#enqueueFrame(child, line);
       offset = newline + 1;
     }
   }
 
-  #enqueueFrame(line: Buffer): void {
+  #enqueueFrame(child: ChildProcess, line: Buffer): void {
     this.#queuedFrames++;
-    if (this.#queuedFrames >= 32) this.#child?.stdout?.pause();
+    if (this.#queuedFrames >= 32) child.stdout?.pause();
     this.#frameChain = this.#frameChain
       .then(async () => {
+        // A chunk can queue multiple frames before one fails. Killing the process does not
+        // remove that queued work, and an old process must never update its replacement.
+        if (!this.#acceptsFrames(child)) return;
         const frame = inbound(() => parseClaudeFrame(line));
         if (frame.session_id !== undefined && frame.session_id !== this.sessionId)
           throw new ClaudeProtocolError(
@@ -1841,6 +1872,7 @@ export class ClaudeManagedRunnerProcess {
         this.#notify();
         if (!wasInitialized && this.state.initialized) {
           if (response) await this.#write(response);
+          if (!this.#acceptsFrames(child)) return;
           this.#resolveInitialization?.();
           this.#resolveInitialization = undefined;
           this.#rejectInitialization = undefined;
@@ -1849,6 +1881,7 @@ export class ClaudeManagedRunnerProcess {
         }
       })
       .catch((error: unknown) => {
+        if (!this.#acceptsFrames(child)) return;
         if (error instanceof ClaudeUndispatchedError) {
           this.#rejectInitialization?.(error);
           return;
@@ -1859,16 +1892,19 @@ export class ClaudeManagedRunnerProcess {
       })
       .finally(() => {
         this.#queuedFrames--;
-        if (this.#queuedFrames < 16) this.#child?.stdout?.resume();
+        if (this.#queuedFrames < 16 && this.#acceptsFrames(child)) child.stdout?.resume();
       });
   }
 
   #conversationItems(frame: JsonObject): Array<{ index: number; item: Record<string, unknown> }> {
     const items: Array<{ index: number; item: Record<string, unknown> }> = [];
+    const origin = frameOrigin(frame);
+    // State ignores these frames; projecting their tools would still mutate the conversation.
+    if (origin.kind === "unattributed") return items;
     const blocks = Array.isArray(frame.message?.content) ? frame.message.content : [];
     if (frame.type === "user") {
       // A sub-agent's first user frame is the prompt that drives it; it is not the user's message.
-      const mainThread = frameOrigin(frame).kind === "main";
+      const mainThread = origin.kind === "main";
       const id =
         (mainThread &&
           typeof frame.uuid === "string" &&

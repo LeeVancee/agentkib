@@ -2,6 +2,7 @@ import { symlinkSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultIo, type ClaudeIo } from "../../../packages/backend/src/context-claude-sources";
+import { FILE_CHARS } from "../../../packages/backend/src/context-files";
 import { Doctor } from "../../../packages/backend/src/doctor";
 import { contextFixture, type ContextFixture } from "./fixtures/claude-context";
 
@@ -57,6 +58,130 @@ const everywhere = (f: ContextFixture) => [
 ];
 
 describe("the MCP tool", () => {
+  it("keeps every external import failure anonymous while retaining workspace diagnostics", async () => {
+    const reads: string[] = [];
+    let unreadable: string;
+    let unresolved: string;
+    const f = fixture({
+      io: {
+        ...defaultIo,
+        lstat(file) {
+          if (file === unreadable) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+          return defaultIo.lstat(file);
+        },
+        realpath(file) {
+          if (file === unresolved) throw new Error("synthetic realpath failure");
+          return defaultIo.realpath(file);
+        },
+        readFile(file, limit) {
+          reads.push(file);
+          return defaultIo.readFile(file, limit);
+        },
+      },
+    });
+    unreadable = f.write(f.inHome("private-notes", "unreadable.md"), "UNREADABLE-CANARY\n");
+    unresolved = f.write(f.inHome("private-notes", "unresolved.md"), "UNRESOLVED-CANARY\n");
+    const sensitive = f.write(f.inHome(".ssh", "id_ed25519"), "SENSITIVE-CANARY\n");
+    const normal = f.write(f.inHome("private-notes", "normal.md"), "EXTERNAL-CANARY\n");
+    const body = [
+      "@~/.ssh/id_ed25519",
+      "@~/private-notes/missing.md",
+      "@~/private-notes/unreadable.md",
+      "@~/private-notes/unresolved.md",
+      "@~/private-notes/normal.md",
+      "@docs/missing.md",
+      "See @~/private-notes/inline-missing.md",
+      "",
+    ].join("\n");
+    f.write("CLAUDE.md", body);
+
+    const result = await f.mcp();
+    expect(result.sections.map((section) => section.content)).toEqual([body]);
+    expect(JSON.stringify(result)).not.toContain(f.home);
+    expect(JSON.stringify(result)).not.toContain("CANARY");
+    expect(result.warnings).toEqual([
+      `Imported file is missing: ${f.at("docs", "missing.md")} (source: ${f.at("CLAUDE.md")})`,
+      "Note: External instruction sources exist (1 file, 16 bytes, 4 skipped); its content is not included in this result.",
+    ]);
+    expect(reads.every((file) => file.startsWith(f.project + path.sep))).toBe(true);
+
+    // The owner's preview still expands ordinary external imports and names failures.
+    const owner = await f.request();
+    expect(owner.sections[0]!.content).toContain("EXTERNAL-CANARY");
+    expect(owner.warnings).toContain(
+      `Instruction import skipped (sensitive path): ${sensitive} (source: ${f.at("CLAUDE.md")})`,
+    );
+    for (const file of [unreadable, unresolved])
+      expect(owner.warnings).toContain(
+        `Instruction import could not be read: ${file} (source: ${f.at("CLAUDE.md")})`,
+      );
+    expect(owner.warnings).toContain(
+      `Imported file is missing: ${f.inHome("private-notes", "missing.md")} (source: ${f.at("CLAUDE.md")})`,
+    );
+    expect(reads).toContain(normal);
+    expect(reads).not.toContain(sensitive);
+  });
+
+  symlinks(
+    "counts external network, circular and deep imports without adding their paths",
+    async () => {
+      const f = fixture();
+      const body = "@~/network/remote.md\n@~/again.md\n@hop1.md\n";
+      f.write("CLAUDE.md", body);
+      f.link("/net/PRIVATE-HOST", f.inHome("network"));
+      f.link(f.at("CLAUDE.md"), f.inHome("again.md"));
+      for (let hop = 1; hop <= 4; hop++)
+        f.write(`hop${hop}.md`, hop === 4 ? "@~/deep.md\n" : `@hop${hop + 1}.md\n`);
+      f.write(f.inHome("deep.md"), "DEEP-CANARY\n");
+      const result = await f.mcp();
+      expect(JSON.stringify(result)).not.toContain(f.home);
+      expect(JSON.stringify(result)).not.toContain("PRIVATE-HOST");
+      expect(JSON.stringify(result)).not.toContain("DEEP-CANARY");
+      expect(result.sections[0]!.content).toContain("@~/deep.md");
+      expect(result.warnings).toEqual([
+        "Note: External instruction sources exist (0 files, 0 bytes, 3 skipped); its content is not included in this result.",
+      ]);
+      const owner = await f.request();
+      for (const [reason, target] of [
+        ["network path", f.inHome("network", "remote.md")],
+        ["circular reference", f.inHome("again.md")],
+        ["deeper than 4 hops", f.inHome("deep.md")],
+      ])
+        expect(owner.warnings.some((warning) => warning.includes(`(${reason}): ${target}`))).toBe(
+          true,
+        );
+    },
+  );
+
+  it("retains an external absolute path already written in workspace text without repeating it in diagnostics", async () => {
+    const f = fixture();
+    const target = f.inHome("private-notes", "missing.md");
+    const body = `Workspace-owned path: ${target}\n@${target}\n`;
+    f.write("CLAUDE.md", body);
+    const result = await f.mcp();
+    expect(result.sections[0]!.content).toBe(body);
+    expect(JSON.stringify(result.warnings)).not.toContain(target);
+    expect(result.warnings).toEqual([
+      "Note: External instruction sources exist (0 files, 0 bytes, 1 skipped); its content is not included in this result.",
+    ]);
+  });
+
+  symlinks("does not name an external alias when its workspace target is truncated", async () => {
+    const f = fixture();
+    const target = f.write("docs/large.md", "x".repeat(FILE_CHARS + 1));
+    const alias = f.link(target, f.inHome("return.md"));
+    f.write("CLAUDE.md", "@~/return.md\n");
+    const result = await f.mcp();
+    expect(result.sections[0]!.content).toContain("x".repeat(100));
+    expect(JSON.stringify(result)).not.toContain(f.home);
+    expect(result.warnings).toContain(
+      `Instruction file exceeds ${FILE_CHARS} characters and was truncated for preview: ${target}`,
+    );
+    expect((await f.request()).warnings).toContain(
+      `Instruction file exceeds ${FILE_CHARS} characters and was truncated for preview: ${alias}`,
+    );
+  });
+
   it("returns sizes and counts of every outside source, and none of their text or paths", async () => {
     const f = fixture();
     seed(f);
@@ -222,6 +347,106 @@ describe("the Doctor", () => {
     f.managed("Use tabs for indentation.\n");
     expect((await issuesOf(f)).map((issue) => issue.code)).toEqual([]);
   });
+
+  it.each(["direct", "nested"])(
+    "does not read a %s external import or count it as a deployed instruction",
+    async (kind) => {
+      const reads: string[] = [];
+      const f = fixture({
+        io: {
+          ...defaultIo,
+          readFile(file, limit) {
+            reads.push(file);
+            return defaultIo.readFile(file, limit);
+          },
+        },
+      });
+      f.write(".agentkib/manifest.yaml", manifest);
+      const external = f.write(
+        f.outside("shared", "team.md"),
+        "Use tabs for indentation.\nPRIVATE-IMPORT-CANARY\n",
+      );
+      f.write("docs/inside.md", "inside text\n@../../shared/team.md\n");
+      f.write(
+        "CLAUDE.md",
+        kind === "direct" ? "project text\n@../shared/team.md\n" : "@docs/inside.md\n",
+      );
+
+      const preview = await f.resolve(f.project, { includeOutsideSources: false });
+      const issues = await issuesOf(f);
+      expect(reads).not.toContain(external);
+      expect(JSON.stringify(preview.sections)).not.toContain("PRIVATE-IMPORT-CANARY");
+      expect(issues.map((issue) => issue.code)).toContain("instruction.expected-content-missing");
+      if (kind === "nested") expect(preview.sections[0]!.content).toContain("inside text");
+
+      // This is a Doctor-only restriction: the owner's preview still expands the import.
+      expect(JSON.stringify((await f.request()).sections)).toContain("PRIVATE-IMPORT-CANARY");
+      expect(reads).toContain(external);
+    },
+  );
+
+  symlinks("does not read an imported file whose symlink leads outside the project", async () => {
+    const reads: string[] = [];
+    const f = fixture({
+      io: {
+        ...defaultIo,
+        readFile(file, limit) {
+          reads.push(file);
+          return defaultIo.readFile(file, limit);
+        },
+      },
+    });
+    f.write(".agentkib/manifest.yaml", manifest);
+    const external = f.write(f.outside("shared", "team.md"), "Use tabs for indentation.\n");
+    f.link(external, "linked.md");
+    f.write("CLAUDE.md", "project text\n@linked.md\n");
+    const issues = await issuesOf(f);
+    expect(reads).not.toContain(external);
+    expect(issues.map((issue) => issue.code)).toContain("instruction.expected-content-missing");
+  });
+
+  symlinks(
+    "does no IO outside the workspace for external imports and still resolves internal absolute links",
+    async () => {
+      const calls: string[] = [];
+      const record =
+        <A extends unknown[], R>(fn: (file: string, ...rest: A) => R) =>
+        (file: string, ...rest: A): R => {
+          calls.push(file);
+          return fn(file, ...rest);
+        };
+      const f = fixture({
+        io: {
+          lstat: record(defaultIo.lstat),
+          readlink: record(defaultIo.readlink),
+          realpath: record(defaultIo.realpath),
+          readdir: record(defaultIo.readdir),
+          readFile: record(defaultIo.readFile),
+        },
+      });
+      f.write(".agentkib/manifest.yaml", manifest);
+      const external = f.write(f.inHome("notes", "private.md"), "PRIVATE-CANARY\n");
+      f.link(external, "linked.md");
+      f.link(f.home, "outside-folder");
+      f.write("docs/local.md", "Use tabs for indentation.\n");
+      f.link(f.at("docs", "local.md"), "local.md");
+      f.link(f.project, "alias");
+      f.write(
+        "CLAUDE.md",
+        "@~/notes/private.md\n@linked.md\n@outside-folder/notes/private.md\n@local.md\n@alias/docs/local.md\n",
+      );
+      const result = await f.resolve(f.project, { includeOutsideSources: false });
+      const issues = await issuesOf(f);
+      expect(
+        calls.filter((file) => file !== f.project && !file.startsWith(f.project + path.sep)),
+      ).toEqual([]);
+      expect(result.sections[0]!.content.match(/Use tabs for indentation\./g)).toHaveLength(2);
+      expect(JSON.stringify(result)).not.toContain("PRIVATE-CANARY");
+      expect(issues.map((issue) => issue.code)).not.toContain(
+        "instruction.expected-content-missing",
+      );
+    },
+  );
 
   it("never touches an outside source", async () => {
     const calls: { call: string; path: string }[] = [];

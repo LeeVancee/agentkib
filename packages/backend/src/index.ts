@@ -858,16 +858,17 @@ export class TypeScriptBackend {
         const parsed = z.object({ port: z.number().int().min(1).max(65535) }).safeParse(network);
         ensureGateway(manifest, parsed.success ? parsed.data.port : 47653);
         const home = userHome({ ...process.env, ...this.environment });
-        return planWorkspace(
-          project,
-          manifest,
-          includeHome
+        return planWorkspace(project, manifest, {
+          skillHomes: [nativeContext({ ...process.env, ...this.environment }).agentkib_home].filter(
+            (root): root is string => typeof root === "string",
+          ),
+          ...(includeHome
             ? {
                 openclaw_config: path.join(home, ".openclaw/openclaw.json"),
                 hermes_config: path.join(home, ".hermes/config.yaml"),
               }
-            : {},
-        );
+            : {}),
+        });
       }
       case RUNTIME_METHODS.workspaceDoctorReport:
       case RUNTIME_METHODS.workspaceDoctorSummaries:
@@ -890,7 +891,11 @@ export class TypeScriptBackend {
           z.object({ project: z.string(), manifest: manifestSchema }),
           params,
         );
-        return planWorkspace(project, manifest, {});
+        return planWorkspace(project, manifest, {
+          skillHomes: [nativeContext({ ...process.env, ...this.environment }).agentkib_home].filter(
+            (root): root is string => typeof root === "string",
+          ),
+        });
       }
       case BACKEND_PLAN_WORKSPACE: {
         if (params.operation !== "add" && params.operation !== "refresh")

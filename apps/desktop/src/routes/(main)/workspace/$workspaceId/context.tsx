@@ -177,6 +177,12 @@ export function ContextPage({
             </div>
             <div className="grid gap-2">
               <Pills values={preview?.visible_skills ?? []} empty={tr("context.noSkill")} />
+              {!!preview?.legacy_declared_skills?.length && (
+                <div className="grid gap-1 text-xs text-muted-foreground">
+                  <span>{tr("skills.sync.legacy")}</span>
+                  <Pills values={preview.legacy_declared_skills} empty="" />
+                </div>
+              )}
               <Pills
                 values={preview?.visible_connections ?? []}
                 empty={tr("context.noConnection")}

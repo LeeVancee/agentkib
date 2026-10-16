@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   skillInventory: vi.fn(),
   skillDeployments: vi.fn(),
   skillTargets: vi.fn(),
+  skillSyncState: vi.fn(),
   skillDetail: vi.fn(),
   readSkillDetailFile: vi.fn(),
   prepareSkillImport: vi.fn(),
@@ -75,12 +76,51 @@ const preview: SkillOperationPreview = {
 };
 
 describe("SkillHubPage", () => {
+  it("shows failed update checks without claiming the Skill is current", async () => {
+    const user = userEvent.setup();
+    const skill = {
+      name: "network-reviewer",
+      display_name: "Network Reviewer",
+      description: "",
+      path: "/library/network-reviewer",
+      size: 128,
+      status: "current",
+      source: candidate.source,
+      can_rollback: false,
+    };
+    mocks.installedSkills.mockResolvedValue([skill]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.checkSkillUpdates.mockResolvedValue([
+      { ...skill, update_check: "failed", update_error: "GitHub rate limit" },
+    ]);
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage
+          workspaceAssets={[]}
+          workspaces={[]}
+          onOpen={vi.fn()}
+          onReload={async () => {}}
+        />
+      </AppDialogProvider>,
+    );
+    await screen.findByText("Network Reviewer");
+    await user.click(screen.getByRole("button", { name: tr("skills.checkUpdates") }));
+    await screen.findByText(tr("skills.sync.checkFailed"));
+    expect(screen.getByRole("status").textContent).toContain("GitHub rate limit");
+    expect(screen.queryByText(tr("skills.status.current"))).toBeNull();
+  });
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     mocks.discardSkillPreview.mockResolvedValue(undefined);
     mocks.skillInventory.mockResolvedValue({ observations: [], warnings: [] });
     mocks.skillDeployments.mockResolvedValue([]);
     mocks.skillTargets.mockResolvedValue([]);
+    mocks.skillSyncState.mockResolvedValue({
+      library: [],
+      deployments: [],
+      observations: [],
+      warnings: [],
+    });
     mocks.readSkillPreviewFile.mockResolvedValue({
       path: "SKILL.md",
       before: null,

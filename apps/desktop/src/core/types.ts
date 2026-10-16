@@ -1,3 +1,20 @@
+export type {
+  PrepareSkillSyncRequest,
+  SkillSyncOperation,
+  SkillSyncResolution,
+  SkillSyncComparison,
+  SkillSyncPolicy,
+  SaveSkillSyncPolicyRequest,
+  SkillSyncPreview,
+  SkillSyncReport,
+  SkillSyncRun,
+  SkillSyncRuns,
+  SkillSyncCoordinatorState,
+  SkillSyncState,
+  SkillSyncDeploymentState,
+  SkillSyncLibraryState,
+} from "@agentkib/runtime-protocol";
+
 export type AgentKind =
   | "codex"
   | "claude-code"
@@ -82,6 +99,7 @@ export interface Manifest {
   >;
 }
 export interface ContextPreview {
+  legacy_declared_skills?: string[];
   agent: AgentKind;
   project: string;
   cwd: string;
@@ -534,6 +552,8 @@ export interface SkillCatalogSnapshot {
 }
 export type InstalledSkillStatus = "current" | "update-available" | "modified" | "unmanaged";
 export interface InstalledSkill {
+  update_check?: "failed";
+  update_error?: string;
   content_sha256?: string;
   warnings?: string[];
   name: string;
@@ -696,6 +716,10 @@ export interface PrepareSkillDeploymentRequest {
   target_ids?: string[];
 }
 export interface SkillDeployment {
+  lifecycle_status?: "active" | "inactive";
+  origin?: "agentkib" | "adopted" | "legacy-unknown";
+  adopted_at?: string;
+  adoption_operation_id?: string;
   id: string;
   library_id: string;
   library_root?: string | null;

@@ -62,14 +62,20 @@ type CandidateContext = {
   options: NativeMcpScanOptions;
   /** A readable managed-mcp.json exists: Claude Code then loads no other MCP servers. */
   claudeManaged: boolean;
+  /** Whether the displayed global file can provide evidence of Claude's effective state. */
+  claudeGlobalGate: ClaudeGlobalConfigGate;
+  /** The global document was fully read and parsed, or confirmed absent with ENOENT. */
+  claudeGlobalReadComplete: boolean;
   /** Names this project switched off with `/mcp`, from its local entry only. */
   claudeDisabled: Set<string>;
   /** The settings files, read once per scan: approvals and policy come from them. */
   claudeSettings?: ClaudeSettings;
   /** Trust record of the matched `~/.claude.json` project entry; unset when there is none. */
   claudeTrusted?: boolean;
-  /** The raw definition behind each Claude candidate, kept in memory for the policy match only. */
+  /** Raw definitions for policy and endpoint comparison only; never sent to the renderer. */
   raw: Map<string, JsonObject | undefined>;
+  /** Plugin server names in Claude's namespace, separate from the existing display labels. */
+  claudePluginNames: Map<string, string>;
   /** Names of servers the organization provides through `managedMcpServers`. */
   claudeProvided: Set<string>;
 };
@@ -84,8 +90,9 @@ const claudeDiagnosticText = {
   native_inactive_exclusive:
     "Not loaded: a managed-mcp.json on this machine gives your organization exclusive control over MCP servers.",
   native_disabled_for_project: "Disabled for this project in Claude Code (/mcp).",
-  native_project_approved:
-    "Approved in your Claude Code settings; Claude Code loads this .mcp.json server.",
+  native_project_approved: "This .mcp.json server is approved in your Claude Code settings.",
+  native_claude_loading_unverified:
+    "Claude Code's global configuration file is unverified, so local overrides and project-disabled server lists are unknown. Approval alone does not confirm that this server loads.",
   native_project_approved_if_trusted:
     "Approved in a project or local settings file, which Claude Code applies only once you trust the folder. No trust record was found for this folder.",
   native_project_pending:
@@ -141,8 +148,11 @@ export function scanNativeMcp(
     environment,
     options,
     claudeManaged: false,
+    claudeGlobalGate: claudeGlobalConfigGate(resolveClaudeConfig(environment, home)),
+    claudeGlobalReadComplete: false,
     claudeDisabled: new Set(),
     raw: new Map(),
+    claudePluginNames: new Map(),
     claudeProvided: new Set(),
     ...(isDirectory(grokRoot) ? { grokHome: canonicalPath(grokRoot) } : {}),
   };
@@ -160,7 +170,7 @@ export function scanNativeMcp(
     return true;
   });
   markLayeredOpenCode(result);
-  markClaudeConfigUnusable(result, claudeGlobalConfigGate(resolveClaudeConfig(environment, home)));
+  markClaudeConfigUnusable(result, context.claudeGlobalGate);
   annotateClaudePrecedence(result, context);
   result.sort(
     (left, right) =>
@@ -213,9 +223,10 @@ function scanHome(context: CandidateContext): void {
     scanConfig(path.join(home, ".codex/config.toml"), "codex", "home", context),
   );
   const claudeFile = claudeGlobalConfigFile(resolveClaudeConfig(context.environment, home), home);
-  scanSafely(context, "claude-code", "home", claudeFile, () =>
-    scanClaudeGlobalFile(claudeFile, context),
-  );
+  scanSafely(context, "claude-code", "home", claudeFile, () => {
+    scanClaudeGlobalFile(claudeFile, context);
+    context.claudeGlobalReadComplete = true;
+  });
   for (const [agent, file] of [
     ["cursor", path.join(home, ".cursor/mcp.json")],
     ["antigravity", path.join(home, ".gemini/config/mcp_config.json")],
@@ -236,8 +247,10 @@ function scanHome(context: CandidateContext): void {
  * both together, and nothing of any other project's entry is looked at.
  */
 function scanClaudeGlobalFile(file: string, context: CandidateContext): void {
-  const snapshot = readNativeMcpSnapshot(file, "claude-code");
+  // A blank file cannot prove that local overrides and disabled records are absent.
+  const snapshot = readNativeMcpSnapshot(file, "claude-code", false);
   if (!snapshot) return;
+  if (!asObject(snapshot.root)) throw new Error("Claude global configuration must be an object");
   collectJsonServers(file, "claude-code", "home", snapshot, context);
   if (!context.project || !hasClaudeProjects(snapshot.root)) return;
   const entry = readClaudeProjectEntry(
@@ -246,8 +259,10 @@ function scanClaudeGlobalFile(file: string, context: CandidateContext): void {
     process.platform,
   );
   if (!entry) return;
-  context.claudeTrusted = entry.trusted;
-  for (const name of entry.disabledMcpServers) context.claudeDisabled.add(name);
+  if (context.claudeGlobalGate.usable) {
+    context.claudeTrusted = entry.trusted;
+    for (const name of entry.disabledMcpServers) context.claudeDisabled.add(name);
+  }
   collectReadonlyServers(file, "local", entry.mcpServers, context);
 }
 
@@ -295,17 +310,12 @@ function scanClaudeSettings(context: CandidateContext, environment: NodeJS.Proce
     settings,
     sensitive: isSensitiveExternalPath,
     pluginsOnly: true,
+    withoutProject: !context.project,
   });
   for (const plugin of assets.plugins)
     for (const entry of plugin.mcp)
       scanSafely(context, "claude-code", "plugin", entry.file, () =>
-        collectReadonlyServers(
-          entry.file,
-          "plugin",
-          entry.servers as JsonObject,
-          context,
-          plugin.id,
-        ),
+        collectReadonlyServers(entry.file, "plugin", entry.servers as JsonObject, context, plugin),
       );
 }
 
@@ -391,9 +401,13 @@ function scanConfig(file: string, agent: Agent, scope: string, context: Candidat
   }
 }
 
-function readNativeMcpSnapshot(file: string, agent: Agent): NativeMcpSnapshot | undefined {
+function readNativeMcpSnapshot(
+  file: string,
+  agent: Agent,
+  emptyIsAbsent = true,
+): NativeMcpSnapshot | undefined {
   const content = readConfig(file);
-  if (content === undefined) return;
+  if (content === undefined || (emptyIsAbsent && !content.trim())) return;
   const document = parseNativeMcpDocument(content, agent, file);
   // All candidates from this read share one document and fingerprint. Never keep
   // this snapshot across scans or the fresh reads required by preview and apply.
@@ -406,8 +420,7 @@ function readConfig(file: string): string | undefined {
     const metadata = statSync(file);
     if (!metadata.isFile() || metadata.size > 1024 * 1024)
       throw new Error("Native MCP config must be a regular file of at most 1 MiB");
-    const content = readFileSync(file, "utf8");
-    return content.trim() ? content : undefined;
+    return readFileSync(file, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -477,7 +490,7 @@ function collectReadonlyServers(
   scope: "local" | "managed" | "plugin",
   servers: JsonObject | undefined,
   context: CandidateContext,
-  plugin?: string,
+  plugin?: { id: string; name: string },
 ): void {
   if (!servers) return;
   const sourcePath = canonicalPath(file);
@@ -488,7 +501,7 @@ function collectReadonlyServers(
     const result: Candidate = {
       // The scope is part of the id: a local and a user server of one name share a file.
       id: createHash("sha256")
-        .update(`${sourcePath}:${scope}:${plugin ? `${plugin}:` : ""}${name}`)
+        .update(`${sourcePath}:${scope}:${plugin ? `${plugin.id}:` : ""}${name}`)
         .digest("hex")
         .slice(0, 24),
       agent: "claude-code",
@@ -514,15 +527,17 @@ function collectReadonlyServers(
       result.warning_messages!.push(mcpDiagnostic("native_review_configuration"));
     }
     context.raw.set(result.id, server);
-    if (plugin)
+    if (plugin) {
+      context.claudePluginNames.set(result.id, `plugin:${plugin.name}:${name}`);
       addDiagnostic(
         result,
-        claudeDiagnosticText.native_plugin_provided.replace("{{plugin}}", plugin),
+        claudeDiagnosticText.native_plugin_provided.replace("{{plugin}}", plugin.id),
         "native_plugin_provided",
         {
-          plugin,
+          plugin: plugin.id,
         },
       );
+    }
     context.output.push(result);
   }
 }
@@ -878,13 +893,39 @@ function projectApproval(
       : "approved_if_trusted";
 }
 
-const wildcardMatches = (pattern: string, text: string) =>
-  new RegExp(
-    `^${pattern
-      .split("*")
-      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-      .join(".*")}$`,
-  ).test(text);
+function wildcardMatches(pattern: string, text: string): boolean {
+  const parts = pattern.split("*");
+  if (parts.length === 1) return pattern === text;
+  const first = parts[0]!,
+    last = parts.at(-1)!;
+  if (!text.startsWith(first) || !text.endsWith(last)) return false;
+  let offset = first.length;
+  const end = text.length - last.length;
+  if (offset > end) return false;
+  // Each '*' separates literal runs. Find them in order using KMP, so patterns from project
+  // settings cannot cause regex backtracking on the shared backend thread. Searches consume
+  // disjoint text ranges; prefix tables together are bounded by the original pattern length.
+  for (const part of parts.slice(1, -1)) {
+    if (!part) continue;
+    const prefix = new Uint32Array(part.length);
+    for (let index = 1, matched = 0; index < part.length; index++) {
+      while (matched > 0 && part[index] !== part[matched]) matched = prefix[matched - 1]!;
+      if (part[index] === part[matched]) matched++;
+      prefix[index] = matched;
+    }
+    let matched = 0;
+    const start = offset;
+    while (offset < end && matched < part.length) {
+      while (matched > 0 && text[offset] !== part[matched]) matched = prefix[matched - 1]!;
+      if (text[offset] === part[matched]) matched++;
+      offset++;
+    }
+    if (matched !== part.length) return false;
+    // Preserve the old wildcard's treatment of line separators; literal runs stay literal.
+    if (/[\r\n\u2028\u2029]/.test(text.slice(start, offset - part.length))) return false;
+  }
+  return !/[\r\n\u2028\u2029]/.test(text.slice(offset, end));
+}
 
 /** One allow or deny entry against one server: by label, by URL (with `*`), or by exact command. */
 function policyMatches(
@@ -915,6 +956,65 @@ function policyMatches(
   return false;
 }
 
+/** Compare private endpoint identities, not the redacted labels used by the list. */
+function claudeEndpointIdentity(server: JsonObject | undefined): string | undefined {
+  if (!server) return undefined;
+  const url = stringField(server, ["url", "serverUrl"]);
+  if (url !== undefined) {
+    try {
+      const parsed = new URL(url);
+      if (!["http:", "https:", "ws:", "wss:"].includes(parsed.protocol)) return undefined;
+      // URL normalizes host/scheme case and default ports. Other endpoint components,
+      // including private query values, must remain distinct and must never be returned.
+      return JSON.stringify([
+        "remote",
+        parsed.protocol,
+        parsed.host,
+        parsed.username,
+        parsed.password,
+        parsed.pathname.replace(/\/$/, ""),
+        parsed.search,
+        parsed.hash,
+      ]);
+    } catch {
+      return undefined;
+    }
+  }
+  const args = server.args ?? [];
+  if (
+    typeof server.command !== "string" ||
+    !server.command ||
+    !Array.isArray(args) ||
+    !args.every((arg) => typeof arg === "string")
+  )
+    return undefined;
+  return JSON.stringify(["stdio", server.command, args]);
+}
+
+const inactiveClaudeDiagnostics = new Set([
+  "native_config_unavailable",
+  "native_claude_loading_unverified",
+  "native_overridden_by_local",
+  "native_overridden_by_project",
+  "native_overridden_if_approved",
+  "native_overridden_by_managed_setting",
+  "native_inactive_exclusive",
+  "native_disabled_for_project",
+  "native_project_pending",
+  "native_project_approved_if_trusted",
+  "native_project_rejected",
+  "native_policy_denied",
+  "native_policy_not_allowed",
+]);
+function isActiveClaudeCandidate(candidate: Candidate): boolean {
+  return (
+    candidate.endpoint !== "unavailable" &&
+    !candidate.warning_messages?.some((message) =>
+      inactiveClaudeDiagnostics.has(message.key.replace(/^.*diagnostic\./, "")),
+    )
+  );
+}
+
 /**
  * Which same-named Claude Code server wins, by Claude Code's own order: a server of the
  * organization's `managedMcpServers`, then local, project, user. Nothing is hidden: a losing entry
@@ -923,40 +1023,48 @@ function policyMatches(
  * server from plugins or claude.ai connectors never beats one of these.
  */
 function annotateClaudePrecedence(candidates: Candidate[], context: CandidateContext): void {
+  const globalUsable = context.claudeGlobalGate.usable && context.claudeGlobalReadComplete;
   const claude = candidates.filter(
     (candidate) =>
       candidate.agent === "claude-code" &&
+      // Uncertain global definitions remain visible, but cannot establish loading or precedence.
+      (globalUsable || !["home", "local"].includes(candidate.scope)) &&
       !candidate.warning_messages?.some((message) => message.key === nativeConfigUnavailableKey),
   );
+  const nativeName = (candidate: Candidate) =>
+    context.claudePluginNames.get(candidate.id) ?? candidate.name;
   const scopesByName = new Map<string, Set<string>>();
   for (const candidate of claude)
     scopesByName.set(
-      candidate.name,
-      (scopesByName.get(candidate.name) ?? new Set()).add(candidate.scope),
+      nativeName(candidate),
+      (scopesByName.get(nativeName(candidate)) ?? new Set()).add(candidate.scope),
     );
   const note = (candidate: Candidate, code: keyof typeof claudeDiagnosticText) =>
     addDiagnostic(candidate, claudeDiagnosticText[code], code);
   const policy = context.claudeSettings?.mcpPolicy();
   for (const candidate of claude) {
+    if (policy && !policy.complete) {
+      addDiagnostic(
+        candidate,
+        "Claude Code settings coverage is incomplete because a source could not be read or exceeds the read limit; loading, policy and precedence cannot be determined.",
+        "native_config_unavailable",
+      );
+      continue;
+    }
+    const name = nativeName(candidate);
     if (candidate.scope === "project") {
-      const state = projectApproval(context.claudeSettings, candidate.name, context.claudeTrusted);
+      const state = projectApproval(
+        context.claudeSettings,
+        candidate.name,
+        globalUsable ? context.claudeTrusted : undefined,
+      );
       note(candidate, `native_project_${state}` as keyof typeof claudeDiagnosticText);
     }
-    // Plugin servers match by endpoint, not by name (mcp page, "Scope hierarchy and precedence").
-    if (
-      candidate.scope === "plugin" &&
-      candidate.endpoint !== "unavailable" &&
-      claude.some(
-        (other) =>
-          ["local", "project", "home"].includes(other.scope) &&
-          other.endpoint === candidate.endpoint,
-      )
-    )
-      note(candidate, "native_plugin_duplicate");
+    if (!globalUsable && candidate.scope !== "managed")
+      note(candidate, "native_claude_loading_unverified");
     if (candidate.scope !== "managed") {
-      const scopes = scopesByName.get(candidate.name)!;
-      if (context.claudeProvided.has(candidate.name))
-        note(candidate, "native_overridden_by_managed_setting");
+      const scopes = scopesByName.get(name)!;
+      if (context.claudeProvided.has(name)) note(candidate, "native_overridden_by_managed_setting");
       else if (context.claudeManaged) note(candidate, "native_inactive_exclusive");
       else if (candidate.scope !== "local" && scopes.has("local"))
         note(candidate, "native_overridden_by_local");
@@ -964,25 +1072,39 @@ function annotateClaudePrecedence(candidates: Candidate[], context: CandidateCon
         const state = projectApproval(
           context.claudeSettings,
           candidate.name,
-          context.claudeTrusted,
+          globalUsable ? context.claudeTrusted : undefined,
         );
         if (state === "approved") note(candidate, "native_overridden_by_project");
         else if (state !== "rejected") note(candidate, "native_overridden_if_approved");
       }
-      if (context.claudeDisabled.has(candidate.name))
+      if (globalUsable && context.claudeDisabled.has(name))
         note(candidate, "native_disabled_for_project");
     }
     if (!policy) continue;
     const server = context.raw.get(candidate.id);
-    if (policy.denied.some((entry) => policyMatches(entry, candidate.name, server)))
+    if (policy.denied.some((entry) => policyMatches(entry, name, server)))
       note(candidate, "native_policy_denied");
     // managed-mcp.json and managedMcpServers need no allowlist entry; the deny list still applies.
     else if (
       candidate.scope !== "managed" &&
       policy.allowed &&
-      !policy.allowed.some((entry) => policyMatches(entry, candidate.name, server))
+      !policy.allowed.some((entry) => policyMatches(entry, name, server))
     )
       note(candidate, "native_policy_not_allowed");
+  }
+  // Evaluate duplicates after precedence, approvals and policy. A disabled, overridden or
+  // not-yet-approved direct server cannot establish that Claude will load it instead.
+  const directEndpoints = new Set(
+    claude
+      .filter((candidate) => candidate.scope !== "plugin" && isActiveClaudeCandidate(candidate))
+      .map((candidate) => claudeEndpointIdentity(context.raw.get(candidate.id)))
+      .filter((identity) => identity !== undefined),
+  );
+  for (const candidate of claude) {
+    if (candidate.scope !== "plugin" || !isActiveClaudeCandidate(candidate)) continue;
+    const identity = claudeEndpointIdentity(context.raw.get(candidate.id));
+    if (identity !== undefined && directEndpoints.has(identity))
+      note(candidate, "native_plugin_duplicate");
   }
 }
 

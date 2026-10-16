@@ -32,7 +32,8 @@ branch pushes run platform checks but do not publish installers.
    application data. The startup probe requires a successful exit after the
    backend handshake, window display, and home-data readiness marks. An error
    window or a process that merely stays alive does not pass. macOS x64 uses
-   the runner's Intel compatibility support when built on Apple Silicon. The
+   the native `macos-15-intel` runner, while macOS arm64 uses the Apple Silicon
+   runner. Both jobs verify the host architecture before packaging. The
    macOS smoke uses `--use-mock-keychain` only for its empty synthetic profile
    to avoid native login-keychain authorization dialogs; it does not validate
    account login or real secure storage. Production launch options are unchanged.

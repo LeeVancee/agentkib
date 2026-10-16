@@ -177,7 +177,7 @@ jobs:
           - name: macOS
             arch: x64
             updater_channel: x64
-            os: macos-15
+            os: macos-15-intel
             artifact: macos-x64
           - name: Windows
             arch: x64
@@ -208,6 +208,17 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.preflight.outputs.release_sha }}
+
+      - name: Verify macOS runner architecture
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_arch="${{ matrix.arch }}"
+          if [[ "$expected_arch" == x64 ]]; then expected_arch=x86_64; fi
+          actual_arch=$(uname -m)
+          echo "macOS runner architecture: $actual_arch; package target: $expected_arch"
+          [[ "$actual_arch" == "$expected_arch" ]]
 
       - name: Checkout Windows release helper scripts
         if: runner.os == 'Windows'
@@ -250,7 +261,7 @@ jobs:
         run: |
           rm -rf apps/desktop/release-electron apps/desktop/build/quota
 
-      - name: Set macOS x64 cross-compilation targets
+      - name: Set macOS x64 package targets
         if: matrix.name == 'macOS' && matrix.arch == 'x64'
         shell: bash
         run: |
@@ -385,13 +396,25 @@ jobs:
       - name: Smoke test macOS application readiness
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          AGENTKIB_STARTUP_SMOKE_REPORT: artifacts/macos-startup-diagnostics/summary.json
         run: |
           set -euo pipefail
           app=$(find apps/desktop/release-electron -type d -name '*.app' -print -quit)
           test -n "$app"
+          file "$app/Contents/MacOS/AgentKib"
           # The synthetic HOME has no login keychain; avoid an unattended native
           # authorization dialog. This smoke does not validate account storage.
           node .github/scripts/run-desktop-startup-smoke.mjs "$app/Contents/MacOS/AgentKib" --use-mock-keychain
+
+      - name: Upload macOS startup diagnostics
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: agentkib-startup-diagnostics-${{ matrix.artifact }}
+          path: artifacts/macos-startup-diagnostics/summary.json
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Remove Apple notarization private key
         if: runner.os == 'macOS' && always()

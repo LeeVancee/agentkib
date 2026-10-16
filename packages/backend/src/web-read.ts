@@ -297,6 +297,7 @@ type ManagedModelOption = {
 
 export class WebReadRequests {
   #codex: CodexAppServerReader;
+  #closing?: Promise<void>;
   #bootId = randomUUID();
   #managedRunners = new Map<string, ManagedRunner>();
   #codexFollowers = new Map<string, CodexFollowerRecord>();
@@ -323,7 +324,12 @@ export class WebReadRequests {
   }
 
   close(): void {
-    this.#codex.close();
+    void this.closeAsync().catch(() => undefined);
+  }
+
+  closeAsync(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    const pending = [this.#codex.closeAsync()];
     for (const record of this.#antigravityRunners.values()) record.runner.close();
     this.#antigravityRunners.clear();
     for (const follower of this.#codexFollowers.values()) follower.bridge.close();
@@ -335,9 +341,14 @@ export class WebReadRequests {
       } catch {
         // Do not replace the persisted snapshot if another process changed it.
       }
-      void runner.bridge.close().finally(runner.release);
+      pending.push(runner.bridge.close().finally(runner.release));
     }
     this.#managedRunners.clear();
+    this.#closing = Promise.allSettled(pending).then((results) => {
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    });
+    return this.#closing;
   }
 
   async managedOptions() {

@@ -44,3 +44,22 @@ Desktop 专项包含 `DesktopConversation.integration`、`claude-bridge-panel`�
 ## 覆盖边界
 
 本轮没有重跑完整 Desktop 或 Skills 磁盘套件；专项通过不替代远程 CI 的完整测试。原有默认 5 秒时限未提高。未重跑真实模型、原生 CLI、运行中热加载、真实手机或 Windows/Linux 原终端连接；这些范围按原 QA 的限制保留。Claude 原会话生产发送、审批、问题和附件控制仍未开放，Codex 生产默认路径不变。
+
+## 合并后 Windows CI 关闭竞态修复
+
+PR #125 的合并前五项检查通过；合并提交 `44bc25a60` 的 [Windows ARM64 检查](https://github.com/starroyhq/agentkib/actions/runs/38889273035/job/116934542636) 随后失败。类型检查及原生 Worker smoke 通过，稳定性套件 933 通过、11 跳过，唯一失败为 `history-search-native-send.test.ts` 的 steer / queue-add 用例清理临时 `project` 时遇到 `EBUSY`。Windows x64、Linux 两项和主 CI 同次通过，不将合并前检查等同于合并后验证。
+
+根因：`TypeScriptBackend.closeAsync()` 在重置阶段调用同步 `WebReadRequests.close()`，其内部丢弃托管 Codex bridge 的异步关闭结果；Backend 在原生 CLI 仍持有工作目录时就应答 shutdown 并退出。现将 WebRead 的共享异步关闭纳入 Backend 的关闭等待，待原生连接退出并释放会话租约后才重置存储。Reader 同时跟踪初始化中的会话，并等待正在收尾的 metadata 请求。
+
+`CodexAppServerSession.close()` 改为并发调用共享完成结果，以实际 ChildProcess `close` 确认退出，不能仅凭 `exitCode` 或发出 kill 就报告完成；正常退出后清理计时器。保留原 3000ms 正常退出宽限，强杀后最多 1000ms 确认，未确认则明确失败。Runtime 外层既有 2 秒应急强制停止预算保持；本次修复覆盖正常 EOF 关闭仍未被等待的竞态，不宣称更改了无响应 CLI 的外层停止策略。
+
+新增 9 项回归：8 项生命周期单测覆盖并发关闭、exit / stdio close 时序、同步 close、Windows Job 终止确认与失败、Reader 初始化及收尾；1 项真实隔离 Backend / CLI 进程集成测试在 EOF 后延迟 150ms 退出，要求 Runtime 停止完成后已存在退出标记。该集成测试在旧 main 构建上因标记尚不存在而失败，修复后通过。生命周期测试已加入 `test:backend:stability`，Windows / Linux CI 均执行。
+
+本地使用现有 Node 22.23.2、现有依赖验证：
+
+- 按 `backend:build` 既有顺序直接运行 Claude stage、Vite backend build、native stage，成功；固定 pnpm shim 的原 ENOEXEC 环境限制仍在，未安装或升级工具。
+- `test:backend:stability` 的原生 smoke 与 Vitest 文件列表等价展开，`--maxWorkers=2`：33 文件、958 通过、1 个既有条件跳过、0 失败。未传 `testTimeout`，使用默认 5000ms；原用例自己的显式超时保持。
+- 相邻 `managed-session-catalog`、`compaction-control`、`codex-live-state`：3 文件、83/83 通过。
+- Backend / Desktop 类型检查、改动文件格式检查、`git diff --check`、lint 均退出 0；lint 保留既有 warning。
+
+本地结果不替代 Windows 实机验证；修复 PR 的 Windows ARM64 / x64 与完整主 CI 结果以 GitHub 检查为准。未扩大测试超时、添加重试、跳过失败用例或修改个人 Agent 配置。

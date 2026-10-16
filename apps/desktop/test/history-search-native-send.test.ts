@@ -46,7 +46,14 @@ const id = process.env.FIXTURE_NATIVE_ID;
 const cwd = process.cwd();
 const frame = (value) => process.stdout.write(JSON.stringify(value) + '\n');
 const thread = () => ({ id, cwd, turns: [], status: { type: 'idle' } });
-readline.createInterface({ input: process.stdin }).on('line', (line) => {
+const input = readline.createInterface({ input: process.stdin });
+input.on('close', () => {
+  if (process.env.FIXTURE_DELAY_EXIT === '1') setTimeout(() => {
+    fs.writeFileSync(process.env.FIXTURE_EXIT_FILE, 'closed');
+    process.exit(0);
+  }, 150);
+});
+input.on('line', (line) => {
   const request = JSON.parse(line), p = request.params || {};
   fs.appendFileSync(process.env.FIXTURE_FRAMES, JSON.stringify(request) + '\n');
   if (request.id === undefined) return;
@@ -95,7 +102,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 });
 `;
 
-async function fixture(agent: "codex" | "claude-code" = "codex") {
+async function fixture(agent: "codex" | "claude-code" = "codex", delayExit = false) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "history-native-send-")));
   cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
   const dataDir = path.join(root, "data"),
@@ -151,6 +158,7 @@ async function fixture(agent: "codex" | "claude-code" = "codex") {
 
   const framesFile = path.join(root, "frames.jsonl"),
     modeFile = path.join(root, "mode"),
+    exitFile = path.join(root, "native-closed"),
     script = path.join(bin, "app-server.cjs");
   await fs.writeFile(framesFile, "");
   await fs.writeFile(modeFile, "respond");
@@ -170,6 +178,8 @@ async function fixture(agent: "codex" | "claude-code" = "codex") {
     FIXTURE_NATIVE_ID: nativeId,
     FIXTURE_FRAMES: framesFile,
     FIXTURE_MODE: modeFile,
+    FIXTURE_DELAY_EXIT: delayExit ? "1" : "0",
+    FIXTURE_EXIT_FILE: exitFile,
   };
   if (process.platform === "win32") {
     if (!environment.SystemRoot) throw new Error("Windows fixture requires SystemRoot");
@@ -320,6 +330,8 @@ async function fixture(agent: "codex" | "claude-code" = "codex") {
     mutationFrames,
     receipt,
     rewriteSource,
+    stop: () => router.stop(),
+    exitFile,
     claude: (value: unknown) => service.localClaude(value),
     disconnect: () => fs.writeFile(modeFile, "disconnect"),
     restart: async () => {
@@ -330,6 +342,18 @@ async function fixture(agent: "codex" | "claude-code" = "codex") {
 }
 
 describe("history references through the real Backend and native protocol", () => {
+  it("waits for the managed native process to close before Runtime shutdown completes", async () => {
+    const f = await fixture("codex", true);
+    expect(await f.local("/send", await f.input())).toMatchObject({
+      status: 200,
+      body: { accepted: true },
+    });
+    await f.stop();
+    // A native CLI can still hold its cwd after stdin ends. Runtime shutdown
+    // must await it before callers can remove the workspace on Windows.
+    expect(await fs.readFile(f.exitFile, "utf8")).toBe("closed");
+  }, 25_000);
+
   it("sends only references once, freezes accepted text across source changes and rejects conflicting reuse", async () => {
     const f = await fixture(),
       body = await f.input();

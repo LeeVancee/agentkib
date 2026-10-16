@@ -6,6 +6,7 @@ import { windowsProcessTree, type NativeProcessTree } from "./native-process";
 const FRAME_LIMIT = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;
 const SHUTDOWN_TIMEOUT_MS = 3_000;
+const TERMINATION_TIMEOUT_MS = 1_000;
 
 type Response = { id?: unknown; result?: unknown; error?: unknown };
 
@@ -17,7 +18,9 @@ export class CodexAppServerSession extends EventEmitter {
   #buffer = Buffer.alloc(0);
   #nextId = 0;
   #closed?: Error;
-  #closing = false;
+  #closing?: Promise<void>;
+  #didClose = false;
+  #exited: Promise<void>;
 
   private constructor(child: ChildProcess, tree?: NativeProcessTree) {
     super();
@@ -26,9 +29,13 @@ export class CodexAppServerSession extends EventEmitter {
     child.stdout?.on("data", (chunk: Buffer) => this.#onData(chunk));
     child.on("error", (error) => this.#fail(error));
     child.stdin?.on("error", (error) => this.#fail(error));
-    child.on("close", (code) => {
-      this.#fail(new Error(`Codex app-server exited (${code ?? "unknown"})`));
-      this.emit("close");
+    this.#exited = new Promise((resolve) => {
+      child.once("close", (code) => {
+        this.#didClose = true;
+        this.#fail(new Error(`Codex app-server exited (${code ?? "unknown"})`));
+        this.emit("close");
+        resolve();
+      });
     });
   }
 
@@ -38,6 +45,7 @@ export class CodexAppServerSession extends EventEmitter {
     home: string,
     environment: NodeJS.ProcessEnv,
     onNotification?: (notification: Record<string, unknown>) => void,
+    onSessionStarted?: (session: CodexAppServerSession) => void,
   ): Promise<CodexAppServerSession> {
     const child = spawn(executable, ["app-server", "--stdio"], {
       cwd: workspace,
@@ -52,6 +60,7 @@ export class CodexAppServerSession extends EventEmitter {
       if (process.platform === "win32" && child.pid) tree = windowsProcessTree(child.pid);
       session = new CodexAppServerSession(child, tree);
       if (onNotification) session.on("notification", onNotification);
+      onSessionStarted?.(session);
       await session.request("initialize", {
         clientInfo: { name: "agentkib", title: "AgentKib", version: "0.13.0" },
         capabilities: { experimentalApi: true },
@@ -119,28 +128,33 @@ export class CodexAppServerSession extends EventEmitter {
     this.#write(Buffer.from(JSON.stringify({ id, error: { code, message } }) + "\n"));
   }
 
-  async close(): Promise<void> {
-    if (this.#closing) return;
-    this.#closing = true;
-    if (this.#child.exitCode === null && this.#child.signalCode === null) {
+  close(): Promise<void> {
+    return (this.#closing ??= this.#close());
+  }
+
+  async #close(): Promise<void> {
+    this.#fail(new Error("Codex app-server session closed"));
+    try {
+      if (this.#didClose) return;
       this.#child.stdin?.end();
-      const exited = new Promise<void>((resolve) => this.#child.once("close", () => resolve()));
-      await Promise.race([exited, delay(SHUTDOWN_TIMEOUT_MS)]);
-      if (this.#child.exitCode === null && this.#child.signalCode === null) {
-        if (process.platform === "win32") {
-          this.#tree?.terminate();
-          if (!this.#tree) this.#child.kill("SIGKILL");
-        } else if (this.#child.pid) {
-          try {
-            process.kill(-this.#child.pid, "SIGKILL");
-          } catch {
-            this.#child.kill("SIGKILL");
-          }
+      if (await settledWithin(this.#exited, SHUTDOWN_TIMEOUT_MS)) return;
+      if (process.platform === "win32") {
+        this.#tree?.terminate();
+        if (!this.#tree) this.#child.kill("SIGKILL");
+      } else if (this.#child.pid) {
+        try {
+          process.kill(-this.#child.pid, "SIGKILL");
+        } catch {
+          this.#child.kill("SIGKILL");
         }
       }
+      // Killing a process (or its Windows job) only requests termination. Keep
+      // its lease and workspace alive until the child and stdio actually close.
+      if (!(await settledWithin(this.#exited, TERMINATION_TIMEOUT_MS)))
+        throw new Error("Codex app-server process did not close after termination");
+    } finally {
+      this.#tree?.close();
     }
-    this.#tree?.close();
-    this.#fail(new Error("Codex app-server session closed"));
   }
 
   #write(frame: Buffer): void {
@@ -197,20 +211,43 @@ export class CodexAppServerSession extends EventEmitter {
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function settledWithin(promise: Promise<void>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Short-lived, bounded Codex app-server reader for metadata-only thread requests. */
 export class CodexAppServerReader {
   #sessions = new Set<CodexAppServerSession>();
   #closed = false;
+  #closing?: Promise<void>;
 
   constructor(readonly environment: NodeJS.ProcessEnv) {}
 
   close(): void {
+    void this.closeAsync().catch(() => undefined);
+  }
+
+  closeAsync(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
-    for (const session of this.#sessions) void session.close();
+    const closing = Promise.allSettled([...this.#sessions].map((session) => session.close())).then(
+      (results) => {
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+      },
+    );
+    this.#closing = closing;
+    return closing;
   }
 
   async readThread(
@@ -272,29 +309,35 @@ export class CodexAppServerReader {
   ): Promise<unknown[]> {
     if (this.#closed) throw new Error("Codex app-server reader is closed");
     if (calls.length === 0 || calls.length > 16) throw new Error("invalid-app-server-call-count");
-    const session = await CodexAppServerSession.start(
-      executable,
-      workspace,
-      home,
-      this.environment,
-    );
-    if (this.#closed) {
-      await session.close();
-      throw new Error("Codex app-server reader is closed");
-    }
-    this.#sessions.add(session);
-    session.once("close", () => this.#sessions.delete(session));
+    let session: CodexAppServerSession | undefined;
     try {
+      const opened = await CodexAppServerSession.start(
+        executable,
+        workspace,
+        home,
+        this.environment,
+        undefined,
+        (started) => {
+          session = started;
+          this.#sessions.add(started);
+        },
+      );
+      if (this.#closed) throw new Error("Codex app-server reader is closed");
       const results: unknown[] = [];
       for (const [index, [method, params]] of calls.entries()) {
-        const result = await session.request(method, params);
+        const result = await opened.request(method, params);
         validateResult?.(index, result);
         results.push(result);
       }
       return results;
     } finally {
-      this.#sessions.delete(session);
-      await session.close();
+      if (session) {
+        try {
+          await session.close();
+        } finally {
+          this.#sessions.delete(session);
+        }
+      }
     }
   }
 }

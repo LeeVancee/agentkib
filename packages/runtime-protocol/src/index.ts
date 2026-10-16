@@ -227,3 +227,4 @@ export interface RuntimeRpcError {
   message: string;
   data?: unknown;
 }
+export * from "./claude-bridge";

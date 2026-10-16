@@ -790,7 +790,7 @@ export class WebAccessService {
     reserved = false,
   ) {
     const executionMode = snapshotField(snapshot, "executionMode");
-    if (["codex-managed", "claude-managed"].includes(String(executionMode))) {
+    if (["codex-managed", "claude-managed", "claude-follower"].includes(String(executionMode))) {
       const workspaceId = snapshotField(snapshot, "workspaceId");
       if (
         typeof workspaceId !== "string" ||
@@ -813,7 +813,9 @@ export class WebAccessService {
         (this.options.verifiedCodex === true &&
           (executionMode === "codex-managed" || executionMode === "codex-follower")) ||
         (this.options.verifiedClaudeManaged === true &&
-          (executionMode === "managed-resume" || executionMode === "claude-managed")) ||
+          (executionMode === "managed-resume" ||
+            executionMode === "claude-managed" ||
+            executionMode === "claude-follower")) ||
         (this.options.verifiedAntigravityManaged === true && executionMode === "acp-managed"))
     );
   }
@@ -923,7 +925,14 @@ export class WebAccessService {
   }
 
   private invalidateScheduledDevice(deviceId: string, reason: string) {
-    return this.scheduler?.invalidate(deviceId, reason) ?? Promise.resolve();
+    return (
+      this.scheduler?.invalidate(deviceId, reason) ??
+      this.options
+        .claudeManagedRequest?.({ operation: "schedule-invalidate", deviceId })
+        .then(() => undefined)
+        .catch(() => undefined) ??
+      Promise.resolve()
+    );
   }
 
   /** Called only after the Electron sender check; shares all command admission and receipts. */
@@ -4077,7 +4086,7 @@ export class WebAccessService {
       const claudeReplay =
         prior?.found === true &&
         prior.sessionId === sessionId &&
-        prior.executionMode === "claude-managed";
+        ["claude-managed", "claude-follower"].includes(String(prior.executionMode));
       this.grant(hash, permission);
       if (!claudeReplay && this.requests.has(requestId)) {
         control.priorUncertain = true;
@@ -4386,8 +4395,9 @@ export class WebAccessService {
         this.unconfirmed.add(sessionId);
         this.unconfirmedRequests.set(sessionId, requestId);
         const pending = (
-          (snapshot as { executionMode?: string }).executionMode === "claude-managed" &&
-          this.options.receiptRequest
+          ["claude-managed", "claude-follower"].includes(
+            String((snapshot as { executionMode?: string }).executionMode),
+          ) && this.options.receiptRequest
             ? dispatchClaude(this.options.runtimeRequest, this.options.receiptRequest, params)
             : this.options.runtimeRequest(params)
         ).finally(() => {
@@ -4881,7 +4891,9 @@ export class WebAccessService {
         if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
         const enabled =
           this.controlsEnabledForProvider(sessionId, controlContext, device) &&
-          (!["codex-managed", "claude-managed"].includes(String(controlContext.executionMode)) ||
+          (!["codex-managed", "claude-managed", "claude-follower"].includes(
+            String(controlContext.executionMode),
+          ) ||
             (typeof controlContext.workspaceId === "string" &&
               (this.isFullAccess(device)
                 ? controlContext.workspaceId === streamWorkspaceId

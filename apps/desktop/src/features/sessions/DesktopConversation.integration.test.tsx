@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmbeddedConversation } from "./conversation/conversation";
 import { WebClient, type Access, type Live } from "@agentkib/web-client";
 import { permissionModeCopy } from "./conversation/features/sessions/permission-mode-copy";
+import { claudeConnectionCopy } from "./conversation/features/sessions/claude-connection-copy";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import {
   createDesktopConversationAdapter,
@@ -548,9 +549,9 @@ describe("desktop embedded conversation", () => {
               status: 200,
               body: {
                 sessionId: "claude-session",
-                executionMode: "claude-managed",
+                executionMode: initial.executionMode,
                 status: "idle",
-                features: { send: { available: true } },
+                features: { send: { available: initial.sendEnabled } },
               },
             };
           return { status: 200, body: {} };
@@ -637,6 +638,102 @@ describe("desktop embedded conversation", () => {
       expect(await screen.findByText("Existing Claude history")).toBeVisible();
       return fixture;
     }
+
+    it("connects the original Claude session without handoff and retains the draft after disconnect", async () => {
+      const { bridge, patch } = await open({
+        ...live(),
+        executionMode: "claude-follower",
+        connectionGeneration: "lease-a",
+      });
+      expect(await screen.findByText("已连接原会话")).toBeVisible();
+      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      const draft = screen.getByRole("textbox", { name: "发送消息" });
+      fireEvent.change(draft, { target: { value: "保留原终端草稿" } });
+      await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+      patch({
+        revision: 2,
+        status: "unsupported",
+        sendEnabled: false,
+        stopEnabled: false,
+        reason: "claude-bridge-disconnected",
+        connectionGeneration: "revoked-a",
+        approvals: [],
+        questions: [],
+        streamText: "",
+      });
+      await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
+      expect(draft).toHaveValue("保留原终端草稿");
+      expect(screen.getByText("仅查看历史")).toBeVisible();
+      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      expect(
+        vi
+          .mocked(bridge.request)
+          .mock.calls.filter(
+            ([path, body]) =>
+              body !== undefined && ["send", "managed/adopt", "managed/create"].includes(path),
+          ),
+      ).toEqual([]);
+    });
+
+    it("explains the unverified native send boundary without requesting a managed handoff", async () => {
+      const { bridge } = await open({
+        ...live(),
+        executionMode: "claude-follower",
+        connectionGeneration: "lease-a",
+        sendEnabled: false,
+        reason: "claude-follower-send-unverified",
+      });
+      expect(
+        await screen.findByText(
+          "原会话发送尚未开放，请在原终端发送；AgentKib 可同步观察并取消当前轮次。",
+        ),
+      ).toBeVisible();
+      fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
+        target: { value: "Keep unsent draft" },
+      });
+      expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      expect(vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send")).toHaveLength(
+        0,
+      );
+    });
+
+    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+      "shows unconfirmed native turn state in %s without handoff",
+      async (locale) => {
+        const { bridge } = await open(
+          {
+            ...live(),
+            executionMode: "claude-follower",
+            status: "running",
+            sendEnabled: false,
+            stopEnabled: false,
+            reason: "claude-follower-turn-unconfirmed",
+          },
+          locale,
+        );
+        expect(await screen.findByText(claudeConnectionCopy[locale].turnUnconfirmed)).toBeVisible();
+        expect(
+          vi
+            .mocked(bridge.request)
+            .mock.calls.filter(([path]) => ["send", "stop", "managed/adopt"].includes(path)),
+        ).toHaveLength(0);
+      },
+    );
+
+    it("explains follower approvals in the original terminal without offering a local decision", async () => {
+      await open({
+        ...live(),
+        executionMode: "claude-follower",
+        connectionGeneration: "lease-a",
+        status: "awaiting-approval",
+        sendEnabled: false,
+        reason: "claude-terminal-approval",
+      });
+      expect(await screen.findByText("正在等待工具审批，请在原终端处理。")).toBeVisible();
+      expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+    });
 
     it.each([
       ["zh-CN", "auto", { mode: "auto" }],

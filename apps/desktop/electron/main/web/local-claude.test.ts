@@ -40,6 +40,46 @@ describe("trusted Claude owner boundary", () => {
     expectedRevision: 1,
     text: "hello",
   };
+  it.each(["bridge-status", "bridge-challenge", "bridge-disconnect"])(
+    "keeps %s on the local owner boundary and ignores caller paths and credentials",
+    async (operation) => {
+      await localClaudeRequest(deps, {
+        operation,
+        sessionId: "session",
+        deviceId: "phone",
+        token: "untrusted-token",
+        socketPath: "/private/untrusted.sock",
+      });
+      expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+        operation,
+        sessionId: "session",
+        deviceId: "agentkib-local-owner",
+      });
+      expect(deps.receipt).not.toHaveBeenCalled();
+    },
+  );
+  it("rejects bridge management for a session outside the Claude catalog", async () => {
+    await expect(
+      localClaudeRequest(deps, {
+        operation: "bridge-challenge",
+        sessionId: "other",
+      }),
+    ).rejects.toThrow("claude_session_unavailable");
+    expect(deps.managed).not.toHaveBeenCalled();
+  });
+  it("allows the owner to revoke an unavailable catalog source without reading its history", async () => {
+    await localClaudeRequest(deps, {
+      operation: "bridge-disconnect",
+      sessionId: "removed-session",
+      deviceId: "phone",
+    });
+    expect(deps.managed).toHaveBeenCalledExactlyOnceWith({
+      operation: "bridge-disconnect",
+      sessionId: "removed-session",
+      deviceId: "agentkib-local-owner",
+    });
+    expect(deps.runtime).not.toHaveBeenCalled();
+  });
   it("assigns the owner in the host and does not forward caller paths or device IDs", async () => {
     await localClaudeRequest(deps, { ...send, deviceId: "phone", path: "/private/secret" });
     expect(deps.managed).toHaveBeenLastCalledWith({

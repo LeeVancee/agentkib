@@ -6,6 +6,7 @@ import {
   reconcileCursorNativeImport,
 } from "./cursor-native-import";
 import { CursorBridge } from "./cursor-bridge";
+import { ClaudeBridge } from "./claude-bridge";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -126,6 +127,7 @@ export class TypeScriptBackend {
   #sessions?: SessionReaders;
   #sessionStream?: SessionStreamHub;
   #cursorBridge?: CursorBridge;
+  #claudeBridge?: ClaudeBridge;
   #webRead?: WebReadRequests;
   #sessionIndex?: SessionIndex;
   #historySearch?: HistorySearch;
@@ -177,6 +179,8 @@ export class TypeScriptBackend {
     this.#storage = undefined;
     this.#quota = undefined;
     this.#claudeManaged?.close();
+    void this.#claudeBridge?.close();
+    this.#claudeBridge = undefined;
     this.#claudeManaged = undefined;
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
@@ -212,10 +216,12 @@ export class TypeScriptBackend {
     if (this.#closing) return this.#closing;
     this.cancelPendingOperations();
     const claudeManaged = this.#claudeManaged;
+    const claudeBridge = this.#claudeBridge;
     const mcp = this.#mcp;
     const mcpHub = this.#mcpHub;
     const remoteAgent = this.#remoteAgent;
     this.#claudeManaged = undefined;
+    this.#claudeBridge = undefined;
     this.#mcpHub = undefined;
     this.#remoteAgent = undefined;
     const closing = (async () => {
@@ -225,6 +231,7 @@ export class TypeScriptBackend {
         this.#handoffQueue.drain().then(() => this.#handoffWork.close()),
         Promise.resolve().then(() => mcp?.closeAsync()),
         Promise.resolve().then(() => claudeManaged?.shutdown()),
+        Promise.resolve().then(() => claudeBridge?.close()),
         Promise.resolve().then(() => mcpHub?.close()),
         Promise.resolve().then(() => remoteAgent?.close()),
       ]);
@@ -469,6 +476,20 @@ export class TypeScriptBackend {
               this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
           },
         );
+        const claudeOwner = this.#claudeManaged;
+        this.#claudeBridge = new ClaudeBridge({
+          dataDir,
+          bootId: claudeOwner.bootId,
+          pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
+          target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
+          validate: (target, forControl) => {
+            if (readPreferences(dataDir).session_index_enabled === false)
+              throw new Error("session-index-disabled");
+            claudeOwner.validateNativeBridgeTarget(target, forControl);
+          },
+          publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
+        });
+        this.#claudeBridge.initialize();
         this.#historySearch = new HistorySearch(
           store,
           dataDir,
@@ -563,7 +584,8 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.controlReceipt) {
       const receipt = readControlReceipt(this.#dataDir, params);
-      return this.#claudeManaged ? this.#claudeManaged.receipt(receipt) : receipt;
+      const nativeReceipt = this.#claudeBridge?.receipt(receipt) ?? receipt;
+      return this.#claudeManaged ? this.#claudeManaged.receipt(nativeReceipt) : nativeReceipt;
     }
     if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
@@ -1541,6 +1563,24 @@ export class TypeScriptBackend {
 
   async #requestClaudeManaged(params: Record<string, unknown>) {
     try {
+      if (params.operation === "schedule-invalidate")
+        this.#claudeBridge?.invalidate(
+          typeof params.deviceId === "string" ? params.deviceId : undefined,
+          typeof params.sessionId === "string" ? params.sessionId : undefined,
+        );
+      if (params.operation === "adopt") this.#claudeBridge?.assertCanAdopt();
+      if (
+        ["bridge-status", "bridge-challenge", "bridge-disconnect"].includes(
+          String(params.operation),
+        )
+      )
+        return this.#claudeBridge!.management(params);
+      if (
+        typeof params.sessionId === "string" &&
+        this.#claudeBridge?.handles(params.sessionId) &&
+        params.operation !== "events"
+      )
+        return this.#claudeBridge.request(params);
       return await this.#claudeManaged!.request(params);
     } catch (error) {
       if (error instanceof ClaudeHostControlPreflightError) return error.result;

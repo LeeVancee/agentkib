@@ -1,3 +1,4 @@
+import { claudeConnectionCopy } from "./claude-connection-copy";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useRef, useState } from "react";
@@ -111,7 +112,7 @@ export function SessionComposer() {
     };
   }, [selected, setComposerText]);
   useEffect(() => {
-    if (access?.device?.attachments) return;
+    if (access?.device?.attachments && live?.executionMode !== "claude-follower") return;
     for (const abort of active.current.values()) abort.abort();
     active.current.clear();
     for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
@@ -119,7 +120,7 @@ export function SessionComposer() {
     setPreviewKey(undefined);
     count.current = 0;
     setUploads([]);
-  }, [access?.device?.attachments]);
+  }, [access?.device?.attachments, live?.executionMode, live?.connectionGeneration]);
   useEffect(() => {
     if (!submitted) return;
     if (notice === "accepted") {
@@ -481,7 +482,9 @@ export function SessionComposer() {
                 title={
                   uploadPermission
                     ? copy.attachmentNote
-                    : capabilities?.features.attachments?.reason || copy.permission
+                    : isClaude && live?.executionMode === "claude-follower"
+                      ? claudeConnectionCopy[locale].attachments
+                      : capabilities?.features.attachments?.reason || copy.permission
                 }
                 onClick={() => fileInput.current?.click()}
               >
@@ -501,11 +504,15 @@ export function SessionComposer() {
             {contextUsageCopy[locale].compactingDetail}
           </p>
         )}
-        {!canSend && !running && !compacting && !connectionFailure && !display.loading && (
-          <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
-            {display.reason}
-          </p>
-        )}
+        {!canSend &&
+          (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
+          !compacting &&
+          !connectionFailure &&
+          !display.loading && (
+            <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
+              {display.reason}
+            </p>
+          )}
         {panels && canConfirmClaudeHandoff(session) && (
           <Button type="button" variant="outline" onClick={() => panels.setActionsOpen(true)}>
             {t.confirmHandoff}

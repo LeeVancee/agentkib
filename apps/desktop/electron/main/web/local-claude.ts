@@ -118,6 +118,9 @@ async function localClaudeRequestInner(
       deviceId: OWNER,
     });
   const sessionId = field(input.sessionId);
+  // Revocation must remain possible after a source disappears from the catalog.
+  if (operation === "bridge-disconnect")
+    return deps.managed({ operation, sessionId, deviceId: OWNER });
   if (["adopt", "release", "reconcile"].includes(operation)) {
     const params: Record<string, unknown> = {
       operation,
@@ -150,6 +153,8 @@ async function localClaudeRequestInner(
     })
   )
     throw new Error("claude_session_unavailable");
+  if (["bridge-status", "bridge-challenge", "bridge-disconnect"].includes(operation))
+    return deps.managed({ operation, sessionId, deviceId: OWNER });
   if (["inspect", "capabilities"].includes(operation))
     return deps.managed({ operation, sessionId, experimentalEnabled: true });
   if (operation === "events")

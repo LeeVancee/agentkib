@@ -25,6 +25,7 @@ export function canConfirmClaudeHandoff(
     capabilities.features.adopt?.available &&
     (!capabilities.reason || capabilities.reason === "handoff-required") &&
     live.reason === "handoff-required" &&
+    live.executionMode !== "claude-follower" &&
     (live.status === "idle" || live.status === "released") &&
     live.activity !== "compacting" &&
     !live.approvals?.length &&

@@ -157,6 +157,21 @@ export interface DesktopRuntimeStatus {
   error?: string;
 }
 
+export interface ClaudeBridgeStatus {
+  supported: boolean;
+  connected: boolean;
+  sessionId: string;
+  version: string;
+  reason?: string;
+  pluginDirectory: string;
+  installInstructions: string;
+}
+export interface ClaudeBridgeChallenge {
+  challenge: string;
+  expiresAt: string;
+  instructions: string;
+}
+
 export interface DesktopApi {
   claude: { request(input: Record<string, unknown>): Promise<unknown> };
   account: {

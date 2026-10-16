@@ -1,0 +1,1349 @@
+// @vitest-environment node
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import {
+  decodeTicket,
+  previewText,
+  observeNativeStream,
+  register as productionRegister,
+  safeSocket,
+  validSend,
+  visibleMessages,
+} from "../../../packages/claude-bridge-plugin/hooks/register.js";
+
+type Value = Record<string, any>;
+type Hook = (api: Value, event: Value, next: (event: Value) => any) => any;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function collectStream(stream: AsyncGenerator<Value, unknown>) {
+  const chunks: Value[] = [];
+  let item = await stream.next();
+  while (!item.done) {
+    chunks.push(item.value);
+    item = await stream.next();
+  }
+  return { chunks, result: item.value };
+}
+
+function measureUtf8Work() {
+  const nativeEncode = TextEncoder.prototype.encode;
+  const nativeEncodeInto = TextEncoder.prototype.encodeInto;
+  const nativeCharCodeAt = String.prototype.charCodeAt;
+  const work = { calls: 0, readUnits: 0, capacity: 0, charCodeAtCalls: 0 };
+  const encode = vi.spyOn(TextEncoder.prototype, "encode").mockImplementation(function (
+    this: TextEncoder,
+    input = "",
+  ) {
+    const result = nativeEncode.call(this, input);
+    work.calls++;
+    work.readUnits += input.length;
+    work.capacity += result.byteLength;
+    return result;
+  });
+  const encodeInto = vi
+    .spyOn(TextEncoder.prototype, "encodeInto")
+    .mockImplementation(function (this: TextEncoder, input, destination) {
+      const result = nativeEncodeInto.call(this, input, destination);
+      work.calls++;
+      work.readUnits += result.read;
+      work.capacity += destination.byteLength;
+      return result;
+    });
+  const charCodeAt = vi
+    .spyOn(String.prototype, "charCodeAt")
+    .mockImplementation(function (this: string, index) {
+      work.charCodeAtCalls++;
+      return nativeCharCodeAt.call(this, index);
+    });
+  return {
+    checkpoint: () => ({ ...work }),
+    reset() {
+      work.calls = 0;
+      work.readUnits = 0;
+      work.capacity = 0;
+      work.charCodeAtCalls = 0;
+    },
+    restore() {
+      charCodeAt.mockRestore();
+      encode.mockRestore();
+      encodeInto.mockRestore();
+    },
+  };
+}
+
+const STREAM_BUDGET = 96 * 1024;
+const PREVIEW_END = "\n[AgentKib preview truncated; read the original history for full content]";
+
+function expectedUtf8Preview(value: string, budget: number) {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= budget) return value;
+  const prefix = bytes.subarray(0, budget - Buffer.byteLength(PREVIEW_END));
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  // An independent byte-based oracle discards at most an incomplete final
+  // UTF-8 code point; it does not share the plugin's UTF-16 slicing logic.
+  for (let end = prefix.length; end >= prefix.length - 3; end--) {
+    try {
+      return decoder.decode(prefix.subarray(0, end)) + PREVIEW_END;
+    } catch {
+      /* The cut fell inside a multi-byte code point. */
+    }
+  }
+  throw new Error("invalid UTF-8 preview prefix");
+}
+
+const experimentalSource = readFileSync(
+  new URL("../../../packages/claude-bridge-plugin/hooks/register.js", import.meta.url),
+  "utf8",
+).replace("const SEND_CONTRACT_EXPERIMENT = false;", "const SEND_CONTRACT_EXPERIMENT = true;");
+const experimentalRegister = (
+  await import(
+    /* @vite-ignore */
+    `data:text/javascript;base64,${Buffer.from(experimentalSource).toString("base64")}`
+  )
+).register;
+
+async function fixture(
+  options: {
+    experiment?: boolean;
+    connect?: boolean;
+    activeAtStart?: boolean;
+    storedCredential?: boolean;
+    httpInterceptor?: (url: string) => Promise<void>;
+  } = {},
+) {
+  const hooks = new Map<string, Array<{ match: Value; hook: Hook }>>();
+  const register = options.experiment === false ? productionRegister : experimentalRegister;
+  register((name: string, matcher: Value | Hook, handler?: Hook) => {
+    const hook = typeof matcher === "function" ? matcher : handler!;
+    const match = typeof matcher === "function" ? {} : matcher;
+    hooks.set(name, [...(hooks.get(name) ?? []), { match, hook }]);
+    return { catch: () => undefined };
+  });
+  const nativeId = randomUUID();
+  let cwd = "/isolated/workspace";
+  let version = "2.1.301";
+  let command: Value | null = null;
+  let dispatches = 0;
+  let stops = 0;
+  let messages: Value[] = [{ role: "user", text: "native history" }];
+  let interceptHttp = options.httpInterceptor;
+  const nextResponses = new Map<string, Value>();
+  const calls: Array<{ url: string; init: Value; body: Value }> = [];
+  const timers: Array<() => Promise<void>> = [];
+  const stored = new Map<string, unknown>();
+  const connection = {
+    protocol: 1,
+    bindingId: randomUUID(),
+    token: "a".repeat(64),
+    leaseId: randomUUID(),
+    credentialPath: "/private/app/claude-bridge/credential.json",
+  };
+  let submit: (value: Value) => Promise<Value>;
+  const api: Value = {
+    session: {
+      id: async () => nativeId,
+      cwd: async () => cwd,
+      version: async () => ({ version }),
+      messages: async () => messages,
+      usage: async () => ({ context: { tokens: 32, window: 100, percent: 32 } }),
+    },
+    command: { register: async () => undefined },
+    store: {
+      get: async (key: string) => stored.get(key),
+      set: async (key: string, value: unknown) => stored.set(key, value),
+    },
+    fs: {
+      read: async () =>
+        JSON.stringify({
+          ...connection,
+          socketPath: "/private/bridge.sock",
+          nativeId,
+          cwd,
+          cliVersion: version,
+          pluginVersion: "0.1.0",
+        }),
+    },
+    clock: { every: (_ms: number, callback: () => Promise<void>) => timers.push(callback) },
+    http: {
+      fetch: async (url: string, init: Value) => {
+        const body = JSON.parse(init.body);
+        calls.push({ url, init, body });
+        await interceptHttp?.(url);
+        const forced = nextResponses.get(url);
+        if (forced) {
+          nextResponses.delete(url);
+          return { ok: false, status: forced.status, text: JSON.stringify(forced.body) };
+        }
+        let result: Value = {};
+        if (url.endsWith("/pair") || url.endsWith("/reconnect")) result = connection;
+        else if (url.endsWith("/events")) result = { ackSeq: body.events.at(-1).seq };
+        else if (url.endsWith("/commands")) {
+          result = { commands: command ? [command] : [] };
+          command = null;
+        }
+        return { ok: true, status: 200, text: JSON.stringify(result) };
+      },
+    },
+    prompt: {
+      submit: async (value: Value) => {
+        dispatches++;
+        return submit(value);
+      },
+    },
+    turn: {
+      abort: async () => {
+        stops++;
+      },
+    },
+  };
+  function run(name: string, event: Value, bottom: (value: Value) => any = (value) => value): any {
+    const rows = (hooks.get(name) ?? []).filter(({ match }) =>
+      Object.entries(match).every(([key, value]) => event[key] === value),
+    );
+    const visit = (index: number, value: Value): any =>
+      index === rows.length
+        ? bottom(value)
+        : rows[index].hook(api, value, (next) => visit(index + 1, next));
+    return visit(0, event);
+  }
+  submit = async (value) => {
+    // Native self-call re-entry skips the sender's own prompt.submit hook.
+    await run("session.append", {
+      door: "prompt",
+      origin: { kind: "plugin", name: "agentkib-bridge", asUser: true },
+      uuid: randomUUID(),
+      message: { type: "user", content: [{ type: "text", text: value.text }] },
+    });
+    const turnId = randomUUID();
+    await run("turn.start", { text: value.text, turnId });
+    return { text: value.text };
+  };
+  if (options.storedCredential) stored.set(`credentialPath:${nativeId}`, connection.credentialPath);
+  let nativeStarts = 0;
+  await run("session.start", { cwd, isInteractive: true, surface: "terminal" }, (value) => {
+    nativeStarts++;
+    return value;
+  });
+  const ticket = Buffer.from(
+    JSON.stringify({ protocol: 1, socketPath: "/private/bridge.sock", ticket: "t".repeat(32) }),
+  ).toString("base64url");
+  await run("ui.render", {
+    component: "AbovePrompt",
+    props: { isWorking: options.activeAtStart === true },
+  });
+  if (options.connect !== false) {
+    const connected = await run("command.run", { command: "agentkib-connect", args: ticket });
+    expect(connected.text).toContain("connected");
+  }
+  const events = () =>
+    calls.filter((call) => call.url.endsWith("/events")).flatMap((call) => call.body.events);
+  const snapshots = () =>
+    events()
+      .filter((entry) => entry.event.type === "snapshot")
+      .map((entry) => entry.event.snapshot);
+  const results = () =>
+    calls.filter((call) => call.url.endsWith("/results")).map((call) => call.body);
+  return {
+    run,
+    calls,
+    stored,
+    connection,
+    nativeId,
+    events,
+    snapshots,
+    results,
+    ticket,
+    nativeStarts,
+    get dispatches() {
+      return dispatches;
+    },
+    get stops() {
+      return stops;
+    },
+    setSubmit(value: typeof submit) {
+      submit = value;
+    },
+    setIdentity(value: { cwd?: string; version?: string }) {
+      cwd = value.cwd ?? cwd;
+      version = value.version ?? version;
+    },
+    setMessages(value: Value[]) {
+      messages = value;
+    },
+    setHttpInterceptor(value: typeof interceptHttp) {
+      interceptHttp = value;
+    },
+    nextHttpResponse(suffix: string, response: Value) {
+      nextResponses.set(`http://localhost${suffix}`, response);
+    },
+    async tick() {
+      for (const callback of timers) await callback();
+    },
+    async flush() {
+      await timers[0]();
+    },
+    stream(turnId: string, chunks: Value[], result: unknown = {}, extra: Value = {}) {
+      return run("turn.step", { turnId, ...extra }, async function* () {
+        yield* chunks;
+        return result;
+      });
+    },
+    async deliver(value: Value) {
+      command = value;
+      await timers[1]();
+    },
+  };
+}
+
+describe("Claude Code native session plugin", () => {
+  it("keeps production sending disabled even when an idle session receives a forged send command", async () => {
+    const f = await fixture({ experiment: false });
+    expect(f.snapshots().at(-1).capabilities).toMatchObject({ read: true, send: false });
+    await f.deliver({
+      commandId: randomUUID(),
+      kind: "send",
+      requestId: randomUUID(),
+      text: "no dispatch",
+      expectedRevision: 0,
+    });
+    expect(f.results().at(-1)).toMatchObject({
+      status: "rejected",
+      reason: "claude-native-send-experimental-disabled",
+    });
+    expect(f.dispatches).toBe(0);
+  });
+
+  it("does not block terminal startup or revive an ended session after a delayed reconnect", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await fixture({
+      connect: false,
+      storedCredential: true,
+      httpInterceptor: async (url) => {
+        if (url.endsWith("/reconnect")) await held;
+      },
+    });
+    expect(f.nativeStarts).toBe(1);
+    await f.run("session.end", { reason: "exit" });
+    release();
+    await f.tick();
+    const status = await f.run("command.run", { command: "agentkib-status", args: "" });
+    expect(status.text).toContain("not connected");
+    expect(f.snapshots().filter((snapshot) => snapshot.status !== "disconnected")).toHaveLength(0);
+  });
+
+  it("retries startup reconnect on later ticks when Runtime was initially offline", async () => {
+    let fail = true;
+    const f = await fixture({
+      connect: false,
+      storedCredential: true,
+      httpInterceptor: async (url) => {
+        if (url.endsWith("/reconnect") && fail) {
+          fail = false;
+          throw new Error("offline");
+        }
+      },
+    });
+    await expect
+      .poll(() => f.calls.filter((call) => call.url.endsWith("/reconnect")).length)
+      .toBe(1);
+    await f.tick();
+    await f.tick();
+    expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(2);
+    expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+      "is connected",
+    );
+    expect(f.dispatches).toBe(0);
+  });
+
+  it("keeps a slow reconnect private from both timer lanes and preserves native completion", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await fixture({
+      connect: false,
+      storedCredential: true,
+      httpInterceptor: async (url) => {
+        if (url.endsWith("/reconnect")) await held;
+      },
+    });
+    await expect.poll(() => f.calls.some((call) => call.url.endsWith("/reconnect"))).toBe(true);
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "native terminal", turnId });
+    await f.run("turn.complete", { turnId, answer: "done", isAborted: true });
+    for (let index = 0; index < 3; index++) await f.tick();
+    expect(
+      f.calls.every(
+        (call) => !["/events", "/commands"].some((suffix) => call.url.endsWith(suffix)),
+      ),
+    ).toBe(true);
+    release();
+    await expect
+      .poll(async () =>
+        (await f.run("command.run", { command: "agentkib-status", args: "" })).text.includes(
+          "is connected",
+        ),
+      )
+      .toBe(true);
+    await f.tick();
+    const completions = f.calls
+      .filter((call) => call.url.endsWith("/events"))
+      .flatMap((call) => call.body.events)
+      .filter((entry) => entry.event.type === "turn-complete");
+    expect(completions).toHaveLength(1);
+    expect(completions[0].event.turnId).toBe(turnId);
+    expect(f.snapshots().at(-1).capabilities.read).toBe(true);
+  });
+
+  it("allows explicit pairing to supersede startup reconnect and ignores its late revoked response", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await fixture({
+      connect: false,
+      storedCredential: true,
+      httpInterceptor: async (url) => {
+        if (url.endsWith("/reconnect")) await held;
+      },
+    });
+    await expect.poll(() => f.calls.some((call) => call.url.endsWith("/reconnect"))).toBe(true);
+    f.nextHttpResponse("/v1/reconnect", { status: 410, body: { error: "binding-revoked" } });
+    const connected = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    expect(connected.text).toContain("connected to this");
+    release();
+    await f.tick();
+    expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+      "is connected",
+    );
+    expect(f.snapshots().at(-1).capabilities.read).toBe(true);
+  });
+
+  it("preserves turn completion across delta overflow and clears only the temporary pause after snapshot ACK", async () => {
+    for (const unknown of [false, true]) {
+      const f = await fixture();
+      if (unknown) {
+        f.setSubmit(async (value) => ({ text: value.text }));
+        await f.deliver({
+          commandId: randomUUID(),
+          kind: "send",
+          requestId: randomUUID(),
+          text: "unconfirmed",
+          expectedRevision: 0,
+        });
+      }
+      const turnId = randomUUID();
+      const eventIndex = f.events().length;
+      await f.run("turn.start", { text: "terminal", turnId });
+      const callsBeforeStream = f.calls.length;
+      const chunks = Array.from({ length: 300 }, () => ({ kind: "text", text: "x" }));
+      const nativeResult = { turnId, answer: "x".repeat(300) };
+      expect(await collectStream(f.stream(turnId, chunks, nativeResult))).toEqual({
+        chunks,
+        result: nativeResult,
+      });
+      expect(f.calls).toHaveLength(callsBeforeStream);
+      f.setMessages([{ role: "assistant", text: nativeResult.answer }]);
+      await f.run("turn.complete", { turnId, answer: "x".repeat(300), isAborted: true });
+      for (let index = 0; index < 12; index++) await f.tick();
+      const delivered = f.events().slice(eventIndex);
+      expect(delivered[0].event).toMatchObject({ type: "gap", revision: 1 });
+      const replacementIndex = delivered.findIndex((entry) => entry.event.type === "snapshot");
+      expect(replacementIndex).toBeGreaterThan(0);
+      expect(
+        delivered.slice(1, replacementIndex).every((entry) => entry.event.type === "turn-complete"),
+      ).toBe(true);
+      const completions = delivered.filter((entry) => entry.event.type === "turn-complete");
+      expect(completions).toHaveLength(1);
+      expect(completions[0].event.turnId).toBe(turnId);
+      expect(f.snapshots().at(-1)).toMatchObject({
+        status: "idle",
+        messages: [{ role: "assistant", text: nativeResult.answer }],
+        streamText: nativeResult.answer,
+      });
+      expect(f.snapshots().at(-1).capabilities.send).toBe(!unknown);
+    }
+  });
+
+  it("keeps an overflow gap and completion newer than an already in-flight event ACK", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal", turnId });
+    await f.flush();
+    await collectStream(f.stream(turnId, [{ kind: "text", text: "before the lost batch" }]));
+    const held = deferred<void>();
+    const intercepted = deferred<void>();
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/events")) {
+        intercepted.resolve();
+        await held.promise;
+      }
+    });
+    const inFlight = f.flush();
+    await intercepted.promise;
+    const oldBatch = f.calls.filter((call) => call.url.endsWith("/events")).at(-1)!.body.events;
+    const oldAck = oldBatch.at(-1).seq;
+    const eventIndex = f.events().length;
+    const chunks = Array.from({ length: 300 }, () => ({ kind: "text", text: "new" }));
+    const nativeResult = { answer: "native final", turnId };
+    expect(await collectStream(f.stream(turnId, chunks, nativeResult))).toEqual({
+      chunks,
+      result: nativeResult,
+    });
+    f.setMessages([{ role: "assistant", text: "native final" }]);
+    await f.run("turn.complete", { turnId, answer: "native final", isAborted: false });
+    expect(f.events()).toHaveLength(eventIndex);
+    held.resolve();
+    await inFlight;
+    f.setHttpInterceptor(undefined);
+    for (let index = 0; index < 12; index++) await f.flush();
+    const recovered = f.events().slice(eventIndex);
+    expect(recovered[0].event.type).toBe("gap");
+    expect(recovered[0].seq).toBeGreaterThan(oldAck);
+    expect(recovered.every((entry) => entry.seq > oldAck)).toBe(true);
+    expect(recovered.filter((entry) => entry.event.type === "turn-complete")).toEqual([
+      expect.objectContaining({
+        event: expect.objectContaining({ turnId, text: "native final", aborted: false }),
+      }),
+    ]);
+    expect(f.snapshots().at(-1)).toMatchObject({
+      status: "idle",
+      messages: [{ role: "assistant", text: "native final" }],
+    });
+  });
+
+  it("rejects cancellation during an unreported gap and restores it only after snapshot acknowledgement", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal", turnId });
+    await f.flush();
+    expect(f.snapshots().at(-1).capabilities.stop).toBe(true);
+    await collectStream(
+      f.stream(
+        turnId,
+        Array.from({ length: 300 }, () => ({ kind: "text", text: "delta" })),
+      ),
+    );
+    const stop = () => ({
+      commandId: randomUUID(),
+      kind: "stop",
+      turnId,
+      expectedRevision: 1,
+    });
+    await f.deliver(stop());
+    expect(f.stops).toBe(0);
+    expect(f.results().at(-1).status).toBe("rejected");
+    for (let index = 0; index < 12; index++) await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({
+      status: "running",
+      currentTurnId: turnId,
+      capabilities: { stop: true },
+    });
+    await f.deliver(stop());
+    expect(f.stops).toBe(1);
+    expect(f.results().at(-1)).toMatchObject({ status: "accepted", turnId });
+  });
+
+  it("keeps cancellation fenced when previews advance before the recovery snapshot ACK", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal", turnId });
+    await collectStream(
+      f.stream(
+        turnId,
+        Array.from({ length: 300 }, () => ({ kind: "text", text: "x" })),
+      ),
+    );
+    const held = deferred<void>();
+    const intercepted = deferred<void>();
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/events")) {
+        intercepted.resolve();
+        await held.promise;
+      }
+    });
+    const recovery = f.flush();
+    await intercepted.promise;
+    expect(f.snapshots().at(-1)).toMatchObject({
+      streamText: "x".repeat(300),
+      capabilities: { stop: false },
+    });
+    await collectStream(f.stream(turnId, [{ kind: "text", text: "after snapshot" }]));
+    held.resolve();
+    await recovery;
+    f.setHttpInterceptor(undefined);
+    await f.deliver({
+      commandId: randomUUID(),
+      kind: "stop",
+      turnId,
+      expectedRevision: 1,
+    });
+    expect(f.stops).toBe(0);
+    expect(f.results().at(-1)).toMatchObject({
+      status: "rejected",
+      reason: "session-state-unverified",
+    });
+    for (let index = 0; index < 3; index++) await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({
+      streamText: "x".repeat(300) + "after snapshot",
+      capabilities: { stop: true },
+    });
+  });
+
+  it("rejects a polled cancellation when the event lane loses its lease before dispatch", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal", turnId });
+    await f.flush();
+    const polled = deferred<void>();
+    const commandGate = deferred<void>();
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/commands")) {
+        polled.resolve();
+        await commandGate.promise;
+      }
+    });
+    const stop = () => ({
+      commandId: randomUUID(),
+      kind: "stop",
+      turnId,
+      expectedRevision: 1,
+    });
+    const pendingStop = f.deliver(stop());
+    await polled.promise;
+    await f.run("session.append", {});
+    f.nextHttpResponse("/v1/events", {
+      status: 409,
+      body: { error: "bridge-lease-expired" },
+    });
+    await f.flush();
+    commandGate.resolve();
+    await pendingStop;
+    expect(f.stops).toBe(0);
+    expect(f.results().at(-1)).toMatchObject({
+      status: "rejected",
+      reason: "session-state-unverified",
+    });
+    f.setHttpInterceptor(undefined);
+    await f.tick();
+    await f.flush();
+    expect(f.snapshots().at(-1).capabilities.stop).toBe(true);
+    await f.deliver(stop());
+    expect(f.stops).toBe(1);
+  });
+
+  it("recovers a hot-loaded running turn from a main step before forwarding text without inventing a start", async () => {
+    const f = await fixture({ activeAtStart: true });
+    expect(f.snapshots().at(-1)).toMatchObject({
+      status: "running",
+      currentTurnId: null,
+      waiting: null,
+      capabilities: { send: false, stop: false },
+    });
+    const turnId = randomUUID();
+    await collectStream(
+      f.stream(turnId, [{ kind: "text", text: "subagent text" }], {}, { agentId: "child" }),
+    );
+    await f.flush();
+    expect(f.snapshots().at(-1).currentTurnId).toBeNull();
+    const eventIndex = f.events().length;
+    const chunk = { kind: "text", text: "main response" };
+    const nativeResult = { answer: "main response", turnId };
+    const observed = await collectStream(f.stream(turnId, [chunk], nativeResult));
+    expect(observed.chunks[0]).toBe(chunk);
+    expect(observed.result).toBe(nativeResult);
+    await f.flush();
+    const delivered = f.events().slice(eventIndex);
+    const snapshotIndex = delivered.findIndex((entry) => entry.event.type === "snapshot");
+    const textIndex = delivered.findIndex((entry) => entry.event.type === "text");
+    expect(snapshotIndex).toBeGreaterThanOrEqual(0);
+    expect(textIndex).toBeGreaterThan(snapshotIndex);
+    expect(delivered[snapshotIndex].event.snapshot).toMatchObject({
+      status: "running",
+      currentTurnId: turnId,
+      capabilities: { stop: true },
+    });
+    expect(delivered[textIndex].event).toMatchObject({ turnId, text: "main response" });
+    expect(f.events().some((entry) => entry.event.type === "turn-start")).toBe(false);
+    expect(JSON.stringify(f.events())).not.toContain("subagent text");
+  });
+
+  it("captures completion and fresh history when reload missed both the start and the stream", async () => {
+    const f = await fixture({ activeAtStart: true });
+    const turnId = randomUUID();
+    f.setMessages([{ role: "assistant", text: "completed before the first observed step" }]);
+    const nativeResult = { native: "completion result" };
+    expect(
+      await f.run(
+        "turn.complete",
+        { turnId, answer: "completed before the first observed step", isAborted: false },
+        () => nativeResult,
+      ),
+    ).toBe(nativeResult);
+    await f.flush();
+    expect(f.events().filter((entry) => entry.event.type === "turn-complete")).toEqual([
+      expect.objectContaining({
+        event: expect.objectContaining({
+          turnId,
+          text: "completed before the first observed step",
+          aborted: false,
+        }),
+      }),
+    ]);
+    expect(f.snapshots().at(-1)).toMatchObject({
+      status: "idle",
+      currentTurnId: null,
+      capabilities: { send: true, stop: false },
+      messages: [{ role: "assistant", text: "completed before the first observed step" }],
+    });
+    expect(f.events().some((entry) => entry.event.type === "turn-start")).toBe(false);
+  });
+
+  it("does not let a late old completion terminate a newer native turn", async () => {
+    const f = await fixture();
+    const oldTurn = randomUUID();
+    const currentTurn = randomUUID();
+    await f.run("turn.start", { text: "old", turnId: oldTurn });
+    await f.run("turn.start", { text: "current", turnId: currentTurn });
+    await collectStream(f.stream(currentTurn, [{ kind: "text", text: "current stream" }]));
+    await f.run("turn.complete", { turnId: oldTurn, answer: "late old result", isAborted: true });
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({
+      status: "running",
+      currentTurnId: currentTurn,
+      streamText: "current stream",
+      capabilities: { stop: true, send: false },
+    });
+    await f.deliver({
+      commandId: randomUUID(),
+      kind: "stop",
+      turnId: currentTurn,
+      expectedRevision: f.snapshots().at(-1).revision,
+    });
+    expect(f.stops).toBe(1);
+  });
+
+  it("replays captured completion evidence after reconnect without repeating native actions", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal", turnId });
+    await f.tick();
+    await f.run("turn.complete", { turnId, answer: "done", isAborted: true });
+    let fail = true;
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/events") && fail) {
+        fail = false;
+        throw new Error("lost event");
+      }
+    });
+    await f.tick();
+    await f.tick();
+    const completions = f.calls
+      .filter((call) => call.url.endsWith("/events"))
+      .flatMap((call) => call.body.events)
+      .filter((entry) => entry.event.type === "turn-complete");
+    expect(completions).toHaveLength(2);
+    expect(completions.every((entry) => entry.event.turnId === turnId)).toBe(true);
+    expect(f.dispatches).toBe(0);
+    expect(f.stops).toBe(0);
+  });
+
+  it("validates tickets, literal text and UTF-8 boundaries", () => {
+    expect(safeSocket("relative.sock")).toBe(false);
+    expect(safeSocket("/tmp/../other.sock")).toBe(false);
+    expect(() => decodeTicket("invalid")).toThrow();
+    expect(validSend({ requestId: "id", text: "你好" })).toBe(true);
+    expect(validSend({ requestId: "id", text: "/logout" })).toBe(false);
+    expect(validSend({ requestId: "id", text: "🙂".repeat(4097) })).toBe(false);
+    const clipped = previewText("🙂".repeat(1000), 128);
+    expect(Buffer.byteLength(clipped)).toBeLessThanOrEqual(128);
+    expect(clipped).toContain("preview truncated");
+    expect(
+      visibleMessages([
+        { role: "system", text: "secret" },
+        { role: "assistant", text: "visible", thinking: "secret" },
+      ]),
+    ).toEqual([{ role: "assistant", text: "visible" }]);
+  });
+
+  it("pairs only the exact native identity over HTTP-over-UDS and stores only the credential path", async () => {
+    const f = await fixture();
+    const pair = f.calls.find((call) => call.url.endsWith("/pair"))!;
+    expect(pair.init.socketPath).toBe("/private/bridge.sock");
+    expect(pair.body).toMatchObject({
+      nativeId: f.nativeId,
+      cwd: "/isolated/workspace",
+      cliVersion: "2.1.301",
+    });
+    expect(pair.init.headers.Authorization).toBeUndefined();
+    expect([...f.stored.values()]).toEqual([f.connection.credentialPath]);
+    expect(JSON.stringify([...f.stored])).not.toContain(f.connection.token);
+    expect(f.snapshots().at(-1)).toMatchObject({
+      capabilities: { read: true, send: true, approve: false, answer: false },
+    });
+    expect(f.dispatches).toBe(0);
+  });
+
+  it("requires origin and a matching actual turn to acknowledge a send, and never repeats it", async () => {
+    const f = await fixture();
+    const command = {
+      commandId: randomUUID(),
+      kind: "send",
+      requestId: randomUUID(),
+      text: "native follow-up",
+      expectedRevision: 0,
+    };
+    await f.deliver(command);
+    expect(f.dispatches).toBe(1);
+    expect(f.results().at(-1)).toMatchObject({ status: "accepted", turnId: expect.any(String) });
+    await f.deliver(command);
+    expect(f.dispatches).toBe(1);
+    expect(f.results()).toHaveLength(2);
+  });
+
+  it("keeps an unconfirmed native result unknown and refuses the next send", async () => {
+    const f = await fixture();
+    f.setSubmit(async (value) => ({ text: value.text }));
+    await f.deliver({
+      commandId: randomUUID(),
+      kind: "send",
+      requestId: randomUUID(),
+      text: "unknown",
+      expectedRevision: 0,
+    });
+    expect(f.results().at(-1)).toMatchObject({
+      status: "unknown",
+      reason: "native-turn-unconfirmed",
+    });
+    await f.deliver({
+      commandId: randomUUID(),
+      kind: "send",
+      requestId: randomUUID(),
+      text: "must not dispatch",
+      expectedRevision: 0,
+    });
+    expect(f.results().at(-1)).toMatchObject({ status: "rejected", reason: "session-not-idle" });
+    expect(f.dispatches).toBe(1);
+  });
+
+  it("resends a lost exact receipt after reconnect without dispatching its action again", async () => {
+    const f = await fixture();
+    let fail = true;
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/results") && fail) {
+        fail = false;
+        throw new Error("lost reply");
+      }
+    });
+    const command = {
+      commandId: randomUUID(),
+      kind: "send",
+      requestId: randomUUID(),
+      text: "once",
+      expectedRevision: 0,
+    };
+    await f.deliver(command);
+    expect(f.dispatches).toBe(1);
+    expect(f.results()).toHaveLength(1);
+    await f.tick();
+    expect(f.results()).toHaveLength(2);
+    expect(f.results()[1]).toMatchObject({
+      commandId: command.commandId,
+      status: "accepted",
+      turnId: f.results()[0].turnId,
+    });
+    expect(f.dispatches).toBe(1);
+    await f.tick();
+    expect(f.results()).toHaveLength(2);
+  });
+
+  it("reconnects an expired Runtime lease and permits a fresh explicit pairing after revoke", async () => {
+    const f = await fixture();
+    f.nextHttpResponse("/v1/commands", { status: 409, body: { error: "bridge-lease-expired" } });
+    await f.tick();
+    await f.tick();
+    expect(f.calls.filter((call) => call.url.endsWith("/reconnect"))).toHaveLength(1);
+    f.nextHttpResponse("/v1/commands", { status: 410, body: { error: "binding-revoked" } });
+    await f.tick();
+    expect((await f.run("command.run", { command: "agentkib-status", args: "" })).text).toContain(
+      "not connected",
+    );
+    await f.run("ui.render", { component: "AbovePrompt", props: { isWorking: false } });
+    const connected = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    expect(connected.text).toContain("connected to this");
+    await f.tick();
+    expect(f.snapshots().at(-1).capabilities.send).toBe(true);
+    expect(f.dispatches).toBe(0);
+  });
+
+  it("does not acknowledge a queued or competing native prompt as this request", async () => {
+    const f = await fixture();
+    f.setSubmit(async (value) => {
+      await f.run("session.append", {
+        door: "queue",
+        origin: { kind: "plugin", name: "agentkib-bridge" },
+        message: { type: "user", content: [{ type: "text", text: value.text }] },
+      });
+      await f.run("turn.start", { text: value.text, turnId: randomUUID() });
+      return { text: value.text };
+    });
+    await f.deliver({
+      commandId: randomUUID(),
+      kind: "send",
+      requestId: randomUUID(),
+      text: "contested",
+      expectedRevision: 0,
+    });
+    expect(f.results().at(-1)).toMatchObject({
+      status: "unknown",
+      reason: "native-turn-unconfirmed",
+    });
+  });
+
+  it("checks terminal activity and exact turn identity before native cancellation", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal input", turnId });
+    await f.deliver({
+      commandId: randomUUID(),
+      kind: "send",
+      requestId: randomUUID(),
+      text: "no queue",
+      expectedRevision: 1,
+    });
+    expect(f.dispatches).toBe(0);
+    await f.deliver({
+      commandId: randomUUID(),
+      kind: "stop",
+      turnId: randomUUID(),
+      expectedRevision: 1,
+    });
+    expect(f.stops).toBe(0);
+    await f.deliver({ commandId: randomUUID(), kind: "stop", turnId, expectedRevision: 1 });
+    expect(f.stops).toBe(1);
+    expect(f.results().at(-1)).toMatchObject({ status: "accepted", turnId });
+  });
+
+  it("forwards native chunks and results unchanged, excluding thinking from the bridge", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "terminal input", turnId });
+    const chunks = [
+      { kind: "thinking", text: "private reasoning" },
+      { kind: "text", text: "visible reply" },
+    ];
+    const result = { answer: "visible reply", turnId, index: 0, toolUses: [] };
+    const stream = f.run("turn.step", { turnId, index: 0 }, async function* () {
+      yield* chunks;
+      return result;
+    });
+    const observed = [];
+    let item = await stream.next();
+    while (!item.done) {
+      observed.push(item.value);
+      item = await stream.next();
+    }
+    expect(observed).toEqual(chunks);
+    expect(item.value).toBe(result);
+    await f.tick();
+    expect(JSON.stringify(f.calls)).toContain("visible reply");
+    expect(JSON.stringify(f.calls)).not.toContain("private reasoning");
+  });
+
+  it.each(["unpaired", "disconnected"] as const)(
+    "does no bridge UTF-8 work on a long %s native stream",
+    async (state) => {
+      const f = await fixture({ connect: state !== "unpaired" });
+      if (state === "disconnected") await f.run("session.end", { reason: "exit" });
+      const turnId = randomUUID();
+      await f.run("turn.start", { text: "native terminal", turnId });
+      const chunks = [
+        { kind: "text", text: "x".repeat(STREAM_BUDGET) },
+        ...Array.from({ length: 64 }, () => ({ kind: "text", text: "word" })),
+      ];
+      const nativeResult = { answer: "native result", turnId };
+      const callsBeforeStream = f.calls.length;
+      const meter = measureUtf8Work();
+      try {
+        const observed = await collectStream(f.stream(turnId, chunks, nativeResult));
+        const work = meter.checkpoint();
+        expect(observed.result).toBe(nativeResult);
+        expect(observed.chunks).toHaveLength(chunks.length);
+        for (const [index, chunk] of chunks.entries()) expect(observed.chunks[index]).toBe(chunk);
+        expect(work).toEqual({ calls: 0, readUnits: 0, capacity: 0, charCodeAtCalls: 0 });
+        expect(f.calls).toHaveLength(callsBeforeStream);
+      } finally {
+        meter.restore();
+      }
+    },
+  );
+
+  it("bounds real turn-step encoding work and stops rescanning a saturated preview", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "native terminal", turnId });
+    const seed = { kind: "text", text: "x".repeat(STREAM_BUDGET) };
+    const overflow = { kind: "text", text: "word" };
+    const tail = Array.from({ length: 64 }, () => ({ kind: "text", text: "word" }));
+    const nativeResult = { answer: "native final result", turnId };
+    const meter = measureUtf8Work();
+    try {
+      const first = await collectStream(f.stream(turnId, [seed, overflow], nativeResult));
+      const firstWork = meter.checkpoint();
+      expect(first.chunks[0]).toBe(seed);
+      expect(first.chunks[1]).toBe(overflow);
+      expect(first.result).toBe(nativeResult);
+      // Count both encoder work and pure JS UTF-8 scans. Several bounded passes
+      // fit these limits; per-code-point encoder allocation or repeated full
+      // prefix scans do not. Capture before assertions to exclude matcher work.
+      expect(firstWork.calls + firstWork.charCodeAtCalls).toBeGreaterThan(0);
+      expect(firstWork.calls).toBeLessThanOrEqual(16);
+      expect(firstWork.readUnits).toBeLessThanOrEqual(STREAM_BUDGET * 8);
+      expect(firstWork.capacity).toBeLessThanOrEqual(STREAM_BUDGET * 8);
+      expect(firstWork.charCodeAtCalls).toBeLessThanOrEqual(STREAM_BUDGET * 8);
+      meter.reset();
+      const observed = await collectStream(f.stream(turnId, tail, nativeResult));
+      const tailWork = meter.checkpoint();
+      expect(observed.result).toBe(nativeResult);
+      for (const [index, chunk] of tail.entries()) expect(observed.chunks[index]).toBe(chunk);
+      const incomingUnits = tail.reduce((total, chunk) => total + chunk.text.length, 0);
+      expect(tailWork.calls).toBeLessThanOrEqual(tail.length * 4);
+      expect(tailWork.readUnits).toBeLessThanOrEqual(incomingUnits * 4);
+      expect(tailWork.capacity).toBeLessThanOrEqual(incomingUnits * 12);
+      expect(tailWork.charCodeAtCalls).toBeLessThanOrEqual(incomingUnits * 2);
+    } finally {
+      meter.restore();
+    }
+    for (let index = 0; index < 4; index++) await f.flush();
+    const preview = f.snapshots().at(-1).streamText;
+    expect(preview).toBe(expectedUtf8Preview(seed.text + overflow.text, STREAM_BUDGET));
+    expect(Buffer.byteLength(preview)).toBeLessThanOrEqual(STREAM_BUDGET);
+    expect(preview.endsWith(PREVIEW_END)).toBe(true);
+    expect(f.events().filter((entry) => entry.event.type === "text")).toHaveLength(66);
+  });
+
+  it("keeps Unicode and a split surrogate exact through the UTF-8 stream limit", async () => {
+    const f = await fixture();
+    const turnId = randomUUID();
+    await f.run("turn.start", { text: "native terminal", turnId });
+    const prefix = "🙂汉éA".repeat((STREAM_BUDGET - 4) / 10);
+    const chunks = [
+      { kind: "text", text: prefix },
+      { kind: "text", text: "\ud83d" },
+      { kind: "text", text: "\ude42" },
+    ];
+    const nativeResult = { answer: prefix + "🙂", turnId };
+    const observed = await collectStream(f.stream(turnId, chunks, nativeResult));
+    for (const [index, chunk] of chunks.entries()) expect(observed.chunks[index]).toBe(chunk);
+    expect(observed.result).toBe(nativeResult);
+    await f.flush();
+    expect(Buffer.byteLength(nativeResult.answer)).toBe(STREAM_BUDGET);
+    expect(f.snapshots().at(-1).streamText).toBe(nativeResult.answer);
+    const overflow = { kind: "text", text: "汉🙂é" };
+    const overLimit = await collectStream(f.stream(turnId, [overflow], nativeResult));
+    expect(overLimit.chunks[0]).toBe(overflow);
+    expect(overLimit.result).toBe(nativeResult);
+    await f.run("session.append", {});
+    await f.flush();
+    const preview = f.snapshots().at(-1).streamText;
+    expect(preview).toBe(expectedUtf8Preview(nativeResult.answer + overflow.text, STREAM_BUDGET));
+    expect(Buffer.byteLength(preview)).toBeLessThanOrEqual(STREAM_BUDGET);
+    expect(preview.endsWith(PREVIEW_END)).toBe(true);
+    expect(preview).not.toContain("\ufffd");
+    expect(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(preview))).toBe(preview);
+  });
+
+  it.each(["allow", "deny", "unknown", "throw"] as const)(
+    "observes nested permission %s without changing native inputs, decisions or errors",
+    async (outcome) => {
+      const f = await fixture();
+      const turnId = randomUUID();
+      await f.run("turn.start", { text: "terminal", turnId });
+      const toolId = randomUUID();
+      const toolEvent = { tool: "Bash", tool_use_id: toolId, command: "long native command" };
+      const permissionEvent = {
+        tool_name: "Bash",
+        tool_input: { command: "long native command" },
+      };
+      const decision =
+        outcome === "allow" || outcome === "deny" ? { decision: { behavior: outcome } } : {};
+      const failure = new Error("native permission failed");
+      const permissionGate = deferred<void>();
+      const permissionReturned = deferred<void>();
+      const toolGate = deferred<void>();
+      let originalDecision: unknown;
+      let originalError: unknown;
+      const nativeResult = { content: [{ type: "text", text: "native tool output" }] };
+      const tool = f.run("tool.call", toolEvent, async (value) => {
+        expect(value).toBe(toolEvent);
+        try {
+          originalDecision = await f.run(
+            "classic.PermissionRequest",
+            permissionEvent,
+            async (permission) => {
+              expect(permission).toBe(permissionEvent);
+              await permissionGate.promise;
+              if (outcome === "throw") throw failure;
+              return decision;
+            },
+          );
+        } catch (error) {
+          originalError = error;
+        }
+        permissionReturned.resolve();
+        await toolGate.promise;
+        return nativeResult;
+      });
+      await f.flush();
+      expect(f.snapshots().at(-1)).toMatchObject({ status: "waiting", waiting: "permission" });
+      permissionGate.resolve();
+      await permissionReturned.promise;
+      await f.flush();
+      expect(f.snapshots().at(-1)).toMatchObject({
+        status: "running",
+        waiting: outcome === "allow" || outcome === "deny" ? null : "unknown",
+        currentTurnId: turnId,
+      });
+      if (outcome === "throw") expect(originalError).toBe(failure);
+      else expect(originalDecision).toBe(decision);
+      await f.run("ui.render", {
+        component: "ToolProgress",
+        props: { kind: "background_hint", tool_use_id: randomUUID() },
+      });
+      await f.flush();
+      expect(f.snapshots().at(-1).waiting).toBe(
+        outcome === "allow" || outcome === "deny" ? null : "unknown",
+      );
+      await f.run("ui.render", {
+        component: "ToolProgress",
+        props: { kind: "background_hint", tool_use_id: toolId },
+      });
+      await f.flush();
+      expect(f.snapshots().at(-1)).toMatchObject({ status: "running", waiting: null });
+      toolGate.resolve();
+      expect(await tool).toBe(nativeResult);
+      await f.flush();
+      expect(f.events().filter((entry) => entry.event.type === "tool-start")).toHaveLength(1);
+      expect(f.events().filter((entry) => entry.event.type === "tool-complete")).toHaveLength(1);
+      expect(f.snapshots().at(-1)).toMatchObject({ status: "running", waiting: null });
+    },
+  );
+
+  it("keeps each unresolved permission tied to its own active tool", async () => {
+    const f = await fixture();
+    await f.run("turn.start", { text: "terminal", turnId: randomUUID() });
+    const ids = [randomUUID(), randomUUID()];
+    const returned = [deferred<void>(), deferred<void>()];
+    const gates = [deferred<void>(), deferred<void>()];
+    const tools = ids.map((id, index) =>
+      f.run(
+        "tool.call",
+        { tool: "Bash", tool_use_id: id, command: `native command ${index}` },
+        async () => {
+          await f.run("classic.PermissionRequest", {
+            tool_name: "Bash",
+            tool_input: { command: `native command ${index}` },
+          });
+          returned[index].resolve();
+          await gates[index].promise;
+          return { native: index };
+        },
+      ),
+    );
+    await Promise.all(returned.map((row) => row.promise));
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ status: "running", waiting: "unknown" });
+    await f.run("ui.render", {
+      component: "ToolProgress",
+      props: { kind: "background_hint", tool_use_id: ids[0] },
+    });
+    gates[0].resolve();
+    await tools[0];
+    await f.flush();
+    expect(f.snapshots().at(-1).waiting).toBe("unknown");
+    await f.run("ui.render", {
+      component: "ToolProgress",
+      props: { kind: "background_hint", tool_use_id: ids[1] },
+    });
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ status: "running", waiting: null });
+    gates[1].resolve();
+    await tools[1];
+  });
+
+  it("does not clear a pending native question when an unrelated tool progresses or completes", async () => {
+    const f = await fixture();
+    await f.run("turn.start", { text: "terminal", turnId: randomUUID() });
+    const questionId = randomUUID();
+    const questionGate = deferred<void>();
+    const nativeAnswer = { answers: { choice: "Alpha" } };
+    const question = f.run(
+      "tool.call",
+      { tool: "AskUserQuestion", tool_use_id: questionId, questions: [{ question: "Choose" }] },
+      async () => {
+        await questionGate.promise;
+        return nativeAnswer;
+      },
+    );
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ status: "waiting", waiting: "question" });
+    const toolId = randomUUID();
+    const gate = deferred<void>();
+    const permissionReturned = deferred<void>();
+    const tool = f.run(
+      "tool.call",
+      { tool: "Bash", tool_use_id: toolId, command: "other native tool" },
+      async () => {
+        await f.run(
+          "classic.PermissionRequest",
+          { tool_name: "Bash", tool_input: { command: "other native tool" } },
+          () => ({ decision: { behavior: "allow" } }),
+        );
+        permissionReturned.resolve();
+        await gate.promise;
+        return { native: "other result" };
+      },
+    );
+    await permissionReturned.promise;
+    await f.run("ui.render", {
+      component: "ToolProgress",
+      props: { kind: "background_hint", tool_use_id: toolId },
+    });
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ status: "waiting", waiting: "question" });
+    gate.resolve();
+    await tool;
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ status: "waiting", waiting: "question" });
+    questionGate.resolve();
+    expect(await question).toBe(nativeAnswer);
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ status: "running", waiting: null });
+  });
+
+  it("preserves native tool exceptions and clears only the failed tool's waiting record", async () => {
+    const f = await fixture();
+    await f.run("turn.start", { text: "terminal", turnId: randomUUID() });
+    const questionGate = deferred<void>();
+    const question = f.run(
+      "tool.call",
+      { tool: "AskUserQuestion", tool_use_id: randomUUID(), questions: [] },
+      async () => {
+        await questionGate.promise;
+        return { native: "answer" };
+      },
+    );
+    const failure = new Error("native tool failed");
+    // The fixture invokes hook bodies directly; native catch dispatch is not
+    // emulated. This checks the original downstream exception and finally path.
+    await expect(
+      f.run("tool.call", { tool: "Bash", tool_use_id: randomUUID(), command: "throws" }, () => {
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ status: "waiting", waiting: "question" });
+    questionGate.resolve();
+    await question;
+    await f.flush();
+    expect(f.snapshots().at(-1)).toMatchObject({ status: "running", waiting: null });
+  });
+
+  it("forwards stream return and throw so cancellation closes the native generator", async () => {
+    let closed = 0;
+    const caught: unknown[] = [];
+    const source = async function* () {
+      try {
+        try {
+          yield { kind: "text", text: "first" };
+        } catch (error) {
+          caught.push(error);
+          yield { kind: "text", text: "recovered" };
+        }
+        return "native-final";
+      } finally {
+        closed++;
+      }
+    };
+    const stream = observeNativeStream(source(), () => undefined);
+    await stream.next();
+    const failure = new Error("outer stopped");
+    expect(await stream.throw(failure)).toMatchObject({
+      done: false,
+      value: { text: "recovered" },
+    });
+    expect(caught).toEqual([failure]);
+    expect(await stream.next()).toEqual({ done: true, value: "native-final" });
+    const cancelled = observeNativeStream(source(), () => undefined);
+    await cancelled.next();
+    await cancelled.return("cancelled");
+    expect(closed).toBe(2);
+  });
+
+  it("invalidates old cached state immediately on session end and identity change", async () => {
+    for (const action of ["end", "identity"] as const) {
+      const f = await fixture();
+      if (action === "end") await f.run("session.end", { reason: "resume" });
+      else {
+        f.setIdentity({ cwd: "/other/workspace" });
+        await f.tick();
+      }
+      const events = f.calls
+        .filter((call) => call.url.endsWith("/events"))
+        .flatMap((call) => call.body.events);
+      expect(events.at(-1).event.type).toBe("invalidated");
+      expect(events.at(-2).event.snapshot).toMatchObject({
+        status: "disconnected",
+        messages: [],
+        streamText: "",
+        capabilities: { read: false, send: false },
+      });
+      const status = await f.run("command.run", { command: "agentkib-status", args: "" });
+      expect(status.text).toContain("not connected");
+    }
+  });
+
+  it("does not block the original terminal lifecycle on an unresolved invalidation notification", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.setHttpInterceptor(async (url) => {
+      if (url.endsWith("/events")) await held;
+    });
+    let nativeEnds = 0;
+    const end = f.run("session.end", { reason: "resume" }, () => {
+      nativeEnds++;
+      return { ended: true };
+    });
+    expect(nativeEnds).toBe(1);
+    await expect(end).resolves.toEqual({ ended: true });
+    const status = await f.run("command.run", { command: "agentkib-status", args: "" });
+    expect(status.text).toContain("not connected");
+    release();
+  });
+
+  it("bounds escaped history bodies and marks clipped text as a preview", async () => {
+    const f = await fixture();
+    f.setMessages(
+      Array.from({ length: 80 }, () => ({ role: "assistant", text: "\u0000".repeat(100_000) })),
+    );
+    await f.run("session.append", {});
+    await f.tick();
+    const calls = f.calls.filter((call) => call.url.endsWith("/events"));
+    expect(calls.every((call) => Buffer.byteLength(call.init.body) <= 1024 * 1024)).toBe(true);
+    expect(f.snapshots().at(-1).messages.at(-1).text).toContain("preview truncated");
+  });
+});

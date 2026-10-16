@@ -2829,6 +2829,64 @@ export class ClaudeManagedReadOwner {
     return this.#live(id, controls);
   }
 
+  /** Bounded identity discovery for a borrowed native host; this never transfers execution. */
+  async nativeBridgeTarget(id: string, nativeId?: string) {
+    const record = this.#load(id);
+    if (record && (!record.released || this.#runners.has(id)))
+      throw new Error("session-already-managed");
+    const indexed = this.store.sessions.get(id);
+    if (!indexed || indexed.agent !== "claude-code" || indexed.sidechain)
+      throw new Error("session-not-controllable");
+    if (nativeId && this.store.sessions.id("claude-code", nativeId) !== id)
+      throw new Error("unverified-session-identity");
+    const registeredWorkspace = canonicalize(this.store.workspacePath(indexed.workspace_id));
+    if (!nativeId) {
+      const listing = await this.sessions.list("claude-code", registeredWorkspace);
+      nativeId = listing.sessions.find(
+        (candidate) =>
+          this.store.sessions.id("claude-code", candidate.native_ref) === id &&
+          !candidate.sidechain,
+      )?.native_ref;
+    }
+    if (!nativeId) throw new Error("session-unavailable");
+    const workspace = this.sessions.claudeControlWorkspace(nativeId, registeredWorkspace);
+    this.sessions.verifiedClaudeControlTarget(nativeId, workspace);
+    return {
+      sessionId: id,
+      nativeId,
+      workspaceId: indexed.workspace_id,
+      workspace,
+      registeredWorkspace,
+    };
+  }
+
+  validateNativeBridgeTarget(
+    target: {
+      sessionId: string;
+      nativeId: string;
+      workspaceId: string;
+      workspace: string;
+      registeredWorkspace: string;
+    },
+    forControl: boolean,
+  ): void {
+    const record = this.#load(target.sessionId);
+    if (record && (!record.released || this.#runners.has(target.sessionId)))
+      throw new Error("session-already-managed");
+    const indexed = this.store.sessions.get(target.sessionId);
+    if (
+      !indexed ||
+      indexed.agent !== "claude-code" ||
+      indexed.sidechain ||
+      indexed.workspace_id !== target.workspaceId ||
+      this.store.sessions.id("claude-code", target.nativeId) !== target.sessionId ||
+      canonicalize(this.store.workspacePath(target.workspaceId)) !== target.registeredWorkspace ||
+      canonicalize(target.workspace) !== target.workspace
+    )
+      throw new Error("unverified-session-identity");
+    if (forControl) this.sessions.verifiedClaudeControlTarget(target.nativeId, target.workspace);
+  }
+
   async receipt(value: unknown): Promise<unknown> {
     if (
       !isObject(value) ||

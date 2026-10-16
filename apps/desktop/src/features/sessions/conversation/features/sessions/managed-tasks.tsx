@@ -540,7 +540,7 @@ export function ManagedTasks({
                       "当前由原客户端执行",
                     )}
               </p>
-              {!managed && (
+              {!managed && live?.executionMode !== "claude-follower" && (
                 <label className="flex items-start gap-2 text-sm">
                   <NativeCheckbox
                     checked={confirmed}
@@ -553,21 +553,23 @@ export function ManagedTasks({
                   )}
                 </label>
               )}
-              <Button
-                disabled={
-                  busy ||
-                  uncertain ||
-                  live?.activity === "compacting" ||
-                  !options.available ||
-                  (!managed && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
-                  (!managed && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
-                }
-                onClick={() => void run(managed ? "release" : "adopt")}
-              >
-                {managed
-                  ? managedText(locale, "Release to original client", "释放给原客户端")
-                  : managedText(locale, "Hand over to AgentKib", "交给 AgentKib")}
-              </Button>
+              {live?.executionMode !== "claude-follower" && (
+                <Button
+                  disabled={
+                    busy ||
+                    uncertain ||
+                    live?.activity === "compacting" ||
+                    !options.available ||
+                    (!managed && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
+                    (!managed && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
+                  }
+                  onClick={() => void run(managed ? "release" : "adopt")}
+                >
+                  {managed
+                    ? managedText(locale, "Release to original client", "释放给原客户端")
+                    : managedText(locale, "Hand over to AgentKib", "交给 AgentKib")}
+                </Button>
+              )}
               {managed && (
                 <Button variant="outline" disabled={busy} onClick={() => void run("reconcile")}>
                   {managedText(locale, "Verify previous outcome", "核对上次执行结果")}

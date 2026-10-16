@@ -1,0 +1,13 @@
+{
+  "name": "agentkib-local",
+  "metadata": { "description": "Local AgentKib session connection plugin" },
+  "owner": { "name": "AgentKib" },
+  "plugins": [
+    {
+      "name": "agentkib-bridge",
+      "source": "./",
+      "description": "Connect your existing Claude Code session to the local AgentKib application.",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -65,5 +65,6 @@ export const appSearchSchema = z.object({
   handoffFormat: z.enum(["markdown", "json"]).optional().catch(undefined),
   handoffSurface: z.literal("cursor-ide").optional().catch(undefined),
   handoffBinding: z.string().max(128).optional().catch(undefined),
+  handoffPreCompaction: z.literal(true).optional().catch(undefined),
   handoffResume: z.enum(["return", "recheck"]).optional().catch(undefined),
 });

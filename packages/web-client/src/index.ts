@@ -227,6 +227,11 @@ export interface Live {
   settings?: CodexSessionSettings;
   usage?: ContextUsage;
   goal?: CodexGoal;
+  /**
+   * Claude only. A `state` patch merges shallowly, so omitting this field leaves the previous
+   * value in place; clearing it takes an explicit `{ mode: null }`.
+   */
+  permission?: LivePermission;
 }
 export type LegacyPreparedReceipt = {
   found: true;
@@ -305,6 +310,24 @@ export type CodexAction =
   | "goal-clear";
 export type SessionAction = CodexAction | "queue-pause" | "queue-resume";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
+/**
+ * Modes the Claude CLI can report about a running session. Only the first three can be
+ * selected from AgentKib; the others are observed and displayed, never offered as choices.
+ */
+export type ClaudeObservedPermissionMode =
+  | ClaudePermissionMode
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
+/** Display-only view of the permission mode a Claude session actually runs in. */
+export interface LivePermission {
+  /** The mode the CLI reported; null when no report has been observed. */
+  mode: ClaudeObservedPermissionMode | null;
+  /** `mode` comes from an earlier run in this backend process; the next run may start differently. */
+  previous?: true;
+  /** Only with `mode: null`, no selection and Claude Code 2.1.285+, where the CLI may start in auto. */
+  possiblyAuto?: true;
+}
 export interface CodexCapabilities {
   sessionId: string;
   executionMode: string;

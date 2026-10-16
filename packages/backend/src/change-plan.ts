@@ -21,6 +21,7 @@ import {
 } from "./config-merge";
 import { compareUtf8, utcNow } from "./workspaces";
 import { mcpDocumentSchema, type McpServer } from "./mcp-config-read";
+import { assertUnmanagedSkillPath } from "./skill-ownership";
 export interface FileChange {
   target: string;
   scope: "project" | "agent-home" | "application-data";
@@ -29,6 +30,7 @@ export interface FileChange {
   after: string;
   risk: "low" | "medium" | "high";
   validator: string;
+  skill_source?: string;
 }
 export interface ChangeSet {
   id: string;
@@ -40,6 +42,7 @@ export interface ChangeSet {
 export interface HomeTargets {
   openclaw_config?: string;
   hermes_config?: string;
+  skillHomes?: string[];
 }
 export function ensureGateway(manifest: Manifest, port: number): void {
   const segment = encodeURIComponent(manifest.workspace.id).replace(
@@ -93,8 +96,13 @@ export function pushChange(
     validator,
   });
 }
-function sourceFiles(project: string, relative: string): [string, string][] {
+function sourceFiles(
+  project: string,
+  relative: string,
+  skillHomes: string[] = [],
+): [string, string][] {
   const source = path.join(project, relative);
+  assertUnmanagedSkillPath(source, skillHomes);
   try {
     lstatSync(source);
   } catch {
@@ -373,7 +381,7 @@ export function planWorkspace(project: string, input: Manifest, home: HomeTarget
       shared = ["codex", "opencode", "open-claw", "hermes", "antigravity"].some((agent) =>
         targets(agent as Agent),
       );
-    for (const [relative, content] of sourceFiles(root, skill.path)) {
+    for (const [relative, content] of sourceFiles(root, skill.path, home.skillHomes)) {
       const roots = [
         ...(shared ? [".agents/skills"] : []),
         ...(targets("cursor") && !shared ? [".cursor/skills"] : []),
@@ -388,15 +396,12 @@ export function planWorkspace(project: string, input: Manifest, home: HomeTarget
             : extension === "md"
               ? "markdown"
               : "text";
-      for (const directory of roots)
-        pushChange(
-          changes,
-          path.join(root, directory, skill.name, relative),
-          content,
-          "project",
-          "low",
-          validator,
-        );
+      for (const directory of roots) {
+        const destination = path.join(root, directory, skill.name, relative);
+        assertUnmanagedSkillPath(destination, home.skillHomes);
+        pushChange(changes, destination, content, "project", "low", validator);
+        changes.at(-1)!.skill_source = path.join(root, skill.path);
+      }
     }
   }
   if (enabled("open-claw") && home.openclaw_config)

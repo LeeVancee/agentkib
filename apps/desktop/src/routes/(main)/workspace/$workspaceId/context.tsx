@@ -29,11 +29,15 @@ import {
   CircleAlert,
   FileCode2,
   FolderOpen,
+  Info,
   RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
 import type { AgentKind, ContextPreview } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
+// 与后端 CONTEXT_NOTE_PREFIX 同值（渲染进程不能引用 backend 包，后端测试断言该常量不变）。
+// 以它开头的条目只是提示，不是问题：用中性样式渲染并去掉前缀。
+const NOTE_PREFIX = "Note: ";
 function Pills({ values, empty }: { values: string[]; empty: string }) {
   return values.length ? (
     <div className="flex flex-wrap gap-2">
@@ -58,7 +62,26 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   }, [value, delayMs]);
   return debounced;
 }
-
+// 后端 Claude Code 来源的 scope 哨兵（context-files.ts 的保留名）：不是项目目录，徽章显示来源类别。
+// 其余取值是项目内的相对目录，原样显示；空串表示项目根。
+const SCOPE_LABEL_KEYS: Record<string, string> = {
+  managed: "context.scope.managed",
+  user: "context.scope.user",
+  ancestor: "context.scope.ancestor",
+  "auto-memory": "context.scope.auto-memory",
+  conditional: "context.scope.conditional",
+  settings: "context.scope.settings",
+  assets: "context.scope.assets",
+};
+// 其他 Agent 的 scope 是项目内的目录（例如 Codex 在 user/AGENTS.md 下的 "user"），不能套用上面的保留名，
+// 所以只对 Claude Code 的结果查表。
+function scopeLabel(scope: string, agent: AgentKind) {
+  const key =
+    agent === "claude-code" && Object.hasOwn(SCOPE_LABEL_KEYS, scope)
+      ? SCOPE_LABEL_KEYS[scope]
+      : undefined;
+  return key ? tr(key) : scope || tr("status.scope.project");
+}
 export function ContextPage({
   project,
   onOpenInstructions,
@@ -154,6 +177,12 @@ export function ContextPage({
             </div>
             <div className="grid gap-2">
               <Pills values={preview?.visible_skills ?? []} empty={tr("context.noSkill")} />
+              {!!preview?.legacy_declared_skills?.length && (
+                <div className="grid gap-1 text-xs text-muted-foreground">
+                  <span>{tr("skills.sync.legacy")}</span>
+                  <Pills values={preview.legacy_declared_skills} empty="" />
+                </div>
+              )}
               <Pills
                 values={preview?.visible_connections ?? []}
                 empty={tr("context.noConnection")}
@@ -183,15 +212,26 @@ export function ContextPage({
             {error}
           </div>
         )}
-        {preview?.warnings.map((warning) => (
-          <div
-            className="mx-4 mt-4 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700"
-            key={warning}
-          >
-            <CircleAlert size={15} />
-            {contextWarningLabel(warning)}
-          </div>
-        ))}
+        {preview?.warnings.map((warning) =>
+          warning.startsWith(NOTE_PREFIX) ? (
+            <div
+              role="note"
+              className="mx-4 mt-4 flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm break-words text-muted-foreground"
+              key={warning}
+            >
+              <Info size={15} className="mt-0.5 shrink-0" />
+              {contextWarningLabel(warning.slice(NOTE_PREFIX.length))}
+            </div>
+          ) : (
+            <div
+              className="mx-4 mt-4 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700"
+              key={warning}
+            >
+              <CircleAlert size={15} />
+              {contextWarningLabel(warning)}
+            </div>
+          ),
+        )}
         {empty && (
           <div className="mx-4 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
             <FileCode2 size={18} />
@@ -217,7 +257,7 @@ export function ContextPage({
                       {shortPath(contextSection.source)}
                     </strong>
                     <Badge variant="outline" className="bg-background text-[11px]">
-                      {contextSection.scope || tr("status.scope.project")}
+                      {scopeLabel(contextSection.scope, preview.agent)}
                     </Badge>
                   </header>
                   <Collapsible>
@@ -254,6 +294,19 @@ export function ContextPage({
   );
 }
 
+const CLAUDE_MESSAGE_KEYS: Record<string, string> = {
+  "AGENTS.md may not be loaded: the Claude Code version could not be detected, and Claude Code reads AGENTS.md only from v2.1.277.":
+    "context.claudeAgentsVersionUnknown",
+  "Settings given on the command line (--settings, --setting-sources), policy delivered by MDM, a configuration profile or the Windows registry, and server-managed settings are not visible to AgentKib, so this list can differ from what Claude Code loads.":
+    "context.claudeSettingsNotRead",
+  "CLAUDE_CONFIG_DIR is set but is not a usable absolute path, so AgentKib reads Claude Code's default configuration folder. User-level instructions shown here may belong to a different setup than the one Claude Code uses.":
+    "context.claudeConfigDirInvalid",
+  "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 is set in AgentKib's environment, so auto memory is not shown. Claude Code started in another environment may still load it.":
+    "context.claudeAutoMemoryOff",
+  "An environment variable that turns off CLAUDE.md loading (CLAUDE_CODE_DISABLE_CLAUDE_MDS, CLAUDE_CODE_SAFE_MODE or CLAUDE_CODE_SIMPLE) is set in AgentKib's environment. Claude Code started with it loads fewer instruction files than listed here; AgentKib does not model this.":
+    "context.claudeLoadSwitches",
+};
+
 function contextWarningLabel(warning: string) {
   if (
     warning ===
@@ -265,7 +318,12 @@ function contextWarningLabel(warning: string) {
     "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import"
   )
     return tr("context.deepseekClaudeImport");
-  return warning;
+  // 后端静态文案（context-claude.ts）：带 Note: 前缀的在去掉前缀之后匹配，其余本身是警告。
+  // 带路径或数量的动态文案保持英文原文。
+  const claudeMessage = Object.hasOwn(CLAUDE_MESSAGE_KEYS, warning)
+    ? CLAUDE_MESSAGE_KEYS[warning]
+    : undefined;
+  return claudeMessage ? tr(claudeMessage) : warning;
 }
 
 function WorkspaceContextRoute() {

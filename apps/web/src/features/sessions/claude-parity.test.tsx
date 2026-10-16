@@ -295,7 +295,7 @@ afterEach(() => {
 });
 
 describe("Claude history handoff shortcut", () => {
-  it("opens the existing confirmation without dispatching or losing the draft", async () => {
+  it("rechecks an open confirmation before dispatching without losing the draft", async () => {
     const { state } = createHost({ unmanaged: true });
     await openSession();
     const draft = screen.getByRole("textbox", { name: "发送消息" });
@@ -314,6 +314,25 @@ describe("Claude history handoff shortcut", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "确认续接" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
+    );
+    state.live = {
+      ...state.live,
+      revision: 2,
+      reason: "control-outcome-unconfirmed",
+    };
+    act(() => {
+      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
+    expect(state.mutations).toEqual([]);
+    expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeDisabled();
+    expect(draft).toHaveValue("Keep this draft");
+    state.live = { ...state.live, revision: 3, reason: "handoff-required" };
+    act(() => {
+      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+    });
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
     );

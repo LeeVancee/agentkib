@@ -33,6 +33,112 @@ afterEach(() => {
 });
 
 describe("Skill manager IPC", () => {
+  it("forwards only supported frozen baseline comparisons", () => {
+    handler("read-preview-file")(
+      event,
+      "sync-token",
+      "SKILL.md",
+      "target",
+      undefined,
+      "base-target",
+    );
+    expect(request).toHaveBeenLastCalledWith("skills.readPreviewFile", {
+      token: "sync-token",
+      path: "SKILL.md",
+      target_id: "target",
+      comparison: "base-target",
+    });
+    expect(() =>
+      handler("read-preview-file")(
+        event,
+        "sync-token",
+        "SKILL.md",
+        undefined,
+        "item",
+        "base-library",
+      ),
+    ).toThrow(TypeError);
+    expect(() =>
+      handler("read-preview-file")(
+        event,
+        "sync-token",
+        "SKILL.md",
+        undefined,
+        undefined,
+        "/private",
+      ),
+    ).toThrow(TypeError);
+  });
+  it("forwards synchronization identities and never exposes the host scheduler", () => {
+    handler("prepare-sync")(event, {
+      operation: "pull",
+      deployment_id: "owned",
+      resolution: "deployment",
+    });
+    expect(request).toHaveBeenLastCalledWith("skills.prepareSync", {
+      operation: "pull",
+      deployment_id: "owned",
+      resolution: "deployment",
+    });
+    handler("apply-sync")(event, "frozen-token", false);
+    expect(request).toHaveBeenLastCalledWith("skills.applySync", {
+      token: "frozen-token",
+      confirmed: true,
+      approve_home: false,
+    });
+    handler("recover-sync")(event, "operation", true);
+    expect(request).toHaveBeenLastCalledWith("skills.recoverSync", {
+      operation_id: "operation",
+      confirmed: true,
+      approve_home: true,
+    });
+    expect(
+      vi.mocked(ipcMain.handle).mock.calls.some(([channel]) => String(channel).includes("run-due")),
+    ).toBe(false);
+  });
+  it("rejects arbitrary synchronization paths and unbound automatic grants", () => {
+    expect(() =>
+      handler("prepare-sync")(event, {
+        operation: "adopt",
+        observation_id: "external",
+        root: "/private",
+      }),
+    ).toThrow(TypeError);
+    const policy = {
+      schema_version: 1,
+      revision: 0,
+      enabled: true,
+      interval_hours: 24,
+      default_mode: "check",
+      libraries: { reviewer: { mode: "auto_update" } },
+      deployments: {},
+      updated_at: null,
+    };
+    expect(() => handler("save-sync-policy")(event, { policy, revision: 0 })).toThrow(TypeError);
+    expect(() => handler("sync-runs")(event, 201)).toThrow(TypeError);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("keeps identity-bound synchronization authorization and policy revisions", () => {
+    const policy = {
+      schema_version: 1,
+      revision: 2,
+      enabled: true,
+      interval_hours: 24,
+      default_mode: "check",
+      libraries: { reviewer: { mode: "auto_update", owner_key: "owner", source_key: "source" } },
+      deployments: {
+        owned: { mode: "follow", approve_home: true, owner_key: "owner", target_key: "target" },
+      },
+      updated_at: null,
+    };
+    handler("save-sync-policy")(event, { policy, revision: 2, approve_home: true });
+    expect(request).toHaveBeenLastCalledWith("skills.saveSyncPolicy", {
+      policy,
+      revision: 2,
+      approve_home: true,
+      confirmed: true,
+    });
+  });
   it("forwards version choices and paginated sources without accepting arbitrary roots", () => {
     handler("list-versions")(event, { library_id: "reviewer", type: "tag", page: 2 });
     expect(request).toHaveBeenLastCalledWith("skills.listVersions", {

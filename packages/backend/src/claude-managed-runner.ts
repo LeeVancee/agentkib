@@ -8,6 +8,20 @@ import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { truncateUtf8 } from "./session-events";
 import {
+  boundedUnknownFields,
+  ClaudeProtocolDiagnostics,
+  ClaudeProtocolError,
+  ClaudeTurnFailure,
+  controlDeny,
+  controlError,
+  formatTermination,
+  frameOrigin,
+  MAX_UNKNOWN_REQUESTS_PER_TURN,
+  type ClaudeTerminationCode,
+  type FrameOrigin,
+} from "./claude-frame-policy";
+import { CLAUDE_MANAGED_VERIFIED_THROUGH, isNewerThanVerified } from "./claude-version";
+import {
   createContextUsageGeneration,
   projectContextUsage,
   type ContextUsage,
@@ -16,11 +30,43 @@ import {
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
 const MAX_INTERACTIONS = 1024 * 1024;
+// Stable texts that tests and logs match on.
+const BACKGROUND_REFUSED = "Claude background tasks are unsupported in managed sessions";
+const UNVERIFIED_START = "unverified Claude foreground Bash task";
+const PERMISSION_KEYS: ReadonlySet<string> = new Set([
+  "subtype",
+  "tool_name",
+  "input",
+  "tool_use_id",
+  "permission_suggestions",
+  "blocked_path",
+  "decision_reason",
+  "agent_id",
+  "title",
+  "display_name",
+  "description",
+  "decision_reason_type",
+  "matched_ask_rule",
+  "classifier_approvable",
+  "suppress_always_allow_rule",
+  "default_to_no",
+  "requires_user_interaction",
+]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type JsonObject = Record<string, any>;
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
+/**
+ * Modes the CLI can report in stream-json (`system/init` and `system/status` carry
+ * `permissionMode`). Only `ClaudePermissionMode` can be selected from AgentKib; the rest are
+ * observed and displayed, never offered as choices.
+ */
+export type ClaudeObservedPermissionMode =
+  | ClaudePermissionMode
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
 export type ClaudeRunnerSettings = {
   model: string | null;
   effort: ClaudeEffort | null;
@@ -60,6 +106,8 @@ export type ClaudeRunnerOptions = {
   mcpConfig?: Record<string, unknown>;
   onResult?: (result: ClaudeRunnerTerminalResult) => void;
   controlTimeoutMs?: number;
+  /** `claude --version` output; only used to explain a failure when the CLI is newer than verified. */
+  cliVersion?: string;
 };
 export class ClaudeUndispatchedError extends Error {
   constructor() {
@@ -68,7 +116,6 @@ export class ClaudeUndispatchedError extends Error {
 }
 const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
-
 export type ClaudeRunnerSnapshot = {
   terminalResult: ClaudeRunnerTerminalResult | null;
   lastOutcome: string | null;
@@ -125,7 +172,16 @@ export class ClaudeRunnerState {
   foregroundBashContract = false;
   bashToolIds = new Set<string>();
   foregroundTasks = new Map<string, string>();
+  // What sub-agents did, observed only: Bash tool ID -> spawning Agent call, task ID -> Bash tool
+  // ID. They never feed bashToolIds or foregroundTasks, which gate `result` and the stop
+  // semantics of the current top-level turn, and nothing here can end the session.
+  subagentBashToolIds = new Map<string, string>();
+  subagentTasks = new Map<string, string>();
   terminalResult: ClaudeRunnerTerminalResult | null = null;
+  // Control requests refused in the current turn; a stream that keeps sending them is broken.
+  unknownRequests = 0;
+  // What was ignored or refused, by category. Not part of any snapshot or checkpoint.
+  readonly diagnostics = new ClaudeProtocolDiagnostics();
 
   constructor(readonly sessionId: string) {}
 
@@ -160,7 +216,10 @@ export class ClaudeRunnerState {
       foregroundBashContract: this.foregroundBashContract,
       bashToolIds: new Set(this.bashToolIds),
       foregroundTasks: new Map(this.foregroundTasks),
+      subagentBashToolIds: new Map(this.subagentBashToolIds),
+      subagentTasks: new Map(this.subagentTasks),
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
+      unknownRequests: this.unknownRequests,
     };
   }
 
@@ -248,6 +307,9 @@ export class ClaudeRunnerState {
     this.terminalResult = null;
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
+    this.subagentBashToolIds.clear();
+    this.subagentTasks.clear();
+    this.unknownRequests = 0;
     this.status = "running";
     this.#pendingUsage();
     this.revision++;
@@ -371,6 +433,9 @@ export class ClaudeRunnerState {
     this.assertCanStop(turnId, revision);
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
+    this.subagentBashToolIds.clear();
+    this.subagentTasks.clear();
+    this.unknownRequests = 0;
     this.status = "idle";
     this.lastOutcome = "cancelled";
     this.terminalResult = null;
@@ -441,11 +506,16 @@ export class ClaudeRunnerState {
         if (!this.approvals.length && this.status === "waiting-approval") this.status = "running";
         break;
       case "stream_event": {
+        const origin = frameOrigin(frame);
+        if (origin.kind !== "main") {
+          this.#observeOtherThread(frame, origin);
+          return null;
+        }
+        this.#assertTurnActive("stream_event");
         const event = frame.event;
         if (event?.type === "message_start") {
-          if (frame.parent_tool_use_id == null && this.activity !== "compacting")
-            this.#pendingUsage();
-          this.#observeUsage(event.message, frame.parent_tool_use_id);
+          if (this.activity !== "compacting") this.#pendingUsage();
+          this.#observeUsage(event.message);
           this.streamItemId = "";
           this.streamItemText = "";
           this.activeTextBlockIndex = -1;
@@ -458,8 +528,7 @@ export class ClaudeRunnerState {
           if (typeof event.content_block.text === "string") this.#append(event.content_block.text);
           this.partial = true;
         }
-        if (event?.type === "content_block_start")
-          this.#observeBash(event.content_block, frame.parent_tool_use_id);
+        if (event?.type === "content_block_start") this.#observeBash(event.content_block, origin);
         if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
           if (typeof event.delta.text !== "string") throw new Error("invalid Claude text delta");
           const index = Number.isSafeInteger(event.index) ? event.index : this.activeTextBlockIndex;
@@ -471,7 +540,13 @@ export class ClaudeRunnerState {
         break;
       }
       case "assistant": {
-        if (frame.isUnmetered !== true) this.#observeUsage(frame.message, frame.parent_tool_use_id);
+        const origin = frameOrigin(frame);
+        if (origin.kind !== "main") {
+          this.#observeOtherThread(frame, origin);
+          return null;
+        }
+        this.#assertTurnActive("assistant");
+        if (frame.isUnmetered !== true) this.#observeUsage(frame.message);
         const blocks = frame.message?.content;
         const nativeId =
           (typeof frame.uuid === "string" && uuidPattern.test(frame.uuid) && frame.uuid) ||
@@ -481,8 +556,7 @@ export class ClaudeRunnerState {
           "";
         const hasText =
           Array.isArray(blocks) && blocks.some((block: JsonObject) => block?.type === "text");
-        if (Array.isArray(blocks))
-          for (const block of blocks) this.#observeBash(block, frame.parent_tool_use_id);
+        if (Array.isArray(blocks)) for (const block of blocks) this.#observeBash(block, origin);
         if (hasText && nativeId && Array.isArray(blocks)) {
           const textBlocks = blocks.flatMap((block: JsonObject, index: number) => {
             if (block?.type !== "text") return [];
@@ -527,7 +601,10 @@ export class ClaudeRunnerState {
         }
         if (!this.initialized) throw new Error("Claude resume failed before initialization");
         if (!this.turnId || this.status === "idle")
-          throw new Error("Claude result outside an active turn");
+          throw new ClaudeProtocolError(
+            "claude-unrequested-turn",
+            "Claude result outside an active turn",
+          );
         if (this.approvals.length || this.questions.length)
           throw new Error("Claude result with unresolved approvals");
         this.terminalResult = {
@@ -551,7 +628,7 @@ export class ClaudeRunnerState {
           const detail = Array.isArray(frame.errors)
             ? frame.errors.filter((item: unknown) => typeof item === "string").join("; ")
             : "";
-          throw new Error(
+          throw new ClaudeTurnFailure(
             `Claude turn failed: ${detail || frame.result || "unknown execution error"}`,
           );
         }
@@ -578,13 +655,31 @@ export class ClaudeRunnerState {
           this.#staleUsage();
         }
         if (
-          ["task_started", "background_tasks_changed"].includes(frame.subtype) ||
-          (this.foregroundBashContract &&
-            ["task_updated", "task_notification"].includes(frame.subtype))
-        )
-          this.#taskFrame(frame);
+          [
+            "task_started",
+            "background_tasks_changed",
+            "task_updated",
+            "task_notification",
+          ].includes(frame.subtype)
+        ) {
+          if (
+            !this.foregroundBashContract &&
+            ["task_updated", "task_notification"].includes(frame.subtype)
+          )
+            return null;
+          // Observing another task must not invalidate an outstanding approval or question.
+          if (!this.#taskFrame(frame)) return null;
+        }
         break;
-      case "user":
+      case "user": {
+        const origin = frameOrigin(frame);
+        if (origin.kind !== "main") {
+          this.#observeOtherThread(frame, origin);
+          return null;
+        }
+        this.#assertTurnActive("user");
+        break;
+      }
       case "tool_progress":
       case "tool_use_summary":
       case "rate_limit_event":
@@ -592,9 +687,10 @@ export class ClaudeRunnerState {
       case "prompt_suggestion":
         break;
       default:
-        throw new Error(
-          `unsupported Claude stream frame (${String(frame.type).slice(0, 64)}); process stopped`,
-        );
+        // A frame type this version does not know cannot approve anything: approvals only arrive
+        // as control requests. Ignore it without touching state, and keep a count.
+        this.diagnostics.record("ignoredFrameTypes", frame.type);
+        return null;
     }
     this.revision++;
     return null;
@@ -616,8 +712,8 @@ export class ClaudeRunnerState {
     };
   }
 
-  #observeUsage(message: unknown, parentToolUseId: unknown): void {
-    if (parentToolUseId != null || !object(message)) return;
+  #observeUsage(message: unknown): void {
+    if (!object(message)) return;
     if (!object(message.usage) || message.model === "<synthetic>") return;
     if (typeof message.model !== "string" || !message.model) {
       this.#staleUsage("model-context-window-unavailable");
@@ -669,43 +765,33 @@ export class ClaudeRunnerState {
     };
   }
 
-  #controlRequest(frame: JsonObject): null {
-    if (!this.initialized) throw new Error("Claude requested interaction before initialize");
-    if (!["running", "waiting-approval", "waiting-input"].includes(this.status))
-      throw new Error("Claude interaction outside active turn");
+  #controlRequest(frame: JsonObject): JsonObject | null {
     const id = frame.request_id;
     if (typeof id !== "string" || !id) throw new Error("invalid Claude request id");
+    const request = frame.request;
+    if (!object(request) || typeof request.subtype !== "string" || !request.subtype)
+      throw new Error("invalid Claude control request");
+    if (request.subtype !== "can_use_tool") {
+      // The CLI waits for an answer to every request, so it gets one: an error, which it treats as
+      // a refusal. Nothing here can ever answer with an allow.
+      if (++this.unknownRequests > MAX_UNKNOWN_REQUESTS_PER_TURN)
+        throw new Error("too many unsupported Claude control requests");
+      this.diagnostics.record("refusedRequests", request.subtype);
+      return controlError(id);
+    }
+    if (!this.initialized) throw new Error("Claude requested interaction before initialize");
+    if (!["running", "waiting-approval", "waiting-input"].includes(this.status))
+      throw new ClaudeProtocolError(
+        "claude-unrequested-turn",
+        "Claude interaction outside active turn",
+      );
     if (this.seenRequests.size >= 4096 || this.seenRequests.has(id))
       throw new Error("duplicate Claude control request");
     this.seenRequests.add(id);
-    const request = frame.request;
-    if (!object(request) || request.subtype !== "can_use_tool")
-      throw new Error("unsupported Claude control request; process stopped");
     const name = request.tool_name;
     if (typeof name !== "string" || !name || !object(request.input))
       throw new Error("invalid Claude tool input");
     if (this.approvals.length >= 32) throw new Error("too many pending Claude approvals");
-    const allowed = new Set([
-      "subtype",
-      "tool_name",
-      "input",
-      "tool_use_id",
-      "permission_suggestions",
-      "blocked_path",
-      "decision_reason",
-      "agent_id",
-      "title",
-      "display_name",
-      "description",
-      "decision_reason_type",
-      "matched_ask_rule",
-      "classifier_approvable",
-      "suppress_always_allow_rule",
-      "default_to_no",
-      "requires_user_interaction",
-    ]);
-    if (Object.keys(request).some((key) => !allowed.has(key)))
-      throw new Error("unsupported Claude permission scope");
     if (name === "AskUserQuestion") {
       const questions = questionSchema(request.input);
       if (this.questions.length >= 32) throw new Error("too many pending questions");
@@ -726,9 +812,15 @@ export class ClaudeRunnerState {
     if (
       request.requires_user_interaction !== undefined &&
       request.requires_user_interaction !== false
-    )
-      throw new Error("unsupported Claude user interaction; process stopped");
-    const context = { ...request };
+    ) {
+      // A tool that needs its own interface cannot be answered from an approval card. Deny with an
+      // explanation the model can pass on; allowing it would run it without that interaction.
+      this.diagnostics.record("refusedTools", name);
+      return controlDeny(id);
+    }
+    const context: JsonObject = {};
+    for (const [key, value] of Object.entries(request))
+      if (PERMISSION_KEYS.has(key)) context[key] = value;
     delete context.input;
     delete context.tool_name;
     delete context.subtype;
@@ -738,6 +830,13 @@ export class ClaudeRunnerState {
     delete context.blocked_path;
     delete context.decision_reason;
     delete context.permission_suggestions;
+    // Fields a newer CLI adds (for example which MCP server asked) are shown, bounded, so the user
+    // decides with what the CLI sent. They are display only: the answer is the decision plus the
+    // original input.
+    const unknown = boundedUnknownFields(request, PERMISSION_KEYS, new Set(Object.keys(context)));
+    Object.assign(context, unknown.fields);
+    for (const field of [...unknown.accepted, ...unknown.dropped])
+      this.diagnostics.record("unknownPermissionFields", field);
     const pending = {
       requestId: id,
       turnId: this.turnId,
@@ -780,9 +879,18 @@ export class ClaudeRunnerState {
     if (block) block.text += value;
   }
 
-  #observeBash(block: JsonObject, parent: unknown): void {
+  /**
+   * Main-thread frames only are tracked; a sub-agent's Bash call is recorded for display and an
+   * unattributable frame is not looked at.
+   */
+  #observeBash(block: JsonObject, origin: FrameOrigin): void {
     if (!this.foregroundBashContract || block?.type !== "tool_use" || block.name !== "Bash") return;
-    if (!this.initialized || this.status !== "running" || !this.turnId || parent !== null)
+    if (origin.kind === "unattributed") return;
+    if (origin.kind === "subagent") {
+      this.#observeSubagentBash(block, origin.spawner);
+      return;
+    }
+    if (!this.initialized || this.status !== "running" || !this.turnId)
       throw new Error("Claude Bash outside current top-level turn");
     if (typeof block.id !== "string" || !block.id || Buffer.byteLength(block.id) > 256)
       throw new Error("invalid Claude Bash tool ID");
@@ -790,44 +898,124 @@ export class ClaudeRunnerState {
     this.bashToolIds.add(block.id);
   }
 
-  #taskFrame(frame: JsonObject): void {
-    if (!this.foregroundBashContract)
-      throw new Error("Claude background tasks are unsupported in managed sessions");
-    const subtype = typeof frame.subtype === "string" ? frame.subtype : "";
-    if (subtype === "background_tasks_changed") {
-      if (!Array.isArray(frame.tasks) || frame.tasks.length)
-        throw new Error("Claude background tasks are unsupported in managed sessions");
+  /**
+   * A main-thread content frame while the session is idle is the CLI working on its own after the
+   * turn AgentKib started has ended. The next `result` would then be booked as the result of a new
+   * turn, so this stops at the first frame. Not after stop() or an idle retirement, which clear
+   * `initialized`: the dying process may still flush frames.
+   */
+  #assertTurnActive(type: string): void {
+    if (this.initialized && this.status === "idle")
+      throw new ClaudeProtocolError(
+        "claude-unrequested-turn",
+        `Claude ${type} frame outside an active turn`,
+      );
+  }
+
+  /**
+   * What a sub-agent (or a frame that cannot be attributed) sends never reaches the main thread's
+   * stream, usage, text or conversation items: only its Bash calls are recorded.
+   */
+  #observeOtherThread(frame: JsonObject, origin: FrameOrigin): void {
+    if (origin.kind === "unattributed") {
+      this.diagnostics.record("unattributedFrames", frame.type);
       return;
     }
-    if (
-      !this.initialized ||
-      !["running", "waiting-approval", "waiting-input"].includes(this.status)
-    )
-      throw new Error("Claude task outside active turn");
+    if (frame.type === "assistant" && Array.isArray(frame.message?.content)) {
+      for (const block of frame.message.content) this.#observeBash(block, origin);
+    } else if (frame.type === "stream_event" && frame.event?.type === "content_block_start") {
+      this.#observeBash(frame.event.content_block, origin);
+    }
+  }
+
+  /**
+   * A Bash call made inside a sub-agent is the sub-agent's own tool call; the current turn only
+   * sees the Agent call that spawned it. It is recorded for display and never tracked as a
+   * foreground task of this turn, so it can neither end the session nor change what `result`
+   * and stop require. A call that cannot be recorded is skipped, not rejected.
+   */
+  #observeSubagentBash(block: JsonObject, spawner: string): void {
+    const id = block.id;
+    if (typeof id !== "string" || !id || Buffer.byteLength(id) > 256) return;
+    if (this.subagentBashToolIds.size >= 4096 && !this.subagentBashToolIds.has(id)) return;
+    this.subagentBashToolIds.set(id, spawner);
+  }
+
+  /**
+   * Observes the foreground Bash task lifecycle of a sub-agent and returns true, or returns false
+   * for any other task frame, which then follows the main-thread rules unchanged. Only frames that
+   * are positively a sub-agent's foreground local_bash task are taken: the CLI marks the owner
+   * (`owned_by_subagent`, 2.1.285), and a Bash call first seen inside a sub-agent's frames is the
+   * same fact when the flag is absent. A main-thread call or task is never reassigned, an explicit
+   * contradiction falls back to the main-thread rules, and backgrounding keeps its meaning for
+   * every Bash task: it would outlive the turn, so it still ends the session.
+   */
+  #observeSubagentTask(frame: JsonObject, subtype: string): boolean {
     const task = frame.task_id;
-    if (typeof task !== "string" || !task || Buffer.byteLength(task) > 256)
-      throw new Error("invalid Claude task ID");
+    if (typeof task !== "string" || !task || Buffer.byteLength(task) > 256) return false;
     if (subtype === "task_started") {
       const tool = frame.tool_use_id;
       if (
         frame.task_type !== "local_bash" ||
         frame.is_backgrounded !== false ||
-        frame.owned_by_subagent === true ||
         typeof tool !== "string" ||
-        !this.bashToolIds.has(tool) ||
-        this.foregroundTasks.size >= 4096 ||
-        this.foregroundTasks.has(task) ||
-        [...this.foregroundTasks.values()].includes(tool)
+        !tool ||
+        Buffer.byteLength(tool) > 256 ||
+        !(
+          frame.owned_by_subagent === true ||
+          (frame.owned_by_subagent == null && this.subagentBashToolIds.has(tool))
+        ) ||
+        this.bashToolIds.has(tool) ||
+        this.foregroundTasks.has(task)
       )
-        throw new Error("unverified Claude foreground Bash task");
-      this.foregroundTasks.set(task, tool);
-      return;
+        return false;
+      if (this.subagentTasks.size < 4096 || this.subagentTasks.has(task))
+        this.subagentTasks.set(task, tool);
+      return true;
+    }
+    if (this.foregroundTasks.has(task) || !this.subagentTasks.has(task)) return false;
+    if (subtype === "task_updated") {
+      if (
+        object(frame.patch) &&
+        frame.patch.is_backgrounded !== undefined &&
+        frame.patch.is_backgrounded !== false
+      )
+        throw new ClaudeProtocolError("claude-background-task", BACKGROUND_REFUSED);
+      return true;
+    }
+    if (subtype === "task_notification") {
+      if (this.subagentTasks.get(task) === frame.tool_use_id) this.subagentTasks.delete(task);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Task lifecycle frames. A sub-agent (`local_agent`) runs inside the CLI, so its task frames are
+   * observed and change nothing; its tool calls still come through `can_use_tool`. A background
+   * Bash command, or a task of any kind this version does not know, is an OS-level or unbounded
+   * lifetime that the turn cannot supervise, so it stops the session with a stated reason.
+   */
+  #taskFrame(frame: JsonObject): boolean {
+    const subtype = typeof frame.subtype === "string" ? frame.subtype : "";
+    if (subtype === "background_tasks_changed") {
+      this.#backgroundTasksChanged(frame);
+      return false;
+    }
+    if (subtype === "task_started") return this.#taskStarted(frame);
+    // task_updated and task_notification, with the contract on.
+    if (this.#observeSubagentTask(frame, subtype)) return false;
+    const task = frame.task_id;
+    // A task this turn never saw start (an earlier process's task closed on resume, or a frame
+    // outside a turn) has nothing to track: observe it.
+    if (typeof task !== "string" || !this.foregroundTasks.has(task)) {
+      this.diagnostics.record("observedTaskTypes", `untracked_${subtype}`);
+      return false;
     }
     if (subtype === "task_updated") {
-      if (!this.foregroundTasks.has(task) || !object(frame.patch))
-        throw new Error("unknown Claude foreground task");
+      if (!object(frame.patch)) throw new Error("unknown Claude foreground task");
       if (frame.patch.is_backgrounded !== undefined && frame.patch.is_backgrounded !== false)
-        throw new Error("Claude background tasks are unsupported in managed sessions");
+        throw new ClaudeProtocolError("claude-background-task", BACKGROUND_REFUSED);
       if (
         frame.patch.status !== undefined &&
         !["pending", "running", "completed", "failed", "killed", "paused"].includes(
@@ -835,7 +1023,7 @@ export class ClaudeRunnerState {
         )
       )
         throw new Error("invalid Claude task status");
-      return;
+      return true;
     }
     if (subtype === "task_notification") {
       if (
@@ -844,9 +1032,64 @@ export class ClaudeRunnerState {
       )
         throw new Error("unverified Claude task completion");
       this.foregroundTasks.delete(task);
-      return;
+      return true;
     }
     throw new Error("unsupported Claude task update");
+  }
+
+  #taskStarted(frame: JsonObject): boolean {
+    const type = frame.task_type;
+    if (type === "local_agent") {
+      this.diagnostics.record("observedTaskTypes", type);
+      return false;
+    }
+    if (type !== "local_bash") {
+      this.diagnostics.record("observedTaskTypes", type);
+      throw new ClaudeProtocolError(
+        "claude-background-task",
+        this.foregroundBashContract ? UNVERIFIED_START : BACKGROUND_REFUSED,
+      );
+    }
+    // Below 2.1.285 a Bash task frame cannot be told apart from a background one.
+    if (!this.foregroundBashContract)
+      throw new ClaudeProtocolError("claude-protocol-violation", BACKGROUND_REFUSED);
+    if (this.#observeSubagentTask(frame, "task_started")) return false;
+    if (
+      !this.initialized ||
+      !["running", "waiting-approval", "waiting-input"].includes(this.status)
+    )
+      throw new Error("Claude task outside active turn");
+    const task = frame.task_id;
+    if (typeof task !== "string" || !task || Buffer.byteLength(task) > 256)
+      throw new Error("invalid Claude task ID");
+    if (frame.is_backgrounded !== false)
+      throw new ClaudeProtocolError("claude-background-task", UNVERIFIED_START);
+    const tool = frame.tool_use_id;
+    if (
+      frame.owned_by_subagent === true ||
+      typeof tool !== "string" ||
+      !this.bashToolIds.has(tool) ||
+      this.foregroundTasks.size >= 4096 ||
+      this.foregroundTasks.has(task) ||
+      [...this.foregroundTasks.values()].includes(tool)
+    )
+      throw new Error(UNVERIFIED_START);
+    this.foregroundTasks.set(task, tool);
+    return true;
+  }
+
+  #backgroundTasksChanged(frame: JsonObject): void {
+    const tasks = frame.tasks;
+    if (!Array.isArray(tasks))
+      throw new ClaudeProtocolError("claude-protocol-violation", BACKGROUND_REFUSED);
+    // The list is the full live set, replaced each time. An empty one means nothing runs.
+    let supervised = true;
+    for (const member of tasks) {
+      const type = object(member) ? member.task_type : undefined;
+      this.diagnostics.record("observedTaskTypes", type);
+      if (type !== "local_agent") supervised = false;
+    }
+    if (!supervised) throw new ClaudeProtocolError("claude-background-task", BACKGROUND_REFUSED);
   }
 }
 
@@ -935,6 +1178,9 @@ export class ClaudeManagedRunnerProcess {
     permissionMode: null,
   };
   #settingsAcknowledged = false;
+  // What the CLI says it runs in (null until the current worker reports). Kept apart from
+  // #settings, which records only explicit selections and is what a relaunch replays.
+  #observedPermissionMode: ClaudeObservedPermissionMode | null = null;
   #configuring = false;
   #steeringIds = new Set<string>();
   #reportedResult?: ClaudeRunnerTerminalResult;
@@ -999,6 +1245,15 @@ export class ClaudeManagedRunnerProcess {
       settings: this.#effectiveSettings,
       settingsAcknowledged: this.#settingsAcknowledged && this.state.initialized,
     });
+  }
+
+  /**
+   * The permission mode the current worker reported, or null while none has. This is a getter,
+   * not part of optionsSnapshot: snapshots clone the model and command catalogs, and the host
+   * reads this on every CLI frame.
+   */
+  get observedPermissionMode(): ClaudeObservedPermissionMode | null {
+    return this.#observedPermissionMode;
   }
 
   /** Discover capabilities with initialize only: never enqueue a user/model turn. */
@@ -1075,6 +1330,8 @@ export class ClaudeManagedRunnerProcess {
         await this.#requestControl({ subtype: "set_permission_mode", mode: next.permissionMode });
       this.#settings = next;
       this.#effectiveSettings = { ...this.#effectiveSettings, ...settings };
+      // The CLI acknowledged the change, so this is the mode it now runs in.
+      if (settings.permissionMode !== undefined) this.#observePermission(settings.permissionMode);
       this.#settingsAcknowledged = true;
       this.state.revision++;
       this.#notify();
@@ -1119,6 +1376,11 @@ export class ClaudeManagedRunnerProcess {
     }
   }
 
+  /** What was ignored or refused so far, by category. Counts only; for diagnostics and tests. */
+  get protocolDiagnostics() {
+    return this.state.diagnostics.snapshot();
+  }
+
   get hasWorker(): boolean {
     return this.#child !== undefined;
   }
@@ -1149,6 +1411,8 @@ export class ClaudeManagedRunnerProcess {
         this.state.seenRequests.clear();
         this.state.bashToolIds.clear();
         this.state.foregroundTasks.clear();
+        this.state.subagentBashToolIds.clear();
+        this.state.subagentTasks.clear();
         this.state.contextUsage = {
           ...this.state.contextUsage,
           state: this.state.contextUsage.available ? "stale" : "unavailable",
@@ -1258,6 +1522,7 @@ export class ClaudeManagedRunnerProcess {
     if (this.#child) throw new Error("Claude runner already started");
     this.#acquireLease();
     this.#effectiveSettings = { model: null, effort: null, permissionMode: null };
+    this.#observedPermissionMode = null;
     let child: ChildProcess;
     try {
       child = spawn(
@@ -1295,7 +1560,10 @@ export class ClaudeManagedRunnerProcess {
         ],
         {
           cwd: this.workspace,
-          env: this.environment,
+          // Background work (Bash run_in_background, background sub-agents) outlives the turn
+          // AgentKib starts and makes the CLI start turns of its own, which a managed session
+          // cannot follow. Turn it off at the source, over whatever the user's environment says.
+          env: { ...this.environment, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" },
           detached: true,
           stdio: ["pipe", "pipe", "ignore"],
           windowsHide: true,
@@ -1342,27 +1610,31 @@ export class ClaudeManagedRunnerProcess {
     });
     // A process can fail while stdin's first write is still pending.
     void this.#initializing.catch(() => undefined);
-    child.stdout?.on("data", (chunk: Buffer) => this.#data(chunk));
+    child.stdout?.on("data", (chunk: Buffer) => this.#data(child, chunk));
     child.stdout?.on("end", () => {
+      if (!this.#acceptsFrames(child)) return;
       if (this.#bufferLength) {
         const final = Buffer.concat(this.#fragments, this.#bufferLength);
         this.#fragments = [];
         this.#bufferLength = 0;
-        this.#enqueueFrame(final);
+        this.#enqueueFrame(child, final);
       }
-      if (!this.#intentional.has(child))
-        void this.#frameChain.finally(() => this.#fail("Claude stream closed"));
+      void this.#frameChain.finally(() => {
+        if (this.#acceptsFrames(child)) this.#fail("Claude stream closed");
+      });
     });
     child.stdin?.on("error", (error) => {
-      if (!this.#intentional.has(child)) this.#fail("Claude stdin write failed");
+      if (!this.#acceptsFrames(child)) return;
+      this.#fail("Claude stdin write failed");
       this.#rejectInitialization?.(error instanceof Error ? error : new Error(String(error)));
     });
     child.on("error", (error) => {
+      if (!this.#acceptsFrames(child)) return;
       this.#rejectInitialization?.(error);
-      if (!this.#intentional.has(child)) this.#fail(error.message);
+      this.#fail(error.message);
     });
     child.on("close", (code) => {
-      if (!this.#intentional.has(child)) this.#fail(`Claude process exited (${code ?? "unknown"})`);
+      if (this.#acceptsFrames(child)) this.#fail(`Claude process exited (${code ?? "unknown"})`);
     });
     return child;
   }
@@ -1396,7 +1668,17 @@ export class ClaudeManagedRunnerProcess {
     lease.release();
   }
 
-  #data(chunk: Buffer): void {
+  #acceptsFrames(child: ChildProcess): boolean {
+    return (
+      child === this.#child &&
+      !this.#closed &&
+      !this.#intentional.has(child) &&
+      this.state.status !== "outcome-unknown"
+    );
+  }
+
+  #data(child: ChildProcess, chunk: Buffer): void {
+    if (!this.#acceptsFrames(child)) return;
     let offset = 0;
     while (offset < chunk.length) {
       const newline = chunk.indexOf(10, offset);
@@ -1405,7 +1687,7 @@ export class ClaudeManagedRunnerProcess {
         this.#fragments.push(Buffer.from(fragment));
         this.#bufferLength += fragment.length;
         if (this.#bufferLength > MAX_LINE) {
-          this.#fail("Claude frame exceeds 25 MiB");
+          this.#fail("Claude frame exceeds 25 MiB", "claude-protocol-violation");
           return;
         }
         break;
@@ -1418,33 +1700,41 @@ export class ClaudeManagedRunnerProcess {
       this.#fragments = [];
       this.#bufferLength = 0;
       if (line.length + 1 > MAX_LINE) {
-        this.#fail("Claude frame exceeds 25 MiB");
+        this.#fail("Claude frame exceeds 25 MiB", "claude-protocol-violation");
         return;
       }
-      this.#enqueueFrame(line);
+      this.#enqueueFrame(child, line);
       offset = newline + 1;
     }
   }
 
-  #enqueueFrame(line: Buffer): void {
+  #enqueueFrame(child: ChildProcess, line: Buffer): void {
     this.#queuedFrames++;
-    if (this.#queuedFrames >= 32) this.#child?.stdout?.pause();
+    if (this.#queuedFrames >= 32) child.stdout?.pause();
     this.#frameChain = this.#frameChain
       .then(async () => {
-        const frame = parseClaudeFrame(line);
+        // A chunk can queue multiple frames before one fails. Killing the process does not
+        // remove that queued work, and an old process must never update its replacement.
+        if (!this.#acceptsFrames(child)) return;
+        const frame = inbound(() => parseClaudeFrame(line));
         if (frame.session_id !== undefined && frame.session_id !== this.sessionId)
-          throw new Error("Claude session ID changed unexpectedly");
+          throw new ClaudeProtocolError(
+            "claude-protocol-violation",
+            "Claude session ID changed unexpectedly",
+          );
         if (frame.type === "control_response" && frame.response?.request_id !== this.state.initId) {
-          this.#controlResponse(frame);
+          inbound(() => this.#controlResponse(frame));
           return;
         }
         const wasInitialized = this.state.initialized;
         const previousItemId = this.state.streamItemId;
         const previousItemText = this.state.streamItemText;
+        const origin = frameOrigin(frame);
         let response: JsonObject | null;
         try {
-          response = this.state.frame(frame);
+          response = inbound(() => this.state.frame(frame));
         } finally {
+          this.#logDiagnostics();
           const result = this.state.terminalResult;
           if (result && result !== this.#reportedResult) {
             this.#reportedResult = result;
@@ -1452,19 +1742,27 @@ export class ClaudeManagedRunnerProcess {
           }
         }
         if (!wasInitialized && this.state.initialized) {
-          this.#discoverOptions(frame.response?.response);
+          inbound(() => this.#discoverOptions(frame.response?.response));
           // Initialization confirms explicit launch options, never inherited host defaults.
           this.#effectiveSettings = {
             model: this.#effectiveSettings.model ?? this.#settings.model,
             effort: this.#effectiveSettings.effort ?? this.#settings.effort,
-            permissionMode: this.#effectiveSettings.permissionMode ?? this.#settings.permissionMode,
+            // A mode the CLI already reported (system/init can precede this response) wins
+            // over the launch selection, including an unselectable one that left this null.
+            permissionMode:
+              this.#observedPermissionMode !== null
+                ? this.#effectiveSettings.permissionMode
+                : (this.#effectiveSettings.permissionMode ?? this.#settings.permissionMode),
           };
           this.#settingsAcknowledged = true;
         }
         if (frame.type === "system" && frame.subtype === "init") {
           if (shortString(frame.model, 256)) this.#effectiveSettings.model = frame.model;
-          if (isPermissionMode(frame.permissionMode))
-            this.#effectiveSettings.permissionMode = frame.permissionMode;
+        }
+        if (frame.type === "system" && (frame.subtype === "init" || frame.subtype === "status")) {
+          // Unknown or malformed values are ignored: observing never ends the process.
+          const mode = normalizeObservedPermissionMode(frame.permissionMode);
+          if (mode !== null) this.#observePermission(mode);
         }
         if (frame.type === "system" && frame.subtype === "commands_changed")
           this.#commands = projectCommands(frame.commands);
@@ -1552,6 +1850,7 @@ export class ClaudeManagedRunnerProcess {
         }
         if (
           frame.type === "assistant" &&
+          origin.kind === "main" &&
           !this.state.finalizedTextBlocks.length &&
           itemId &&
           itemText
@@ -1573,6 +1872,7 @@ export class ClaudeManagedRunnerProcess {
         this.#notify();
         if (!wasInitialized && this.state.initialized) {
           if (response) await this.#write(response);
+          if (!this.#acceptsFrames(child)) return;
           this.#resolveInitialization?.();
           this.#resolveInitialization = undefined;
           this.#rejectInitialization = undefined;
@@ -1581,27 +1881,37 @@ export class ClaudeManagedRunnerProcess {
         }
       })
       .catch((error: unknown) => {
+        if (!this.#acceptsFrames(child)) return;
         if (error instanceof ClaudeUndispatchedError) {
           this.#rejectInitialization?.(error);
           return;
         }
         const reason = errorMessage(error);
-        this.#fail(reason);
+        this.#fail(reason, error instanceof ClaudeProtocolError ? error.code : undefined);
         this.#rejectInitialization?.(error instanceof Error ? error : new Error(reason));
       })
       .finally(() => {
         this.#queuedFrames--;
-        if (this.#queuedFrames < 16) this.#child?.stdout?.resume();
+        if (this.#queuedFrames < 16 && this.#acceptsFrames(child)) child.stdout?.resume();
       });
   }
 
   #conversationItems(frame: JsonObject): Array<{ index: number; item: Record<string, unknown> }> {
     const items: Array<{ index: number; item: Record<string, unknown> }> = [];
+    const origin = frameOrigin(frame);
+    // State ignores these frames; projecting their tools would still mutate the conversation.
+    if (origin.kind === "unattributed") return items;
     const blocks = Array.isArray(frame.message?.content) ? frame.message.content : [];
     if (frame.type === "user") {
+      // A sub-agent's first user frame is the prompt that drives it; it is not the user's message.
+      const mainThread = origin.kind === "main";
       const id =
-        (typeof frame.uuid === "string" && uuidPattern.test(frame.uuid) && frame.uuid) ||
-        (typeof frame.message?.id === "string" &&
+        (mainThread &&
+          typeof frame.uuid === "string" &&
+          uuidPattern.test(frame.uuid) &&
+          frame.uuid) ||
+        (mainThread &&
+          typeof frame.message?.id === "string" &&
           uuidPattern.test(frame.message.id) &&
           frame.message.id) ||
         "";
@@ -1705,6 +2015,16 @@ export class ClaudeManagedRunnerProcess {
     }
   }
 
+  /**
+   * Record the mode the CLI runs in. A mode that cannot be selected clears the effective
+   * selection, so `settings.current` never shows a stale plan or default beside an observed
+   * auto mode. Must not throw: it runs on the frame path, where an error ends the session.
+   */
+  #observePermission(mode: ClaudeObservedPermissionMode): void {
+    this.#observedPermissionMode = mode;
+    this.#effectiveSettings.permissionMode = isPermissionMode(mode) ? mode : null;
+  }
+
   #discoverOptions(value: unknown): void {
     if (value !== undefined && !object(value))
       throw new Error("invalid Claude initialization data");
@@ -1804,10 +2124,48 @@ export class ClaudeManagedRunnerProcess {
     }
   }
 
-  #fail(reason: string): void {
+  /** The CLI's version number when it is newer than the version managed sessions were verified through. */
+  #versionNumber(): string | null {
+    return /^(\d+\.\d+\.\d+) \(Claude Code\)$/.exec(this.options.cliVersion ?? "")?.[1] ?? null;
+  }
+
+  #logDiagnostics(): void {
+    try {
+      const version = this.#versionNumber();
+      for (const { label, key } of this.state.diagnostics.takeNew())
+        console.warn(
+          `Claude Code protocol: ${label} "${key}"${version ? ` (Claude Code ${version})` : ""}`,
+        );
+    } catch {
+      // A log line must never change what happens to the frame.
+    }
+  }
+
+  /**
+   * `code` marks a reason AgentKib can explain to the user; the stored reason is then
+   * `<code>: <detail>` and the UI shows the explanation. Other failures keep their plain text.
+   */
+  #fail(reason: string, code?: ClaudeTerminationCode): void {
     this.#settingsAcknowledged = false;
+    // A failed process no longer runs in any mode; the next worker reports its own.
+    this.#observedPermissionMode = null;
+    this.#effectiveSettings.permissionMode = null;
     this.#rejectControls(new Error(reason));
-    if (this.state.status !== "outcome-unknown") this.state.fail(reason);
+    if (this.state.status !== "outcome-unknown")
+      this.state.fail(
+        code
+          ? formatTermination(
+              code,
+              reason,
+              isNewerThanVerified(this.options.cliVersion)
+                ? {
+                    version: this.#versionNumber()!,
+                    verified: CLAUDE_MANAGED_VERIFIED_THROUGH,
+                  }
+                : undefined,
+            )
+          : reason,
+      );
     this.#notify();
     this.#rejectInitialization?.(new Error(reason));
     void this.#killOnFailure();
@@ -1869,6 +2227,26 @@ export class ClaudeManagedRunnerProcess {
   }
 }
 
+/**
+ * Runs the part of frame handling that reads what the CLI sent. Anything it throws that is not
+ * already classified is a protocol violation, so a new `throw` added later fails closed with the
+ * generic explanation instead of an unexplained stop. Outbound writes and host callbacks are not
+ * wrapped: their failures are not the CLI's fault.
+ */
+function inbound<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (
+      error instanceof ClaudeProtocolError ||
+      error instanceof ClaudeTurnFailure ||
+      error instanceof ClaudeUndispatchedError
+    )
+      throw error;
+    throw new ClaudeProtocolError("claude-protocol-violation", errorMessage(error));
+  }
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -1884,6 +2262,25 @@ const shortString = (value: unknown, max: number): value is string =>
 
 const isPermissionMode = (value: unknown): value is ClaudePermissionMode =>
   value === "default" || value === "plan" || value === "acceptEdits";
+
+/**
+ * Maps a `permissionMode` the CLI reported to the closed set AgentKib can show. The CLI's
+ * `--permission-mode manual` spelling means `default`; anything else, including values a newer
+ * CLI might add, is unknown (null) rather than guessed.
+ */
+export function normalizeObservedPermissionMode(
+  value: unknown,
+): ClaudeObservedPermissionMode | null {
+  if (value === "manual") return "default";
+  if (
+    isPermissionMode(value) ||
+    value === "auto" ||
+    value === "dontAsk" ||
+    value === "bypassPermissions"
+  )
+    return value;
+  return null;
+}
 
 function validateRunnerSettings(value: ClaudeRunnerEffectiveSettings): void {
   if (value.model !== null && !shortString(value.model, 256))

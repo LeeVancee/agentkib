@@ -1,7 +1,16 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileTime } from "./asset-scanner";
+import { claudeConfigFiles, resolveClaudeConfig } from "./claude-config";
 import { isFile, readText, within } from "./files";
 import { isDirectory, isProbeWorkspace } from "./paths";
 import { jsonLines } from "./jsonl";
@@ -83,43 +92,127 @@ function userTitle(row: Record<string, unknown>): string | null {
       .join("\n"),
   );
 }
-function transcriptHeader(
+const HEADER_BYTES = 2 * 1024 * 1024;
+const HEADER_LINES = 256;
+/** Claude appends renames and generated titles late, so the newest values live near the end. */
+const TAIL_BYTES = 256 * 1024;
+const SCAN_CACHE_LIMIT = 4096;
+interface TranscriptScan {
+  nativeRef: string;
+  cwd: string | null;
+  created: string | null;
+  updated: string | null;
+  branch: string | null;
+  sidechain: boolean | null;
+  customTitles: Map<string, string>;
+  aiTitles: Map<string, string>;
+  firstPrompts: Map<string, string>;
+}
+// Keyed by path; an entry is only reused while mtime and size are unchanged.
+const scans = new Map<string, { mtimeMs: number; size: number; scan: TranscriptScan }>();
+/** A title names a session; it is not evidence for changing the transcript's identity. */
+function noteTitle(
+  row: Record<string, unknown>,
+  customTitles: Map<string, string>,
+  aiTitles: Map<string, string>,
+) {
+  const internal = row.isMeta === true || row.isCompactSummary === true || row.isSidechain === true;
+  const custom = row.type === "custom-title";
+  const id = text(row.sessionId),
+    title = sessionTitle(custom ? row.customTitle : row.aiTitle);
+  if (!internal && id && title) (custom ? customTitles : aiTitles).set(id, title);
+}
+/** Reads at most TAIL_BYTES from the end; the first (possibly partial) line is dropped. */
+function tailTitles(
   file: string,
-  probeWorkspace = isProbeWorkspace,
-): NativeSessionSource | null {
-  let nativeRef = path.basename(file, ".jsonl"),
-    cwd: string | null = null,
-    created: string | null = null,
-    updated = fileTime(file),
-    branch: string | null = null,
-    sidechain: boolean | null = null;
-  const customTitles = new Map<string, string>();
-  const firstPrompts = new Map<string, string>();
-  for (const { value } of jsonLines(file, { bytes: 2 * 1024 * 1024, lines: 256 })) {
+  customTitles: Map<string, string>,
+  aiTitles: Map<string, string>,
+) {
+  const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.size === 0) return;
+    const start = Math.max(0, metadata.size - TAIL_BYTES),
+      buffer = Buffer.allocUnsafe(metadata.size - start);
+    let filled = 0;
+    while (filled < buffer.length) {
+      const count = readSync(fd, buffer, filled, buffer.length - filled, start + filled);
+      if (!count) break;
+      filled += count;
+    }
+    let from = 0;
+    if (start > 0) {
+      const newline = buffer.subarray(0, filled).indexOf(10);
+      if (newline < 0) return;
+      from = newline + 1;
+    }
+    for (const line of buffer.subarray(from, filled).toString("utf8").split("\n")) {
+      if (!line.includes('"custom-title"') && !line.includes('"ai-title"')) continue;
+      try {
+        const row = record(JSON.parse(line));
+        if (row && (row.type === "custom-title" || row.type === "ai-title"))
+          noteTitle(row, customTitles, aiTitles);
+      } catch {}
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+function scanTranscript(file: string): TranscriptScan {
+  const stat = lstatSync(file);
+  if (!stat.isFile()) throw new Error("Transcript must be a regular file");
+  const cached = scans.get(file);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.scan;
+  const scan: TranscriptScan = {
+    nativeRef: path.basename(file, ".jsonl"),
+    cwd: null,
+    created: null,
+    updated: fileTime(file),
+    branch: null,
+    sidechain: null,
+    customTitles: new Map(),
+    aiTitles: new Map(),
+    firstPrompts: new Map(),
+  };
+  for (const { value } of jsonLines(file, { bytes: HEADER_BYTES, lines: HEADER_LINES })) {
     const row = record(value);
     if (!row) continue;
     const internal =
       row.isMeta === true || row.isCompactSummary === true || row.isSidechain === true;
-    if (row.type === "custom-title") {
-      const id = text(row.sessionId),
-        title = sessionTitle(row.customTitle);
-      // A title names a session; it is not evidence for changing the transcript's identity.
-      if (!internal && id && title) customTitles.set(id, title);
+    if (row.type === "custom-title" || row.type === "ai-title") {
+      noteTitle(row, scan.customTitles, scan.aiTitles);
       continue;
     }
-    nativeRef = text(row.sessionId) ?? nativeRef;
-    cwd ??= text("cwd" in row ? row.cwd : row.projectPath);
-    branch ??= text(row.gitBranch);
-    if (sidechain === null && ["user", "assistant"].includes(String(row.type)))
-      sidechain = typeof row.isSidechain === "boolean" ? row.isSidechain : false;
+    scan.nativeRef = text(row.sessionId) ?? scan.nativeRef;
+    scan.cwd ??= text("cwd" in row ? row.cwd : row.projectPath);
+    scan.branch ??= text(row.gitBranch);
+    if (scan.sidechain === null && ["user", "assistant"].includes(String(row.type)))
+      scan.sidechain = typeof row.isSidechain === "boolean" ? row.isSidechain : false;
     const at = parseTime(row.timestamp);
-    created = earliest(created, at);
-    updated = latest(updated, at);
-    if (!internal && !firstPrompts.has(nativeRef)) {
+    scan.created = earliest(scan.created, at);
+    scan.updated = latest(scan.updated, at);
+    if (!internal && !scan.firstPrompts.has(scan.nativeRef)) {
       const title = userTitle(row);
-      if (title) firstPrompts.set(nativeRef, title);
+      if (title) scan.firstPrompts.set(scan.nativeRef, title);
     }
   }
+  // Tail records are newer than anything in the header, so they overwrite it.
+  tailTitles(file, scan.customTitles, scan.aiTitles);
+  scans.delete(file);
+  scans.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, scan });
+  if (scans.size > SCAN_CACHE_LIMIT) scans.delete(scans.keys().next().value as string);
+  return scan;
+}
+/** Explicit titles first (user set, then generated); the caller chooses the fallbacks. */
+function explicitTitle(scan: TranscriptScan): string | null {
+  return scan.customTitles.get(scan.nativeRef) ?? scan.aiTitles.get(scan.nativeRef) ?? null;
+}
+function transcriptHeader(
+  file: string,
+  probeWorkspace = isProbeWorkspace,
+): NativeSessionSource | null {
+  const scan = scanTranscript(file),
+    { nativeRef, cwd, sidechain } = scan;
   if (cwd === null || probeWorkspace(cwd)) return null;
   return {
     cwd,
@@ -127,14 +220,12 @@ function transcriptHeader(
     session: {
       native_ref: nativeRef,
       agent: "claude-code",
-      title: sidechain
-        ? null
-        : (customTitles.get(nativeRef) ?? firstPrompts.get(nativeRef) ?? null),
+      title: sidechain ? null : (explicitTitle(scan) ?? scan.firstPrompts.get(nativeRef) ?? null),
       origin: sidechain === null ? "unknown" : sidechain ? "auxiliary" : "interactive",
-      created_at: created,
-      updated_at: updated,
+      created_at: scan.created,
+      updated_at: scan.updated,
       message_count: null,
-      git_branch: sessionTitle(branch),
+      git_branch: sessionTitle(scan.branch),
       archived: false,
       sidechain: sidechain ?? false,
       availability: readable(file) ? "readable" : "metadata-only",
@@ -145,8 +236,11 @@ function transcriptHeader(
 }
 export class ClaudeSessions {
   constructor(readonly environment: NodeJS.ProcessEnv) {}
+  #config() {
+    return resolveClaudeConfig(this.environment, homedir());
+  }
   home() {
-    return this.environment.CLAUDE_CONFIG_DIR ?? path.join(homedir(), ".claude");
+    return this.#config().dir;
   }
   list(workspace: string | null) {
     // Many sessions share a cwd. Retain probe checks only within this scan so
@@ -169,8 +263,8 @@ export class ClaudeSessions {
       }
       return result;
     };
-    const home = this.home(),
-      projects = path.join(home, "projects"),
+    const files = claudeConfigFiles(this.#config()),
+      projects = files.projects,
       errors: string[] = [],
       paths = isDirectory(projects) ? scan(projects, errors) : [],
       sessions = new Map<string, NativeSessionSource>();
@@ -223,19 +317,20 @@ export class ClaudeSessions {
         });
       }
     }
-    const update = (
-      session: NativeSessionSource,
-      file: string,
-      header?: NativeSessionSource | null,
-    ) => {
+    const update = (session: NativeSessionSource, file: string) => {
       session.transcript = file;
       session.session.updated_at = latest(session.session.updated_at, fileTime(file));
       session.session.availability = readable(file) ? "readable" : "metadata-only";
-      if (!session.session.title && !session.session.sidechain) {
+      if (!session.session.sidechain) {
         try {
-          header ??= transcriptHeader(file, probeWorkspace);
-          if (header?.session.native_ref === session.session.native_ref)
-            session.session.title = header.session.title;
+          // custom-title and ai-title outrank the indexed title; the index and first prompt fill in.
+          const scan = scanTranscript(file);
+          if (scan.nativeRef === session.session.native_ref)
+            session.session.title =
+              explicitTitle(scan) ??
+              session.session.title ??
+              scan.firstPrompts.get(scan.nativeRef) ??
+              null;
         } catch (error) {
           errors.push(String(error));
         }
@@ -251,13 +346,13 @@ export class ClaudeSessions {
         const session = transcriptHeader(file, probeWorkspace);
         if (!session) continue;
         const previous = sessions.get(session.session.native_ref);
-        if (previous) update(previous, file, session);
+        if (previous) update(previous, file);
         else sessions.set(session.session.native_ref, session);
       } catch (error) {
         errors.push(String(error));
       }
     }
-    const history = path.join(home, "history.jsonl");
+    const history = files.history;
     if (isFile(history)) {
       try {
         for (const { value } of jsonLines(history, {

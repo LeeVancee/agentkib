@@ -104,7 +104,7 @@ function sanitizeText(value: string, count: { value: number }): string {
     const marker = line
       .trim()
       .toUpperCase()
-      .match(/^-----BEGIN (.+PRIVATE KEY)-----$/);
+      .match(/^-----BEGIN (.*PRIVATE KEY)-----$/);
     if (marker) {
       lines.push("[REDACTED PRIVATE KEY]");
       privateKeyEnd = `-----END ${marker[1]}-----`;
@@ -323,7 +323,14 @@ export function renderHandoff(
     return `${JSON.stringify({ generated_at: generatedAt, instruction: notice, schema_version: 1, session: document, target_agent: targetAgent }, null, 2)}\n`;
   let output = `# AgentKib session continuation\n\n> ${notice}\n\n- Source Agent: ${document.source.agent}\n- Target Agent: ${targetAgent}\n- Generated: ${generatedAt}\n\n## Timeline\n`;
   for (const turn of document.turns) {
-    output += `\n### ${turn.role[0]!.toUpperCase()}${turn.role.slice(1)}\n\n`;
+    // AgentKib's own compaction turns are stored with the user role; the heading says what they are.
+    const heading =
+      turn.kind === "context-summary"
+        ? "Context summary"
+        : turn.kind === "compaction-boundary"
+          ? "Compaction boundary"
+          : `${turn.role[0]!.toUpperCase()}${turn.role.slice(1)}`;
+    output += `\n### ${heading}\n\n`;
     for (const block of turn.blocks) {
       if (block.type === "text") output += `${block.text}\n`;
       else if (block.type === "tool-call")

@@ -21,8 +21,13 @@ import {
   type HistorySourceInput,
   type HistorySourceRecord,
 } from "../../../packages/backend/src/history-search-source";
+import * as sourceIdentity from "../../../packages/backend/src/history-search-source-identity";
+import { HISTORY_SEARCH_SANITIZER_VERSION } from "../../../packages/backend/src/history-search-source-types";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
-import { readJsonlSearchSource } from "../../../packages/backend/src/history-search-source-jsonl";
+import {
+  claudeLineageFields,
+  readJsonlSearchSource,
+} from "../../../packages/backend/src/history-search-source-jsonl";
 import { HistorySearchStore } from "../../../packages/backend/src/history-search-store";
 import { sessionIdentity, type NativeSession } from "../../../packages/backend/src/session-store";
 import { ClaudeSessions } from "../../../packages/backend/src/claude-sessions";
@@ -35,6 +40,21 @@ import { prepareCursorIdePayload } from "../../../packages/backend/src/cursor-id
 import { stableNativeRef } from "../../../packages/backend/src/session-history";
 import { canonicalize } from "../../../packages/backend/src/paths";
 import type { SessionDocument } from "../../../packages/backend/src/session-model";
+import {
+  assistant,
+  boundary,
+  duplicateToolUuidSession,
+  duplicateUuidSession,
+  futureLogicalParentSession,
+  heavilyRetainedSession,
+  preservedSegmentSession,
+  retainedRewriteSession,
+  retainedToolRewriteSession,
+  specificationSession,
+  summary,
+  twiceRetainedRewriteSession,
+  user,
+} from "./fixtures/claude-compaction-session";
 
 const roots: string[] = [];
 const close: Array<() => void> = [];
@@ -1652,5 +1672,387 @@ describe("complete history search source extraction", () => {
     expect(cache.locate(hits.hits[0]!.location, [sessionId]).content).toContain(
       "END_AFTER_256_KIB",
     );
+  });
+});
+
+describe("Claude compaction in the content search source", () => {
+  const specification = [
+    "alpha-question",
+    "bravo-answer",
+    "charlie-question",
+    "delta-answer",
+    "echo-question",
+  ];
+  const contents = (records: HistorySourceRecord[]) => records.map((record) => record.content);
+
+  it("indexes the whole lineage across a compact_boundary and keeps the summary out", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(specificationSession());
+    const result = await f.read();
+    expect(contents(result.records)).toEqual(specification);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+    expect(JSON.stringify(result.records)).not.toContain("SUMMARY-BODY");
+  });
+
+  it("reaches the earlier history through the preserved-segment head without a limitation", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(preservedSegmentSession());
+    const result = await f.read();
+    expect(contents(result.records)).toEqual([
+      "alpha-question",
+      "bravo-answer",
+      "charlie-question",
+      "tail-answer",
+      "delta-question",
+      "echo-answer",
+    ]);
+    expect(result.status).toBe("ready");
+    expect(result.limitations).not.toContain("compaction-link-unavailable");
+    expect(result.limitations).toEqual([]);
+  });
+
+  it("indexes every segment of a transcript with repeated uuids and several compactions", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(duplicateUuidSession());
+    const result = await f.read();
+    expect(contents(result.records)).toEqual([
+      "zero-a",
+      "zero-b",
+      "one-a",
+      "one-b",
+      "two-a",
+      "two-b",
+      "three-a",
+      "three-b",
+    ]);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+  });
+
+  it.each([
+    [
+      retainedRewriteSession,
+      ["alpha-question", "bravo-answer", "charlie-question", "delta-answer", "echo-question"],
+    ],
+    [
+      twiceRetainedRewriteSession,
+      [
+        "alpha-question",
+        "bravo-answer",
+        "echo-question",
+        "charlie-question",
+        "delta-answer",
+        "foxtrot-question",
+      ],
+    ],
+    [futureLogicalParentSession, ["alpha-question", "bravo-answer", "latest-answer"]],
+  ])(
+    "indexes trusted historical versions without later unrelated branches (%#)",
+    async (records, expected) => {
+      const f = fixture("claude-code");
+      f.resolve();
+      f.write(records());
+      const result = await f.read();
+      expect(contents(result.records)).toEqual(expected);
+      expect(new Set(result.records.map((record) => record.recordId)).size).toBe(
+        result.records.length,
+      );
+      expect(result).toMatchObject({ status: "ready", limitations: [] });
+    },
+  );
+
+  it("indexes retained tool records once after tracing their older ancestry", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(retainedToolRewriteSession());
+    const result = await f.read();
+    expect(result.records.map(({ kind, content }) => ({ kind, content }))).toEqual([
+      { kind: "user", content: "Read the original file" },
+      { kind: "tool-input", content: JSON.stringify({ file: "original.txt" }, null, 2) },
+      { kind: "tool-output", content: "original output" },
+      { kind: "assistant", content: "after compaction" },
+    ]);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+  });
+
+  it("reports partial search coverage after reaching the shared historical traversal budget", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(heavilyRetainedSession());
+    const result = await f.read();
+    expect(result).toMatchObject({
+      status: "partial",
+      limitations: ["compaction-link-unavailable"],
+    });
+    expect(contents(result.records).sort()).toEqual(
+      Array.from({ length: 1000 }, (_, index) => `retained-${index}`).sort(),
+    );
+    expect(new Set(result.records.map((record) => record.recordId)).size).toBe(1000);
+    expect(contents(result.records)).not.toContain("unrecovered-original");
+  });
+
+  it.each([null, "future"])(
+    "reports incomplete coverage when no pre-boundary head exists (%s)",
+    async (head) => {
+      const f = fixture("claude-code");
+      f.resolve();
+      f.write(futureLogicalParentSession(head));
+      const result = await f.read();
+      expect(contents(result.records)).toEqual(["latest-answer"]);
+      expect(result).toMatchObject({
+        status: "partial",
+        limitations: ["compaction-link-unavailable"],
+      });
+    },
+  );
+
+  it("indexes selected occurrences while keeping repeated text in distinct turns", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write([
+      ...duplicateUuidSession(),
+      assistant("b3", "a3", "active-replacement"),
+      user("a4", "b3", "one-a"),
+    ]);
+    const result = await f.read();
+    expect(contents(result.records)).toEqual([
+      "zero-a",
+      "zero-b",
+      "one-a",
+      "one-b",
+      "two-a",
+      "two-b",
+      "three-a",
+      "active-replacement",
+      "one-a",
+    ]);
+    expect(new Set(result.records.map((record) => record.recordId)).size).toBe(
+      result.records.length,
+    );
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+  });
+
+  it("indexes only the selected tool call and its original output", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(duplicateToolUuidSession());
+    const result = await f.read();
+    expect(result.records.map(({ kind, content }) => ({ kind, content }))).toEqual([
+      { kind: "user", content: "Read the original file" },
+      { kind: "tool-input", content: JSON.stringify({ file: "original.txt" }, null, 2) },
+      { kind: "tool-output", content: "original output" },
+      { kind: "assistant", content: "after compaction" },
+    ]);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+  });
+
+  it.each([0, 1])(
+    "marks coverage partial for a missing parent inside an earlier segment (%s)",
+    async (index) => {
+      const f = fixture("claude-code");
+      f.resolve();
+      const records = specificationSession();
+      records[index] = { ...records[index]!, parentUuid: "missing-parent" };
+      f.write(records);
+      const result = await f.read();
+      expect(contents(result.records)).toEqual(specification.slice(index));
+      expect(result).toMatchObject({
+        status: "partial",
+        limitations: ["compaction-link-unavailable"],
+      });
+    },
+  );
+
+  it("marks coverage partial when a boundary cannot be linked to earlier history", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write([
+      user("a", null, "alpha-question"),
+      boundary("bd", { logicalParentUuid: "gone", head: "gone-too", trigger: "auto" }),
+      summary("sm", "bd", "SUMMARY-BODY"),
+      assistant("d", "sm", "delta-answer"),
+      user("e", "d", "echo-question"),
+    ]);
+    const result = await f.read();
+    expect(contents(result.records)).toEqual(["delta-answer", "echo-question"]);
+    expect(result).toMatchObject({
+      status: "partial",
+      limitations: ["compaction-link-unavailable"],
+    });
+  });
+
+  it("reads uncompacted Claude transcripts exactly as before", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write([user("a", null, "alpha-question"), assistant("b", "a", "bravo-answer")]);
+    const result = await f.read();
+    expect(contents(result.records)).toEqual(["alpha-question", "bravo-answer"]);
+    expect(result).toMatchObject({ status: "ready", limitations: [] });
+  });
+
+  it("collects boundary pointers in the first pass and nothing else from compactMetadata", () => {
+    const marked = boundary("bd", {
+      logicalParentUuid: "c",
+      head: "h",
+      anchor: "sm",
+      tail: "t",
+      trigger: "auto",
+    });
+    expect(claudeLineageFields(marked)).toEqual({
+      uuid: "bd",
+      parentUuid: null,
+      leafUuid: undefined,
+      type: "system",
+      isSidechain: false,
+      subtype: "compact_boundary",
+      logicalParentUuid: "c",
+      compactMetadata: { preservedSegment: { headUuid: "h" } },
+    });
+    const ordinary = claudeLineageFields({
+      ...user("a", null, "alpha-question"),
+      compactMetadata: { preservedSegment: { headUuid: "h" }, preTokens: 1 },
+    });
+    expect(ordinary).not.toHaveProperty("compactMetadata");
+    expect(ordinary).toMatchObject({ uuid: "a", type: "user", parentUuid: null });
+    // A boundary without a usable head carries no metadata object at all.
+    expect(claudeLineageFields(boundary("bd2", { logicalParentUuid: "c" }))).not.toHaveProperty(
+      "compactMetadata",
+    );
+    expect(
+      claudeLineageFields({
+        ...boundary("bd3"),
+        compactMetadata: { preservedSegment: { headUuid: 7 } },
+      }),
+    ).not.toHaveProperty("compactMetadata");
+  });
+
+  it("keeps Claude lineage changes separate from the shared sanitizer version", async () => {
+    const identity = vi.spyOn(sourceIdentity, "historySourceIdentity");
+    const claude = fixture("claude-code");
+    claude.resolve();
+    claude.write(specificationSession());
+    await claude.read();
+    const codex = fixture("codex");
+    codex.resolve();
+    codex.write([codexText("user_message", "body")]);
+    await codex.read();
+    const [claudeIdentity, codexIdentity] = identity.mock.results.map(
+      (result) => result.value as string,
+    );
+    expect(JSON.parse(claudeIdentity!)).toMatchObject({
+      version: 7,
+      sanitizerVersion: HISTORY_SEARCH_SANITIZER_VERSION,
+      agent: "claude-code",
+      claudeLineage: 3,
+    });
+    expect(codexIdentity).not.toContain("claudeLineage");
+    expect(JSON.parse(codexIdentity!)).toMatchObject({
+      version: 7,
+      sanitizerVersion: HISTORY_SEARCH_SANITIZER_VERSION,
+      agent: "codex",
+    });
+  });
+
+  it("invalidates every agent's former identity while retaining all ownership evidence", () => {
+    const resolved = { workspace: "/workspace", native: { native_ref: "native" } };
+    const identity = (agent: string) =>
+      sourceIdentity.historySourceIdentity(
+        {
+          sessionId: "session",
+          summary: {
+            agent,
+            title: "Synthetic",
+            workspace_id: "registered",
+          } as HistorySourceInput["summary"],
+          profiles: [],
+        },
+        "evidence",
+        resolved,
+      );
+    const former = (agent: string) =>
+      JSON.stringify({
+        version: 7,
+        sanitizerVersion: HISTORY_SEARCH_SANITIZER_VERSION,
+        sessionId: "session",
+        agent,
+        title: "Synthetic",
+        nativeEvidence: "evidence",
+        workspaceId: "registered",
+        workspace: "/workspace",
+        native: "native",
+        profiles: [],
+      });
+    for (const agent of [
+      "codex",
+      "hermes",
+      "open-claw",
+      "grok-build",
+      "opencode",
+      "cursor",
+      "antigravity",
+    ]) {
+      expect(identity(agent)).toBe(former(agent));
+      const old = JSON.parse(former(agent));
+      delete old.sanitizerVersion;
+      expect(identity(agent)).not.toBe(JSON.stringify(old));
+    }
+    expect(identity("claude-code")).toBe(
+      former("claude-code").replace(/}$/, ',"claudeLineage":3}'),
+    );
+  });
+
+  it("invalidates the old Claude source revision without changing the transcript", async () => {
+    const f = fixture("claude-code");
+    f.resolve();
+    f.write(retainedRewriteSession());
+    const currentIdentity = sourceIdentity.historySourceIdentity;
+    const identity = vi
+      .spyOn(sourceIdentity, "historySourceIdentity")
+      .mockImplementation((...args) => {
+        const former = JSON.parse(currentIdentity(...args));
+        former.claudeLineage = 2;
+        return JSON.stringify(former);
+      });
+    const former = await f.read();
+    identity.mockRestore();
+    const current = await f.read();
+    expect(current.records).toEqual(former.records);
+    expect(current.sourceRevision).not.toBe(former.sourceRevision);
+    const cache = new HistorySearchStore(path.join(f.root, "search.sqlite"), true);
+    close.push(() => cache.close());
+    const session = {
+      sessionId: f.input.sessionId,
+      workspaceId: f.input.summary.workspace_id,
+      agent: f.input.summary.agent,
+      title: f.input.summary.title,
+      updatedAt: f.input.summary.updated_at,
+      archived: false,
+      ownerKey: "synthetic-claude-owner",
+    };
+    const save = (result: typeof current) => {
+      const generation = cache.begin(session);
+      for (const record of result.records)
+        cache.append(session.sessionId, generation, record, () => {});
+      cache.finish(
+        session.sessionId,
+        generation,
+        result.sourceRevision,
+        result.status,
+        result.limitations,
+      );
+    };
+    save(former);
+    const allowed = [session.sessionId];
+    const oldLocation = cache.query({ query: "alpha-question" }, allowed, () => {}).hits[0]!
+      .location;
+    expect(cache.cachedSourceRevision(session)).not.toBe(current.sourceRevision);
+    save(current);
+    expect(cache.cachedSourceRevision(session)).toBe(current.sourceRevision);
+    expect(() => cache.locate(oldLocation, allowed)).toThrow("history-source-stale");
+    const newLocation = cache.query({ query: "alpha-question" }, allowed, () => {}).hits[0]!
+      .location;
+    expect(cache.locate(newLocation, allowed).content).toBe("alpha-question");
   });
 });

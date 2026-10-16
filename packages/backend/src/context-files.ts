@@ -8,11 +8,46 @@ import {
   readdirSync,
 } from "node:fs";
 import path from "node:path";
-import { canonicalize } from "./paths";
-import { isFile, within } from "./files";
+import { canonicalize, lexicalPathIdentity } from "./paths";
+import { isFile, safeAncestors, within } from "./files";
 import { compareUtf8 } from "./workspaces";
 export const FILE_CHARS = 128 * 1024,
-  TOTAL_CHARS = 512 * 1024;
+  TOTAL_CHARS = 512 * 1024,
+  /** Separate budget for Claude Code sources outside the workspace, so they cannot crowd out project files. */
+  OUTSIDE_TOTAL_CHARS = 256 * 1024;
+/**
+ * A warning that starts with this is an advisory note rather than a problem: the Context page
+ * shows it in a neutral style without the prefix, and the Doctor does not report it.
+ */
+export const CONTEXT_NOTE_PREFIX = "Note: ";
+/**
+ * `Section.scope` values Claude Code uses for sources that are not project files. A project
+ * directory with one of these names gets a `./` prefix instead (see `inWorkspaceScope`).
+ */
+const CLAUDE_RESERVED_SCOPES = new Set([
+  "managed",
+  "user",
+  "ancestor",
+  "auto-memory",
+  "conditional",
+  "agent-home",
+  "platform-override",
+  "settings",
+  "assets",
+]);
+/** The `scope` of a Claude Code source found in the workspace at `relative` (a directory below the root). */
+export function inWorkspaceScope(relative: string): string {
+  return CLAUDE_RESERVED_SCOPES.has(relative) ? `./${relative}` : relative;
+}
+/**
+ * Whether a section comes from the project. For Claude Code every reserved scope is something
+ * else (managed policy, user level, parent directory, auto memory, conditional rule, the settings
+ * and asset listings); the other
+ * Agents keep their one exception, the Agent Home.
+ */
+export function isProjectScope(agent: string, scope: string): boolean {
+  return agent === "claude-code" ? !CLAUDE_RESERVED_SCOPES.has(scope) : scope !== "agent-home";
+}
 export function lines(text: string): string[] {
   if (!text) return [];
   const result = text.split(/\r?\n/);
@@ -51,11 +86,46 @@ export function decodePrefix(bytes: Buffer, allowPartial: boolean): string {
   }
 }
 export function prefix(file: string, limit: number, regular = false): Buffer {
-  if (regular && !lstatSync(file).isFile())
-    throw new Error("Instruction source must be a regular file");
-  const fd = openSync(file, constants.O_RDONLY | (regular ? (constants.O_NOFOLLOW ?? 0) : 0));
+  const canonical = canonicalize(file);
+  const identity = lexicalPathIdentity(canonical);
+  // Callers that already authorized a canonical target must not follow a newly introduced
+  // leaf or parent link. Other callers may resolve a stable link before capturing identity.
+  if (
+    regular &&
+    lexicalPathIdentity(file) !== identity &&
+    !(
+      process.platform === "darwin" &&
+      lexicalPathIdentity(file).toLowerCase() === identity.toLowerCase() &&
+      safeAncestors(file, path.parse(file).root)
+    )
+  )
+    throw new Error("Instruction source path changed before reading");
+  const before = lstatSync(canonical, { bigint: true });
+  if (!before.isFile()) throw new Error("Instruction source must be a regular file");
+  const same = (metadata: typeof before) =>
+    metadata.isFile() &&
+    metadata.dev === before.dev &&
+    metadata.ino === before.ino &&
+    metadata.size === before.size &&
+    metadata.mtimeNs === before.mtimeNs &&
+    metadata.ctimeNs === before.ctimeNs;
+  const fd = openSync(
+    canonical,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
   try {
-    if (!fstatSync(fd).isFile()) throw new Error("Instruction source must be a regular file");
+    const verify = () => {
+      // Checking the descriptor as well as the path rejects a temporarily swapped parent
+      // restored immediately after open. Only the verified descriptor supplies the bytes.
+      if (
+        !same(fstatSync(fd, { bigint: true })) ||
+        lexicalPathIdentity(canonicalize(file)) !== identity ||
+        lexicalPathIdentity(canonicalize(canonical)) !== identity ||
+        !same(lstatSync(canonical, { bigint: true }))
+      )
+        throw new Error("Instruction source changed while reading");
+    };
+    verify();
     const bytes = Buffer.allocUnsafe(limit);
     let size = 0;
     while (size < limit) {
@@ -63,13 +133,42 @@ export function prefix(file: string, limit: number, regular = false): Buffer {
       if (!count) break;
       size += count;
     }
+    verify();
     return bytes.subarray(0, size);
   } finally {
     closeSync(fd);
   }
 }
-export function readContext(file: string): { content: string; truncated: boolean } {
-  const bytes = prefix(file, FILE_CHARS * 4 + 1),
+/** Resolve a permitted alias, authorize its target, then bind the read to that target. */
+export function checkedPrefix(
+  file: string,
+  limit: number,
+  skipSource: (file: string) => boolean,
+  regular = false,
+): Buffer {
+  if (skipSource(file)) throw new Error("Instruction source is not available");
+  if (regular && !lstatSync(file).isFile())
+    throw new Error("Instruction source must be a regular file");
+  const canonical = canonicalize(file);
+  if (skipSource(canonical)) throw new Error("Instruction source is not available");
+  return prefix(canonical, limit, true);
+}
+/** The complete-text variant preserves configuration size limits and strict UTF-8 decoding. */
+export function readContextText(
+  file: string,
+  limit: number,
+  skipSource: (file: string) => boolean,
+  regular = false,
+): string {
+  const bytes = checkedPrefix(file, limit + 1, skipSource, regular);
+  if (bytes.length > limit) throw new Error("Instruction source exceeds the read limit");
+  return decodePrefix(bytes, false);
+}
+export function readContext(
+  file: string,
+  reader: (file: string, limit: number) => Buffer = prefix,
+): { content: string; truncated: boolean } {
+  const bytes = reader(file, FILE_CHARS * 4 + 1),
     exceeded = bytes.length > FILE_CHARS * 4,
     raw = decodePrefix(exceeded ? bytes.subarray(0, FILE_CHARS * 4) : bytes, exceeded),
     chars = [...raw];
@@ -99,16 +198,19 @@ export function loadImports(
   warnings: string[],
   visited = new Set<string>(),
   depth = 0,
+  skipSource: (file: string) => boolean = () => false,
 ): string {
+  if (skipSource(file)) return "";
   if (depth > 5) throw new Error(`Instruction import depth exceeds 5: ${file}`);
   const canonical = canonicalize(file);
+  if (skipSource(canonical)) return "";
   if (!within(canonical, root))
     throw new Error(`Refusing to import instructions outside the project: ${file}`);
   if (visited.has(canonical)) throw new Error(`Circular instruction import detected: ${file}`);
   visited.add(canonical);
   let loaded: ReturnType<typeof readContext>;
   try {
-    loaded = readContext(canonical);
+    loaded = readContext(canonical, (source, limit) => prefix(source, limit, true));
   } catch {
     throw new Error(`Could not read ${file}`);
   }
@@ -130,7 +232,7 @@ export function loadImports(
         : `${path.dirname(canonical)}${path.sep}${name}`;
       if (isFile(imported)) {
         output +=
-          loadImports(imported, root, budget, warnings, visited, depth + 1) +
+          loadImports(imported, root, budget, warnings, visited, depth + 1, skipSource) +
           append("\n", budget, warnings);
         continue;
       }
@@ -156,9 +258,14 @@ export function sortedFiles(root: string, extension: string): string[] {
 export function firstExisting(directory: string, names: string[]): string | null {
   return names.map((name) => path.join(directory, name)).find(isFile) ?? null;
 }
-export function cursorAlways(file: string): boolean {
+export function cursorAlways(
+  file: string,
+  skipSource: (file: string) => boolean = () => false,
+): boolean {
   try {
-    const content = lines(readContext(file).content);
+    const content = lines(
+      readContext(file, (source, limit) => checkedPrefix(source, limit, skipSource)).content,
+    );
     if (content.shift()?.trim() !== "---") return false;
     for (const line of content) {
       if (line.trim() === "---") break;

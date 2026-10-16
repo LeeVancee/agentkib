@@ -534,9 +534,6 @@ importers:
 
   packages/session-ui:
     dependencies:
-      '@agentkib/conversation-state':
-        specifier: workspace:*
-        version: link:../conversation-state
       react:
         specifier: ^19.1.0
         version: 19.2.8

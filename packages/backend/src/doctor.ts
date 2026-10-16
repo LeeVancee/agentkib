@@ -7,6 +7,8 @@ import { scanWorkspace } from "./asset-scanner";
 import { withinLexical } from "./files";
 import { isDirectory, pathIdentity } from "./paths";
 import { loadManifest, manifestPath, type Manifest } from "./manifest";
+import { stripBlockComments } from "./context-claude";
+import { CONTEXT_NOTE_PREFIX, isProjectScope } from "./context-files";
 import { effectiveMcp, type McpServer } from "./mcp-config-read";
 import { compareUtf8, utcNow } from "./workspaces";
 import {
@@ -225,6 +227,9 @@ export class Doctor {
       }
       const instructionExpected = fragments.length;
       let instructionActual = 0;
+      // Claude Code drops block-level HTML comments from CLAUDE.md files, so what its preview
+      // shows may lack a comment the manifest text has; both sides are compared without them.
+      const plain = agent === "claude-code" ? stripBlockComments : (text: string) => text;
       const skills =
           manifest?.skills.filter(
             (skill) => !skill.targets.length || skill.targets.includes(agent),
@@ -260,7 +265,11 @@ export class Doctor {
         let missingReported = false;
         for (const cwd of cwds)
           try {
-            const preview = await this.context.resolve(project, cwd, agent, manifest, []),
+            // Claude Code sources outside the workspace are never looked at here: files the
+            // Doctor does not manage cannot become a finding.
+            const preview = await this.context.resolve(project, cwd, agent, manifest, [], {
+                includeOutsideSources: false,
+              }),
               truncated = preview.warnings.some(
                 (warning) =>
                   !warning.startsWith("Agent home: ") &&
@@ -268,7 +277,8 @@ export class Doctor {
                     warning.includes("instruction budget")),
               ),
               current = preview.sections.filter(
-                (section) => !["platform-override", "agent-home"].includes(section.scope),
+                (section) =>
+                  section.scope !== "platform-override" && isProjectScope(agent, section.scope),
               ),
               here = fragments
                 .map((fragment, index) => ({ fragment, index }))
@@ -277,7 +287,9 @@ export class Doctor {
               if (
                 current.some(
                   (section) =>
-                    normalize(section.content).includes(normalize(fragment.content)) &&
+                    normalize(plain(section.content)).includes(
+                      normalize(plain(fragment.content)),
+                    ) &&
                     (!fragment.scoped ||
                       pathIdentity(path.dirname(section.source)) === pathIdentity(cwd)),
                 )
@@ -286,7 +298,9 @@ export class Doctor {
               if (truncated) indeterminate.add(index);
             }
             for (const warning of preview.warnings) {
-              if (warning.startsWith("Agent home: ")) continue;
+              // Notes only inform (for example "directories above the root were not checked").
+              if (warning.startsWith("Agent home: ") || warning.startsWith(CONTEXT_NOTE_PREFIX))
+                continue;
               const missing = warning.includes("No project instruction");
               if (
                 warning.includes("semantic conflicts") ||
@@ -337,7 +351,7 @@ export class Doctor {
           : sections.length;
         const seen = new Map<string, string>();
         for (const section of sections) {
-          const text = normalize(section.content);
+          const text = normalize(plain(section.content));
           if (!text) continue;
           const first = seen.get(text);
           seen.set(text, section.source);

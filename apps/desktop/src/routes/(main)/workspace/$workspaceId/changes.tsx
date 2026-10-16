@@ -30,6 +30,7 @@ import { withAsyncCleanup } from "@/lib/utils";
 import { diffLines } from "@/features/workspace/diff";
 import type { ChangeSet, SessionHandoffLaunchRequest } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
+import { isClaudeGlobalConfig } from "@/core/claude-global-config";
 function Empty({
   icon: Icon,
   title,
@@ -250,6 +251,15 @@ export function Changes({
             {tr(isNativeImport ? "handoff.nativeImportWarning" : "handoff.changeSetWarning")}
           </div>
         )}
+        {changeSet.changes.some(isClaudeGlobalConfig) && (
+          <div
+            role="note"
+            className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700"
+          >
+            <CircleAlert size={14} className="mt-0.5 shrink-0" />
+            {tr("changes.claudeGlobalConfigWarning")}
+          </div>
+        )}
         {changeSet.changes.map((file, index) => (
           <Button
             variant="bare"
@@ -431,6 +441,7 @@ function WorkspaceChangesRoute() {
           handoffFormat: search.handoffFormat,
           handoffSurface: search.handoffSurface,
           handoffBinding: search.handoffBinding,
+          handoffPreCompaction: search.handoffPreCompaction,
           handoffResume: autoPrepare ? ("recheck" as const) : ("return" as const),
         }),
       });
@@ -441,6 +452,7 @@ function WorkspaceChangesRoute() {
       search.handoffFormat,
       search.handoffSurface,
       search.handoffBinding,
+      search.handoffPreCompaction,
       search.handoffSession,
       search.handoffTarget,
       workspaceId,

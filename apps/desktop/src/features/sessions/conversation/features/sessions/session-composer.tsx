@@ -34,6 +34,7 @@ import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
+import { PermissionModeNotice } from "./permission-mode-notice";
 import { useSessionPanels } from "./session-panels";
 import { canConfirmClaudeHandoff } from "./claude-handoff";
 
@@ -357,6 +358,7 @@ export function SessionComposer() {
               .join(" · ")}
           </p>
         )}
+        {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} />}
         <label className="sr-only" htmlFor="message">
           {t.message}
         </label>

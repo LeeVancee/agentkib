@@ -9,6 +9,7 @@ import type {
   SkillDeploymentPreview,
   SkillObservation,
   SkillTargetCapability,
+  SkillSyncState,
 } from "@/core/types";
 import {
   SkillDeploymentDialog,
@@ -88,6 +89,39 @@ const deployment: SkillDeployment = {
   previous_hash: "older-hash",
   operation_id: "operation",
   updated_at: "2026-10-03T00:00:00Z",
+};
+const syncState: SkillSyncState = {
+  library: [
+    {
+      library_id: "reviewer",
+      display_name: "Reviewer",
+      hash: "accepted",
+      observed_hash: "edited-library",
+      upstream_base_hash: null,
+      locally_customized: false,
+      owner_key: "library-owner",
+      source_key: "source",
+      valid: true,
+      can_auto_update: false,
+      diagnostics: [],
+      policy: null,
+    },
+  ],
+  observations: [],
+  warnings: [],
+  deployments: [
+    {
+      ...deployment,
+      base_hash: "accepted",
+      library_hash: "edited-library",
+      target_hash: "accepted",
+      sync_state: "blocked",
+      baseline_available: true,
+      owner_key: "deployment-owner",
+      target_key: "deployment-target",
+      policy: null,
+    },
+  ],
 };
 const preview: SkillDeploymentPreview = {
   token: "immutable-preview",
@@ -674,6 +708,110 @@ describe("Skill deployment workflow", () => {
 });
 
 describe("Skill usage and details", () => {
+  function renderSyncUsage(state: SkillSyncState, busy = false) {
+    const onSync = vi.fn();
+    render(
+      <SkillUsageList
+        inventory={{ observations: [], warnings: [] }}
+        deployments={[deployment]}
+        installed={[]}
+        workspaces={[]}
+        loading={false}
+        busy={busy}
+        onDetail={vi.fn()}
+        onImport={vi.fn()}
+        onAction={vi.fn()}
+        onOpen={vi.fn()}
+        syncState={state}
+        onSync={onSync}
+      />,
+    );
+    return onSync;
+  }
+  it("offers explicit library overwrite alongside collecting an incoming copy", async () => {
+    const onSync = renderSyncUsage({
+      ...syncState,
+      deployments: [{ ...syncState.deployments[0], sync_state: "incoming" }],
+    });
+    expect(screen.getByRole("button", { name: "Bring changes into library" })).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Use library package" }));
+    expect(onSync).toHaveBeenCalledExactlyOnceWith({
+      operation: "push",
+      deployment_id: deployment.id,
+      resolution: "library",
+    });
+  });
+  it.each(["library", "deployment"] as const)(
+    "offers explicit acceptance of valid library edits using the %s version",
+    async (resolution) => {
+      const onSync = renderSyncUsage(syncState);
+      await userEvent.setup().click(
+        screen.getByRole("button", {
+          name:
+            resolution === "library" ? "Review and accept library changes" : "Use deployed package",
+        }),
+      );
+      expect(onSync).toHaveBeenCalledExactlyOnceWith({
+        operation: resolution === "library" ? "push" : "pull",
+        deployment_id: deployment.id,
+        resolution,
+      });
+    },
+  );
+  it.each([
+    "invalid-library",
+    "unchanged-library",
+    "missing-library",
+    "missing-baseline",
+    "missing-owner",
+    "missing-target-identity",
+    "missing-target",
+    "recovery-required",
+  ])("does not offer library-edit acceptance for %s", (reason) => {
+    const next = structuredClone(syncState);
+    if (reason === "invalid-library") next.library[0].valid = false;
+    if (reason === "unchanged-library") next.library[0].observed_hash = next.library[0].hash;
+    if (reason === "missing-library") next.library = [];
+    if (reason === "missing-baseline") next.deployments[0].baseline_available = false;
+    if (reason === "missing-owner") next.deployments[0].owner_key = "";
+    if (reason === "missing-target-identity") next.deployments[0].target_key = "";
+    if (reason === "missing-target") next.deployments[0].target_hash = null;
+    if (reason === "recovery-required") next.deployments[0].status = "recovery-required";
+    // The visible deployment lifecycle comes from the independently refreshed deployment list.
+    const rows =
+      reason === "recovery-required"
+        ? [{ ...deployment, status: "recovery-required" }]
+        : [deployment];
+    render(
+      <SkillUsageList
+        inventory={{ observations: [], warnings: [] }}
+        deployments={rows}
+        installed={[]}
+        workspaces={[]}
+        loading={false}
+        busy={false}
+        onDetail={vi.fn()}
+        onImport={vi.fn()}
+        onAction={vi.fn()}
+        onOpen={vi.fn()}
+        syncState={next}
+        onSync={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Review and accept library changes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use deployed package" })).toBeNull();
+  });
+  it("keeps acceptance unavailable while another write is in progress", () => {
+    renderSyncUsage(syncState, true);
+    expect(
+      screen
+        .getByRole("button", { name: "Review and accept library changes" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Use deployed package" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
   it.each([
     ["en-US", "Broken link"],
     ["zh-CN", "链接断开"],

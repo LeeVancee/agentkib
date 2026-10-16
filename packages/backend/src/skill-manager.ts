@@ -6,9 +6,12 @@ import path from "node:path";
 import JSON5 from "json5";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
+import { claudeConfigFiles, isClaudeConfigDirSet, resolveClaudeConfig } from "./claude-config";
 import { isReparseOrSymlink } from "./native-files";
 import { copySkillPackage, skillPackage, skillPreviewFile } from "./skill-package";
 import { commitTask, currentTask } from "./task-executor";
+import { SkillStateStore, SKILL_HASH_ALGORITHM, withSkillTargetLocks } from "./skill-state";
+import { readSkillSyncTargetJournals, safeSkillDirectoryName } from "./skill-sync-journal";
 
 type Agent =
   | "codex"
@@ -67,7 +70,24 @@ type Deployment = {
   previous_hash: string | null;
   operation_id: string;
   updated_at: string;
+  hash_algorithm?: string;
+  base_snapshot_hash?: string;
+  origin?: "agentkib" | "adopted" | "legacy-unknown";
+  adopted_at?: string;
+  adoption_operation_id?: string;
 };
+export type SkillSyncLocation = {
+  target: Target;
+  destination: string;
+  receipt_file: string;
+  receipt: Deployment | null;
+  target_hash: string | null;
+  target_identity?: string | null;
+  owner_key: string;
+  target_key: string;
+  observation_id?: string;
+};
+type SyncMutation = "write" | "adopt" | "baseline" | "detach" | "bind";
 type DeploymentOperation = "deploy" | "update" | "undeploy" | "rollback";
 type PlannedTarget = {
   target: Target;
@@ -86,6 +106,9 @@ type PlannedTarget = {
   modified: string[];
   removed: string[];
   conflicts: string[];
+  syncMutation?: SyncMutation;
+  expectedLibraryLock?: string;
+  expectedIdentity?: string | null;
 };
 type PreparedDeployment = {
   token: string;
@@ -95,7 +118,7 @@ type PreparedDeployment = {
   targets: PlannedTarget[];
 };
 type Journal = {
-  schema_version: 1;
+  schema_version: 1 | 2;
   operation_id: string;
   operation: DeploymentOperation;
   target_id: string;
@@ -107,6 +130,8 @@ type Journal = {
   expected_hash: string | null;
   incoming_hash: string | null;
   state: "prepared" | "activated" | "receipt-written";
+  metadata_only?: boolean;
+  expected_identity?: string | null;
 };
 
 const AGENTS: Agent[] = [
@@ -226,11 +251,16 @@ export class SkillManager {
   readonly #workspaces: () => unknown[];
   readonly #prepared = new Map<string, PreparedDeployment>();
   #writing = false;
+  #beforeRollback?: (deploymentId: string) => Promise<void>;
 
   constructor(root: string, env: NodeJS.ProcessEnv, workspaces: () => unknown[]) {
     this.#root = root;
     this.#env = env;
     this.#workspaces = workspaces;
+  }
+
+  setSyncPolicyHooks(hooks: { beforeRollback: (deploymentId: string) => Promise<void> }) {
+    this.#beforeRollback = hooks.beforeRollback;
   }
 
   #workspaceList(): Workspace[] {
@@ -265,8 +295,12 @@ export class SkillManager {
 
   #agentHome(agent: Agent): { path: string; invalid: boolean } {
     const home = this.#home();
-    if (agent === "claude-code")
-      return this.#configured("CLAUDE_CONFIG_DIR", path.join(home, ".claude"));
+    if (agent === "claude-code") {
+      // The value is taken literally (a settings file needs an absolute path): `~` and `${VAR}`
+      // are not expanded, unlike the other homes below.
+      const config = resolveClaudeConfig(this.#env, home);
+      return { path: config.dir, invalid: config.invalid !== undefined };
+    }
     if (agent === "opencode") {
       const xdg = this.#configured("XDG_CONFIG_HOME", path.join(home, ".config"));
       return { path: path.join(xdg.path, "opencode"), invalid: xdg.invalid };
@@ -294,7 +328,7 @@ export class SkillManager {
     return { path: path.join(home, PERSONAL_ROOTS[agent], ".."), invalid: false };
   }
 
-  async #openClawWorkspaces(): Promise<string[]> {
+  async #openClawWorkspaceEntries(): Promise<Array<{ id: string; workspace: string }>> {
     const state = this.#agentHome("open-claw");
     if (state.invalid) return [];
     const configured = this.#configured(
@@ -366,7 +400,7 @@ export class SkillManager {
           : resolveWorkspace(values.OPENCLAW_WORKSPACE_DIR)
         : resolveWorkspace(defaults.workspace);
     if (!base) return [];
-    const roots: string[] = [];
+    const roots: Array<{ id: string; workspace: string }> = [];
     if (agents.entries !== undefined) {
       if (!agents.entries || typeof agents.entries !== "object" || Array.isArray(agents.entries))
         return [];
@@ -389,23 +423,26 @@ export class SkillManager {
                 ? path.join(base, id.toLowerCase())
                 : path.join(state.path, `workspace-${id.toLowerCase()}`);
         if (!resolved) return [];
-        roots.push(resolved);
+        roots.push({ id, workspace: resolved });
       }
     } else {
-      roots.push(base);
       if (agents.list !== undefined) {
         if (!Array.isArray(agents.list)) return [];
-        for (const entry of agents.list) {
+        for (const [index, entry] of agents.list.entries()) {
           if (!entry || typeof entry !== "object") return [];
           const workspace = (entry as Record<string, unknown>).workspace;
-          if (workspace === undefined) continue;
-          const resolved = resolveWorkspace(workspace);
+          const resolved = workspace === undefined ? base : resolveWorkspace(workspace);
           if (!resolved) return [];
-          roots.push(resolved);
+          const id = (entry as Record<string, unknown>).id;
+          roots.push({ id: typeof id === "string" ? id : String(index), workspace: resolved });
         }
-      }
+      } else roots.push({ id: "default", workspace: base });
     }
-    return [...new Set(roots)];
+    return roots;
+  }
+
+  async #openClawWorkspaces(): Promise<string[]> {
+    return [...new Set((await this.#openClawWorkspaceEntries()).map((entry) => entry.workspace))];
   }
 
   async #hermesHomes(): Promise<string[]> {
@@ -558,14 +595,23 @@ export class SkillManager {
         agents.entries && typeof agents.entries === "object" && !Array.isArray(agents.entries)
           ? Object.entries(agents.entries)
           : Array.isArray(agents.list)
-            ? agents.list.map((item, index) => [String(index), item])
+            ? agents.list.map((item, index) => [
+                item &&
+                typeof item === "object" &&
+                typeof (item as Record<string, unknown>).id === "string"
+                  ? String((item as Record<string, unknown>).id)
+                  : String(index),
+                item,
+              ])
             : [];
       let matching: Array<[string, unknown]> = [];
       if (workspacePath) {
-        const roots = await this.#openClawWorkspaces();
-        matching = entries.filter(
-          ([, value], index) => roots[index] && samePath(roots[index]!, workspacePath),
+        const roots = await this.#openClawWorkspaceEntries();
+        matching = entries.filter(([id]) =>
+          roots.some((entry) => entry.id === id && samePath(entry.workspace, workspacePath)),
         );
+        if (!entries.length && roots.some((entry) => samePath(entry.workspace, workspacePath)))
+          matching = [["default", defaults]];
       } else if (entries.length) matching = entries;
       if (!matching.length && workspacePath)
         return {
@@ -1125,7 +1171,7 @@ export class SkillManager {
     if (
       agent === "claude-code" &&
       scope === "personal" &&
-      this.#env.CLAUDE_CONFIG_DIR &&
+      isClaudeConfigDirSet(this.#env) &&
       !samePath(root, path.join(this.#home(), ".claude/skills"))
     )
       target.visible_to = target.visible_to.filter((item) => item !== "opencode");
@@ -1188,7 +1234,7 @@ export class SkillManager {
       "OPENCODE_DISABLE_CLAUDE_CODE",
     ].some((key) => ["1", "true"].includes(this.#env[key]?.toLowerCase() ?? ""));
     const defaultClaudeSkills = path.join(home, ".claude/skills");
-    const configuredClaudeSkills = path.join(this.#agentHome("claude-code").path, "skills");
+    const configuredClaudeSkills = claudeConfigFiles(resolveClaudeConfig(this.#env, home)).skills;
     if (!opencodeClaudeSkillsDisabled && !samePath(defaultClaudeSkills, configuredClaudeSkills))
       extra.push({
         path: defaultClaudeSkills,
@@ -1435,6 +1481,15 @@ export class SkillManager {
         if (!observation.diagnostics.includes(diagnostic)) observation.diagnostics.push(diagnostic);
       }
     }
+    const pendingTargets = [
+      ...(await this.#allReservations()).map((row) => ({ destination: row.target })),
+      ...(await this.#syncRecoveryTargets()),
+    ];
+    for (const observation of output)
+      if (pendingTargets.some((row) => sameEntryPath(row.destination, observation.path))) {
+        observation.status = "recovery-required";
+        observation.diagnostics.push("Interrupted Skill synchronization requires recovery");
+      }
     return { observations: output, warnings };
   }
 
@@ -1590,15 +1645,31 @@ export class SkillManager {
   async #reserve(record: Deployment) {
     const file = this.#reservationFile(record.scope, record.scope_root);
     const reservations = await this.#readReceipts(file);
-    if (reservations.some((item) => sameEntryPath(item.target, record.target)))
+    if (
+      reservations.some(
+        (item) =>
+          sameEntryPath(item.target, record.target) && item.operation_id !== record.operation_id,
+      )
+    )
       throw new Error("Skill target is reserved by another operation");
-    reservations.push(record);
-    await this.#writeReceipts(file, reservations);
+    await this.#writeReceipts(file, [
+      ...reservations.filter((item) => !sameEntryPath(item.target, record.target)),
+      record,
+    ]);
   }
 
-  async #releaseReservation(record: Deployment) {
+  async #releaseReservation(
+    record: Pick<Deployment, "scope" | "scope_root" | "target" | "operation_id">,
+  ) {
     const file = this.#reservationFile(record.scope, record.scope_root);
     const reservations = await this.#readReceipts(file);
+    if (
+      !reservations.some(
+        (item) =>
+          item.operation_id === record.operation_id && sameEntryPath(item.target, record.target),
+      )
+    )
+      return;
     await this.#writeReceipts(
       file,
       reservations.filter(
@@ -1625,7 +1696,7 @@ export class SkillManager {
       deployments?: Deployment[];
     };
     if (
-      value.schema_version !== 1 ||
+      (value.schema_version !== 1 && value.schema_version !== 2) ||
       !Array.isArray(value.deployments) ||
       value.deployments.length > 4_096
     )
@@ -1635,7 +1706,7 @@ export class SkillManager {
         !record ||
         typeof record.id !== "string" ||
         typeof record.library_id !== "string" ||
-        typeof record.package_name !== "string" ||
+        !safeSkillDirectoryName(record.package_name) ||
         (record.display_name !== undefined && typeof record.display_name !== "string") ||
         typeof record.package_hash !== "string" ||
         (record.scope !== "personal" && record.scope !== "workspace") ||
@@ -1643,6 +1714,7 @@ export class SkillManager {
         !path.isAbsolute(record.scope_root) ||
         record.scope_root.split(path.sep).includes("..") ||
         typeof record.target !== "string" ||
+        record.package_name !== path.basename(record.target) ||
         !path.isAbsolute(record.target) ||
         record.target.split(path.sep).includes("..") ||
         !inside(record.target, record.scope_root) ||
@@ -1663,7 +1735,7 @@ export class SkillManager {
 
   async #writeReceipts(file: string, deployments: Deployment[]) {
     if (deployments.length > 4_096) throw new Error("Skill receipt limit exceeded");
-    const body = JSON.stringify({ schema_version: 1, deployments }, null, 2);
+    const body = JSON.stringify({ schema_version: 2, deployments }, null, 2);
     if (Buffer.byteLength(body) > 4 * 1024 * 1024) throw new Error("Skill receipts exceed 4 MiB");
     await fs.mkdir(path.dirname(file), { recursive: true });
     const parent = await fs.lstat(path.dirname(file));
@@ -1761,7 +1833,88 @@ export class SkillManager {
     return groups.flat();
   }
 
-  async listDeployments() {
+  async #syncRecoveryTargets() {
+    const roots = new Set([this.#root]);
+    for (const workspace of this.#workspaceList())
+      for (const root of await this.#readLibraries("workspace", workspace.path)) roots.add(root);
+    for (const target of await this.targets()) {
+      if (target.scope !== "personal") continue;
+      for (const root of await this.#readLibraries("personal", target.scope_root)) roots.add(root);
+    }
+    return (await Promise.all([...roots].map(readSkillSyncTargetJournals))).flat();
+  }
+
+  async assertSyncOperationAvailable(destination: string, operationId?: string): Promise<void> {
+    const pending = [
+      ...(await this.#allReservations()).map((row) => ({
+        operation_id: row.operation_id,
+        destination: row.target,
+      })),
+      ...(await this.#activeJournals()).map(({ journal }) => ({
+        operation_id: journal.operation_id,
+        destination: journal.destination,
+      })),
+      ...(await this.#syncRecoveryTargets()),
+    ];
+    if (
+      pending.some(
+        (row) => row.operation_id !== operationId && sameEntryPath(row.destination, destination),
+      )
+    )
+      throw new Error("Skill location has an unfinished operation requiring recovery");
+  }
+
+  /** The sync executor already holds the shared library and target leases. */
+  async reserveSyncLocationLocked(
+    location: SkillSyncLocation,
+    operationId: string,
+    libraryId: string | null,
+    packageHash: string | null,
+  ): Promise<void> {
+    await this.assertSyncOperationAvailable(location.destination, operationId);
+    const reservedHash = packageHash ?? location.receipt?.package_hash;
+    if (!reservedHash) throw new Error("Skill synchronization reservation has no package hash");
+    const record: Deployment = {
+      ...(location.receipt ?? {
+        id: operationId,
+        library_id: libraryId ?? operationId,
+        library_root: this.#root,
+        package_name: path.basename(location.destination),
+        package_hash: reservedHash,
+        scope: location.target.scope,
+        workspace_id: location.target.workspace_id,
+        scope_root: location.target.scope_root,
+        target: location.destination,
+        agents: [location.target.agent],
+        visible_to: location.target.visible_to,
+        diagnostics: [],
+        previous_hash: null,
+      }),
+      status: "recovery-required",
+      operation_id: operationId,
+      updated_at: new Date().toISOString(),
+    };
+    const register = await this.#prepareLibraryRegistration(
+      location.target.scope,
+      location.target.scope_root,
+    );
+    await register?.();
+    await this.#reserve(record);
+  }
+
+  async releaseSyncReservationLocked(
+    location: SkillSyncLocation,
+    operationId: string,
+  ): Promise<void> {
+    await this.#releaseReservation({
+      scope: location.target.scope,
+      scope_root: location.target.scope_root,
+      target: location.destination,
+      operation_id: operationId,
+    });
+  }
+
+  async listDeployments(ignoreSyncOperationId?: string) {
     const inventory = await this.inventory();
     const observations = inventory.observations;
     const deployments = await this.#allReceipts({
@@ -1769,28 +1922,40 @@ export class SkillManager {
       tolerateUnreadableReceipts: true,
     });
     const journals = await this.#activeJournals();
+    const reservations = (await this.#allReservations()).filter(
+      (row) => row.operation_id !== ignoreSyncOperationId,
+    );
+    const syncTargets = (await this.#syncRecoveryTargets()).filter(
+      (row) => row.operation_id !== ignoreSyncOperationId,
+    );
     const known = await Promise.all(
       deployments.map(async (record) => {
         const displayName = await this.#deploymentDisplayName(record);
         const output = {
           ...record,
+          origin: record.origin ?? "legacy-unknown",
+          lifecycle_status:
+            record.status === "inactive" ? ("inactive" as const) : ("active" as const),
           display_name: displayName,
           diagnostics: [...record.diagnostics],
           visible_to: [] as Agent[],
         };
         const currentLibrary =
-          record.library_root !== null && samePath(record.library_root, this.#root);
+          typeof record.library_root === "string" && samePath(record.library_root, this.#root);
         const pending = journals.find((item) =>
           sameEntryPath(item.journal.destination, record.target),
         );
-        if (pending) {
+        const reserved = reservations.find((item) => sameEntryPath(item.target, record.target));
+        const sync = syncTargets.find((item) => sameEntryPath(item.destination, record.target));
+        if (pending || reserved || sync) {
           output.status = "recovery-required";
-          output.operation_id = pending.journal.operation_id;
+          output.operation_id =
+            pending?.journal.operation_id ?? reserved?.operation_id ?? sync!.operation_id;
           output.diagnostics.push("Interrupted Skill operation requires recovery");
         }
         if (record.status !== "inactive") {
           const actual = await this.#currentHash(record.target).catch(() => null);
-          if (actual !== record.package_hash && !pending) {
+          if (actual !== record.package_hash && !pending && !reserved && !sync) {
             output.status = "modified";
             output.diagnostics.push("Deployed package changed or is missing");
           }
@@ -1809,22 +1974,202 @@ export class SkillManager {
         return { ...output, source_is_current_library: currentLibrary };
       }),
     );
-    for (const { journal } of journals) {
+    for (const journal of [
+      ...journals.map(({ journal }) => journal),
+      ...reservations.map((row) => ({
+        destination: row.target,
+        next_receipt: row,
+        operation_id: row.operation_id,
+      })),
+    ]) {
       if (known.some((item) => sameEntryPath(item.target, journal.destination))) continue;
       const displayName = await this.#deploymentDisplayName(journal.next_receipt);
       known.push({
         ...journal.next_receipt,
+        origin: journal.next_receipt.origin ?? "legacy-unknown",
+        lifecycle_status:
+          journal.next_receipt.status === "inactive" ? ("inactive" as const) : ("active" as const),
         display_name: displayName,
         status: "recovery-required",
         operation_id: journal.operation_id,
         diagnostics: ["Interrupted Skill operation requires recovery"],
         visible_to: [],
         source_is_current_library:
-          journal.next_receipt.library_root !== null &&
+          typeof journal.next_receipt.library_root === "string" &&
           samePath(journal.next_receipt.library_root, this.#root),
       });
     }
     return known;
+  }
+
+  /** Resolves only scanned IDs; callers cannot turn a wire path into a writable location. */
+  async syncLocation(
+    params: { deployment_id?: string; observation_id?: string },
+    mode: "package" | "ownership" = "package",
+    operationId?: string,
+  ): Promise<SkillSyncLocation> {
+    if (params.deployment_id && params.observation_id)
+      throw new Error("Choose exactly one deployment or observation ID");
+    const targets = await this.targets();
+    const receipts = await this.#allReceipts();
+    let receipt: Deployment | null = null;
+    let destination: string;
+    if (params.deployment_id) {
+      receipt = receipts.find((item) => item.id === params.deployment_id) ?? null;
+      if (!receipt) throw new Error("Skill deployment no longer exists");
+      if (receipt.library_root && !samePath(receipt.library_root, this.#root))
+        throw new Error("Skill deployment belongs to another library");
+      destination = receipt.target;
+    } else if (params.observation_id) {
+      const observation = (await this.inventory()).observations.find(
+        (item) => item.id === params.observation_id,
+      );
+      if (!observation) throw new Error("Skill observation no longer exists");
+      if (observation.kind !== "directory")
+        throw new Error("Linked Skills can only be copied into the library");
+      destination = observation.path;
+      if (
+        receipts.some(
+          (item) => item.status !== "inactive" && sameEntryPath(item.target, destination),
+        )
+      )
+        throw new Error("Skill location is already managed");
+    } else throw new Error("Choose a deployment or observation ID");
+    if (!safeSkillDirectoryName(path.basename(destination)))
+      throw new Error("Skill native directory must have a safe single name");
+    const target = targets.find(
+      (item) =>
+        (!receipt || item.scope === receipt.scope) &&
+        sameEntryPath(item.root, path.dirname(destination)),
+    );
+    if (!target || !target.writable)
+      throw new Error(target?.reason ?? "Skill location is not a writable native target");
+    await this.assertSyncOperationAvailable(destination, operationId);
+    const rootIdentity = physicalPathIdentity(this.#root);
+    const entryIdentity = mode === "ownership" ? await this.#ownershipIdentity(destination) : null;
+    const targetHash = await this.#currentHash(destination, mode);
+    if (mode === "ownership" && entryIdentity !== (await this.#ownershipIdentity(destination)))
+      throw new Error("Skill directory changed while checking ownership");
+    return {
+      target,
+      destination,
+      receipt_file: this.#receiptFile(target.scope, target.scope_root),
+      receipt,
+      target_hash: targetHash,
+      ...(mode === "ownership" ? { target_identity: entryIdentity } : {}),
+      owner_key: stableId(
+        "owner",
+        `${rootIdentity}:${receipt?.library_root ? "verified" : "unverified"}:${receipt?.library_id ?? "unbound"}:${receipt?.adoption_operation_id ?? receipt?.id ?? "external"}`,
+      ),
+      target_key: stableId(
+        "location",
+        `${target.id}:${physicalPathIdentity(destination, true)}:${[...target.visible_to].sort().join(",")}`,
+      ),
+      ...(params.observation_id ? { observation_id: params.observation_id } : {}),
+    };
+  }
+
+  async syncBaseline(location: SkillSyncLocation): Promise<string | null> {
+    const receipt = location.receipt;
+    if (!receipt || !receipt.library_root || !samePath(receipt.library_root, this.#root))
+      return null;
+    const store = new SkillStateStore(this.#root);
+    try {
+      return await store.verifySnapshot(receipt.base_snapshot_hash ?? receipt.package_hash);
+    } catch {
+      return null;
+    }
+  }
+
+  async recoverSyncOperation(
+    operationId: string,
+    approveHome: boolean,
+    preserveSyncReservation = false,
+  ) {
+    const entries = (await this.#activeJournals()).filter(
+      (item) => item.journal.operation_id === operationId,
+    );
+    const targets = entries.map((item) => ({
+      destination: item.journal.destination,
+      scope_root: item.journal.next_receipt.scope_root,
+    }));
+    const targetIdentities = new Set(
+      entries.map(({ journal }) => this.#recoveryTargetIdentity(journal)),
+    );
+    return withSkillTargetLocks(this.#root, targets, () =>
+      this.#recoverOperation(operationId, approveHome, targetIdentities, preserveSyncReservation),
+    );
+  }
+
+  async commitSync(input: {
+    location: SkillSyncLocation;
+    kind: SyncMutation;
+    libraryId: string;
+    snapshotHash: string | null;
+    displayName: string;
+    operationId: string;
+    allowTargetDrift?: boolean;
+  }): Promise<Deployment> {
+    const { location, kind } = input;
+    return withSkillTargetLocks(
+      this.#root,
+      [{ destination: location.destination, scope_root: location.target.scope_root }],
+      async () => {
+        const fresh = await this.syncLocation(
+          location.receipt
+            ? { deployment_id: location.receipt.id }
+            : {
+                observation_id: location.observation_id,
+              },
+          kind === "detach" ? "ownership" : "package",
+          input.operationId,
+        );
+        if (
+          JSON.stringify(fresh.receipt) !== JSON.stringify(location.receipt) ||
+          fresh.target_key !== location.target_key ||
+          (kind === "detach" && fresh.target_identity !== location.target_identity)
+        )
+          throw new Error("Skill deployment ownership changed after preview");
+        if (!input.allowTargetDrift && fresh.target_hash !== location.target_hash)
+          throw new Error("Skill destination changed after preview");
+        if (kind !== "bind" && kind !== "detach" && fresh.receipt && !fresh.receipt.library_root)
+          throw new Error("Skill deployment has no verified library; bind it explicitly first");
+        const source = input.snapshotHash
+          ? await new SkillStateStore(this.#root).verifySnapshot(input.snapshotHash)
+          : null;
+        const plan: PlannedTarget = {
+          target: fresh.target,
+          agents: [fresh.target.agent],
+          visibleTo: fresh.target.visible_to,
+          destination: fresh.destination,
+          displayName: input.displayName,
+          receiptFile: fresh.receipt_file,
+          receipt: fresh.receipt,
+          expectedHash: fresh.target_hash,
+          source,
+          sourceHash: input.snapshotHash,
+          incomingHash: input.snapshotHash,
+          backup: fresh.receipt ? this.#backupPath(fresh.receipt) : null,
+          added: [],
+          modified: [],
+          removed: [],
+          conflicts: [],
+          syncMutation: kind,
+          ...(kind === "detach" ? { expectedIdentity: fresh.target_identity } : {}),
+        };
+        return this.#applyTarget(
+          {
+            token: input.operationId,
+            operation: kind === "detach" ? "undeploy" : fresh.receipt ? "update" : "deploy",
+            libraryId: input.libraryId,
+            expires: Date.now() + 60_000,
+            targets: [plan],
+          },
+          plan,
+          input.operationId,
+        );
+      },
+    );
   }
 
   async prepareDeployment(params: Record<string, unknown>) {
@@ -1835,6 +2180,7 @@ export class SkillManager {
     const currentTargets = await this.targets();
     const receipts = await this.#allReceipts();
     const allReservations = await this.#allReservations();
+    const syncTargets = await this.#syncRecoveryTargets();
     let selected: Target[];
     let libraryId: string | null;
     let receipt: Deployment | null = null;
@@ -1879,7 +2225,11 @@ export class SkillManager {
     for (const group of grouped.values()) {
       const target = group[0]!;
       const packageName = receipt?.package_name ?? libraryId!;
-      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(packageName))
+      if (
+        receipt
+          ? !safeSkillDirectoryName(packageName)
+          : !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(packageName)
+      )
         throw new Error("Invalid Skill package identity");
       const destination = path.join(target.root, packageName);
       const owned =
@@ -1890,6 +2240,8 @@ export class SkillManager {
       const reservations = allReservations;
       if (reservations.some((item) => sameEntryPath(item.target, destination)))
         conflicts.push("Skill target has an unfinished operation requiring recovery");
+      if (syncTargets.some((item) => sameEntryPath(item.destination, destination)))
+        conflicts.push("Skill target has an unfinished synchronization requiring recovery");
       if (group.some((item) => !item.writable))
         conflicts.push(...group.flatMap((item) => (item.reason ? [item.reason] : [])));
       if (action === "deploy" && owned) conflicts.push("Destination is already owned by AgentKib");
@@ -1912,6 +2264,13 @@ export class SkillManager {
             ? this.#backupPath(receipt!)
             : path.join(this.#root, "skills", libraryId!);
       const sourceInfo = source && (await exists(source)) ? await skillPackage(source) : null;
+      let expectedLibraryLock: string | undefined;
+      if ((action === "deploy" || action === "update") && libraryId && sourceInfo) {
+        const lockEntry = (await this.#lock()).skills[libraryId];
+        expectedLibraryLock = JSON.stringify(lockEntry);
+        if (!lockEntry || lockEntry.content_sha256 !== sourceInfo.hash)
+          conflicts.push("Library package contains unaccepted local changes");
+      }
       if (source && !sourceInfo) conflicts.push("Library or previous Skill package is unavailable");
       if (sourceInfo?.diagnostics.length) conflicts.push(...sourceInfo.diagnostics);
       const displayName =
@@ -1947,6 +2306,7 @@ export class SkillManager {
         modified,
         removed,
         conflicts,
+        expectedLibraryLock,
       });
     }
     const token = randomUUID();
@@ -1994,7 +2354,21 @@ export class SkillManager {
     );
   }
 
-  async #currentHash(directory: string): Promise<string | null> {
+  async #ownershipIdentity(directory: string): Promise<string | null> {
+    const metadata = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!metadata) return null;
+    if (!metadata.isDirectory() || isReparseOrSymlink(directory, metadata))
+      throw new Error("Skill ownership location must remain a regular directory");
+    return `${metadata.dev}:${metadata.ino}:${metadata.birthtimeMs}`;
+  }
+
+  async #currentHash(
+    directory: string,
+    mode: "package" | "ownership" = "package",
+  ): Promise<string | null> {
     const metadata = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null;
       throw error;
@@ -2003,6 +2377,29 @@ export class SkillManager {
     if (!metadata.isDirectory() || isReparseOrSymlink(directory, metadata)) return null;
     const packageInfo = await skillPackage(directory);
     if (packageInfo.diagnostics.length) throw new Error(packageInfo.diagnostics.join("; "));
+    // Releasing ownership does not require the user's retained files to remain a valid Skill.
+    if (mode === "ownership") return packageInfo.hash;
+    const entry = packageInfo.files.find((file) => file.path === "SKILL.md");
+    if (!entry || entry.binary || entry.size > 1024 * 1024)
+      throw new Error("Skill package requires a readable SKILL.md entry point within 1 MiB");
+    const text = await fs.readFile(path.join(directory, "SKILL.md"), "utf8");
+    const front = /^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+    if (!front) throw new Error("SKILL.md must start with YAML frontmatter");
+    const value = parseYaml(front[1]!) as Record<string, unknown> | null;
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Skill frontmatter must be a mapping");
+    const declaredName = Object.hasOwn(value, "name");
+    const name = declaredName ? value.name : path.basename(directory);
+    if (typeof name !== "string" || !name.trim() || Buffer.byteLength(name) > 64)
+      throw new Error("Skill name is invalid");
+    if (declaredName && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name.trim()))
+      throw new Error("Skill name must use lowercase letters, numbers, and single hyphens");
+    if (
+      typeof value.description !== "string" ||
+      !value.description.trim() ||
+      Buffer.byteLength(value.description) > 1024
+    )
+      throw new Error("Skill description is invalid");
     return packageInfo.hash;
   }
 
@@ -2070,7 +2467,8 @@ export class SkillManager {
   }
 
   async #activeJournals(): Promise<Array<{ directory: string; journal: Journal }>> {
-    const roots = new Set((await this.targets()).map((target) => path.dirname(target.root)));
+    const targets = await this.targets();
+    const roots = new Set(targets.map((target) => path.dirname(target.root)));
     const journals: Array<{ directory: string; journal: Journal }> = [];
     for (const root of roots) {
       const operationRoot = path.join(root, ".agentkib-skill-state", "operations");
@@ -2089,13 +2487,47 @@ export class SkillManager {
             throw error;
           });
           if (!data) continue;
+          if (Buffer.byteLength(data) > 4 * 1024 * 1024)
+            throw new Error(`Skill operation journal exceeds its size limit: ${file}`);
           const journal = JSON.parse(data) as Journal;
+          const target = targets.find((item) => item.id === targetId);
           if (
-            journal.schema_version !== 1 ||
+            (journal.schema_version !== 1 && journal.schema_version !== 2) ||
             journal.operation_id !== operationId ||
-            journal.target_id !== targetId
+            journal.target_id !== targetId ||
+            !target ||
+            !journal.next_receipt ||
+            typeof journal.destination !== "string" ||
+            !path.isAbsolute(journal.destination) ||
+            journal.destination.split(/[\\/]/).includes("..") ||
+            !safeSkillDirectoryName(path.basename(journal.destination)) ||
+            !safeSkillDirectoryName(journal.next_receipt.package_name) ||
+            journal.next_receipt.package_name !== path.basename(journal.destination) ||
+            !sameEntryPath(path.dirname(journal.destination), target.root) ||
+            !sameEntryPath(journal.next_receipt.target, journal.destination) ||
+            journal.next_receipt.scope !== target.scope ||
+            !samePath(journal.next_receipt.scope_root, target.scope_root) ||
+            !sameEntryPath(
+              journal.receipt_file,
+              this.#receiptFile(target.scope, target.scope_root),
+            ) ||
+            (journal.backup !== null &&
+              !sameEntryPath(journal.backup, this.#backupPath(journal.next_receipt)))
           )
             throw new Error(`Invalid Skill operation journal: ${file}`);
+          for (
+            let current = directory;
+            inside(current, target.scope_root);
+            current = path.dirname(current)
+          ) {
+            const metadata = await fs.lstat(current);
+            if (!metadata.isDirectory() || isReparseOrSymlink(current, metadata))
+              throw new Error(`Unsafe Skill operation journal path: ${file}`);
+            if (samePath(current, target.scope_root)) break;
+          }
+          const metadata = await fs.lstat(file);
+          if (!metadata.isFile() || isReparseOrSymlink(file, metadata))
+            throw new Error(`Unsafe Skill operation journal: ${file}`);
           journals.push({ directory, journal });
         }
       }
@@ -2110,7 +2542,7 @@ export class SkillManager {
     this.#writing = true;
     try {
       const preview = this.#prepared.get(params.token);
-      if (!preview) return this.#recoverOperation(params.token, params.approve_home === true);
+      if (!preview) return this.recoverSyncOperation(params.token, params.approve_home === true);
       if (preview.expires <= Date.now()) throw new Error("Skill deployment preview has expired");
       if (
         preview.targets.some((item) => item.target.scope === "personal") &&
@@ -2123,7 +2555,11 @@ export class SkillManager {
       for (const target of preview.targets) {
         try {
           currentTask()?.checkpoint();
-          const deployment = await this.#applyTarget(preview, target, operationId);
+          const deployment = await withSkillTargetLocks(
+            this.#root,
+            [{ destination: target.destination, scope_root: target.target.scope_root }],
+            () => this.#applyTarget(preview, target, operationId),
+          );
           results.push({
             target_id: target.target.id,
             deployment_id: deployment.id,
@@ -2174,9 +2610,15 @@ export class SkillManager {
     const current = (await this.targets()).find((item) => item.id === plan.target.id);
     if (!current || !current.writable || !samePath(current.root, plan.target.root))
       throw new Error("Skill target changed after preview");
-    const actual = await this.#currentHash(plan.destination);
+    const mode = plan.syncMutation === "detach" ? "ownership" : "package";
+    const actual = await this.#currentHash(plan.destination, mode);
     if (actual !== plan.expectedHash || (actual === null && (await exists(plan.destination))))
       throw new Error("Skill destination changed after preview");
+    if (
+      mode === "ownership" &&
+      (await this.#ownershipIdentity(plan.destination)) !== plan.expectedIdentity
+    )
+      throw new Error("Skill directory changed after preview");
     const receipts = await this.#readReceipts(plan.receiptFile);
     const currentReceipt = receipts.find((item) => item.id === plan.receipt?.id) ?? null;
     if (
@@ -2189,12 +2631,18 @@ export class SkillManager {
     );
     if (otherOwners.some((item) => item.id !== currentReceipt?.id))
       throw new Error("Skill destination is owned by another library");
-    if (
-      (await this.#allReservations()).some((item) => sameEntryPath(item.target, plan.destination))
-    )
-      throw new Error("Skill destination has an unfinished operation");
+    await this.assertSyncOperationAvailable(plan.destination, operationId);
     const sourceHash = plan.source ? await this.#currentHash(plan.source) : null;
     if (sourceHash !== plan.sourceHash) throw new Error("Skill source changed after preview");
+    if (
+      plan.expectedLibraryLock !== undefined &&
+      JSON.stringify((await this.#lock()).skills[preview.libraryId!]) !== plan.expectedLibraryLock
+    )
+      throw new Error("Skill library record changed after preview");
+    const snapshots = new SkillStateStore(this.#root);
+    if (mode !== "ownership" && currentReceipt && actual === currentReceipt.package_hash)
+      await snapshots.snapshot(plan.destination, actual);
+    if (plan.source && sourceHash) await snapshots.snapshot(plan.source, sourceHash);
     const directory = this.#operationDir(plan.target, operationId);
     const stage = path.join(directory, "new");
     const old = path.join(directory, "old");
@@ -2204,11 +2652,15 @@ export class SkillManager {
     const next: Deployment = currentReceipt
       ? {
           ...currentReceipt,
+          ...(plan.syncMutation === "bind"
+            ? { library_root: this.#root, library_id: preview.libraryId! }
+            : {}),
           display_name: plan.displayName,
           package_hash: plan.incomingHash ?? currentReceipt.package_hash,
           previous_hash:
-            preview.operation === "update" || preview.operation === "rollback"
-              ? currentReceipt.package_hash
+            (!plan.syncMutation || plan.syncMutation === "write") &&
+            (preview.operation === "update" || preview.operation === "rollback")
+              ? plan.expectedHash
               : currentReceipt.previous_hash,
           visible_to: plan.visibleTo,
           agents: plan.agents,
@@ -2237,8 +2689,25 @@ export class SkillManager {
           operation_id: operationId,
           updated_at: now,
         };
+    next.hash_algorithm = SKILL_HASH_ALGORITHM;
+    next.origin ??= currentReceipt
+      ? "legacy-unknown"
+      : plan.syncMutation === "adopt" ||
+          (plan.syncMutation === "write" && plan.expectedHash !== null)
+        ? "adopted"
+        : "agentkib";
+    if (plan.syncMutation === "bind") {
+      next.origin = "adopted";
+      next.adopted_at = now;
+      next.adoption_operation_id = operationId;
+    }
+    if (next.origin === "adopted" && !next.adopted_at) {
+      next.adopted_at = now;
+      next.adoption_operation_id = operationId;
+    }
+    if (plan.incomingHash) next.base_snapshot_hash = plan.incomingHash;
     const journal: Journal = {
-      schema_version: 1,
+      schema_version: 2,
       operation_id: operationId,
       operation: preview.operation,
       target_id: plan.target.id,
@@ -2250,6 +2719,8 @@ export class SkillManager {
       expected_hash: plan.expectedHash,
       incoming_hash: plan.incomingHash,
       state: "prepared",
+      metadata_only: plan.syncMutation !== undefined && plan.syncMutation !== "write",
+      ...(mode === "ownership" ? { expected_identity: plan.expectedIdentity } : {}),
     };
     currentTask()?.checkpoint();
     await fs.mkdir(directory, { recursive: true });
@@ -2266,13 +2737,40 @@ export class SkillManager {
         plan.target.scope,
         plan.target.scope_root,
       );
-      const hasBackup = backup && (await exists(backup));
+      const hasBackup = !journal.metadata_only && backup && (await exists(backup));
+      if (preview.operation === "rollback" && currentReceipt)
+        await this.#beforeRollback?.(currentReceipt.id);
+      const finalTarget = (await this.targets()).find((item) => item.id === plan.target.id);
+      if (!finalTarget?.writable || !samePath(finalTarget.root, plan.target.root))
+        throw new Error("Skill target changed while staging");
+      if (
+        (await this.#currentHash(plan.destination, mode)) !== plan.expectedHash ||
+        (mode === "ownership" &&
+          (await this.#ownershipIdentity(plan.destination)) !== plan.expectedIdentity) ||
+        JSON.stringify(
+          (await this.#readReceipts(plan.receiptFile)).find(
+            (item) => item.id === plan.receipt?.id,
+          ) ?? null,
+        ) !== JSON.stringify(currentReceipt) ||
+        (plan.source ? await this.#currentHash(plan.source) : null) !== plan.sourceHash
+      )
+        throw new Error("Skill contents or ownership changed while staging");
       return await commitTask(
         async () => {
           await registerLibrary?.();
-          if (hasBackup) await fs.rename(backup!, previousBackup);
           await this.#writeJournal(directory, journal);
           await this.#reserve(next);
+          if (hasBackup) await fs.rename(backup!, previousBackup);
+          if (journal.metadata_only) {
+            const updated = receipts.filter((item) => item.id !== next.id);
+            updated.push(next);
+            await this.#writeReceipts(plan.receiptFile, updated);
+            journal.state = "receipt-written";
+            await this.#writeJournal(directory, journal);
+            if (!plan.syncMutation) await this.#releaseReservation(next);
+            await fs.rm(directory, { recursive: true, force: true });
+            return next;
+          }
           await fs.mkdir(plan.target.root, { recursive: true });
           if (plan.expectedHash) await fs.rename(plan.destination, old);
           if (preview.operation !== "undeploy") await fs.rename(stage, plan.destination);
@@ -2287,7 +2785,7 @@ export class SkillManager {
             await fs.mkdir(path.dirname(backup), { recursive: true });
             await fs.rename(old, backup);
           }
-          await this.#releaseReservation(next);
+          if (!plan.syncMutation) await this.#releaseReservation(next);
           await fs.rm(directory, { recursive: true, force: true });
           return next;
         },
@@ -2304,11 +2802,18 @@ export class SkillManager {
     }
   }
 
-  async #recoverOperation(operationId: string, approveHome: boolean) {
+  async #recoverOperation(
+    operationId: string,
+    approveHome: boolean,
+    lockedTargets: ReadonlySet<string>,
+    preserveSyncReservation: boolean,
+  ) {
     const entries = (await this.#activeJournals()).filter(
       (item) => item.journal.operation_id === operationId,
     );
     if (!entries.length) throw new Error("Skill operation does not exist or has already completed");
+    if (entries.some(({ journal }) => !lockedTargets.has(this.#recoveryTargetIdentity(journal))))
+      throw new Error("Skill recovery targets changed while acquiring locks; retry recovery");
     const results = [];
     for (const { directory, journal } of entries) {
       if (!approveHome && journal.next_receipt.scope === "personal") {
@@ -2324,6 +2829,11 @@ export class SkillManager {
       }
       try {
         currentTask()?.checkpoint();
+        if (
+          journal.next_receipt.library_root &&
+          !samePath(journal.next_receipt.library_root, this.#root)
+        )
+          throw new Error("Skill operation belongs to another library");
         const workspaceId = journal.next_receipt.workspace_id;
         if (workspaceId) {
           const workspacePath = journal.next_receipt.scope_root;
@@ -2338,7 +2848,18 @@ export class SkillManager {
         const receipts = await this.#readReceipts(journal.receipt_file);
         const active = receipts.find((item) => item.id === journal.next_receipt.id) ?? null;
         const committed = active?.operation_id === operationId;
-        const actual = await this.#currentHash(journal.destination);
+        const ownershipOnly = journal.metadata_only && journal.operation === "undeploy";
+        const actual = await this.#currentHash(
+          journal.destination,
+          ownershipOnly ? "ownership" : "package",
+        );
+        if (
+          ownershipOnly &&
+          (actual !== journal.expected_hash ||
+            (journal.expected_identity !== undefined &&
+              (await this.#ownershipIdentity(journal.destination)) !== journal.expected_identity))
+        )
+          throw new Error("Skill destination changed externally; recovery preserved the files");
         const old = path.join(directory, "old");
         const priorBackup = path.join(directory, "previous-backup");
         const oldExists = await exists(old);
@@ -2346,7 +2867,9 @@ export class SkillManager {
         const newExists = await exists(path.join(directory, "new"));
         await commitTask(
           async () => {
-            if (committed && actual === journal.incoming_hash) {
+            if (journal.metadata_only) {
+              // Metadata-only commits never claim or remove native bytes during recovery.
+            } else if (committed && actual === journal.incoming_hash) {
               if (journal.backup && oldExists) {
                 await fs.mkdir(path.dirname(journal.backup), { recursive: true });
                 await fs.rename(old, journal.backup);
@@ -2370,7 +2893,7 @@ export class SkillManager {
             } else {
               throw new Error("Skill destination changed externally; recovery preserved the files");
             }
-            await this.#releaseReservation(journal.next_receipt);
+            if (!preserveSyncReservation) await this.#releaseReservation(journal.next_receipt);
             await fs.rm(directory, { recursive: true, force: true });
           },
           workspaceId ? { workspaceId, workspacePath: journal.next_receipt.scope_root } : undefined,
@@ -2395,6 +2918,14 @@ export class SkillManager {
       }
     }
     return { operation_id: operationId, results, warnings: [] };
+  }
+
+  #recoveryTargetIdentity(journal: Journal): string {
+    return JSON.stringify([
+      journal.target_id,
+      physicalPathIdentity(journal.destination, true),
+      physicalPathIdentity(journal.next_receipt.scope_root),
+    ]);
   }
 
   async #metadata(root: string, fallback: string) {

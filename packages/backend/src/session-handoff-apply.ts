@@ -4,6 +4,11 @@ import { applyRequest } from "./changes";
 import { changeSet, validateApplicationArchive } from "./change-apply";
 import { canonicalProject, withinLexical } from "./files";
 import { pathIdentity } from "./paths";
+import {
+  assertClaudeConfigWritable,
+  claudeConfigFiles,
+  resolveClaudeConfig,
+} from "./claude-config";
 import { userHome } from "./mcp-config-read";
 import { archiveManifest } from "./session-model";
 import type { BackendStore } from "./store";
@@ -89,11 +94,13 @@ export function applySessionHandoff(
       );
     const change = homeChanges[0]!;
     const home = userHome(environment);
+    const claude = resolveClaudeConfig(environment, home);
+    if (request.launchRequest.target_agent === "claude-code") assertClaudeConfigWritable(claude);
     const root =
       request.launchRequest.target_agent === "codex"
         ? path.join(environment.CODEX_HOME ?? path.join(home, ".codex"), "sessions")
         : request.launchRequest.target_agent === "claude-code"
-          ? path.join(environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects")
+          ? claudeConfigFiles(claude).projects
           : null;
     if (
       !root ||

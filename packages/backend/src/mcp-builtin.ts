@@ -124,11 +124,18 @@ export class McpBuiltins {
   ): Promise<unknown> {
     switch (name) {
       case "workspace_get_context":
-        return this.context.request({
-          project,
-          cwd: typeof arguments_.cwd === "string" ? arguments_.cwd : project,
-          agent,
-        });
+        // The connected Agent gets nothing from outside the workspace but sizes and counts, whatever
+        // Agent the connection URL names: no imports outside the project (Claude Code asks the user
+        // before loading those) and no user-level, managed, parent-directory or auto memory text
+        // (personal content that must not reach another Agent), and no paths to them.
+        return this.context.request(
+          {
+            project,
+            cwd: typeof arguments_.cwd === "string" ? arguments_.cwd : project,
+            agent,
+          },
+          { externalBodies: false },
+        );
       case "asset_list":
         return scanWorkspace(project).assets;
       case "asset_get":

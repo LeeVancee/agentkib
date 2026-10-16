@@ -7,6 +7,20 @@ import { compareUtf8 } from "./workspaces";
 import { SkillManager } from "./skill-manager";
 import { copySkillPackage, skillPackage, skillPreviewFile } from "./skill-package";
 import { commitTask, currentTask, isTaskCancellation } from "./task-executor";
+import {
+  SKILL_HASH_ALGORITHM,
+  SkillStateStore,
+  readSkillJson,
+  writeSkillJson,
+  withSkillLocks,
+} from "./skill-state";
+import {
+  executeLibraryTransaction,
+  listLibraryTransactions,
+  readLibraryTransaction,
+  recoverLibraryTransactions,
+} from "./skill-library-transaction";
+import { SkillSyncService } from "./skill-sync";
 
 const MAX_TREE_ENTRIES = 20_000;
 const MAX_CANDIDATES = 200;
@@ -15,7 +29,6 @@ const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_ENTRY_BYTES = 1024 * 1024;
 const MAX_PREVIEW_BYTES = 256 * 1024;
-const MAX_PACKAGE_ENTRIES = 4_096;
 const PREVIEW_TTL_MS = 15 * 60_000;
 const MAX_STAGED_BYTES = 1024 * 1024 * 1024;
 const PREVIEW_METADATA_FILE = ".agentkib-preview.json";
@@ -100,6 +113,16 @@ type LockEntry = {
   display_name?: string;
   local_source?: string | null;
   local_resolved_path?: string | null;
+  upstream_base_hash?: string | null;
+  upstream_display_name?: string;
+  snapshot_hash?: string;
+  hash_algorithm?: typeof SKILL_HASH_ALGORITHM;
+  version_origin?: {
+    kind: "github" | "local-import" | "deployment" | "library-edit";
+    deployment_id?: string;
+    operation_id: string;
+  };
+  library_instance_id?: string;
 };
 type LockFile = {
   schema_version: number;
@@ -117,6 +140,8 @@ type Prepared = {
   expectedLock: string;
   beforePath: string | null;
   stagedBytes: number;
+  operationId?: string;
+  beforeCommit?: () => Promise<void>;
 };
 type ImportItem = {
   id: string;
@@ -182,6 +207,8 @@ export class Skills {
   #previewRetention: Promise<void> = Promise.resolve();
   #busy = false;
   readonly manager: SkillManager;
+  readonly state: SkillStateStore;
+  readonly sync: SkillSyncService;
 
   constructor(
     environment: NodeJS.ProcessEnv,
@@ -190,7 +217,38 @@ export class Skills {
   ) {
     this.root = skillRoot(environment);
     this.cache = path.join(dataDir, "skill-cache");
+    this.state = new SkillStateStore(this.root);
     this.manager = new SkillManager(this.root, environment, listWorkspaces);
+    this.sync = new SkillSyncService(this.root, this.manager, {
+      list: async () => {
+        const lock = await this.#lock();
+        const entries = await Promise.all(
+          Object.keys(lock.skills).map((id) => this.#syncLibrary(id)),
+        );
+        return entries.filter((entry) => entry !== null);
+      },
+      get: (id) => this.#syncLibrary(id),
+      accept: (input) => this.#syncAccept(input),
+      fork: (input) => this.#syncFork(input),
+      check: (id) => this.#syncCheck(id),
+      update: (id, operationId, beforeCommit) => this.#syncUpdate(id, operationId, beforeCommit),
+      operationStatus: async (id) => {
+        const journal = await readLibraryTransaction(this.root, id);
+        return journal
+          ? { library_id: journal.library_id, committed: journal.state === "committed" }
+          : null;
+      },
+      transactions: async () =>
+        (await listLibraryTransactions(this.root)).map((journal) => ({
+          operation_id: journal.id,
+          library_id: journal.library_id,
+          operation: journal.operation,
+          status: journal.state,
+          started_at: journal.created_at,
+          ...(journal.error ? { error: journal.error } : {}),
+        })),
+      recover: (id) => withSkillLocks([this.root], () => recoverLibraryTransactions(this.root, id)),
+    });
   }
 
   async request(method: string, params: Record<string, unknown>) {
@@ -243,8 +301,14 @@ export class Skills {
       case "skills.applyImports":
         return this.#lifecycle(() => this.applyImports(params));
       case "skills.discardPreview":
+        if (typeof params.token === "string" && this.sync.hasPreview(params.token))
+          return this.sync.discardPreview(params.token);
         return this.#lifecycle(() => this.discardPreview(this.#string(params.token, "token")));
       case "skills.readPreviewFile":
+        if (typeof params.token === "string" && this.sync.hasPreview(params.token))
+          return this.sync.readPreviewFile(params);
+        if (params.comparison !== undefined)
+          throw new Error("Baseline comparisons require a Skill synchronization preview");
         if (params.target_id !== undefined && params.item_id !== undefined)
           throw new Error("Choose exactly one preview target or import item");
         return params.target_id === undefined
@@ -255,7 +319,40 @@ export class Skills {
       case "skills.prepareDeployment":
         return this.manager.prepareDeployment(params);
       case "skills.applyDeployment":
-        return this.#lifecycle(() => this.manager.applyDeployment(params));
+        return this.#lifecycle(async () => {
+          const recoveryTarget =
+            typeof params.token === "string"
+              ? await this.sync.recoveryTargetId(params.token)
+              : null;
+          if (recoveryTarget) {
+            const report = await this.sync.recover({
+              operation_id: params.token,
+              confirmed: params.confirmed,
+              approve_home: params.approve_home,
+            });
+            return {
+              ...report,
+              results: report.results.map((row) => ({
+                ...row,
+                target_id: recoveryTarget,
+                deployment_id: row.deployment_id ?? null,
+                path: row.path ?? "",
+                error: row.error ?? null,
+              })),
+            };
+          }
+          const result = await this.manager.applyDeployment(params);
+          return result;
+        });
+      case "skills.syncState":
+      case "skills.prepareSync":
+      case "skills.applySync":
+      case "skills.syncPolicy":
+      case "skills.saveSyncPolicy":
+      case "skills.syncRuns":
+      case "skills.recoverSync":
+      case "skills.runDueSync":
+        return this.sync.request(method, params);
       default:
         throw new Error(`Unknown Skill method: ${method}`);
     }
@@ -315,6 +412,217 @@ export class Skills {
     } finally {
       this.#busy = false;
     }
+  }
+
+  async #syncLibrary(id: string) {
+    this.#validateId(id);
+    const record = (await this.#lock()).skills[id];
+    if (!record) return null;
+    const directory = path.join(this.root, "skills", id);
+    const diagnostics: string[] = [];
+    let observed: string | null = null;
+    try {
+      observed = await this.#targetHash(directory);
+      if (!observed) diagnostics.push("Skill package is missing");
+      else
+        this.#frontmatter(
+          await fs.readFile(path.join(directory, "SKILL.md"), "utf8"),
+          record.display_name ?? id,
+        );
+    } catch (error) {
+      diagnostics.push(error instanceof Error ? error.message : String(error));
+    }
+    return {
+      id,
+      instance_id: record.library_instance_id ?? record.installed_at,
+      display_name: record.display_name ?? id,
+      hash: record.content_sha256,
+      observed_hash: observed,
+      lock_fingerprint: this.#lockFingerprint(record),
+      source: record.source,
+      upstream_base_hash:
+        record.upstream_base_hash ?? (record.source ? record.content_sha256 : null),
+      path: directory,
+      valid: observed !== null && diagnostics.length === 0,
+      diagnostics,
+    };
+  }
+
+  async #syncAccept(input: {
+    id: string;
+    snapshotPath: string;
+    expectedHash: string | null;
+    expectedLock: string;
+    operationId: string;
+    originDeploymentId?: string;
+    originKind?: "deployment" | "local-import" | "library-edit";
+  }) {
+    return withSkillLocks([this.root], async () => {
+      await this.#recoverBeforeWrite();
+      const completed = await readLibraryTransaction(this.root, input.operationId);
+      if (completed?.state === "committed") {
+        if (completed.library_id !== input.id) throw new Error("Skill operation identity changed");
+        const result = await this.#syncLibrary(input.id);
+        if (!result) throw new Error("Previously saved Skill is no longer present");
+        return result;
+      }
+      this.#validateId(input.id);
+      const lock = await this.#lock();
+      const current = lock.skills[input.id];
+      if (!current || this.#lockFingerprint(current) !== input.expectedLock)
+        throw new Error("Skill library record changed after preview");
+      const currentPath = path.join(this.root, "skills", input.id);
+      if ((await this.#targetHash(currentPath)) !== input.expectedHash)
+        throw new Error("Skill library contents changed after preview");
+      const hash = await this.state.snapshot(input.snapshotPath);
+      const snapshot = await this.state.verifySnapshot(hash);
+      const tempPath = await this.#staging();
+      const packagePath = path.join(tempPath, "package");
+      try {
+        await copySkillPackage(snapshot, packagePath);
+        const metadata = this.#frontmatter(
+          await fs.readFile(path.join(packagePath, "SKILL.md"), "utf8"),
+          current.display_name ?? input.id,
+        );
+        const now = new Date().toISOString();
+        await this.#applyPrepared({
+          name: input.id,
+          packagePath,
+          tempPath,
+          beforePath: null,
+          stagedBytes: (await skillPackage(snapshot)).totalSize,
+          expectedHash: input.expectedHash,
+          expectedLock: input.expectedLock,
+          operationId: input.operationId,
+          preview: { operation: "reverse-sync" },
+          lock: {
+            ...current,
+            content_sha256: hash,
+            display_name: metadata.name,
+            updated_at: now,
+            upstream_base_hash:
+              current.upstream_base_hash ?? (current.source ? current.content_sha256 : null),
+            ...(current.source
+              ? {
+                  upstream_display_name:
+                    current.upstream_display_name ?? current.display_name ?? input.id,
+                }
+              : {}),
+            version_origin: {
+              kind: input.originKind ?? "deployment",
+              operation_id: input.operationId,
+              ...(input.originDeploymentId ? { deployment_id: input.originDeploymentId } : {}),
+            },
+          },
+        });
+        return (await this.#syncLibrary(input.id))!;
+      } finally {
+        activePreviewDirectories.delete(tempPath);
+        await fs.rm(tempPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+    });
+  }
+
+  async #syncFork(input: {
+    snapshotPath: string;
+    displayName: string;
+    operationId: string;
+    localSource?: string;
+  }) {
+    return withSkillLocks([this.root], async () => {
+      await this.#recoverBeforeWrite();
+      const completed = await readLibraryTransaction(this.root, input.operationId);
+      if (completed?.state === "committed") {
+        const result = await this.#syncLibrary(completed.library_id);
+        if (!result) throw new Error("Previously imported Skill is no longer present");
+        return result;
+      }
+      const hash = await this.state.snapshot(input.snapshotPath);
+      const snapshot = await this.state.verifySnapshot(hash);
+      const metadata = this.#frontmatter(
+        await fs.readFile(path.join(snapshot, "SKILL.md"), "utf8"),
+        input.displayName,
+        true,
+      );
+      const lock = await this.#lock();
+      const name = this.#allocateLocalName(
+        metadata.name,
+        input.operationId,
+        await this.#reservedNames(lock),
+      );
+      const tempPath = await this.#staging();
+      const packagePath = path.join(tempPath, "package");
+      try {
+        await copySkillPackage(snapshot, packagePath);
+        const now = new Date().toISOString();
+        await this.#applyPrepared({
+          name,
+          packagePath,
+          tempPath,
+          beforePath: null,
+          stagedBytes: (await skillPackage(snapshot)).totalSize,
+          expectedHash: null,
+          expectedLock: this.#lockFingerprint(undefined),
+          operationId: input.operationId,
+          preview: { operation: "install" },
+          lock: {
+            source: null,
+            content_sha256: hash,
+            display_name: metadata.name,
+            installed_at: now,
+            updated_at: now,
+            upstream_base_hash: null,
+            local_source: input.localSource ?? null,
+            version_origin: { kind: "local-import", operation_id: input.operationId },
+          },
+        });
+        return (await this.#syncLibrary(name))!;
+      } finally {
+        activePreviewDirectories.delete(tempPath);
+        await fs.rm(tempPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+    });
+  }
+
+  async #syncCheck(id: string) {
+    const library = await this.#syncLibrary(id);
+    if (!library?.source) return { available: false };
+    const source = library.source;
+    // Tags and commits remain pinned to their accepted commit in automatic mode.
+    if (source.ref_type === "tag" || source.ref_type === "commit") return { available: false };
+    const [owner, repository] = source.repository.split("/");
+    const commit = await this.#commit(owner!, repository!, source.ref, source.ref_type);
+    const resolved = await this.#resolve({
+      owner: owner!,
+      repository: repository!,
+      reference: commit,
+      selectorPath: source.path,
+    });
+    const tree =
+      source.path === ""
+        ? resolved.rootTree
+        : resolved.entries.find((entry) => entry.type === "tree" && entry.path === source.path)
+            ?.sha;
+    if (!tree) throw new Error("GitHub Skill package no longer exists at the tracked path");
+    return { available: tree !== source.tree_sha };
+  }
+
+  async #syncUpdate(id: string, operationId: string, beforeCommit?: () => Promise<void>) {
+    const library = await this.#syncLibrary(id);
+    if (!library?.source || !library.valid)
+      throw new Error("Skill is not eligible for an automatic GitHub update");
+    if (library.observed_hash !== library.hash || library.hash !== library.upstream_base_hash)
+      throw new Error("Locally customized Skill requires an explicit upstream replacement");
+    if (library.source.ref_type === "tag" || library.source.ref_type === "commit") return library;
+    const preview = await this.prepareUpdate(id);
+    const prepared = this.#previews.get(String(preview.token));
+    if (!prepared) throw new Error("Skill update preview is missing");
+    if (prepared.preview.local_modified)
+      throw new Error("Skill changed during automatic update preparation");
+    prepared.operationId = operationId;
+    prepared.beforeCommit = beforeCommit;
+    await this.apply({ token: preview.token, confirmed: true });
+    return (await this.#syncLibrary(id))!;
   }
 
   async discover(input: string): Promise<Candidate[]> {
@@ -424,6 +732,13 @@ export class Skills {
             ? "current"
             : "modified",
         source: record?.source ?? null,
+        upstream_base_hash:
+          record?.upstream_base_hash ?? (record?.source ? record.content_sha256 : null),
+        locally_customized: Boolean(
+          record?.source &&
+          record.content_sha256 !== (record.upstream_base_hash ?? record.content_sha256),
+        ),
+        version_origin: record?.version_origin ?? null,
         installed_at: record?.installed_at ?? null,
         updated_at: record?.updated_at ?? null,
         can_rollback: Boolean(
@@ -478,7 +793,11 @@ export class Skills {
           )
             throw error;
           currentTask()?.checkpoint();
-          return skill;
+          return {
+            ...skill,
+            update_check: "failed",
+            update_error: error instanceof Error ? error.message : String(error),
+          };
         }
       }),
     );
@@ -537,6 +856,52 @@ export class Skills {
     if (!info.isDirectory() || info.isSymbolicLink())
       throw new Error("Skill target must be a regular directory");
     return info;
+  }
+
+  async #snapshotHistory(
+    target: string,
+    options: { expectedHash?: string; acceptedHash?: string } = {},
+  ) {
+    await this.#managedDirectory(path.dirname(target));
+    if (!(await this.#regularDirectory(target))) return;
+    if (options.acceptedHash) {
+      try {
+        await this.state.verifySnapshot(options.acceptedHash);
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    const entry = await fs
+      .lstat(path.join(target, "SKILL.md"))
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+    // Damaged history is retained by directory moves, not admitted as a Skill
+    // snapshot. Inspecting an absent entry must not hide a real I/O failure.
+    if (!entry?.isFile()) return;
+    let hash = options.expectedHash;
+    if (!hash) {
+      const info = await skillPackage(target).catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          ([
+            "Skill path must remain inside its package",
+            "Skill package contains too many entries",
+            "Skill package exceeds the file limit",
+            "Skill package exceeds the total size limit",
+          ].includes(error.message) ||
+            error.message.startsWith("Skill package contains a non-portable path:") ||
+            error.message.startsWith("Skill package contains colliding paths:"))
+        )
+          return null;
+        throw error;
+      });
+      if (!info || info.diagnostics.length) return;
+      hash = info.hash;
+    }
+    await this.state.snapshot(target, hash);
   }
 
   #lockFingerprint(entry: LockEntry | undefined) {
@@ -765,13 +1130,28 @@ export class Skills {
     );
   }
 
-  #allocateName(name: string, identity: string, reserved: Set<string>) {
+  #allocateName(name: string, identity: string, reserved: Set<string>, maximumLength?: number) {
     let candidate = name;
-    const base = `${name}--${createHash("sha256").update(identity).digest("hex").slice(0, 12)}`;
-    for (let suffix = 1; reserved.has(candidate.normalize("NFC").toLowerCase()); suffix++)
-      candidate = suffix === 1 ? base : `${base}-${suffix}`;
+    const digest = createHash("sha256").update(identity).digest("hex").slice(0, 12);
+    for (let suffix = 1; reserved.has(candidate.normalize("NFC").toLowerCase()); suffix++) {
+      const ending = `--${digest}${suffix === 1 ? "" : `-${suffix}`}`;
+      const prefix = maximumLength ? name.slice(0, maximumLength - ending.length) : name;
+      candidate = `${prefix}${ending}`;
+    }
     reserved.add(candidate.normalize("NFC").toLowerCase());
     return candidate;
+  }
+
+  #allocateLocalName(displayName: string, identity: string, reserved: Set<string>) {
+    // A directory fallback is a display name. Native copies still need a safe,
+    // bounded ID, including the collision suffix, without rewriting SKILL.md.
+    const base =
+      displayName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "skill";
+    this.#validateSkillName(base);
+    return this.#allocateName(base, identity, reserved, 64);
   }
 
   async #prepareLocal(observation: Observation, reserved: Set<string>, lock: LockFile) {
@@ -788,9 +1168,9 @@ export class Skills {
       const metadata = this.#frontmatter(
         await fs.readFile(path.join(packagePath, "SKILL.md"), "utf8"),
         path.basename(observation.path),
+        true,
       );
-      this.#validateSkillName(metadata.name);
-      const name = this.#allocateName(metadata.name, source, reserved);
+      const name = this.#allocateLocalName(metadata.name, source, reserved);
       const packageHash = await this.#packageHash(packagePath);
       const files = (await skillPackage(packagePath)).files.map(({ path, size, executable }) => ({
         path,
@@ -1250,6 +1630,19 @@ export class Skills {
   }
 
   async #applyPrepared(prepared: Prepared): Promise<Installed> {
+    return withSkillLocks([this.root], async () => {
+      await this.#recoverBeforeWrite();
+      return this.#applyPreparedLocked(prepared);
+    });
+  }
+
+  async #recoverBeforeWrite() {
+    const results = await recoverLibraryTransactions(this.root);
+    if (results.some((result) => result.status === "recovery-required"))
+      throw new Error("An interrupted Skill operation requires recovery before another write");
+  }
+
+  async #applyPreparedLocked(prepared: Prepared): Promise<Installed> {
     let committed = false;
     const warnings: string[] = [];
     try {
@@ -1285,6 +1678,13 @@ export class Skills {
         modified_at: packageInfo.modifiedAt,
         status: "current",
         source: prepared.lock.source,
+        upstream_base_hash: prepared.lock.upstream_base_hash ?? null,
+        locally_customized: Boolean(
+          prepared.lock.source &&
+          prepared.lock.upstream_base_hash &&
+          prepared.lock.content_sha256 !== prepared.lock.upstream_base_hash,
+        ),
+        version_origin: prepared.lock.version_origin ?? null,
         installed_at: prepared.lock.installed_at,
         updated_at: prepared.lock.updated_at,
         can_rollback: Boolean(old),
@@ -1292,8 +1692,9 @@ export class Skills {
       const backup = path.join(this.root, "backups/skills", prepared.name);
       await this.#managedDirectory(path.dirname(target), true);
       await this.#managedDirectory(path.dirname(backup), true);
-      // Rollback may have preserved damaged contents in this old backup.
-      // Validate its directory before replacement without reading those contents.
+      // Directory safety is independent of damaged backup contents. Existing
+      // accepted snapshots are reused; valid legacy history is archived below
+      // only when its immutable snapshot is missing.
       const hasExistingBackup = (await this.#regularDirectory(backup)) !== null;
       const volumes = await Promise.all(
         [prepared.tempPath, path.dirname(target), path.dirname(backup)].map((directory) =>
@@ -1303,38 +1704,72 @@ export class Skills {
       if (volumes.some((info) => info.dev !== volumes[0]!.dev))
         throw new Error("Skill staging, backup and library must be on the same volume");
       return await commitTask(async () => {
-        const stagedBackup = `${backup}.staging-${randomUUID()}`;
-        let hasBackup = false;
-        let targetMoved = false;
-        let packageInstalled = false;
-        try {
-          if (old && actual !== null) {
-            if (hasExistingBackup) {
-              await fs.rename(backup, stagedBackup);
-              hasBackup = true;
-            }
-            await fs.rename(target, backup);
-            targetMoved = true;
-          }
-          await fs.rename(prepared.packagePath, target);
-          packageInstalled = true;
-          lock.skills[prepared.name] = prepared.lock;
-          if (old) lock.previous[prepared.name] = old;
-          await this.#writeLock(lock);
-          committed = true;
-        } catch (error) {
-          if (packageInstalled) await fs.rm(target, { recursive: true, force: true });
-          if (targetMoved && old) await fs.rename(backup, target);
-          if (hasBackup) await fs.rename(stagedBackup, backup);
-          throw error;
-        }
-        if (hasBackup) {
-          try {
-            await fs.rm(stagedBackup, { recursive: true, force: true });
-          } catch {
-            warnings.push("Skill was saved, but the older backup could not be removed");
-          }
-        }
+        await prepared.beforeCommit?.();
+        const operationId = prepared.operationId ?? randomUUID();
+        const transactionRoot = path.join(this.root, ".skill-state/library-staging", operationId);
+        await this.#managedDirectory(transactionRoot, true);
+        const incoming = path.join(transactionRoot, "incoming");
+        await copySkillPackage(prepared.packagePath, incoming);
+        const incomingHash = await this.state.snapshot(incoming, prepared.lock.content_sha256);
+        if (old && actual) await this.#snapshotHistory(target, { expectedHash: actual });
+        if (hasExistingBackup)
+          await this.#snapshotHistory(backup, {
+            acceptedHash: lock.previous[prepared.name]?.content_sha256,
+          });
+        const oldLock = await readSkillJson(path.join(this.root, "skills.lock.json"));
+        const origin =
+          prepared.preview.operation === "update"
+            ? {
+                kind: "github" as const,
+                operation_id: operationId,
+              }
+            : (prepared.lock.version_origin ?? {
+                kind: prepared.lock.source ? ("github" as const) : ("local-import" as const),
+                operation_id: operationId,
+              });
+        lock.schema_version = 2;
+        lock.skills[prepared.name] = {
+          ...prepared.lock,
+          snapshot_hash: incomingHash,
+          hash_algorithm: SKILL_HASH_ALGORITHM,
+          library_instance_id: old?.library_instance_id ?? old?.installed_at ?? randomUUID(),
+          upstream_base_hash:
+            prepared.lock.upstream_base_hash ?? (prepared.lock.source ? incomingHash : null),
+          version_origin: origin,
+        };
+        if (old)
+          lock.previous[prepared.name] = {
+            ...old,
+            ...(actual === old.content_sha256
+              ? { snapshot_hash: actual, hash_algorithm: SKILL_HASH_ALGORITHM }
+              : {}),
+          };
+        const moves: Array<{ from: string; to: string }> = [];
+        const stagedBackup = `${backup}.staging-${operationId}`;
+        if (hasExistingBackup) moves.push({ from: backup, to: stagedBackup });
+        if (old && actual !== null) moves.push({ from: target, to: backup });
+        moves.push({ from: incoming, to: target });
+        if (
+          (await this.#targetHash(target)) !== prepared.expectedHash ||
+          this.#lockFingerprint((await this.#lock()).skills[prepared.name]) !==
+            prepared.expectedLock ||
+          (await this.#targetHash(incoming)) !== incomingHash
+        )
+          throw new Error(
+            "Skill contents or ownership changed before commit; prepare the operation again",
+          );
+        const transaction = await executeLibraryTransaction(this.root, {
+          id: operationId,
+          operation: String(prepared.preview.operation),
+          library_id: prepared.name,
+          old_lock: oldLock,
+          new_lock: lock,
+          moves,
+          cleanup: [...(hasExistingBackup ? [stagedBackup] : []), transactionRoot],
+        });
+        if (transaction?.cleanup_pending)
+          warnings.push("Skill was saved, but the older backup could not be removed");
+        committed = true;
         let refreshed = result;
         try {
           const current = (await this.installed()).find((item) => item.name === prepared.name);
@@ -1357,6 +1792,13 @@ export class Skills {
   }
 
   async rollback(params: Record<string, unknown>) {
+    return withSkillLocks([this.root], async () => {
+      await this.#recoverBeforeWrite();
+      return this.#rollbackLocked(params);
+    });
+  }
+
+  async #rollbackLocked(params: Record<string, unknown>) {
     if (params.confirmed !== true) throw new Error("Skill rollback requires explicit confirmation");
     const name = this.#string(params.name, "name");
     this.#validateId(name);
@@ -1389,46 +1831,48 @@ export class Skills {
       modified_at: packageInfo.modifiedAt,
       status: backupHash === previous.content_sha256 ? "current" : "modified",
       source: previous.source,
+      upstream_base_hash:
+        previous.upstream_base_hash ?? (previous.source ? previous.content_sha256 : null),
+      locally_customized: Boolean(
+        previous.source &&
+        previous.upstream_base_hash &&
+        previous.content_sha256 !== previous.upstream_base_hash,
+      ),
+      version_origin: previous.version_origin ?? null,
       installed_at: previous.installed_at,
       updated_at: previous.updated_at,
       can_rollback: true,
     };
     return commitTask(async () => {
-      const staging = `${target}.rollback-${randomUUID()}`;
-      await fs.rename(target, staging);
-      try {
-        await fs.rename(backup, target);
-        try {
-          await fs.rename(staging, backup);
-        } catch (error) {
-          await fs.rename(target, backup);
-          await fs.rename(staging, target);
-          throw error;
-        }
-        lock.skills[name] = previous;
-        lock.previous[name] = current;
-        try {
-          await this.#writeLock(lock);
-        } catch (error) {
-          await fs.rename(target, staging);
-          await fs.rename(backup, target);
-          await fs.rename(staging, backup);
-          throw error;
-        }
-      } catch (error) {
-        if (
-          (await fs.stat(staging).then(
-            () => true,
-            () => false,
-          )) &&
-          !(await fs.stat(target).then(
-            () => true,
-            () => false,
-          ))
-        )
-          await fs.rename(staging, target);
-        throw error;
-      }
+      const operationId = randomUUID();
+      const transactionRoot = path.join(this.root, ".skill-state/library-staging", operationId);
+      await this.#managedDirectory(transactionRoot, true);
+      const staging = path.join(transactionRoot, "current");
+      await this.state.snapshot(backup, backupHash);
+      await this.#snapshotHistory(target);
+      const oldLock = await readSkillJson(path.join(this.root, "skills.lock.json"));
+      lock.schema_version = 2;
+      lock.skills[name] = {
+        ...previous,
+        ...(backupHash === previous.content_sha256
+          ? { snapshot_hash: backupHash, hash_algorithm: SKILL_HASH_ALGORITHM }
+          : {}),
+      };
+      lock.previous[name] = current;
+      await this.sync.pauseLibrary(name);
+      await executeLibraryTransaction(this.root, {
+        id: operationId,
+        operation: "rollback",
+        library_id: name,
+        old_lock: oldLock,
+        new_lock: lock,
+        moves: [
+          { from: target, to: staging },
+          { from: backup, to: target },
+          { from: staging, to: backup },
+        ],
+        cleanup: [transactionRoot],
+      });
       try {
         return (
           (await this.installed()).find((item) => item.name === name) ?? {
@@ -1448,10 +1892,18 @@ export class Skills {
   }
 
   async uninstall(params: Record<string, unknown>) {
+    return withSkillLocks([this.root], async () => {
+      await this.#recoverBeforeWrite();
+      return this.#uninstallLocked(params);
+    });
+  }
+
+  async #uninstallLocked(params: Record<string, unknown>) {
     if (params.confirmed !== true)
       throw new Error("Skill uninstall requires explicit confirmation");
     const name = this.#string(params.name, "name");
     this.#validateId(name);
+    await this.sync.assertLibraryRemovable(name);
     if (
       (await this.manager.listDeployments()).some(
         (deployment) =>
@@ -1476,20 +1928,28 @@ export class Skills {
       previous: lock.previous[name] ?? null,
     };
     return commitTask(async () => {
-      await fs.mkdir(root, { recursive: true });
+      await this.#managedDirectory(root, true);
       await this.#writeJson(path.join(root, "record.json"), record);
-      await fs.rename(target, path.join(root, "package"));
+      await this.#snapshotHistory(target);
       const backup = path.join(this.root, "backups/skills", name);
-      if (
-        await fs.stat(backup).then(
-          () => true,
-          () => false,
-        )
-      )
-        await fs.rename(backup, path.join(root, "backup"));
+      const hasBackup = (await this.#regularDirectory(backup)) !== null;
+      if (hasBackup) await this.#snapshotHistory(backup);
+      const oldLock = await readSkillJson(path.join(this.root, "skills.lock.json"));
       delete lock.skills[name];
       delete lock.previous[name];
-      await this.#writeLock(lock);
+      lock.schema_version = 2;
+      await this.sync.pauseLibrary(name);
+      await executeLibraryTransaction(this.root, {
+        id,
+        operation: "uninstall",
+        library_id: name,
+        old_lock: oldLock,
+        new_lock: lock,
+        moves: [
+          { from: target, to: path.join(root, "package") },
+          ...(hasBackup ? [{ from: backup, to: path.join(root, "backup") }] : []),
+        ],
+      });
       return {
         id,
         name,
@@ -1535,6 +1995,13 @@ export class Skills {
   }
 
   async restore(params: Record<string, unknown>) {
+    return withSkillLocks([this.root], async () => {
+      await this.#recoverBeforeWrite();
+      return this.#restoreLocked(params);
+    });
+  }
+
+  async #restoreLocked(params: Record<string, unknown>) {
     if (params.confirmed !== true) throw new Error("Skill restore requires explicit confirmation");
     const id = this.#string(params.id, "id");
     if (!/^skill-[a-zA-Z0-9-]{1,150}$/.test(id)) throw new Error("Removed Skill id is invalid");
@@ -1554,22 +2021,32 @@ export class Skills {
     )
       throw new Error("A Skill with this name already exists");
     return commitTask(async () => {
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.rename(path.join(root, "package"), target);
+      await this.#managedDirectory(path.dirname(target), true);
+      const packagePath = path.join(root, "package");
+      const restoredHash = await this.#targetHash(packagePath);
+      if (!restoredHash) throw new Error("Removed Skill package is missing");
+      await this.state.snapshot(packagePath, restoredHash);
       const backup = path.join(this.root, "backups/skills", name);
-      await fs.mkdir(path.dirname(backup), { recursive: true });
-      if (
-        await fs.stat(path.join(root, "backup")).then(
-          () => true,
-          () => false,
-        )
-      )
-        await fs.rename(path.join(root, "backup"), backup);
+      await this.#managedDirectory(path.dirname(backup), true);
+      const hasBackup = (await this.#regularDirectory(path.join(root, "backup"))) !== null;
       const lock = await this.#lock();
+      const oldLock = await readSkillJson(path.join(this.root, "skills.lock.json"));
+      if (lock.skills[name]) throw new Error("Skill library identity is already in use");
       if (record.lock) lock.skills[name] = record.lock as LockEntry;
       if (record.previous) lock.previous[name] = record.previous as LockEntry;
-      await this.#writeLock(lock);
-      await fs.rm(root, { recursive: true, force: true });
+      lock.schema_version = 2;
+      await executeLibraryTransaction(this.root, {
+        id: randomUUID(),
+        operation: "restore",
+        library_id: name,
+        old_lock: oldLock,
+        new_lock: lock,
+        moves: [
+          { from: packagePath, to: target },
+          ...(hasBackup ? [{ from: path.join(root, "backup"), to: backup }] : []),
+        ],
+        cleanup: [root],
+      });
       return (await this.installed()).find((item) => item.name === name);
     });
   }
@@ -1747,7 +2224,10 @@ export class Skills {
         throw new Error("Skill update source changed");
       if (
         existingName &&
-        metadata.name !== (currentLock?.display_name ?? existingName.split("--")[0])
+        metadata.name !==
+          (currentLock?.upstream_display_name ??
+            currentLock?.display_name ??
+            existingName.split("--")[0])
       )
         throw new Error("Skill update changed the package name");
       const beforePath = previousHash === null ? null : path.join(tempPath, "before");
@@ -1793,13 +2273,21 @@ export class Skills {
         modified,
         removed,
         total_size: packageResult.size,
-        local_modified: Boolean(currentLock && previousHash !== currentLock.content_sha256),
+        local_modified: Boolean(
+          currentLock &&
+          (previousHash !== currentLock.content_sha256 ||
+            (currentLock.source &&
+              currentLock.content_sha256 !==
+                (currentLock.upstream_base_hash ?? currentLock.content_sha256))),
+        ),
         expires_at: new Date(Date.now() + PREVIEW_TTL_MS).toISOString(),
       };
       const entry: LockEntry = {
         ...currentLock,
         source: resolvedSource,
         content_sha256: packageResult.hash,
+        upstream_base_hash: packageResult.hash,
+        upstream_display_name: metadata.name,
         installed_at: currentLock?.installed_at ?? now,
         updated_at: now,
         display_name: metadata.name,
@@ -1986,14 +2474,19 @@ export class Skills {
     return JSON.parse(data.toString("utf8")) as unknown;
   }
 
-  #frontmatter(content: string, fallbackName?: string): SkillMetadata {
+  #frontmatter(
+    content: string,
+    fallbackName?: string,
+    validateDeclaredName = false,
+  ): SkillMetadata {
     if (Buffer.byteLength(content) > MAX_ENTRY_BYTES)
       throw new Error("SKILL.md exceeds the 1 MiB limit");
     const match = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     if (!match) throw new Error("SKILL.md must start with YAML frontmatter");
     const value = parseYaml(match[1]!);
     if (!value || typeof value !== "object") throw new Error("Skill frontmatter must be a mapping");
-    const name = value.name ?? fallbackName;
+    const declaredName = Object.hasOwn(value, "name");
+    const name = declaredName ? value.name : fallbackName;
     const description = value.description;
     if (typeof name !== "string" || !name.trim() || Buffer.byteLength(name) > 64)
       throw new Error("Skill name is invalid");
@@ -2003,8 +2496,9 @@ export class Skills {
       Buffer.byteLength(description) > 1024
     )
       throw new Error("Skill description is invalid");
+    if (declaredName && validateDeclaredName) this.#validateSkillName(name.trim());
     return {
-      name: name.trim(),
+      name: declaredName ? name.trim() : name,
       description: description.trim(),
       license: typeof value.license === "string" ? value.license : null,
       compatibility: typeof value.compatibility === "string" ? value.compatibility : null,
@@ -2012,72 +2506,16 @@ export class Skills {
   }
 
   async #packageHash(root: string) {
-    const entries: Array<{
-      absolute: string;
-      relative: string;
-      info: Awaited<ReturnType<typeof fs.stat>>;
-    }> = [];
-    let count = 0;
-    let size = 0;
-    const emptyDirectories: string[] = [];
-    const walk = async (directory: string) => {
-      const children = await fs.readdir(directory, { withFileTypes: true });
-      if (directory !== root && children.length === 0)
-        emptyDirectories.push(path.relative(root, directory).replaceAll("\\", "/"));
-      for (const entry of children) {
-        count++;
-        if (count > MAX_PACKAGE_ENTRIES)
-          throw new Error("Skill package contains more than 4096 entries");
-        const absolute = path.join(directory, entry.name);
-        const stat = await fs.lstat(absolute);
-        if (stat.isSymbolicLink()) throw new Error("Skill package contains an unsupported file");
-        if (stat.isDirectory()) await walk(absolute);
-        else if (stat.isFile()) {
-          if (stat.size > MAX_FILE_BYTES)
-            throw new Error("Skill package contains a file larger than 8 MiB");
-          if (entries.length >= MAX_SKILL_FILES)
-            throw new Error("Skill package contains more than 512 files");
-          size += stat.size;
-          if (size > MAX_TOTAL_BYTES) throw new Error("Skill package is larger than 32 MiB");
-          entries.push({
-            absolute,
-            relative: path.relative(root, absolute).replaceAll("\\", "/"),
-            info: stat,
-          });
-        } else throw new Error("Skill package contains an unsupported file");
-      }
-    };
-    await walk(root);
-    entries.sort((a, b) => compareUtf8(a.relative, b.relative));
-    const hash = createHash("sha256");
-    let modifiedAt: string | null = null;
-    for (const entry of entries) {
-      currentTask()?.checkpoint();
-      const relative = Buffer.from(entry.relative);
-      const sizeBytes = Buffer.alloc(8);
-      sizeBytes.writeBigUInt64LE(BigInt(entry.info.size));
-      const lengthBytes = Buffer.alloc(8);
-      lengthBytes.writeBigUInt64LE(BigInt(relative.byteLength));
-      hash.update(lengthBytes);
-      hash.update(relative);
-      hash.update(Buffer.from([Number(entry.info.mode) & 0o111 ? 1 : 0]));
-      hash.update(sizeBytes);
-      hash.update(await fs.readFile(entry.absolute));
-      const mtime = entry.info.mtime.toISOString();
-      if (!modifiedAt || mtime > modifiedAt) modifiedAt = mtime;
-    }
-    if (emptyDirectories.length) {
-      hash.update(Buffer.alloc(8, 0xff));
-      hash.update(Buffer.from("agentkib-empty-directories-v1\0"));
-      for (const directory of emptyDirectories.sort(compareUtf8)) {
-        const value = Buffer.from(directory);
-        const length = Buffer.alloc(8);
-        length.writeBigUInt64LE(BigInt(value.length));
-        hash.update(length);
-        hash.update(value);
-      }
-    }
-    return { hash: hash.digest("hex"), size, modifiedAt };
+    const info = await skillPackage(root).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "Skill package exceeds the file limit")
+        throw new Error("Skill package contains a file larger than 8 MiB or too many files");
+      throw error;
+    });
+    if (info.diagnostics.length)
+      throw new Error(
+        `Skill package contains unsupported resources: ${info.diagnostics.join("; ")}`,
+      );
+    return { hash: info.hash, size: info.totalSize, modifiedAt: info.modifiedAt };
   }
 
   async #fileDelta(existing: string, incoming: string) {
@@ -2135,21 +2573,20 @@ export class Skills {
       (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : Promise.reject(error)),
     )) as Partial<LockFile> | null;
     if (!lock) return { schema_version: 1, skills: {}, previous: {} };
-    if (lock.schema_version !== 1) throw new Error("Unsupported Skill lock schema version");
-    return { schema_version: 1, skills: lock.skills ?? {}, previous: lock.previous ?? {} };
+    if (lock.schema_version !== 1 && lock.schema_version !== 2)
+      throw new Error("Unsupported Skill lock schema version");
+    return {
+      schema_version: lock.schema_version,
+      skills: lock.skills ?? {},
+      previous: lock.previous ?? {},
+    };
   }
 
-  async #writeLock(lock: LockFile) {
-    await this.#writeJson(path.join(this.root, "skills.lock.json"), lock);
-  }
   async #readJson(file: string) {
     return JSON.parse(await fs.readFile(file, "utf8")) as unknown;
   }
   async #writeJson(file: string, value: unknown) {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-    await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-    await fs.rename(temporary, file);
+    await writeSkillJson(file, value);
   }
   async #isLink(file: string) {
     return fs.lstat(file).then(

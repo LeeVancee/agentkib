@@ -184,6 +184,150 @@ afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => fs.rm(home, { recursive: true, force: true })));
 });
 
+describe("Skill upstream synchronization protection", () => {
+  it("records accepted library edits without attributing them to the deployment", async () => {
+    github();
+    const { backend, root } = await fixture();
+    await install(backend);
+    const target = (await backend.manager.targets()).find(
+      (item) => item.agent === "claude-code" && item.scope === "personal",
+    )!;
+    const prepared = await backend.manager.prepareDeployment({
+      operation: "deploy",
+      library_id: "reviewer",
+      target_ids: [target.id],
+    });
+    await backend.manager.applyDeployment({
+      token: prepared.token,
+      confirmed: true,
+      approve_home: true,
+    });
+    const receipt = (await backend.manager.listDeployments())[0]!;
+    await fs.writeFile(
+      path.join(root, "skills/reviewer/SKILL.md"),
+      body("reviewer", "Library edit"),
+    );
+    expect(
+      (await backend.sync.prepare({ operation: "push", deployment_id: receipt.id })).targets[0]
+        ?.conflicts.length,
+    ).toBeGreaterThan(0);
+    const preview = await backend.sync.prepare({
+      operation: "push",
+      deployment_id: receipt.id,
+      resolution: "library",
+    });
+    expect(
+      (await backend.sync.apply({ token: preview.token, confirmed: true, approve_home: true }))
+        .results[0]?.success,
+    ).toBe(true);
+    expect((await backend.installed())[0]?.version_origin).toMatchObject({ kind: "library-edit" });
+    expect((await backend.installed())[0]?.version_origin?.deployment_id).toBeUndefined();
+  });
+
+  it("retains the GitHub baseline after reverse sync and protects ordinary and selected-version updates", async () => {
+    const remote = github();
+    const { backend, home, root } = await fixture();
+    await install(backend);
+    const target = (await backend.manager.targets()).find(
+      (item) => item.agent === "claude-code" && item.scope === "personal",
+    )!;
+    const deployment = await backend.manager.prepareDeployment({
+      operation: "deploy",
+      library_id: "reviewer",
+      target_ids: [target.id],
+    });
+    const deployed = await backend.manager.applyDeployment({
+      token: deployment.token,
+      confirmed: true,
+      approve_home: true,
+    });
+    expect(deployed.results[0]?.success).toBe(true);
+    const receipt = (await backend.manager.listDeployments())[0]!;
+    await fs.writeFile(
+      path.join(home, ".claude/skills/reviewer/SKILL.md"),
+      body("custom-reviewer", "My customization"),
+    );
+    const pull = await backend.sync.prepare({ operation: "pull", deployment_id: receipt.id });
+    const accepted = await backend.sync.apply({
+      token: pull.token,
+      confirmed: true,
+      approve_home: true,
+    });
+    expect(accepted.results[0]?.success).toBe(true);
+    const current = (await backend.installed())[0]!;
+    expect(current.locally_customized).toBe(true);
+    expect(current.source?.repository).toBe("example/skills");
+    expect(current.version_origin?.kind).toBe("deployment");
+    remote.refs.set("heads/main", B);
+    const ordinary = await backend.prepareUpdate("reviewer");
+    expect(ordinary.local_modified).toBe(true);
+    await expect(backend.apply({ token: ordinary.token, confirmed: true })).rejects.toThrow(
+      "modified locally",
+    );
+    const selected = await backend.prepareVersionChange({
+      library_id: "reviewer",
+      selector: { type: "tag", value: "next" },
+    });
+    expect(selected.local_modified).toBe(true);
+    await expect(backend.apply({ token: selected.token, confirmed: true })).rejects.toThrow(
+      "modified locally",
+    );
+    expect(await fs.readFile(path.join(root, "skills/reviewer/SKILL.md"), "utf8")).toContain(
+      "My customization",
+    );
+    await backend.apply({ token: selected.token, confirmed: true, allowModified: true });
+    const replacement = (await backend.installed())[0]!;
+    expect(replacement.locally_customized).toBe(false);
+    expect(replacement.version_origin?.kind).toBe("github");
+  });
+
+  it("pauses automatic upstream writes on manual rollback and keeps tag tracking pinned", async () => {
+    const remote = github();
+    const { backend } = await fixture();
+    await install(backend, source("example/skills", "v1", "tag"));
+    const state = await backend.sync.state();
+    const row = state.library[0]!;
+    const policy = await backend.sync.policy();
+    await backend.sync.savePolicy({
+      revision: policy.revision,
+      policy: {
+        ...policy,
+        libraries: {
+          reviewer: { mode: "auto_update", owner_key: row.owner_key, source_key: row.source_key },
+        },
+      },
+    });
+    remote.refs.set("tags/v1", B);
+    await backend.sync.runDue();
+    expect((await backend.installed())[0]?.source?.resolved_commit).toBe(A);
+    const preview = await backend.prepareVersionChange({
+      library_id: "reviewer",
+      selector: { type: "branch", value: "next" },
+    });
+    await backend.apply({ token: preview.token, confirmed: true });
+    await backend.rollback({ name: "reviewer", confirmed: true });
+    expect((await backend.sync.policy()).libraries.reviewer?.mode).toBe("manual");
+    expect((await backend.installed())[0]?.source?.resolved_commit).toBe(A);
+  });
+
+  it("reports a failed GitHub check separately from an unchanged package", async () => {
+    github();
+    const { backend } = await fixture();
+    await install(backend);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("offline fixture");
+      }),
+    );
+    const checked = await backend.checkUpdates();
+    expect(checked[0]).toMatchObject({
+      update_check: "failed",
+      update_error: expect.stringContaining("offline"),
+    });
+  });
+});
+
 describe("Skill batch imports", () => {
   it("combines linked aliases, preserves the complete package and skips only matching source/content", async () => {
     const { backend, home, root } = await fixture();
@@ -818,7 +962,7 @@ describe("Skill batch imports", () => {
       unblock = resolve;
     });
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-      if (path.basename(String(from)) === "package") {
+      if (path.basename(String(from)) === "incoming") {
         moving();
         await release;
       }
@@ -1837,7 +1981,7 @@ describe("Skill rollback recovery", () => {
           phase === "metadata-commit"
             ? destination === lockPath
             : phase === "install-candidate"
-              ? destination === target && source.endsWith(`${path.sep}package`)
+              ? destination === target && source.endsWith(`${path.sep}incoming`)
               : source === target && destination === backup;
         if (matches && !rejected) {
           rejected = true;

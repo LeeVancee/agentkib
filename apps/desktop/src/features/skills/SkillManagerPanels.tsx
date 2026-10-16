@@ -39,6 +39,8 @@ import type {
   SkillObservation,
   SkillPreviewFile,
   SkillTargetCapability,
+  SkillSyncState,
+  PrepareSkillSyncRequest,
   WorkspaceSummary,
 } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
@@ -859,6 +861,8 @@ export function SkillUsageList({
   onImport,
   onAction,
   onOpen,
+  syncState,
+  onSync,
 }: {
   inventory: SkillInventory;
   deployments: SkillDeployment[];
@@ -870,6 +874,8 @@ export function SkillUsageList({
   onImport: (observationId: string) => void;
   onAction: (action: SkillDeploymentAction) => void;
   onOpen: (id: string) => void;
+  syncState?: SkillSyncState;
+  onSync?: (request: PrepareSkillSyncRequest) => void;
 }) {
   const { tr } = useI18n();
   const [query, setQuery] = useState("");
@@ -961,6 +967,16 @@ export function SkillUsageList({
             <Copy size={14} />
             {tr("skills.manager.copyToLibrary")}
           </Button>
+          {syncState?.observations.find((observation) => observation.id === item.id)?.can_adopt && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => onSync?.({ operation: "adopt", observation_id: item.id })}
+            >
+              {tr("skills.sync.operation.adopt")}
+            </Button>
+          )}
           {workspaceIds.map((id) => (
             <Button key={id} size="sm" variant="ghost" onClick={() => onOpen(id)}>
               {tr("skills.manager.openWorkspace")} ·{" "}
@@ -1021,7 +1037,22 @@ export function SkillUsageList({
       {loading && <p role="status">{tr("common.loading")}</p>}
       <p className="text-xs text-muted-foreground">{tr("skills.manager.visibilityNotice")}</p>
       {filteredDeployments.map((item) => {
+        const sync = syncState?.deployments.find((entry) => entry.id === item.id);
         const localSource = item.source_is_current_library === true;
+        const syncLibrary = syncState?.library.find(
+          (entry) => entry.library_id === item.library_id,
+        );
+        const unacceptedLibrary = Boolean(
+          sync?.sync_state === "blocked" &&
+          localSource &&
+          syncLibrary?.valid &&
+          syncLibrary.observed_hash &&
+          syncLibrary.observed_hash !== syncLibrary.hash &&
+          sync.baseline_available &&
+          sync.owner_key &&
+          sync.target_key &&
+          sync.target_hash,
+        );
         const libraryHash = installed.find(
           (skill) => localSource && skill.name === item.library_id,
         )?.content_sha256;
@@ -1039,6 +1070,24 @@ export function SkillUsageList({
             <div className="flex flex-wrap items-center gap-2">
               <strong>{item.display_name ?? item.package_name}</strong>
               <Badge variant="outline">{tr("skills.manager.managedDeployment")}</Badge>
+              <Badge variant="outline">
+                {tr(`skills.sync.origin.${item.origin ?? "legacy-unknown"}`)}
+              </Badge>
+              {sync && (
+                <Badge
+                  variant="outline"
+                  className={
+                    ["conflict", "blocked"].includes(sync.sync_state)
+                      ? "border-destructive/40 text-destructive"
+                      : undefined
+                  }
+                >
+                  {tr(`skills.sync.state.${sync.sync_state}`)}
+                </Badge>
+              )}
+              {sync?.policy?.mode === "pinned" && (
+                <Badge variant="secondary">{tr("skills.sync.mode.pinned")}</Badge>
+              )}
               <Badge variant="secondary">{skillStatusLabel(item.status, tr)}</Badge>
               {item.status !== "inactive" && libraryHash && libraryHash !== item.package_hash && (
                 <Badge variant="outline">{tr("skills.manager.differsFromLibrary")}</Badge>
@@ -1080,6 +1129,120 @@ export function SkillUsageList({
               </p>
             ))}
             <div className="flex flex-wrap gap-2">
+              {sync &&
+                onSync &&
+                item.status !== "inactive" &&
+                item.status !== "recovery-required" && (
+                  <>
+                    {["incoming", "converged", "conflict"].includes(sync.sync_state) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => onSync({ operation: "pull", deployment_id: item.id })}
+                      >
+                        {tr("skills.sync.operation.pull")}
+                      </Button>
+                    )}
+                    {(["outgoing", "converged", "conflict"].includes(sync.sync_state) ||
+                      (sync.sync_state === "unverified" && localSource)) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => onSync({ operation: "push", deployment_id: item.id })}
+                      >
+                        {tr("skills.sync.operation.push")}
+                      </Button>
+                    )}
+                    {(sync.sync_state === "incoming" || unacceptedLibrary) && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() =>
+                            onSync({
+                              operation: "push",
+                              deployment_id: item.id,
+                              resolution: "library",
+                            })
+                          }
+                        >
+                          {tr(
+                            unacceptedLibrary
+                              ? "skills.sync.acceptLibrary"
+                              : "skills.sync.useLibrary",
+                          )}
+                        </Button>
+                        {unacceptedLibrary && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() =>
+                              onSync({
+                                operation: "pull",
+                                deployment_id: item.id,
+                                resolution: "deployment",
+                              })
+                            }
+                          >
+                            {tr("skills.sync.useDeployment")}
+                          </Button>
+                        )}
+                      </>
+                    )}
+                    {sync.sync_state === "missing" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => onSync({ operation: "restore", deployment_id: item.id })}
+                      >
+                        {tr("skills.sync.operation.restore")}
+                      </Button>
+                    )}
+                    {sync.sync_state === "unverified" &&
+                      !item.library_root &&
+                      installed.some((entry) => entry.name === item.library_id) && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() =>
+                            onSync({
+                              operation: "bind",
+                              deployment_id: item.id,
+                              library_id: item.library_id,
+                            })
+                          }
+                        >
+                          {tr("skills.sync.operation.bind")}
+                        </Button>
+                      )}
+                    {item.status !== "inactive" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy || ["missing", "blocked"].includes(sync.sync_state)}
+                        onClick={() => onSync({ operation: "fork", deployment_id: item.id })}
+                      >
+                        {tr("skills.sync.operation.fork")}
+                      </Button>
+                    )}
+                    {item.status !== "inactive" && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => onSync({ operation: "detach", deployment_id: item.id })}
+                      >
+                        {tr("skills.sync.operation.detach")}
+                      </Button>
+                    )}
+                  </>
+                )}
               <Button
                 size="sm"
                 variant="outline"
@@ -1094,40 +1257,42 @@ export function SkillUsageList({
               >
                 {tr("skills.manager.details")}
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={
-                  busy ||
-                  (item.status !== "recovery-required" &&
-                    (!localSource || !installed.some((skill) => skill.name === item.library_id)))
-                }
-                onClick={() =>
-                  onAction(
+              {(!sync || item.status === "recovery-required" || item.status === "inactive") && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    busy ||
+                    (item.status !== "recovery-required" &&
+                      (!localSource || !installed.some((skill) => skill.name === item.library_id)))
+                  }
+                  onClick={() =>
+                    onAction(
+                      item.status === "recovery-required"
+                        ? {
+                            operation: "recover",
+                            deployment: item,
+                            recoveryDeployments: deployments.filter(
+                              (deployment) =>
+                                deployment.operation_id === item.operation_id &&
+                                deployment.status === "recovery-required",
+                            ),
+                          }
+                        : item.status === "inactive"
+                          ? { operation: "deploy", libraryId: item.library_id }
+                          : { operation: "update", deployment: item },
+                    )
+                  }
+                >
+                  {tr(
                     item.status === "recovery-required"
-                      ? {
-                          operation: "recover",
-                          deployment: item,
-                          recoveryDeployments: deployments.filter(
-                            (deployment) =>
-                              deployment.operation_id === item.operation_id &&
-                              deployment.status === "recovery-required",
-                          ),
-                        }
+                      ? "skills.manager.operation.recover"
                       : item.status === "inactive"
-                        ? { operation: "deploy", libraryId: item.library_id }
-                        : { operation: "update", deployment: item },
-                  )
-                }
-              >
-                {tr(
-                  item.status === "recovery-required"
-                    ? "skills.manager.operation.recover"
-                    : item.status === "inactive"
-                      ? "skills.manager.deploy"
-                      : "skills.manager.syncUpdate",
-                )}
-              </Button>
+                        ? "skills.manager.deploy"
+                        : "skills.manager.syncUpdate",
+                  )}
+                </Button>
+              )}
               {item.previous_hash && item.status !== "recovery-required" && (
                 <Button
                   size="sm"

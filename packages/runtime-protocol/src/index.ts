@@ -1,6 +1,7 @@
 // Shared runtime protocol source of truth; the Electron compatibility entry is generated.
 export * from "./history-search";
 export * from "./mcp-management";
+export * from "./skill-sync";
 export {
   SESSION_COLLECTIONS,
   sessionCollection,
@@ -67,6 +68,14 @@ export const RUNTIME_METHODS = {
   listSkillDeployments: "skills.listDeployments",
   prepareSkillDeployment: "skills.prepareDeployment",
   applySkillDeployment: "skills.applyDeployment",
+  skillSyncState: "skills.syncState",
+  prepareSkillSync: "skills.prepareSync",
+  applySkillSync: "skills.applySync",
+  skillSyncPolicy: "skills.syncPolicy",
+  saveSkillSyncPolicy: "skills.saveSyncPolicy",
+  skillSyncRuns: "skills.syncRuns",
+  recoverSkillSync: "skills.recoverSync",
+  runDueSkillSync: "skills.runDueSync",
   listGlobalMemories: "memories.listGlobal",
   listActivity: "activity.list",
   listScanRoots: "discovery.listScanRoots",

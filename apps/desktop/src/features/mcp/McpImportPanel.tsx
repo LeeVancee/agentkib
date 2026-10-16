@@ -10,6 +10,7 @@ import type {
 } from "@agentkib/runtime-protocol";
 import type { McpMigrationCandidate } from "@/core/types";
 import { api } from "@/core/api";
+import { isClaudeGlobalConfig } from "@/core/claude-global-config";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -153,6 +154,9 @@ export function McpImportPanel({
           {tr("mcp.manage.scanNative")}
         </Button>
       </div>
+      {candidates.some((candidate) => candidate.agent === "claude-code") && (
+        <p className="text-sm text-muted-foreground">{tr("mcp.manage.claudeScopesHint")}</p>
+      )}
       {candidates.map((candidate) => (
         <label key={candidate.id} className="flex items-start gap-2">
           <Checkbox
@@ -207,6 +211,11 @@ export function McpImportPanel({
               </pre>
             </McpDisclosure>
           ))}
+          {migration.changes.some(isClaudeGlobalConfig) && (
+            <p role="note" className="text-sm text-amber-700">
+              {tr("changes.claudeGlobalConfigWarning")}
+            </p>
+          )}
           {migration.requires_home_approval && (
             <label>
               <Checkbox checked={approved} onCheckedChange={(checked) => setApproved(checked)} />

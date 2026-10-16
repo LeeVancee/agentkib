@@ -32,6 +32,7 @@ import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
+import { SkillSyncCoordinator } from "./skill-sync-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
 import { createQuitGuard } from "./quit-guard";
@@ -73,6 +74,7 @@ let systemSuspended = false;
 let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
+let skillSyncCoordinator: SkillSyncCoordinator | undefined;
 let runtimeHost: RuntimeHost | undefined;
 let accountService: DesktopAccountService | undefined;
 let webAccess: WebAccessService | undefined;
@@ -157,6 +159,7 @@ app.on("before-quit", (event) => {
   shutdownStarted = true;
   accountService?.shutdown();
   refreshCoordinator?.stop();
+  skillSyncCoordinator?.stop();
   nativeShell?.destroy();
   void (async () => {
     try {
@@ -202,6 +205,7 @@ async function startApplication(): Promise<void> {
     startupBenchmark.setRuntimePid(handshake.pid);
     startupBenchmark.mark("runtime-handshake");
     refreshCoordinator?.setRuntimeAvailable(true);
+    skillSyncCoordinator?.setRuntimeAvailable(true);
     void initializeRuntimeServices().catch((error: unknown) => {
       process.stderr.write(`AgentKib runtime services failed: ${String(error)}\n`);
     });
@@ -214,7 +218,10 @@ async function startApplication(): Promise<void> {
     conversationHub?.unavailable();
     webAccess?.runtimeUnavailable();
     lanWebAccess?.runtimeUnavailable();
-    if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
+    if (!expected) {
+      refreshCoordinator?.setRuntimeAvailable(false);
+      skillSyncCoordinator?.setRuntimeAvailable(false);
+    }
   });
   selectedRuntimeHost.on("restart-error", (error: unknown) => {
     process.stderr.write(`AgentKib runtime restart failed: ${String(error)}\n`);
@@ -350,10 +357,15 @@ async function startApplication(): Promise<void> {
     onQuotaSnapshot: (snapshot: QuotaSnapshot) =>
       sendRendererEvent("agentkib:quota-updated", snapshot),
   });
+  skillSyncCoordinator = new SkillSyncCoordinator({
+    runtime: requireRuntime,
+    onState: (state) => sendRendererEvent("agentkib:skills:sync-state-changed", state),
+  });
 
   const updatePowerActivity = () => {
     const paused = systemSuspended || screenLocked;
     refreshCoordinator?.setSuspended(paused);
+    skillSyncCoordinator?.setSuspended(paused);
     sendRendererEvent(
       "agentkib:window-activity",
       !paused && Boolean(mainWindow?.isVisible() && !mainWindow?.isMinimized()),
@@ -467,6 +479,7 @@ async function initializeRuntimeServices(): Promise<void> {
       nativeShell.create();
     }
     refreshCoordinator?.start();
+    skillSyncCoordinator?.start();
   })();
 
   try {

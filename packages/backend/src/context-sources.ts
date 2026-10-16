@@ -1,13 +1,19 @@
 import path from "node:path";
 import { lstatSync, statSync, opendirSync } from "node:fs";
 import JSON5 from "json5";
-import { isFile, readText, walk, within } from "./files";
+import { isFile, walk, within } from "./files";
 import { canonicalize, pathIdentity } from "./paths";
-import { firstExisting, sortedFiles, cursorAlways, FILE_CHARS } from "./context-files";
+import {
+  firstExisting,
+  sortedFiles,
+  cursorAlways,
+  readContextText,
+  FILE_CHARS,
+} from "./context-files";
 import { openCodeInstructionPatterns } from "./default-manifest";
 import { globMatches } from "./context-glob";
 import { userHome } from "./mcp-config-read";
-function sensitive(value: string): boolean {
+export function sensitive(value: string): boolean {
   const name = path.basename(value).toLowerCase();
   return name === ".env" || /credential|token|secret/.test(name) || /\.(pem|key)$/.test(name);
 }
@@ -88,11 +94,12 @@ function configuredSources(
   }
   return output;
 }
-function globalPatterns(home: string): string[] {
+function globalPatterns(home: string, skipSource: (file: string) => boolean): string[] {
   let effective: string[] = [];
   for (const name of ["opencode.json", "opencode.jsonc"]) {
+    if (skipSource(path.join(home, name))) continue;
     try {
-      const content = readText(path.join(home, name)),
+      const content = readContextText(path.join(home, name), 1024 * 1024, skipSource, true),
         value = name.endsWith(".jsonc") ? JSON5.parse(content) : JSON.parse(content);
       if (Array.isArray(value.instructions))
         effective = value.instructions.filter((value: unknown) => typeof value === "string");
@@ -105,6 +112,7 @@ export function sources(
   dirs: string[],
   warnings: string[],
   environment: NodeJS.ProcessEnv,
+  skipSource: (file: string) => boolean = () => false,
 ): string[] {
   const root = dirs[0]!;
   switch (agent) {
@@ -113,19 +121,12 @@ export function sources(
         const file = firstExisting(dir, ["AGENTS.override.md", "AGENTS.md"]);
         return file ? [file] : [];
       });
-    case "claude-code":
-      return [
-        ...dirs.flatMap((dir) =>
-          ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"]
-            .map((name) => path.join(dir, name))
-            .filter(isFile),
-        ),
-        ...sortedFiles(path.join(root, ".claude/rules"), ".md"),
-      ];
     case "cursor":
       return dirs.flatMap((dir) => [
         ...[path.join(dir, "AGENTS.md")].filter(isFile),
-        ...sortedFiles(path.join(dir, ".cursor/rules"), ".mdc").filter(cursorAlways),
+        ...sortedFiles(path.join(dir, ".cursor/rules"), ".mdc").filter(
+          (file) => !skipSource(file) && cursorAlways(file, skipSource),
+        ),
       ]);
     case "open-claw":
       return [
@@ -160,13 +161,20 @@ export function sources(
           firstExisting(path.join(user, ".claude"), ["CLAUDE.md"]),
         result = [
           ...(global ? [global] : []),
-          ...configuredSources(config, config, globalPatterns(config), warnings),
+          ...configuredSources(config, config, globalPatterns(config, skipSource), warnings),
           ...dirs.flatMap((dir) => {
             const file = firstExisting(dir, ["AGENTS.md", "CLAUDE.md"]);
             return file ? [file] : [];
           }),
           ...dirs.flatMap((dir) =>
-            configuredSources(root, dir, openCodeInstructionPatterns(dir), warnings),
+            configuredSources(
+              root,
+              dir,
+              openCodeInstructionPatterns(dir, skipSource, (file) =>
+                readContextText(file, 1024 * 1024, skipSource, true),
+              ),
+              warnings,
+            ),
           ),
         ];
       const seen = new Set<string>();

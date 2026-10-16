@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-14",
+  "claudeCode": "2.1.299",
+  "model": "claude-haiku-5-5",
+  "modelUsageModels": ["claude-haiku-5-5"],
+  "processesLaunched": 21,
+  "processesWithUsage": 19,
+  "processCap": 30,
+  "totalCostUsd": 0.0432,
+  "tokens": { "input": 58, "output": 4486, "cacheRead": 414212, "cacheCreation": 191101 },
+  "results": [
+    { "id": "A", "result": "pass" },
+    { "id": "B1", "result": "pass", "note": "init carries permissionMode after the initialize response" },
+    { "id": "B2", "result": "pass", "note": "no frames in 20 s idle; no background_tasks_changed seen" },
+    { "id": "B3", "result": "pass" },
+    { "id": "B4", "result": "pass", "note": "foreground local_agent, session not terminated" },
+    { "id": "B5", "result": "pass" },
+    { "id": "B6", "result": "pass", "note": "mcp_server is {name, source}" },
+    { "id": "C", "result": "pass" },
+    { "id": "D1", "result": "pass" },
+    { "id": "D2", "result": "pass" },
+    { "id": "D3", "result": "pass", "note": "rule order inside the rules folder differs (P2)" },
+    { "id": "D4", "result": "fail-fixed", "fix": "b691a5714" },
+    { "id": "D5", "result": "fail-fixed", "fix": "ddc9c18df" },
+    { "id": "D6", "result": "pass" },
+    { "id": "D7", "result": "pass" },
+    { "id": "D8", "result": "pass" },
+    { "id": "E", "result": "not-run", "note": "authentication failed with an empty config directory" }
+  ],
+  "counts": { "pass": 14, "fail": 2, "notRun": 1 },
+  "outOfScope": ["P1-5", "P1-3", "Windows", "Linux", "Node 22"]
+}

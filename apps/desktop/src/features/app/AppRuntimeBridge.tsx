@@ -20,6 +20,7 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useHomeQueryEvents } from "@/features/home/home-query";
 import { useInsightsQueryEvents } from "@/features/insights/insights-query";
 import { useQuotaQueryEvents } from "@/features/quota/quota-query";
+import { useSkillSyncEvents } from "@/features/skills/skills-query";
 import { withAsyncCleanup } from "@/lib/utils";
 import type { AppMenuCommandRequest, AppNavigationRequest, EffectiveTheme } from "@/core/types";
 import type { DesktopRuntimeStatus } from "../../../electron/api";
@@ -55,6 +56,7 @@ export function AppRuntimeBridge() {
   useQuotaQueryEvents();
   useHomeQueryEvents();
   useInsightsQueryEvents();
+  useSkillSyncEvents();
 
   useEffect(() => {
     let disposed = false;

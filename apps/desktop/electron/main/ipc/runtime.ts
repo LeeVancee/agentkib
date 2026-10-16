@@ -24,8 +24,11 @@ import {
   skillObservationIds,
   skillVersionSelector,
   skillVersionListRequest,
+  skillSyncRequest,
+  skillSyncPolicyRequest,
 } from "./skill-validation";
 import {
+  optionalBoolean,
   optionalPositiveInteger,
   optionalString,
   requireAgentKind,
@@ -236,6 +239,7 @@ export function registerRuntimeIpc({
         targetFingerprint: unknown,
         targetSurface: unknown,
         bindingId: unknown,
+        includePreCompactionHistory: unknown,
       ) => ({
         sessionId: requireString(sessionId, "sessionId"),
         workspaceId: requireString(workspaceId, "workspaceId"),
@@ -252,6 +256,10 @@ export function registerRuntimeIpc({
         targetFingerprint: optionalString(targetFingerprint, "targetFingerprint"),
         targetSurface: optionalString(targetSurface, "targetSurface"),
         bindingId: optionalString(bindingId, "bindingId"),
+        includePreCompactionHistory: optionalBoolean(
+          includePreCompactionHistory,
+          "includePreCompactionHistory",
+        ),
       }),
     );
     forward(
@@ -443,14 +451,27 @@ export function registerRuntimeIpc({
     forward(
       "agentkib:skills:read-preview-file",
       RUNTIME_METHODS.readSkillPreviewFile,
-      (token: unknown, filePath: unknown, targetId: unknown, itemId: unknown) => {
+      (
+        token: unknown,
+        filePath: unknown,
+        targetId: unknown,
+        itemId: unknown,
+        comparison: unknown,
+      ) => {
         if (targetId !== undefined && itemId !== undefined)
           throw new TypeError("Select a deployment target or an import item");
+        if (
+          comparison !== undefined &&
+          (!["candidate", "base-library", "base-target"].includes(String(comparison)) ||
+            itemId !== undefined)
+        )
+          throw new TypeError("Invalid Skill synchronization comparison");
         return {
           token: skillIdentity(token, "token"),
           path: skillRelativePath(filePath),
           ...(targetId === undefined ? {} : { target_id: skillIdentity(targetId, "target_id") }),
           ...(itemId === undefined ? {} : { item_id: skillIdentity(itemId, "item_id") }),
+          ...(comparison === undefined ? {} : { comparison }),
         };
       },
     );
@@ -479,6 +500,38 @@ export function registerRuntimeIpc({
         approve_home: requireBoolean(approveHome, "approve_home"),
       }),
     );
+    forward("agentkib:skills:sync-state", RUNTIME_METHODS.skillSyncState);
+    forward("agentkib:skills:sync-policy", RUNTIME_METHODS.skillSyncPolicy);
+    forward("agentkib:skills:prepare-sync", RUNTIME_METHODS.prepareSkillSync, skillSyncRequest);
+    forward(
+      "agentkib:skills:save-sync-policy",
+      RUNTIME_METHODS.saveSkillSyncPolicy,
+      skillSyncPolicyRequest,
+    );
+    forward("agentkib:skills:sync-runs", RUNTIME_METHODS.skillSyncRuns, (limit: unknown) => {
+      const count = limit === undefined ? 30 : requirePositiveInteger(limit, "limit");
+      if (count > 200) throw new TypeError("Skill synchronization history limit exceeds 200");
+      return { limit: count };
+    });
+    forward(
+      "agentkib:skills:apply-sync",
+      RUNTIME_METHODS.applySkillSync,
+      (token: unknown, approveHome: unknown) => ({
+        token: skillIdentity(token, "token"),
+        confirmed: true,
+        approve_home: requireBoolean(approveHome, "approve_home"),
+      }),
+    );
+    forward(
+      "agentkib:skills:recover-sync",
+      RUNTIME_METHODS.recoverSkillSync,
+      (operationId: unknown, approveHome: unknown) => ({
+        operation_id: skillIdentity(operationId, "operation_id"),
+        confirmed: true,
+        approve_home: requireBoolean(approveHome, "approve_home"),
+      }),
+    );
+    // runDueSync is host-only: renderer input cannot impersonate a scheduled run.
 
     forward("agentkib:mcp:management-state", RUNTIME_METHODS.mcpManagementState, mcpScope);
     forward("agentkib:mcp:save-configuration", RUNTIME_METHODS.saveMcpConfiguration, mcpSave);

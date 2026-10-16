@@ -5,6 +5,7 @@ import JSON5 from "json5";
 import { normalizeDiscoveryCandidates } from "./discovery-scan-roots";
 import { isReparseOrSymlink } from "./native-files";
 import { fileTime } from "./asset-scanner";
+import { resolveClaudeConfig } from "./claude-config";
 import { userHome } from "./mcp-config-read";
 import { jsonTimestamp } from "./session-history";
 import { Sql } from "./sql";
@@ -52,7 +53,7 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
     {
       agent: "claude-code",
       source: "history-and-index",
-      path: environment.CLAUDE_CONFIG_DIR ?? path.join(userHome(environment), ".claude"),
+      path: resolveClaudeConfig(environment, userHome(environment)).dir,
       read: (home: string) => readClaude(home),
     },
     {
@@ -167,7 +168,7 @@ export function agentInstallations(environment: NodeJS.ProcessEnv) {
     opencodeData = openCodeDataHome(environment),
     homes: Record<string, string> = {
       codex: codexHome(environment),
-      "claude-code": environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"),
+      "claude-code": resolveClaudeConfig(environment, home).dir,
       cursor: cursorHome,
       opencode: opencodeConfig,
       "open-claw": environment.OPENCLAW_STATE_DIR ?? path.join(home, ".openclaw"),

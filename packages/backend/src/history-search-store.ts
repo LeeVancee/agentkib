@@ -15,7 +15,10 @@ import type {
 } from "@agentkib/runtime-protocol";
 import { literalHistoryMatchRanges, normalizeHistorySearchText } from "@agentkib/runtime-protocol";
 import { isReparseOrSymlink } from "./native-files";
-import type { OpenClawHistorySourceBinding } from "./history-search-source-types";
+import {
+  HISTORY_SEARCH_SANITIZER_VERSION,
+  type OpenClawHistorySourceBinding,
+} from "./history-search-source-types";
 
 export const CONTENT_SEARCH_BUDGET = 1024 * 1024 * 1024;
 const CHUNK_SIZE = 8192;
@@ -228,14 +231,14 @@ export class HistorySearchStore {
         // Older derived caches may contain text accepted after a redaction or ownership failure.
         // Rebuild before a query worker can observe them; native history is unaffected.
         if (
-          this.value("sanitizer_version") !== "1" ||
+          this.value("sanitizer_version") !== HISTORY_SEARCH_SANITIZER_VERSION ||
           this.value("source_validation_version") !== SOURCE_VALIDATION_VERSION ||
           this.value("normalization_version") !== NORMALIZATION_VERSION
         )
           this.transaction(() => {
             this.db.exec("DELETE FROM sessions");
             this.set("budgetExceeded", "false");
-            this.set("sanitizer_version", "1");
+            this.set("sanitizer_version", HISTORY_SEARCH_SANITIZER_VERSION);
             this.set("source_validation_version", SOURCE_VALIDATION_VERSION);
             this.set("normalization_version", NORMALIZATION_VERSION);
             this.bump();
@@ -247,7 +250,7 @@ export class HistorySearchStore {
       } else this.db.exec("PRAGMA query_only=ON;");
       if (this.value("version") !== "1")
         throw new Error("Unsupported content search cache version");
-      if (this.value("sanitizer_version") !== "1")
+      if (this.value("sanitizer_version") !== HISTORY_SEARCH_SANITIZER_VERSION)
         throw new Error("Obsolete content search sanitizer; rebuild required");
       if (this.value("source_validation_version") !== SOURCE_VALIDATION_VERSION)
         throw new Error("Obsolete content search source validation; rebuild required");

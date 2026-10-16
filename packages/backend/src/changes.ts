@@ -10,6 +10,13 @@ import {
   validateApplicationArchive,
   type ApplyOptions,
 } from "./change-apply";
+import {
+  assertClaudeConfigWritable,
+  claudeConfigFiles,
+  claudeGlobalConfigFile,
+  claudeGlobalConfigGate,
+  resolveClaudeConfig,
+} from "./claude-config";
 import { canonicalProject, withinLexical } from "./files";
 import { lexicalPathIdentity, pathIdentity } from "./paths";
 import { loadManifest, manifestPath } from "./manifest";
@@ -37,9 +44,24 @@ export function applyRequest(
       environment.XDG_CONFIG_HOME && path.isAbsolute(environment.XDG_CONFIG_HOME)
         ? environment.XDG_CONFIG_HOME
         : path.join(home, ".config");
+  const claude = resolveClaudeConfig(environment, home);
+  if (claude.invalid) {
+    // A request prepared against the default Claude locations gets the real reason instead of the
+    // generic "not approved" error below. Nothing under an unusable variable is ever approved.
+    const defaults = resolveClaudeConfig({}, home);
+    for (const change of plan.changes)
+      if (
+        change.scope === "agent-home" &&
+        (lexicalPathIdentity(change.target) ===
+          lexicalPathIdentity(claudeGlobalConfigFile(defaults, home)) ||
+          withinLexical(change.target, claudeConfigFiles(defaults).projects))
+      )
+        assertClaudeConfigWritable(claude);
+  }
   const approvedHome = [
     path.join(home, ".codex/config.toml"),
-    path.join(home, ".claude.json"),
+    // The global file only counts while it is certain to be the one Claude Code reads.
+    ...(claudeGlobalConfigGate(claude).usable ? [claudeGlobalConfigFile(claude, home)] : []),
     path.join(home, ".gemini/config/mcp_config.json"),
     path.join(xdg, "opencode/opencode.json"),
     path.join(xdg, "opencode/opencode.jsonc"),
@@ -113,7 +135,7 @@ export function applyRequest(
   }
   const roots = [
     path.join(environment.CODEX_HOME ?? path.join(home, ".codex"), "sessions"),
-    path.join(environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects"),
+    ...(claude.invalid ? [] : [claudeConfigFiles(claude).projects]),
   ];
   for (const change of plan.changes)
     if (change.scope === "agent-home" && change.validator === "jsonl") {

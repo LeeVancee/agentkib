@@ -28,7 +28,9 @@ import type { BackendStore } from "./store";
 import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
-import { versionAtLeast } from "./native-version";
+import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
+import { terminationCodeOf } from "./claude-frame-policy";
+import { assertClaudeConfigWritable, resolveClaudeConfig } from "./claude-config";
 import {
   ClaudeHostStateStore,
   validClaudeDeviceId,
@@ -41,6 +43,7 @@ import { projectContextUsage } from "./context-usage";
 import {
   ClaudeManagedRunnerProcess,
   ClaudeUndispatchedError,
+  type ClaudeObservedPermissionMode,
   type ClaudeRunnerSnapshot,
   validateClaudeContent,
 } from "./claude-managed-runner";
@@ -54,10 +57,8 @@ import {
   openManagedLedger,
 } from "./managed-ledger";
 
-export function supportsClaudeVersion(value: string, minimum = "2.1.263"): boolean {
-  const match = /^(\d+\.\d+\.\d+) \(Claude Code\)$/.exec(value);
-  return match !== null && versionAtLeast(match[1]!, minimum);
-}
+// Defined in claude-version.ts (imported above for this file's own checks); still exported from here.
+export { supportsClaudeVersion } from "./claude-version";
 
 /** The requested mutation is durably rejected before any external effect. */
 export class ClaudeHostControlPreflightError extends Error {
@@ -109,6 +110,12 @@ type ClaudeConversationAliaser = (
   itemId: string,
   live: Record<string, unknown>,
 ) => void;
+/** Display-only: which permission mode a managed session runs in (see `Live.permission`). */
+type ClaudePermissionView = {
+  mode: ClaudeObservedPermissionMode | null;
+  previous?: true;
+  possiblyAuto?: true;
+};
 
 /** Manages Claude session ownership, CLI runners, and read-side state. */
 export class ClaudeManagedReadOwner {
@@ -128,6 +135,10 @@ export class ClaudeManagedReadOwner {
   #runnerReservationTail: Promise<void> = Promise.resolve();
   #ownerLocks = new Map<string, () => void>();
   #sessionQueues = new Map<string, Promise<void>>();
+  // Last mode each session's worker reported in this process. Memory only: it survives a
+  // retired worker so the UI keeps showing it (marked as earlier), and a backend restart or a
+  // release forgets it rather than presenting a stale mode as current.
+  #lastPermission = new Map<string, ClaudeObservedPermissionMode>();
   #publishConversationEvent?: ClaudeConversationPublisher;
   #aliasConversationItem?: ClaudeConversationAliaser;
 
@@ -731,6 +742,7 @@ export class ClaudeManagedReadOwner {
           ? { forkSourceNativeId: record.forkSourceNativeId, forkCutoff: record.forkCutoff }
           : {}),
         ...options,
+        ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
         onResult: (result) => {
           this.#hostState.complete(id, result.turnId, {
             success: result.success,
@@ -1809,6 +1821,8 @@ export class ClaudeManagedReadOwner {
     )
       throw new Error("invalid-managed-create");
     if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    // Before the request is claimed or dispatched: nothing may be left half-recorded.
+    this.#home();
     const selectedSettings = this.#settings(value);
     if (
       Object.keys(selectedSettings).length &&
@@ -1883,6 +1897,12 @@ export class ClaudeManagedReadOwner {
         this.#hostState.update(id, (host) => {
           host.settings = selectedSettings;
         });
+      const cliVersion = await this.#installationVersion();
+      const permission = this.#permissionView(
+        id,
+        cliVersion,
+        () => selectedSettings.permissionMode,
+      );
       const live = {
         ...record.snapshot,
         revision: Number(record.snapshot.revision ?? 0) + this.#hostState.read(id).revision,
@@ -1891,8 +1911,9 @@ export class ClaudeManagedReadOwner {
         sourceSessionId: nativeId,
         runtimeBootId: this.bootId,
         executionMode: "claude-managed",
-        cliVersion: await this.#installationVersion(),
+        cliVersion,
         permissionMode: "cli-configured",
+        ...(permission ? { permission } : {}),
       };
       const result = {
         accepted: true,
@@ -1947,6 +1968,8 @@ export class ClaudeManagedReadOwner {
     )
       throw new Error("invalid-managed-adopt");
     if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    // Before the request is claimed or dispatched: nothing may be left half-recorded.
+    this.#home();
     const logical = { ...value };
     delete logical.runtimeBootId;
     const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
@@ -2040,6 +2063,14 @@ export class ClaudeManagedReadOwner {
       if (this.#load(id)?.snapshot.activity === "compacting") throw new Error("session-compacting");
       dispatchManagedCommand(this.dataDir, requestId);
       this.#save(record);
+      const cliVersion = await this.#installationVersion();
+      // The selection lives in host state and survives a release; read lazily so a failure there
+      // costs only the hint, never the adoption that has already been recorded.
+      const permission = this.#permissionView(
+        id,
+        cliVersion,
+        () => this.#hostState.read(id).settings.permissionMode,
+      );
       const live = {
         ...record.snapshot,
         sessionId: id,
@@ -2047,8 +2078,9 @@ export class ClaudeManagedReadOwner {
         sourceSessionId: nativeId,
         runtimeBootId: this.bootId,
         executionMode: "claude-managed",
-        cliVersion: await this.#installationVersion(),
+        cliVersion,
         permissionMode: "cli-configured",
+        ...(permission ? { permission } : {}),
       };
       const result = {
         accepted: true,
@@ -2152,6 +2184,7 @@ export class ClaudeManagedReadOwner {
         controlOutcome: "accepted",
       };
       finishManagedCommand(this.dataDir, requestId, result);
+      await this.#publishReleasedPermission(id);
       return result;
     } finally {
       if (releaseLock) releaseLock();
@@ -2416,10 +2449,11 @@ export class ClaudeManagedReadOwner {
     return path.join(this.#directory(), `${id}.json`);
   }
 
+  /** The CLI writes the session files here, so an unusable CLAUDE_CONFIG_DIR fails closed. */
   #home(): string {
-    const configured =
-      this.environment.CLAUDE_CONFIG_DIR ??
-      path.join(this.environment.HOME ?? homedir(), ".claude");
+    const config = resolveClaudeConfig(this.environment, this.environment.HOME ?? homedir());
+    assertClaudeConfigWritable(config);
+    const configured = config.dir;
     if (existsSync(configured)) return canonicalize(configured);
     const parent = path.dirname(configured);
     return path.join(canonicalize(parent), path.basename(configured));
@@ -2548,27 +2582,10 @@ export class ClaudeManagedReadOwner {
 
   async #installationVersion(): Promise<string | null> {
     if (this.#version && Date.now() - this.#version.at < 30_000) return this.#version.value;
-    const executable = resolveCommand("claude", this.environment);
-    if (!executable) {
-      this.#version = { at: Date.now(), value: null };
-      return null;
-    }
-    try {
-      const output = await this.commands.run(executable, ["--version"], {
-        env: this.environment,
-        timeout: 5000,
-        limit: 4096,
-        strictOutput: true,
-        allowFailure: true,
-      });
-      const version = output.bytes.toString("utf8").trim();
-      const value = output.success && supportsClaudeVersion(version) ? version : null;
-      this.#version = { at: Date.now(), value };
-      return value;
-    } catch {
-      this.#version = { at: Date.now(), value: null };
-      return null;
-    }
+    const version = await readClaudeVersion(this.commands, this.environment);
+    const value = version !== null && supportsClaudeVersion(version) ? version : null;
+    this.#version = { at: Date.now(), value };
+    return value;
   }
 
   async options(): Promise<Record<string, unknown>> {
@@ -2642,6 +2659,13 @@ export class ClaudeManagedReadOwner {
       (!runner && record.snapshot.status !== "idle") ||
       managedSessionHasUnknownCommands(this.dataDir, id)
     ) {
+      // A session AgentKib stopped for a stated reason keeps that reason across a restart, unless a
+      // command is also unresolved: then the generic "outcome unconfirmed" matters more.
+      const stopped =
+        !runner &&
+        record.snapshot.status === "outcome-unknown" &&
+        terminationCodeOf(record.snapshot.reason) !== null &&
+        !managedSessionHasUnknownCommands(this.dataDir, id);
       live = {
         ...record.snapshot,
         status: "outcome-unknown",
@@ -2650,7 +2674,7 @@ export class ClaudeManagedReadOwner {
         approvals: [],
         questions: [],
         streamText: "",
-        reason: "control-outcome-unconfirmed",
+        reason: stopped ? record.snapshot.reason : "control-outcome-unconfirmed",
       };
     } else {
       live = { ...record.snapshot };
@@ -2705,6 +2729,10 @@ export class ClaudeManagedReadOwner {
       selected: host.settings,
       applicationStatus: options?.settingsAcknowledged ? "confirmed" : "pending",
     };
+    const permission = record.released
+      ? this.#releasedPermission(id)
+      : this.#permissionView(id, version, () => host.settings.permissionMode);
+    if (permission) live.permission = permission;
     if (host.archived) {
       live.status = "archived";
       live.sendEnabled = false;
@@ -2718,17 +2746,83 @@ export class ClaudeManagedReadOwner {
     snapshot: ClaudeRunnerSnapshot,
     record = this.#load(id),
   ): Record<string, unknown> {
+    const host = this.#hostState.read(id);
+    // Same version source as #live: the cached value, never a fresh probe per CLI frame.
+    const version = this.#version?.value ?? null;
+    const permission = this.#permissionView(id, version, () => host.settings.permissionMode);
     return {
       ...snapshot,
-      revision: snapshot.revision + this.#hostState.read(id).revision,
+      revision: snapshot.revision + host.revision,
       sessionId: id,
       sourceSessionId: record?.nativeId ?? null,
       workspaceId: record?.workspaceId ?? null,
       runtimeBootId: this.bootId,
       executionMode: "claude-managed",
       permissionMode: "cli-configured",
-      cliVersion: this.#version?.value ?? null,
+      cliVersion: version,
+      ...(permission ? { permission } : {}),
     };
+  }
+
+  /**
+   * Which permission mode this session runs in, for display only. The CLI's own report wins;
+   * a retired worker keeps showing its last report (marked `previous`); only a session whose
+   * mode was never observed and that has no selection can carry the "possibly auto" hint.
+   * Nothing here is inferred: an unknown mode stays `mode: null`. Every observation passing
+   * through also becomes the session's last report.
+   *
+   * Total on purpose. The runner reports a failing snapshot callback as a session failure and
+   * kills the process, and #streamLive runs inside that callback for every CLI frame, so this
+   * returns undefined (no `permission` field) instead of ever throwing.
+   */
+  #permissionView(
+    id: string,
+    version: string | null,
+    selected: () => ClaudeSettings["permissionMode"],
+  ): ClaudePermissionView | undefined {
+    try {
+      const runner = this.#runners.get(id);
+      const observed = runner?.hasWorker ? runner.observedPermissionMode : null;
+      if (observed !== null && observed !== undefined) {
+        this.#lastPermission.set(id, observed);
+        return { mode: observed };
+      }
+      const previous = this.#lastPermission.get(id);
+      if (previous !== undefined) return { mode: previous, previous: true };
+      // Documented start-mode rule: without feature flags (third-party provider, telemetry off)
+      // `claude -p` starts in auto from 2.1.285. Organization policy can change this, so the
+      // hint says "possibly" and only marks the unknown mode.
+      return {
+        mode: null,
+        ...(selected() === undefined && supportsClaudeVersion(version ?? "", "2.1.285")
+          ? { possiblyAuto: true as const }
+          : {}),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** A released session runs nothing here: clear the view explicitly and forget the last mode. */
+  #releasedPermission(id: string): ClaudePermissionView {
+    this.#lastPermission.delete(id);
+    return { mode: null };
+  }
+
+  /**
+   * `state` patches merge shallowly, so a subscriber only drops its permission notice when told
+   * to. Best effort: the release is already durable, and a client that misses this patch re-reads
+   * `live`, where a released session carries the same explicit clear.
+   */
+  async #publishReleasedPermission(id: string): Promise<void> {
+    // Forget first: the live read below can fail without undoing the release.
+    this.#lastPermission.delete(id);
+    try {
+      const released = await this.#live(id, false);
+      this.#publishConversationEvent?.(id, "state", { permission: { mode: null } }, released);
+    } catch {
+      /* The release already committed; nothing to roll back. */
+    }
   }
 
   async live(id: string, controls = false) {

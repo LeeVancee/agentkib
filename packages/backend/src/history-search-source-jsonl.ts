@@ -4,7 +4,7 @@ import { isReparseOrSymlink } from "./native-files";
 import { messageText } from "./session-events";
 import { jsonTimestamp } from "./session-history";
 import {
-  claudeActiveChain,
+  claudeLineage,
   compactJson,
   isClaudeEcho,
   looksLikeInternalContext,
@@ -116,6 +116,31 @@ async function lines(
   }
 }
 
+/**
+ * What the first pass keeps of a Claude Code record: just enough to rebuild the lineage. Only a
+ * `compact_boundary` also keeps the head of the segment Claude Code preserved, as a bare string,
+ * so the first pass's memory does not grow with the size of compaction metadata.
+ */
+export function claudeLineageFields(value: Record<string, unknown>): Record<string, unknown> {
+  const { uuid, parentUuid, leafUuid, type, isSidechain, subtype, logicalParentUuid } = value;
+  const headUuid =
+    type === "system" && subtype === "compact_boundary"
+      ? object(object(value.compactMetadata).preservedSegment).headUuid
+      : undefined;
+  return {
+    uuid,
+    parentUuid,
+    leafUuid,
+    type,
+    isSidechain,
+    subtype,
+    logicalParentUuid,
+    ...(typeof headUuid === "string"
+      ? { compactMetadata: { preservedSegment: { headUuid } } }
+      : {}),
+  };
+}
+
 export async function readJsonlSearchSource(
   file: string,
   format: string,
@@ -129,10 +154,7 @@ export async function readJsonlSearchSource(
     `${role}:${createHash("sha256").update(value.trim()).digest("hex")}`;
   let legacyBranch = false;
   const first = await lines(file, sink, ({ line, value }) => {
-    if (format === "claude-code") {
-      const { uuid, parentUuid, leafUuid, type, isSidechain } = value;
-      parents.push({ line, value: { uuid, parentUuid, leafUuid, type, isSidechain } });
-    }
+    if (format === "claude-code") parents.push({ line, value: claudeLineageFields(value) });
     if (format === "open-claw" && ["reset", "leaf", "compaction"].includes(String(value.type)))
       legacyBranch = true;
     if (format !== "codex") return;
@@ -188,7 +210,18 @@ export async function readJsonlSearchSource(
     primary,
     fallback.filter((item) => !excluded.has(item.line)),
   );
-  const chain = format === "claude-code" ? claudeActiveChain(parents, false) : null;
+  // Everything Claude Code compacted away is still part of the conversation: index the whole
+  // lineage, and say so when a boundary could not be joined to the history before it.
+  const lineage = format === "claude-code" ? claudeLineage(parents, false) : null;
+  if (lineage?.unlinked) sink.limit("compaction-link-unavailable");
+  let chain: Set<string> | null = lineage?.segments[0]?.uuids ?? null;
+  if (lineage && lineage.segments.length > 1) {
+    chain = new Set<string>();
+    for (const segment of lineage.segments) for (const uuid of segment.uuids) chain.add(uuid);
+  }
+  const selectedLines = lineage?.segments.some((segment) => segment.boundary)
+    ? new Set(lineage.segments.flatMap((segment) => [...segment.lines]))
+    : null;
   // Legacy branch controls lack SQLite's verified active projection. Do not index siblings as active history.
   if (legacyBranch) sink.limit("legacy-branch-history");
   const second = await lines(file, sink, async ({ line, offset, value }) => {
@@ -267,6 +300,7 @@ export async function readJsonlSearchSource(
       if (
         value.isSidechain === true ||
         value.isCompactSummary === true ||
+        (selectedLines && !selectedLines.has(line)) ||
         (chain && (!text(value.uuid) || !chain.has(String(value.uuid))))
       )
         return;

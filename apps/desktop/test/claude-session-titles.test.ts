@@ -149,10 +149,7 @@ describe("Claude native session title discovery", () => {
     [{ summary: "", firstPrompt: "Indexed prompt" }, "Indexed prompt"],
   ])("preserves valid indexed titles (%j)", (entry, expected) => {
     const f = fixture();
-    f.write([
-      f.row("Native prompt"),
-      { type: "custom-title", sessionId: f.sessionId, customTitle: "Native title" },
-    ]);
+    f.write([f.row("Native prompt")]);
     f.writeIndex(entry);
     const before = readFileSync(f.index);
     expect(f.list()[0].session.title).toBe(expected);
@@ -216,14 +213,14 @@ describe("Claude native session title discovery", () => {
     expect(f.list()[0].session.title).toBeNull();
   });
 
-  it("does not inspect titles or prompts beyond the 256-line header", () => {
+  it("reads a late title through the tail window but never prompts beyond the 256-line header", () => {
     const f = fixture();
     f.write([
       f.row("First prompt"),
       ...Array.from({ length: 255 }, () => ({ type: "progress" })),
       { type: "custom-title", sessionId: f.sessionId, customTitle: "Outside header" },
     ]);
-    expect(f.list()[0].session.title).toBe("First prompt");
+    expect(f.list()[0].session.title).toBe("Outside header");
     f.write([
       f.row("Ignored", { isMeta: true }),
       ...Array.from({ length: 255 }, () => ({ type: "progress" })),
@@ -232,13 +229,13 @@ describe("Claude native session title discovery", () => {
     expect(f.list()[0].session.title).toBeNull();
   });
 
-  it("does not inspect titles beyond the 2 MiB byte budget", () => {
+  it("reads a title past the 2 MiB header budget when it sits in the tail window", () => {
     const f = fixture();
     f.write([
       f.row("First prompt"),
       { type: "progress", data: "x".repeat(2 * 1024 * 1024) },
       { type: "custom-title", sessionId: f.sessionId, customTitle: "Outside byte budget" },
     ]);
-    expect(f.list()[0].session.title).toBe("First prompt");
+    expect(f.list()[0].session.title).toBe("Outside byte budget");
   });
 });

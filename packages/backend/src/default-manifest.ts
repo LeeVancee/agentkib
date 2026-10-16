@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readdirSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import path from "node:path";
 import JSON5 from "json5";
 import { globMatches } from "./context-glob";
@@ -14,6 +14,8 @@ import {
 } from "./manifest";
 import { AGENTS } from "./rpc";
 import { compareUtf8 } from "./workspaces";
+import { assertUnmanagedSkillPath } from "./skill-ownership";
+import { isReparseOrSymlink } from "./native-files";
 export const MANAGED_START = "<!-- agentkib:managed:start -->";
 export const MANAGED_END = "<!-- agentkib:managed:end -->";
 export function managedContent(content: string): string | null {
@@ -41,7 +43,11 @@ function delta(shared: string, content: string): string | null {
     ? content.slice(shared.length).trim()
     : content;
 }
-export function openCodeInstructionPatterns(project: string): string[] {
+export function openCodeInstructionPatterns(
+  project: string,
+  skipSource: (file: string) => boolean = () => false,
+  readSource: (file: string) => string = readText,
+): string[] {
   const result: string[] = [];
   for (const name of [
     "opencode.json",
@@ -49,8 +55,9 @@ export function openCodeInstructionPatterns(project: string): string[] {
     ".opencode/opencode.json",
     ".opencode/opencode.jsonc",
   ]) {
+    if (skipSource(path.join(project, name))) continue;
     try {
-      const content = readText(path.join(project, name));
+      const content = readSource(path.join(project, name));
       const value = name.endsWith(".jsonc") ? JSON5.parse(content) : JSON.parse(content);
       if (Array.isArray(value.instructions))
         for (const item of value.instructions)
@@ -139,6 +146,15 @@ export function defaultManifest(project: string): Manifest {
   try {
     for (const entry of readdirSync(path.join(root, ".agents/skills"), { withFileTypes: true })) {
       try {
+        if (
+          !entry.isDirectory() ||
+          [".agents", ".agents/skills"].some((relative) => {
+            const directory = path.join(root, relative);
+            return isReparseOrSymlink(directory, lstatSync(directory));
+          })
+        )
+          continue;
+        assertUnmanagedSkillPath(path.join(root, ".agents/skills", entry.name));
         const skill = inspectSkill(path.join(root, ".agents/skills", entry.name, "SKILL.md"));
         skills.push({ name: skill.name, path: `.agents/skills/${entry.name}`, targets: [] });
       } catch {}
@@ -152,7 +168,23 @@ export function defaultManifest(project: string): Manifest {
     8,
     (value, directory) =>
       !directory ||
-      ![".git", ".agentkib", "node_modules", "target", "dist"].includes(path.basename(value)),
+      (![
+        ".git",
+        ".agentkib",
+        ".skill-state",
+        ".staging",
+        "node_modules",
+        "target",
+        "dist",
+      ].includes(path.basename(value)) &&
+        (() => {
+          try {
+            assertUnmanagedSkillPath(value, [], false);
+            return true;
+          } catch {
+            return false;
+          }
+        })()),
     true,
   )
     .filter((value) => path.basename(value) === "AGENTS.md" && path.dirname(value) !== root)

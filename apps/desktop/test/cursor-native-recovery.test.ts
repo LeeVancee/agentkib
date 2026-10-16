@@ -38,7 +38,7 @@ import {
   type HandoffReadOutput,
 } from "../../../packages/backend/src/handoff-read-tasks";
 import { TaskContext, type TaskWorkspace } from "../../../packages/backend/src/task-executor";
-import type { SessionDocument } from "../../../packages/backend/src/session-model";
+import type { DocumentOptions, SessionDocument } from "../../../packages/backend/src/session-model";
 
 const roots: string[] = [];
 const stores: BackendStore[] = [];
@@ -448,7 +448,7 @@ class ImportWindow extends CursorBridge {
   }
 }
 
-function importFixture(persisted = true) {
+function importFixture(persisted = true, includePreCompactionHistory = false) {
   const directory = root();
   const store = storeAt(directory);
   const project = workspace(store, directory, "registered");
@@ -469,9 +469,18 @@ function importFixture(persisted = true) {
     },
   ]);
   const context = profileAt(directory, project, "profile");
+  // A compacted source reads differently with and without the earlier history.
+  const base = document("legacy");
+  const withHistory: SessionDocument = {
+    ...base,
+    turns: [
+      { id: "old", role: "user", blocks: [{ type: "text", text: "Earlier history marker" }] },
+      ...base.turns,
+    ],
+  };
   const dataDir = path.join(directory, "data"),
     operation = randomUUID(),
-    source = document("legacy");
+    source = includePreCompactionHistory ? withHistory : base;
   const prepared = prepareCursorIdePayload(source, operation, project);
   const plan = {
     schema_version: 1,
@@ -488,6 +497,7 @@ function importFixture(persisted = true) {
     expected: prepared.expected,
     payload: prepared.payload,
     marker: prepared.marker,
+    ...(includePreCompactionHistory ? { include_pre_compaction_history: true } : {}),
   };
   const content = JSON.stringify(plan, null, 2) + "\n";
   const location = path.join(
@@ -533,16 +543,19 @@ function importFixture(persisted = true) {
   bridge.loseImportReply = false;
   bridges.push(bridge);
   let beforeSourceRead: (() => void) | undefined;
+  const requested: Array<DocumentOptions | undefined> = [];
   const sessions = {
-    document: async () => {
+    document: async (_id: string, options?: DocumentOptions) => {
+      requested.push(options);
       beforeSourceRead?.();
-      return structuredClone(source);
+      return structuredClone(options?.includePreCompactionHistory ? withHistory : base);
     },
   };
   const environment = { HOME: directory, USERPROFILE: directory };
   return {
     store,
     bridge,
+    requested,
     planFile,
     receiptFile: path.join(location, "receipt.json"),
     attemptFile: path.join(location, "attempted.json"),
@@ -657,6 +670,15 @@ describe("Cursor continuation registered owner stability", () => {
     expect(existsSync(f.receiptFile)).toBe(false);
   });
 
+  it.each([false, true])(
+    "reads an unpersisted source again with the pre-compaction history choice of its plan (%s)",
+    async (include) => {
+      const f = importFixture(false, include);
+      await f.proceed();
+      expect(f.requested).toEqual([include ? { includePreCompactionHistory: true } : undefined]);
+      expect(f.bridge.imports).toBe(1);
+    },
+  );
   it("keeps a consumed import unresolved when its registered owner changes before the reply", async () => {
     const f = importFixture();
     f.bridge.onImport = f.replaceOwner;

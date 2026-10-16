@@ -43,6 +43,15 @@ import {
 } from "./relay/manager";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
+/** Modes a Claude CLI can report; only the first three are ever selectable from AgentKib. */
+const CLAUDE_OBSERVED_PERMISSION_MODES = new Set([
+  "default",
+  "plan",
+  "acceptEdits",
+  "auto",
+  "dontAsk",
+  "bypassPermissions",
+]);
 /** Freeze browser-visible inputs so durable replay never needs to reopen resources. */
 function managedActionInputHash(operation: string, body: Record<string, unknown>): string {
   const fields = [
@@ -1689,6 +1698,7 @@ export class WebAccessService {
       stateDirectory: join(this.options.dataDir, "relay", digest(config.brokerUrl).slice(0, 24)),
       target: targets.control,
       preview: targets.preview,
+      directAddresses: () => this.addresses.map(({ address }) => address),
       onOrigins: ({ publicUrl, previewUrl }) => {
         const update = this.adminQueue.then(async () => {
           if (epoch !== this.relayEpoch || !this.config.relay?.enabled) return;
@@ -1973,6 +1983,32 @@ export class WebAccessService {
             : usage;
     }
     return projected;
+  }
+  /**
+   * `permission` is display-only data about the mode a Claude session runs in. This is the edge
+   * to browsers, so only the documented closed shape passes: anything else is dropped, never
+   * repaired, and unknown keys are not copied.
+   */
+  private projectPermission(raw: unknown) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const { mode, previous, possiblyAuto } = raw as Record<string, unknown>;
+    if (mode !== null && !CLAUDE_OBSERVED_PERMISSION_MODES.has(mode as string)) return undefined;
+    if (previous !== undefined && previous !== true) return undefined;
+    if (possiblyAuto !== undefined && possiblyAuto !== true) return undefined;
+    // `previous` is an earlier report, so it needs a mode; the hint marks an unknown mode only.
+    if (previous === true && mode === null) return undefined;
+    if (possiblyAuto === true && mode !== null) return undefined;
+    return {
+      mode: mode as string | null,
+      ...(previous === true ? { previous: true as const } : {}),
+      ...(possiblyAuto === true ? { possiblyAuto: true as const } : {}),
+    };
+  }
+  private projectPermissionField(snapshot: Record<string, unknown>) {
+    if (!Object.hasOwn(snapshot, "permission")) return snapshot;
+    const { permission: raw, ...rest } = snapshot;
+    const permission = this.projectPermission(raw);
+    return permission ? { ...rest, permission } : rest;
   }
   private projectSettings(raw: unknown, usage?: unknown) {
     const data =
@@ -3489,7 +3525,9 @@ export class WebAccessService {
     reserved = false,
   ) {
     if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot))
-      snapshot = this.projectUsageFields(snapshot as Record<string, unknown>, device);
+      snapshot = this.projectPermissionField(
+        this.projectUsageFields(snapshot as Record<string, unknown>, device),
+      );
     if (
       sessionId &&
       this.options.receiptRequest &&
@@ -3809,6 +3847,8 @@ export class WebAccessService {
         device && !browser.ended && this.options.historyRequest
           ? await this.historyAccessScope(hash)
           : undefined;
+      const directConnection =
+        external && device && !browser.ended ? this.relay?.directConnection : undefined;
       return this.json(res, 200, {
         status: browser.ended
           ? "ended"
@@ -3825,6 +3865,11 @@ export class WebAccessService {
         pairingMode: lan ? "confirmation" : "code",
         experimentalEnabled: this.controlsEnabled(undefined, device),
         ...(historyAccess ? { historySearch: true, historySearchScope: historyAccess.token } : {}),
+        ...(directConnection &&
+        directConnection.controlOrigin === this.config.externalOrigin &&
+        directConnection.previewOrigin === this.previewOrigin
+          ? { directConnection }
+          : {}),
         ...(bearerToken ? { bearerToken } : {}),
       });
     }
@@ -4001,6 +4046,9 @@ export class WebAccessService {
         if (!artifacts) throw new HttpError(503, "preview_unavailable");
         const result = await artifacts.issueTicket(scope, {
           artifactId: this.field(body.artifactId),
+          ...(body.expectedRevision !== undefined
+            ? { expectedRevision: this.field(body.expectedRevision) }
+            : {}),
           download: body.download === true,
         });
         this.grant(hash, "files");
@@ -4828,7 +4876,7 @@ export class WebAccessService {
         if (event.type !== "state") return event;
         // Keep only authorization metadata, never manufacture absent patch fields
         // or refresh chat state while projecting a native notification.
-        const patch = this.projectUsageFields(event.payload, device);
+        const patch = this.projectPermissionField(this.projectUsageFields(event.payload, device));
         if ("executionMode" in patch) controlContext.executionMode = patch.executionMode;
         if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
         const enabled =

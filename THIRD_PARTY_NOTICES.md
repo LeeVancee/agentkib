@@ -25,9 +25,12 @@ The complete license text is bundled with the desktop application at
 
 ## Win-CodexBar CLI
 
-AgentKib builds and bundles the Win-CodexBar 0.48.0 CLI from its verified
-release source on Windows x64 to collect local quota snapshots. Its installer
-is not executed during the AgentKib build.
+AgentKib bundles the prebuilt Win-CodexBar 0.60.3 console CLI on Windows x64 to
+collect local quota snapshots. The AgentKib build downloads the upstream release
+archive (`CodexBarCLI-v0.60.3-windows-x64.zip`), verifies its pinned SHA-256
+checksum, and copies `codexbar-cli.exe` unchanged as the quota sidecar; it does
+not compile Win-CodexBar from source. Its installer is not executed during the
+AgentKib build.
 
 - Project: https://github.com/nesszer/Win-CodexBar
 - License: MIT

@@ -679,6 +679,7 @@ export class ArtifactService {
     const kind = kindFor(record.path);
     let entryPath = basename(record.path),
       revision = revisionOf(inspected.stat);
+    let sourceRevision = revision;
     if (input.expectedRevision && input.expectedRevision !== revision)
       reject(409, "artifact_changed");
     let bundle: Map<string, BundleFile> | undefined;
@@ -729,6 +730,7 @@ export class ArtifactService {
             snapshot.revision !== input.expectedRevision
           )
             reject(409, "artifact_changed");
+          if (child === record.path) sourceRevision = snapshot.revision;
           total += snapshot.bytes.length;
           bundle!.set(bundleRoot ? child.slice(bundleRoot.length + 1) : child, {
             bytes: snapshot.bytes,
@@ -779,6 +781,9 @@ export class ArtifactService {
       url: `${this.previewOrigin}/p/${id}/${toUrlPath(entryPath)}`,
       expiresAt,
       revision,
+      // HTML revision identifies the complete frozen bundle; callers compare the
+      // selected entry against this actual snapshot revision instead.
+      sourceRevision,
       kind,
       ...(bundle
         ? {

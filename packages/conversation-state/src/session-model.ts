@@ -9,42 +9,6 @@ export interface ConversationEventPage {
   warnings: string[];
 }
 
-export function groupConversationEvents(events: ConversationEvent[], incomplete = false) {
-  const runs: ConversationEvent[][] = [];
-  for (const event of events) {
-    const last = runs.at(-1);
-    if (last && (last[0].turn_id?.trim() || undefined) === (event.turn_id?.trim() || undefined))
-      last.push(event);
-    else runs.push([event]);
-  }
-  return runs.map((run) => {
-    const complete =
-      !incomplete &&
-      !!run[0].turn_id?.trim() &&
-      run[0].kind === "user-message" &&
-      run.some(
-        (event) => event.message_phase === "final_answer" && event.kind === "agent-message",
-      ) &&
-      !run.some((event) => event.truncated);
-    const segments: { key: string; process: boolean; events: ConversationEvent[] }[] = [];
-    for (const event of run) {
-      const process =
-        event.kind === "tool-summary" ||
-        (complete && event.kind === "agent-message" && event.message_phase === "commentary");
-      const last = segments.at(-1);
-      if (process && last?.process) last.events.push(event);
-      else segments.push({ key: event.id, process, events: [event] });
-    }
-    return {
-      key: run[0].id,
-      complete,
-      turnId: run[0].turn_id,
-      time: run.find((event) => event.timestamp)?.timestamp,
-      segments,
-    };
-  });
-}
-
 function mergeConversationEvents(
   previous: readonly ConversationEvent[],
   incoming: readonly ConversationEvent[],

@@ -34,6 +34,7 @@ import { McpHub, type McpNetworkSettings } from "./mcp-hub";
 import { McpOAuth } from "./mcp-oauth";
 import { planSessionMcpConnection } from "./mcp-continuation";
 import { mcpConnectionInfo, planMcpConnection, verifyMcpConnection } from "./mcp-connection";
+import { markPossiblyOverwritten } from "./claude-global-writes";
 import { scanNativeMcp } from "./mcp-native-scan";
 import { planNativeMcpMigration } from "./mcp-migration-plan";
 import { webDiff } from "./web-diff";
@@ -857,16 +858,17 @@ export class TypeScriptBackend {
         const parsed = z.object({ port: z.number().int().min(1).max(65535) }).safeParse(network);
         ensureGateway(manifest, parsed.success ? parsed.data.port : 47653);
         const home = userHome({ ...process.env, ...this.environment });
-        return planWorkspace(
-          project,
-          manifest,
-          includeHome
+        return planWorkspace(project, manifest, {
+          skillHomes: [nativeContext({ ...process.env, ...this.environment }).agentkib_home].filter(
+            (root): root is string => typeof root === "string",
+          ),
+          ...(includeHome
             ? {
                 openclaw_config: path.join(home, ".openclaw/openclaw.json"),
                 hermes_config: path.join(home, ".hermes/config.yaml"),
               }
-            : {},
-        );
+            : {}),
+        });
       }
       case RUNTIME_METHODS.workspaceDoctorReport:
       case RUNTIME_METHODS.workspaceDoctorSummaries:
@@ -889,7 +891,11 @@ export class TypeScriptBackend {
           z.object({ project: z.string(), manifest: manifestSchema }),
           params,
         );
-        return planWorkspace(project, manifest, {});
+        return planWorkspace(project, manifest, {
+          skillHomes: [nativeContext({ ...process.env, ...this.environment }).agentkib_home].filter(
+            (root): root is string => typeof root === "string",
+          ),
+        });
       }
       case BACKEND_PLAN_WORKSPACE: {
         if (params.operation !== "add" && params.operation !== "refresh")
@@ -1288,10 +1294,13 @@ export class TypeScriptBackend {
       }
       case RUNTIME_METHODS.scanNativeMcp: {
         const request = parameters(z.object({ project: z.string().nullable().optional() }), params);
-        return scanNativeMcp({ project: request.project ?? undefined }, this.#store!, {
-          ...process.env,
-          ...this.environment,
-        });
+        return markPossiblyOverwritten(
+          scanNativeMcp({ project: request.project ?? undefined }, this.#store!, {
+            ...process.env,
+            ...this.environment,
+          }),
+          this.#dataDir!,
+        );
       }
       case RUNTIME_METHODS.planMcpMigration:
         return planNativeMcpMigration(params, this.#store!, manager, {

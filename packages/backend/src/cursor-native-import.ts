@@ -29,7 +29,7 @@ import { applyRequest } from "./changes";
 import { canonicalProject } from "./files";
 import { CursorBridge } from "./cursor-bridge";
 import { CursorIdeSessions, prepareCursorIdePayload } from "./cursor-ide-sessions";
-import type { SessionDocument } from "./session-model";
+import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import type { BackendStore } from "./store";
 
@@ -72,6 +72,7 @@ type Plan = {
   expected: SessionDocument;
   payload: string;
   marker: string;
+  include_pre_compaction_history?: true;
 };
 
 function saveReceipt(
@@ -141,7 +142,7 @@ export function validateCursorPlan(
 
 export async function continueCursorNativeImport(
   value: unknown,
-  sessions: { document(id: string): Promise<SessionDocument> },
+  sessions: { document(id: string, options?: DocumentOptions): Promise<SessionDocument> },
   sessionStore: SessionStore,
   store: BackendStore,
   dataDir: string,
@@ -211,7 +212,12 @@ export async function continueCursorNativeImport(
   if (sourceFingerprint !== plan.source_fingerprint)
     throw new Error("Persisted Cursor source snapshot changed");
   if (!persisted) {
-    const current = await sessions.document(plan.source_session_id);
+    const current = await sessions.document(
+      plan.source_session_id,
+      plan.include_pre_compaction_history === true
+        ? { includePreCompactionHistory: true }
+        : undefined,
+    );
     assertWorkspace();
     current.source.workspace_id = effectiveWorkspace;
     const currentFingerprint = await fingerprintHandoff(current);
@@ -453,7 +459,7 @@ export function loadCursorRecoveryPlan(
 
 export async function reconcileCursorNativeImport(
   requestValue: unknown,
-  sessions: { document(id: string): Promise<SessionDocument> },
+  sessions: { document(id: string, options?: DocumentOptions): Promise<SessionDocument> },
   sessionStore: SessionStore,
   store: BackendStore,
   dataDir: string,

@@ -6,13 +6,23 @@ import { z } from "zod";
 import { pushChange, type ChangeSet, type FileChange } from "./change-plan";
 import { hash } from "./doctor-files";
 import { userHome } from "./mcp-config-read";
+import {
+  assertClaudeConfigWritable,
+  claudeConfigFiles,
+  resolveClaudeConfig,
+} from "./claude-config";
+import { claudeProjectKey } from "./claude-project-path";
 import { buildSessionArchive } from "./session-archive";
 import { planSessionWindow, renderHandoff, sanitizeHandoffExport } from "./session-handoff";
-import type { SessionDocument } from "./session-model";
+import type { DocumentOptions, SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import type { BackendStore } from "./store";
 import { Commands } from "./commands";
-import { continuationMcpAvailable, nativeImportCapability } from "./session-continuation";
+import {
+  continuationMcpAvailable,
+  nativeHistoryIncomplete,
+  nativeImportCapability,
+} from "./session-continuation";
 import { resolveWorkspaceIdentity, requireUniqueContinuationWorkspace } from "./workspace-identity";
 import { isReparseOrSymlink } from "./native-files";
 import { inspectNativeImportTarget, planNativeImport } from "./session-native-import-owner";
@@ -34,6 +44,7 @@ const requestSchema = z.object({
   acceptLosses: z.boolean(),
   historyBudgetTokens: z.number().int().positive(),
   archiveId: z.string().nullable().optional(),
+  includePreCompactionHistory: z.boolean().optional(),
 });
 const planEnvelopeSchema = requestSchema.extend({
   mcpHubStatus: z.object({ running: z.boolean(), port: z.number().int().min(1).max(65535) }),
@@ -100,6 +111,15 @@ function codexCompletedText(role: string, text: string, timestamp: string) {
     },
   };
 }
+
+/**
+ * Value of the `version` field in written Claude records. It names the Claude Code release whose
+ * record structure `renderNative` reproduces, not the installed CLI: stamping a newer version on
+ * records shaped like this one would claim fields and semantics AgentKib does not write. It is
+ * below the supported-version gate on purpose; keep it unless the record structure is re-verified
+ * against a newer release.
+ */
+export const CLAUDE_RECORD_SCHEMA_VERSION = "2.1.233";
 
 export function renderNative(
   document: SessionDocument,
@@ -190,7 +210,7 @@ export function renderNative(
       sessionId,
       timestamp,
       cwd: project,
-      version: "2.1.233",
+      version: CLAUDE_RECORD_SCHEMA_VERSION,
       isSidechain: false,
       userType: "external",
       message: { role, content },
@@ -237,7 +257,7 @@ export function renderNative(
 
 export async function planSessionHandoff(
   value: unknown,
-  sessions: { document(id: string): Promise<SessionDocument> },
+  sessions: { document(id: string, options?: DocumentOptions): Promise<SessionDocument> },
   sessionStore: SessionStore,
   store: BackendStore,
   dataDir: string,
@@ -249,7 +269,13 @@ export async function planSessionHandoff(
   const source = sessionStore.get(request.sessionId);
   if (!source || source.workspace_id !== request.workspaceId)
     throw new Error("Conversation metadata is no longer available");
-  const original = await sessions.document(request.sessionId);
+  // The choice made at preview time: the source is read again here and again when a persisted
+  // plan continues, and all three reads must see the same document.
+  const includePreCompactionHistory = request.includePreCompactionHistory === true;
+  const original = await sessions.document(
+    request.sessionId,
+    includePreCompactionHistory ? { includePreCompactionHistory } : undefined,
+  );
   const workspace = resolveWorkspaceIdentity(store, request.workspaceId);
   const continuationWorkspaceId = workspace.archiveWorkspaceId;
   const document = structuredClone(original);
@@ -258,6 +284,11 @@ export async function planSessionHandoff(
     throw new Error("Conversation changed after the continuation preview was prepared");
   if (document.losses.some((loss) => loss.code !== "reasoning-excluded") && !request.acceptLosses)
     throw new Error("Continuation losses must be acknowledged");
+  if (
+    request.mode === "native-session" &&
+    nativeHistoryIncomplete(document, includePreCompactionHistory)
+  )
+    throw new Error("Native import requires complete pre-compaction history");
   const archiveId: string = request.archiveId ?? randomUUID();
   const window = await readHandoff(
     "window",
@@ -303,6 +334,7 @@ export async function planSessionHandoff(
       expected: prepared.expected,
       payload: prepared.payload,
       marker: prepared.marker,
+      ...(includePreCompactionHistory ? { include_pre_compaction_history: true } : {}),
     };
     const { content, hash: planHash } = await serializeHandoff(plan, true, false);
     const directory = path.join(
@@ -394,11 +426,17 @@ export async function planSessionHandoff(
         request.targetAgent,
         document,
         snapshot,
+        includePreCompactionHistory,
       );
     }
     if (request.targetAgent !== "codex" && request.targetAgent !== "claude-code")
       throw new Error("Target Agent does not support native sessions");
-    const capability = await nativeImportCapability(request.targetAgent, commands, environment);
+    const capability = await nativeImportCapability(
+      request.targetAgent,
+      commands,
+      environment,
+      project,
+    );
     if (!capability.supported) throw new Error("Native session import is no longer available");
     const sessionId = randomUUID();
     const date = new Date(generated);
@@ -415,13 +453,12 @@ export async function planSessionHandoff(
         `rollout-${filenameStamp}-${sessionId}.jsonl`,
       );
     } else {
-      const projectKey = project.replaceAll("/", "-").replaceAll("\\", "-").replaceAll(":", "-");
-      target = path.join(
-        environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"),
-        "projects",
-        projectKey,
-        `${sessionId}.jsonl`,
-      );
+      const claude = resolveClaudeConfig(environment, home);
+      assertClaudeConfigWritable(claude);
+      const projectKey = claudeProjectKey(project, environment);
+      if (!projectKey.ok)
+        throw new Error("Claude Code project directory cannot be determined for this workspace");
+      target = path.join(claudeConfigFiles(claude).projects, projectKey.key, `${sessionId}.jsonl`);
     }
     if (existsSync(target)) throw new Error("Native target session already exists");
     const targetAgent = request.targetAgent;

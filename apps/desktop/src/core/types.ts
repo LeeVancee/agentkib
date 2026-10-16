@@ -1,3 +1,20 @@
+export type {
+  PrepareSkillSyncRequest,
+  SkillSyncOperation,
+  SkillSyncResolution,
+  SkillSyncComparison,
+  SkillSyncPolicy,
+  SaveSkillSyncPolicyRequest,
+  SkillSyncPreview,
+  SkillSyncReport,
+  SkillSyncRun,
+  SkillSyncRuns,
+  SkillSyncCoordinatorState,
+  SkillSyncState,
+  SkillSyncDeploymentState,
+  SkillSyncLibraryState,
+} from "@agentkib/runtime-protocol";
+
 export type AgentKind =
   | "codex"
   | "claude-code"
@@ -82,6 +99,7 @@ export interface Manifest {
   >;
 }
 export interface ContextPreview {
+  legacy_declared_skills?: string[];
   agent: AgentKind;
   project: string;
   cwd: string;
@@ -534,6 +552,8 @@ export interface SkillCatalogSnapshot {
 }
 export type InstalledSkillStatus = "current" | "update-available" | "modified" | "unmanaged";
 export interface InstalledSkill {
+  update_check?: "failed";
+  update_error?: string;
   content_sha256?: string;
   warnings?: string[];
   name: string;
@@ -696,6 +716,10 @@ export interface PrepareSkillDeploymentRequest {
   target_ids?: string[];
 }
 export interface SkillDeployment {
+  lifecycle_status?: "active" | "inactive";
+  origin?: "agentkib" | "adopted" | "legacy-unknown";
+  adopted_at?: string;
+  adoption_operation_id?: string;
   id: string;
   library_id: string;
   library_root?: string | null;
@@ -1286,6 +1310,8 @@ export type SessionLossCode =
   | "external-attachment"
   | "reasoning-excluded"
   | "source-content-truncated"
+  | "compacted-history"
+  | "compaction-link-unavailable"
   | "target-tool-summary"
   | "target-attachment-omitted";
 export interface SessionLoss {
@@ -1341,6 +1367,8 @@ export interface SessionHandoffRequest {
   history_budget_tokens: number;
   target_surface?: "cursor-ide";
   binding_id?: string;
+  /** Claude Code sources only: also hand over the history that a compaction replaced. */
+  include_pre_compaction_history?: boolean;
 }
 export type CursorBridgeRequest =
   | { action: "status"; workspaceId: string }
@@ -1377,6 +1405,8 @@ export interface SessionHandoffDraft {
   capabilities: ContinuationCapabilities;
   stats: SessionImportStats;
   history_budget_tokens: number;
+  /** The choice this preview was prepared with; planning must repeat it. */
+  include_pre_compaction_history: boolean;
   window_strategy: SessionWindowStrategy;
   window_stats: SessionWindowStats;
   archive_id?: string;

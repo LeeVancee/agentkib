@@ -6,6 +6,8 @@ import { api } from "@/core/api";
 import { ClaudeSessionPanel } from "./ClaudeSessionPanel";
 import type { Live } from "../../../../../packages/web-client/src/index";
 import type { SessionStreamHandlers } from "@agentkib/web-client";
+import { permissionModeCopy } from "@/features/sessions/conversation/features/sessions/permission-mode-copy";
+import type { SupportedLocale as Locale } from "@/core/types";
 vi.mock("@/core/api", () => ({ api: { claudeRequest: vi.fn() } }));
 vi.mock("@/core/useI18n", () => ({ useI18n: () => ({ locale }) }));
 vi.mock("@/components/MarkdownContent", () => ({
@@ -1022,4 +1024,71 @@ it("does not remove a newer pending identity when the previous panel's IPC respo
     JSON.parse(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")!).requestId,
   ).toBe(newer);
   await act(async () => replies[1]({ accepted: true, sessionId: "session" }));
+});
+
+describe("Claude local owner panel permission mode notice", () => {
+  const languages: Locale[] = ["en-US", "zh-CN", "zh-TW", "ja-JP"];
+  const keys = ["auto", "dontAsk", "bypassPermissions", "possiblyAuto", "previous"] as const;
+  const shown = (text: string) =>
+    screen.queryAllByRole("status").some((element) => element.textContent?.includes(text));
+  const warnings: Array<[string, NonNullable<Live["permission"]>, Array<(typeof keys)[number]>]> = [
+    ["auto", { mode: "auto" }, ["auto"]],
+    ["dontAsk", { mode: "dontAsk" }, ["dontAsk"]],
+    ["bypassPermissions", { mode: "bypassPermissions" }, ["bypassPermissions"]],
+    ["an unknown mode with the version hint", { mode: null, possiblyAuto: true }, ["possiblyAuto"]],
+    ["a previously observed auto mode", { mode: "auto", previous: true }, ["auto", "previous"]],
+  ];
+  const quiet: Array<[string, Live["permission"]]> = [
+    ["default", { mode: "default" }],
+    ["plan", { mode: "plan" }],
+    ["acceptEdits", { mode: "acceptEdits" }],
+    ["an unknown mode without a hint", { mode: null }],
+    ["no permission field", undefined],
+  ];
+
+  it.each(
+    languages.flatMap((code) =>
+      warnings.map(([name, permission, expected]) => ({ code, name, permission, expected })),
+    ),
+  )("shows $name in $code in the owner panel", async ({ code, permission, expected }) => {
+    locale = code;
+    live = { ...live, permission };
+    mount();
+    await screen.findByText("Synthetic history");
+    const copy = permissionModeCopy[code];
+    await waitFor(() => expect(shown(copy[expected[0]!])).toBe(true));
+    for (const key of keys) expect(shown(copy[key])).toBe(expected.includes(key));
+  });
+
+  it.each(quiet)("shows no notice for %s", async (_name, permission) => {
+    live = { ...live, ...(permission ? { permission } : {}) };
+    mount();
+    await screen.findByText("Synthetic history");
+    await enabled(screen.getByLabelText("Message"));
+    for (const key of keys) expect(shown(permissionModeCopy["en-US"][key])).toBe(false);
+  });
+
+  it("follows native patches without disabling controls and drops the notice on an explicit clear", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enabled(screen.getByLabelText("Message"));
+    const copy = permissionModeCopy["en-US"];
+    act(() => emitNative(1, "state", { revision: 2, permission: { mode: "auto" } }));
+    await waitFor(() => expect(shown(copy.auto)).toBe(true));
+    // A permission-only patch is display data: it does not pause the composer.
+    expect(screen.getByLabelText("Message")).toBeEnabled();
+    act(() => emitNative(2, "state", { revision: 3, permission: { mode: "bypassPermissions" } }));
+    await waitFor(() => expect(shown(copy.bypassPermissions)).toBe(true));
+    expect(shown(copy.auto)).toBe(false);
+    act(() => emitNative(3, "state", { revision: 4, permission: { mode: "plan" } }));
+    await waitFor(() => expect(shown(copy.bypassPermissions)).toBe(false));
+    act(() =>
+      emitNative(4, "state", { revision: 5, permission: { mode: "auto", previous: true } }),
+    );
+    await waitFor(() => expect(shown(copy.previous)).toBe(true));
+    act(() => emitNative(5, "state", { revision: 6, permission: { mode: null } }));
+    await waitFor(() => expect(shown(copy.auto)).toBe(false));
+    expect(shown(copy.previous)).toBe(false);
+    expect(screen.getByLabelText("Message")).toBeEnabled();
+  });
 });

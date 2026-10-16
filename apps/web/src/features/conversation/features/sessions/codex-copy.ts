@@ -404,6 +404,12 @@ const reasons: Record<Locale, Record<string, string>> = {
     "unsupported-codex-cli-version": "当前 Codex 版本未经兼容验证，此能力保持只读。",
     "native-operation-not-integrated": "此原生操作尚未接入远控。",
     "control-outcome-unconfirmed": "上次执行结果尚未确认，请先核对原生状态与请求回执。",
+    "claude-background-task":
+      "Claude 启动了后台任务。托管会话无法监管后台任务，所以 AgentKib 停止了该会话，避免进程无人看管。Claude Code 自己保存着此前的对话（最后几条消息可能缺失）。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。",
+    "claude-unrequested-turn":
+      "AgentKib 发起的这一轮结束后，Claude 仍在继续工作（例如后台子代理完成）。托管会话只跟随自己发起的回合，所以 AgentKib 停止了会话，以保持此处显示与已保存的对话一致。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。",
+    "claude-protocol-violation":
+      "AgentKib 无法解析 Claude Code 的输出，为安全起见已停止会话。Claude Code 自己保存着此前的对话（最后几条消息可能缺失）。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。若反复出现，请更新 AgentKib 并反馈 Claude Code 的版本。",
     permission_denied: "此浏览器尚未获得对应权限，请在桌面授权。",
   },
   "zh-TW": {
@@ -428,6 +434,12 @@ const reasons: Record<Locale, Record<string, string>> = {
     "unsupported-codex-cli-version": "目前 Codex 版本未經相容驗證，此能力保持唯讀。",
     "native-operation-not-integrated": "此原生操作尚未接入遠端控制。",
     "control-outcome-unconfirmed": "上次執行結果尚未確認，請先核對原生狀態與請求回執。",
+    "claude-background-task":
+      "Claude 啟動了背景任務。受管對話無法監管背景任務，所以 AgentKib 停止了該對話，避免程序無人看管。Claude Code 自己保存著先前的對話（最後幾則訊息可能缺失）。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。",
+    "claude-unrequested-turn":
+      "AgentKib 發起的這一輪結束後，Claude 仍在繼續工作（例如背景子代理完成）。受管對話只跟隨自己發起的回合，所以 AgentKib 停止了對話，以保持此處顯示與已儲存的對話一致。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。",
+    "claude-protocol-violation":
+      "AgentKib 無法解析 Claude Code 的輸出，為安全起見已停止對話。Claude Code 自己保存著先前的對話（最後幾則訊息可能缺失）。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。若反覆出現，請更新 AgentKib 並回報 Claude Code 的版本。",
     permission_denied: "此瀏覽器尚未取得對應權限，請在桌面授權。",
   },
   "en-US": {
@@ -465,6 +477,12 @@ const reasons: Record<Locale, Record<string, string>> = {
       "This native operation is not integrated into remote access yet.",
     "control-outcome-unconfirmed":
       "The previous outcome is unknown. Check native state and the saved receipt first.",
+    "claude-background-task":
+      "Claude started a background task. A managed session cannot supervise background work, so AgentKib stopped it rather than leave processes running unattended. Claude Code keeps the conversation up to that point (the last messages may be missing). This session is read-only in AgentKib; continue it in the Claude Code terminal.",
+    "claude-unrequested-turn":
+      "Claude kept working after the turn AgentKib started had ended (for example a background sub-agent finished). Managed sessions only follow turns they start, so AgentKib stopped the session to keep this view consistent with the saved conversation. This session is read-only in AgentKib; continue it in the Claude Code terminal.",
+    "claude-protocol-violation":
+      "AgentKib could not follow Claude Code's output and stopped the session to stay safe. Claude Code keeps the conversation up to that point (the last messages may be missing). This session is read-only in AgentKib; continue it in the Claude Code terminal. If this keeps happening, update AgentKib and report the Claude Code version.",
     permission_denied: "This browser needs the corresponding desktop permission.",
   },
   "ja-JP": {
@@ -499,9 +517,20 @@ const reasons: Record<Locale, Record<string, string>> = {
     "native-operation-not-integrated": "このネイティブ操作はリモートアクセスに未対応です。",
     "control-outcome-unconfirmed":
       "前回の結果が未確認です。ネイティブ状態と保存済みリクエストの応答を確認してください。",
+    "claude-background-task":
+      "Claude がバックグラウンドタスクを開始しました。管理対象の会話ではバックグラウンド作業を監督できないため、プロセスが放置されないよう AgentKib が会話を停止しました。Claude Code はそれまでの会話を保存しています（最後の数件は欠けている可能性があります）。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。",
+    "claude-unrequested-turn":
+      "AgentKib が開始したターンが終わった後も Claude が作業を続けました（例: バックグラウンドのサブエージェントの完了）。管理対象の会話は自分で開始したターンだけを追うため、保存済みの会話と表示を一致させるために AgentKib が会話を停止しました。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。",
+    "claude-protocol-violation":
+      "AgentKib は Claude Code の出力を解釈できなかったため、安全のため会話を停止しました。Claude Code はそれまでの会話を保存しています（最後の数件は欠けている可能性があります）。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。繰り返し発生する場合は、AgentKib を更新し、Claude Code のバージョンを報告してください。",
     permission_denied: "このブラウザーにはデスクトップで対応する権限を付与する必要があります。",
   },
 };
+const claudeStopCodes = [
+  "claude-background-task",
+  "claude-unrequested-turn",
+  "claude-protocol-violation",
+];
 export function codexReason(locale: Locale, reason?: string): { text: string; technical?: string } {
   if (
     reason === "unverified-installation" ||
@@ -510,6 +539,15 @@ export function codexReason(locale: Locale, reason?: string): { text: string; te
   ) {
     return { text: unavailableReasonText(reason, dictionaries[locale]) };
   }
+  // A stopped Claude session stores `<code>: <detail>`; the code is explained, the detail is
+  // shown as the technical text.
+  const separator = reason?.indexOf(": ") ?? -1;
+  const code = reason && separator > 0 ? reason.slice(0, separator) : undefined;
+  if (reason && code && claudeStopCodes.includes(code))
+    return {
+      text: reasons[locale][code]!,
+      ...(reason.length > separator + 2 ? { technical: reason.slice(separator + 2) } : {}),
+    };
   const text = reason ? reasons[locale][reason] : undefined;
   return text
     ? { text }

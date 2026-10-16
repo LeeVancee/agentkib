@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmbeddedConversation } from "./conversation/conversation";
 import { WebClient, type Access, type Live } from "@agentkib/web-client";
+import { permissionModeCopy } from "./conversation/features/sessions/permission-mode-copy";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import {
   createDesktopConversationAdapter,
@@ -16,7 +17,7 @@ afterEach(() => {
 });
 
 describe("desktop embedded conversation", () => {
-  it("opens Claude handoff through the trusted bridge without sending or discarding the draft", async () => {
+  it("rechecks Claude handoff eligibility through the trusted bridge without discarding the draft", async () => {
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     sessionStorage.clear();
     const state: { live: Live; owned: boolean } = {
@@ -49,6 +50,7 @@ describe("desktop embedded conversation", () => {
         manage: true,
       },
     };
+    const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
     const bridge: DesktopConversationBridge = {
       request: vi.fn(async (path) => {
         const operation = path.split("?")[0];
@@ -121,7 +123,7 @@ describe("desktop embedded conversation", () => {
           state.owned = true;
           state.live = {
             ...state.live,
-            revision: 2,
+            revision: state.live.revision + 1,
             executionMode: "claude-managed",
             reason: undefined,
             sendEnabled: true,
@@ -150,7 +152,10 @@ describe("desktop embedded conversation", () => {
       })),
       acknowledge: vi.fn(async () => {}),
       unsubscribe: vi.fn(async () => {}),
-      onEvent: () => () => {},
+      onEvent: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
       onUnavailable: () => () => {},
       onControlChanged: () => () => {},
     };
@@ -188,6 +193,37 @@ describe("desktop embedded conversation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "确认续接" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
+    );
+    function emitLive(seq: number) {
+      for (const listener of listeners)
+        listener({
+          protocolVersion: 2,
+          sessionId: "claude-session",
+          subscriptionId: "claude-subscription",
+          runtimeBootId: "runtime",
+          epoch: "epoch",
+          seq,
+          cursor: `cursor-${seq}`,
+          type: "snapshot",
+          payload: { live: { ...state.live } },
+        });
+    }
+    state.live = {
+      ...state.live,
+      revision: 2,
+      reason: "control-outcome-unconfirmed",
+    };
+    act(() => emitLive(1));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
+    expect(mutations()).toEqual([]);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeDisabled(),
+    );
+    expect(draft).toHaveValue("保留桌面草稿");
+    state.live = { ...state.live, revision: 3, reason: "handoff-required" };
+    act(() => emitLive(2));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
     );
@@ -445,5 +481,214 @@ describe("desktop embedded conversation", () => {
     expect(vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send")).toHaveLength(
       1,
     );
+  });
+
+  describe("Claude permission mode notice", () => {
+    // Hand-built bridge for a managed Claude session; no real session data is involved.
+    function claudeBridge(initial: Live) {
+      const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
+      const access: Access = {
+        protocolVersion: 2,
+        status: "approved",
+        csrfToken: "local",
+        bootId: "boot",
+        experimentalEnabled: true,
+        device: {
+          id: "local",
+          name: "Desktop",
+          accessMode: "full",
+          send: true,
+          approve: true,
+          advancedControl: true,
+          manage: true,
+        },
+      };
+      const bridge: DesktopConversationBridge = {
+        request: vi.fn(async (path) => {
+          const operation = path.split("?")[0];
+          if (operation === "access") return { status: 200, body: access };
+          if (operation === "catalog")
+            return {
+              status: 200,
+              body: {
+                indexEnabled: true,
+                workspaces: [{ id: "workspace", name: "Project", path: "/isolated/project" }],
+                sessions: [
+                  {
+                    id: "claude-session",
+                    workspace_id: "workspace",
+                    agent: "claude-code",
+                    title: "Native Claude conversation",
+                    availability: "readable",
+                    archived: false,
+                    sidechain: false,
+                  },
+                ],
+              },
+            };
+          if (operation === "events")
+            return {
+              status: 200,
+              body: {
+                events: [
+                  {
+                    id: "history",
+                    kind: "agent-message",
+                    content: "Existing Claude history",
+                    attachment_count: 0,
+                    truncated: false,
+                  },
+                ],
+                warnings: [],
+              },
+            };
+          if (operation === "live") return { status: 200, body: initial };
+          if (operation === "managed/capabilities")
+            return {
+              status: 200,
+              body: {
+                sessionId: "claude-session",
+                executionMode: "claude-managed",
+                status: "idle",
+                features: { send: { available: true } },
+              },
+            };
+          return { status: 200, body: {} };
+        }),
+        upload: vi.fn(async () => ({ status: 400, body: { error: "not-used" } })),
+        subscribe: vi.fn(async (sessionId): Promise<ConversationSubscription<Live>> => ({
+          subscriptionId: "claude-subscription",
+          events: [
+            {
+              protocolVersion: 2,
+              sessionId,
+              subscriptionId: "claude-subscription",
+              runtimeBootId: "runtime",
+              epoch: "epoch",
+              seq: 0,
+              cursor: "cursor-0",
+              type: "snapshot",
+              payload: { live: { ...initial, sessionId } },
+            },
+          ],
+          cursor: "cursor-0",
+        })),
+        acknowledge: vi.fn(async () => {}),
+        unsubscribe: vi.fn(async () => {}),
+        onEvent: (listener) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        onUnavailable: () => () => {},
+        onControlChanged: () => () => {},
+      };
+      let seq = 0;
+      const patch = (payload: Partial<Live>) =>
+        act(() => {
+          seq += 1;
+          const event: SessionStreamEvent<Live> = {
+            protocolVersion: 2,
+            sessionId: "claude-session",
+            subscriptionId: "claude-subscription",
+            runtimeBootId: "runtime",
+            epoch: "epoch",
+            seq,
+            cursor: `cursor-${seq}`,
+            type: "state",
+            payload,
+          };
+          for (const listener of listeners) listener(event);
+        });
+      return { bridge, patch };
+    }
+    const live = (permission?: Live["permission"]): Live => ({
+      sessionId: "claude-session",
+      status: "idle",
+      revision: 1,
+      sendEnabled: true,
+      approvals: [],
+      questions: [],
+      executionMode: "claude-managed",
+      cliVersion: "2.1.296 (Claude Code)",
+      ...(permission ? { permission } : {}),
+    });
+    const shown = (text: string) =>
+      screen.queryAllByRole("status").some((element) => element.textContent?.includes(text));
+    async function open(initial: Live, locale: "zh-CN" | "en-US" | "zh-TW" | "ja-JP" = "zh-CN") {
+      vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+      sessionStorage.clear();
+      const fixture = claudeBridge(initial);
+      render(
+        <EmbeddedConversation
+          client={
+            new WebClient(
+              undefined,
+              { type: "same-origin" },
+              createDesktopConversationAdapter(() => fixture.bridge),
+            )
+          }
+          sessionId="claude-session"
+          locale={locale}
+          onSessionChange={vi.fn()}
+        />,
+      );
+      expect(await screen.findByText("Existing Claude history")).toBeVisible();
+      return fixture;
+    }
+
+    it.each([
+      ["zh-CN", "auto", { mode: "auto" }],
+      ["en-US", "dontAsk", { mode: "dontAsk" }],
+      ["zh-TW", "bypassPermissions", { mode: "bypassPermissions" }],
+      ["ja-JP", "possiblyAuto", { mode: null, possiblyAuto: true }],
+    ] as const)(
+      "shows the %s %s notice in the desktop composer",
+      async (locale, key, permission) => {
+        await open(live(permission), locale);
+        const copy = permissionModeCopy[locale];
+        await waitFor(() => expect(shown(copy[key])).toBe(true));
+        for (const other of [
+          "auto",
+          "dontAsk",
+          "bypassPermissions",
+          "possiblyAuto",
+          "previous",
+        ] as const)
+          if (other !== key) expect(shown(copy[other])).toBe(false);
+      },
+    );
+
+    it.each([
+      ["default", { mode: "default" }],
+      ["an unknown mode without a hint", { mode: null }],
+      ["no permission field", undefined],
+    ] as const)("shows no notice for %s", async (_name, permission) => {
+      await open(live(permission));
+      const copy = permissionModeCopy["zh-CN"];
+      for (const key of [
+        "auto",
+        "dontAsk",
+        "bypassPermissions",
+        "possiblyAuto",
+        "previous",
+      ] as const)
+        expect(shown(copy[key])).toBe(false);
+    });
+
+    it("updates from native patches and shows the previous-mode suffix", async () => {
+      const fixture = await open(live({ mode: null, possiblyAuto: true }), "en-US");
+      const copy = permissionModeCopy["en-US"];
+      await waitFor(() => expect(shown(copy.possiblyAuto)).toBe(true));
+      fixture.patch({ revision: 2, permission: { mode: "auto" } });
+      await waitFor(() => expect(shown(copy.auto)).toBe(true));
+      expect(shown(copy.possiblyAuto)).toBe(false);
+      fixture.patch({ revision: 3, permission: { mode: "auto", previous: true } });
+      await waitFor(() => expect(shown(copy.previous)).toBe(true));
+      fixture.patch({ revision: 4, permission: { mode: null } });
+      await waitFor(() => expect(shown(copy.auto)).toBe(false));
+      expect(shown(copy.previous)).toBe(false);
+    });
   });
 });

@@ -56,6 +56,7 @@ function WorkspaceSessionsRoute() {
               format: search.handoffFormat,
               targetSurface: search.handoffSurface,
               bindingId: search.handoffBinding,
+              ...(search.handoffPreCompaction ? { includePreCompactionHistory: true } : {}),
               autoPrepare: search.handoffResume === "recheck",
             }
           : undefined
@@ -73,6 +74,7 @@ function WorkspaceSessionsRoute() {
             handoffFormat: undefined,
             handoffSurface: undefined,
             handoffBinding: undefined,
+            handoffPreCompaction: undefined,
             handoffResume: undefined,
           }),
         });
@@ -92,6 +94,7 @@ function WorkspaceSessionsRoute() {
             handoffFormat: request.format,
             handoffSurface: request.targetSurface,
             handoffBinding: request.bindingId,
+            handoffPreCompaction: request.includePreCompactionHistory ? (true as const) : undefined,
             handoffResume: "return" as const,
           }),
         });

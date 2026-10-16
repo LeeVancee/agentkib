@@ -3,15 +3,16 @@ import { lstatSync, statSync } from "node:fs";
 import { parse as toml } from "smol-toml";
 import { Commands } from "./commands";
 import { canonicalize, isDirectory } from "./paths";
-import { isFile, readText, within, withinLexical } from "./files";
+import { isFile, within, withinLexical } from "./files";
 import {
   append,
   budgetWarning,
+  checkedPrefix,
   decodePrefix,
   entries,
   lines,
-  prefix,
   readContext,
+  readContextText,
   TOTAL_CHARS,
   type Budget,
 } from "./context-files";
@@ -43,7 +44,11 @@ export function deepseekRoot(root: string, cwd: string): string {
       return cwd;
   }
 }
-export function deepseekSkills(root: string, environment: NodeJS.ProcessEnv): string[] {
+export function deepseekSkills(
+  root: string,
+  environment: NodeJS.ProcessEnv,
+  skipSource: (file: string) => boolean = () => false,
+): string[] {
   const home = userHome(environment),
     dsh = environment.DSH_HOME ?? path.join(home, ".dsh"),
     names = new Set<string>();
@@ -55,8 +60,8 @@ export function deepseekSkills(root: string, environment: NodeJS.ProcessEnv): st
   ])
     for (const file of entries(directory))
       if (
-        (isDirectory(file) && isFile(path.join(file, "SKILL.md"))) ||
-        path.extname(file) === ".md"
+        !skipSource(isDirectory(file) ? path.join(file, "SKILL.md") : file) &&
+        ((isDirectory(file) && isFile(path.join(file, "SKILL.md"))) || path.extname(file) === ".md")
       )
         names.add(path.basename(file, path.extname(file)));
   return [...names].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
@@ -66,6 +71,7 @@ export function deepseekSections(
   dirs: string[],
   warnings: string[],
   environment: NodeJS.ProcessEnv,
+  skipSource: (file: string) => boolean = () => false,
 ): Section[] {
   const output: Section[] = [],
     home = environment.DSH_HOME ?? path.join(userHome(environment), ".dsh");
@@ -90,6 +96,7 @@ export function deepseekSections(
       warnings.push(`DeepSeek Harness instruction budget of 64 KiB truncated ${file}`);
   };
   const read = (file: string): string | null => {
+    if (skipSource(file)) return null;
     let metadata;
     try {
       metadata = statSync(file);
@@ -102,7 +109,7 @@ export function deepseekSections(
       return null;
     }
     try {
-      return readText(file, 1024 * 1024, false);
+      return readContextText(file, 1024 * 1024, skipSource);
     } catch {
       warnings.push(`Could not read ${file}`);
       return null;
@@ -116,8 +123,11 @@ export function deepseekSections(
       path.join(home, "cordis.patch.yml"),
       ...entries(path.join(home, "profiles")).map((file) => path.join(file, "cordis.patch.yml")),
     ].some((file) => {
+      if (skipSource(file)) return false;
       try {
-        const { content } = readContext(file);
+        const { content } = readContext(file, (source, limit) =>
+          checkedPrefix(source, limit, skipSource),
+        );
         return content.includes("agent-instructions") || content.includes("skill-filesystem");
       } catch {
         return false;
@@ -150,12 +160,14 @@ export async function grokSections(
   warnings: string[],
   environment: NodeJS.ProcessEnv,
   commands: Commands,
+  skipSource: (file: string) => boolean = () => false,
 ): Promise<Section[]> {
   const user = userHome(environment),
     home = environment.GROK_HOME ?? path.join(user, ".grok");
   const config = (file: string): Record<string, unknown> => {
+    if (skipSource(file)) return {};
     try {
-      return toml(readText(file, 1024 * 1024, false)) as Record<string, unknown>;
+      return toml(readContextText(file, 1024 * 1024, skipSource)) as Record<string, unknown>;
     } catch {
       return {};
     }
@@ -292,6 +304,7 @@ export async function grokSections(
     output: Section[] = [],
     budget: Budget = { remaining: TOTAL_CHARS };
   for (const source of sources) {
+    if (skipSource(source)) continue;
     if (!budget.remaining) {
       budgetWarning(warnings);
       break;
@@ -311,7 +324,7 @@ export async function grokSections(
       continue;
     let content: string, truncated: boolean;
     try {
-      const raw = decodePrefix(prefix(resolved, 40004, true), true),
+      const raw = decodePrefix(checkedPrefix(resolved, 40004, skipSource, true), true),
         chars = [...raw];
       content = chars.slice(0, 10000).join("");
       truncated = chars.length > 10000;

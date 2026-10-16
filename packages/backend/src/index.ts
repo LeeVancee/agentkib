@@ -197,7 +197,6 @@ export class TypeScriptBackend {
     this.#mcpOAuth = undefined;
     this.#remoteGateways = undefined;
     this.#remoteAgent = undefined;
-    this.#webRead?.close();
     this.#sessions?.close();
     this.#sessions = undefined;
     this.#cursorBridge?.close();
@@ -220,6 +219,7 @@ export class TypeScriptBackend {
     const mcp = this.#mcp;
     const mcpHub = this.#mcpHub;
     const remoteAgent = this.#remoteAgent;
+    const webRead = this.#webRead;
     this.#claudeManaged = undefined;
     this.#claudeBridge = undefined;
     this.#mcpHub = undefined;
@@ -234,6 +234,9 @@ export class TypeScriptBackend {
         Promise.resolve().then(() => claudeBridge?.close()),
         Promise.resolve().then(() => mcpHub?.close()),
         Promise.resolve().then(() => remoteAgent?.close()),
+        // Native CLI processes must release their workspace before shutdown is
+        // acknowledged and the backing stores (or temporary workspace) close.
+        Promise.resolve().then(() => webRead?.closeAsync()),
       ]);
       this.#reset();
       const failed = results.find((result) => result.status === "rejected");

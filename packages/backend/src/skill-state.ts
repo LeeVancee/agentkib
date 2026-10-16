@@ -249,7 +249,9 @@ export class SkillStateStore {
         throw new Error("Skill package changed while snapshotting");
       for (const entry of staged.files) {
         if (entry.path.endsWith("/")) continue;
-        const handle = await fs.open(path.join(temporary, entry.path), constants.O_RDONLY);
+        // Windows FlushFileBuffers requires write access, even when only flushing
+        // an already copied file. O_RDWR preserves its contents and final mode.
+        const handle = await fs.open(path.join(temporary, entry.path), constants.O_RDWR);
         try {
           await handle.sync();
         } finally {

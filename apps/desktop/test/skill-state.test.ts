@@ -1,7 +1,7 @@
-import { promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 import { skillPackage } from "../../../packages/backend/src/skill-package";
 import {
@@ -13,6 +13,7 @@ import {
 
 const directories: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     directories.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
   );
@@ -57,6 +58,87 @@ describe("Skill persistent state", () => {
     expect(await fs.readFile(entry, "utf8")).toBe("Damaged\n");
     expect(() => store.snapshotPath("../outside")).toThrow("Invalid Skill snapshot hash");
   });
+
+  it("flushes every snapshot file using a writable handle without changing its contents or mode", async () => {
+    const { source, store } = await fixture();
+    // The copier normalizes native read-only inputs to its existing 0644/0755 contract.
+    await fs.chmod(path.join(source, "resources/data.bin"), 0o444);
+    const original = await skillPackage(source);
+    const open = fs.open.bind(fs);
+    const flushed: string[] = [];
+    vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+      const handle = await open(file, flags, mode);
+      if (
+        String(file)
+          .split(path.sep)
+          .some((part) => part.startsWith(".snapshot-"))
+      ) {
+        const info = await handle.stat();
+        if (info.isFile()) {
+          const sync = handle.sync.bind(handle);
+          vi.spyOn(handle, "sync").mockImplementation(async () => {
+            // Model Windows' FlushFileBuffers requirement on every host.
+            if (typeof flags !== "number" || !(flags & (constants.O_WRONLY | constants.O_RDWR)))
+              throw Object.assign(new Error("EPERM: operation not permitted, fsync"), {
+                code: "EPERM",
+              });
+            flushed.push(path.relative(path.dirname(String(file)), String(file)));
+            return sync();
+          });
+        }
+      }
+      return handle;
+    });
+    const hash = await store.snapshot(source, original.hash);
+    expect(flushed.sort()).toEqual(["SKILL.md", "data.bin", "run.sh"]);
+    expect((await skillPackage(source)).hash).toBe(original.hash);
+    const saved = await store.verifySnapshot(hash);
+    expect((await skillPackage(saved)).hash).toBe(original.hash);
+    expect(await fs.readFile(path.join(saved, "resources/data.bin"))).toEqual(
+      Buffer.from([0, 1, 2, 255]),
+    );
+    if (process.platform !== "win32") {
+      expect((await fs.stat(path.join(saved, "resources/data.bin"))).mode & 0o777).toBe(0o644);
+      expect((await fs.stat(path.join(saved, "run.sh"))).mode & 0o777).toBe(0o755);
+      expect((await fs.stat(path.join(source, "resources/data.bin"))).mode & 0o777).toBe(0o444);
+    }
+  });
+
+  it.each(["EPERM", "EIO"])(
+    "does not publish a snapshot when its file flush fails with %s",
+    async (code) => {
+      const { source, store } = await fixture();
+      const original = await skillPackage(source);
+      const open = fs.open.bind(fs);
+      const failure = Object.assign(new Error(`Injected ${code} during snapshot flush`), { code });
+      let attempted = false;
+      vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+        const handle = await open(file, flags, mode);
+        if (
+          String(file)
+            .split(path.sep)
+            .some((part) => part.startsWith(".snapshot-"))
+        ) {
+          const info = await handle.stat();
+          if (info.isFile())
+            vi.spyOn(handle, "sync").mockImplementation(async () => {
+              attempted = true;
+              throw failure;
+            });
+        }
+        return handle;
+      });
+      await expect(store.snapshot(source, original.hash)).rejects.toBe(failure);
+      vi.restoreAllMocks();
+      expect(attempted).toBe(true);
+      expect((await skillPackage(source)).hash).toBe(original.hash);
+      await expect(fs.lstat(store.snapshotPath(original.hash))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(await fs.readdir(path.dirname(store.snapshotPath(original.hash)))).toEqual([]);
+      expect(await store.snapshot(source, original.hash)).toBe(original.hash);
+    },
+  );
 
   it("retains journal stages across instances and refuses an existing operation identity", async () => {
     const { store } = await fixture();

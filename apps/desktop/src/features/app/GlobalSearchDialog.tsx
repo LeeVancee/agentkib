@@ -287,6 +287,7 @@ export function GlobalSearchDialog({
               locale={locale}
               scope={historyScope}
               initialQuery={query}
+              onSettingsOpened={() => onOpenChange(false)}
               onScopeEnded={() => {
                 setHistoryMode(false);
                 setHistoryScope("");

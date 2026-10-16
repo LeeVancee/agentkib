@@ -180,10 +180,13 @@ describe("desktop embedded conversation", () => {
     fireEvent.change(draft, { target: { value: "保留桌面草稿" } });
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(
-      (await screen.findAllByText("尚未交接给 AgentKib，请先停止原终端中的同一会话，再确认续接。"))
-        .length,
+      (
+        await screen.findAllByText(
+          "此会话尚未交给 AgentKib。请先停止原客户端中的同一会话，再确认交接。",
+        )
+      ).length,
     ).toBeGreaterThan(0);
-    fireEvent.click(await screen.findByRole("button", { name: "确认续接" }));
+    fireEvent.click(await screen.findByRole("button", { name: "交给 AgentKib" }));
     const confirm = await screen.findByRole("button", { name: "交给 AgentKib" });
     expect(confirm).toBeDisabled();
     fireEvent.click(confirm);
@@ -192,7 +195,7 @@ describe("desktop embedded conversation", () => {
     expect(draft).toHaveValue("保留桌面草稿");
     expect(mutations()).toEqual([]);
 
-    fireEvent.click(screen.getByRole("button", { name: "确认续接" }));
+    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
@@ -246,7 +249,7 @@ describe("desktop embedded conversation", () => {
       ],
     ]);
     expect(vi.mocked(bridge.request).mock.calls.some(([path]) => path === "send")).toBe(false);
-    expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
   });
 
   it("uses the trusted bridge for history, streaming and sends without pairing or a second application shell", async () => {
@@ -486,7 +489,7 @@ describe("desktop embedded conversation", () => {
 
   describe("Claude permission mode notice", () => {
     // Hand-built bridge for a managed Claude session; no real session data is involved.
-    function claudeBridge(initial: Live) {
+    function claudeBridge(initial: Live, adoptAvailable = false) {
       const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
       const access: Access = {
         protocolVersion: 2,
@@ -551,7 +554,10 @@ describe("desktop embedded conversation", () => {
                 sessionId: "claude-session",
                 executionMode: initial.executionMode,
                 status: "idle",
-                features: { send: { available: initial.sendEnabled } },
+                features: {
+                  send: { available: initial.sendEnabled },
+                  adopt: { available: adoptAvailable },
+                },
               },
             };
           return { status: 200, body: {} };
@@ -617,10 +623,14 @@ describe("desktop embedded conversation", () => {
     });
     const shown = (text: string) =>
       screen.queryAllByRole("status").some((element) => element.textContent?.includes(text));
-    async function open(initial: Live, locale: "zh-CN" | "en-US" | "zh-TW" | "ja-JP" = "zh-CN") {
+    async function open(
+      initial: Live,
+      locale: "zh-CN" | "en-US" | "zh-TW" | "ja-JP" = "zh-CN",
+      adoptAvailable = false,
+    ) {
       vi.spyOn(window, "scrollTo").mockImplementation(() => {});
       sessionStorage.clear();
-      const fixture = claudeBridge(initial);
+      const fixture = claudeBridge(initial, adoptAvailable);
       render(
         <EmbeddedConversation
           client={
@@ -639,6 +649,27 @@ describe("desktop embedded conversation", () => {
       return fixture;
     }
 
+    it("keeps an original-terminal connection outside managed handoff with stale adoption capabilities", async () => {
+      const { bridge } = await open(
+        {
+          ...live(),
+          executionMode: "claude-follower",
+          sendEnabled: false,
+          reason: "handoff-required",
+        },
+        "zh-CN",
+        true,
+      );
+      const draft = screen.getByRole("textbox", { name: "发送消息" });
+      fireEvent.change(draft, { target: { value: "Keep original terminal draft" } });
+      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      expect(draft).toHaveValue("Keep original terminal draft");
+      expect(vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined)).toEqual(
+        [],
+      );
+    });
+
     it("connects the original Claude session without handoff and retains the draft after disconnect", async () => {
       const { bridge, patch } = await open({
         ...live(),
@@ -646,7 +677,7 @@ describe("desktop embedded conversation", () => {
         connectionGeneration: "lease-a",
       });
       expect(await screen.findByText("已连接原会话")).toBeVisible();
-      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       const draft = screen.getByRole("textbox", { name: "发送消息" });
       fireEvent.change(draft, { target: { value: "保留原终端草稿" } });
       await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
@@ -664,7 +695,7 @@ describe("desktop embedded conversation", () => {
       await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
       expect(draft).toHaveValue("保留原终端草稿");
       expect(screen.getByText("仅查看历史")).toBeVisible();
-      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       expect(
         vi
           .mocked(bridge.request)
@@ -692,7 +723,7 @@ describe("desktop embedded conversation", () => {
         target: { value: "Keep unsent draft" },
       });
       expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       expect(vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send")).toHaveLength(
         0,
       );
@@ -732,7 +763,7 @@ describe("desktop embedded conversation", () => {
       });
       expect(await screen.findByText("正在等待工具审批，请在原终端处理。")).toBeVisible();
       expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     });
 
     it.each([

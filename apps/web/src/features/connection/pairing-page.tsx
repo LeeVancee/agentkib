@@ -4,6 +4,7 @@ import { ChevronRight, MonitorSmartphone, ShieldCheck, Unlink } from "lucide-rea
 import { PairingLayout } from "@/features/connection/pairing-layout";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { codePairingCopy } from "./code-pairing-copy";
+import { pairingErrorCopy, pairingErrorText } from "./pairing-error-copy";
 export function PairingPage() {
   const {
     t,
@@ -14,6 +15,8 @@ export function PairingPage() {
     name,
     setName,
     busy,
+    pairingError,
+    refresh,
     locale,
     post,
     connection,
@@ -32,7 +35,7 @@ export function PairingPage() {
       </div>
       <h1>{direct ? copy.title : t.pairTitle}</h1>
       <p>{direct ? copy.info : t.pairInfo}</p>
-      <form onSubmit={pair}>
+      <form onSubmit={pair} aria-busy={busy}>
         <label>
           {direct ? copy.code : t.code}
           <Input
@@ -44,19 +47,42 @@ export function PairingPage() {
             maxLength={8}
             autoComplete="one-time-code"
             required
+            disabled={busy}
+            aria-invalid={pairingError === "invalid_pairing_code" || undefined}
+            aria-describedby={pairingError ? "pairing-error" : undefined}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
           />
         </label>
         <label>
           {t.name}
-          <Input value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+          <Input
+            value={name}
+            maxLength={80}
+            disabled={busy}
+            onChange={(e) => setName(e.target.value)}
+          />
         </label>
         <aside className="info">
           <ShieldCheck size={19} />
           <span>{direct ? copy.scope : t.scope}</span>
         </aside>
+        {pairingError && (
+          <div className="grid gap-2">
+            <p id="pairing-error" role="alert" className="text-sm text-destructive">
+              {pairingErrorText(locale, pairingError)}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void refresh(true)}
+            >
+              {t.retry}
+            </Button>
+          </div>
+        )}
         <Button variant="default" className="h-11" disabled={busy || code.length !== 8}>
-          {direct ? copy.connect : t.pair}
+          {busy ? pairingErrorCopy[locale].requesting : direct ? copy.connect : t.pair}
           <ChevronRight size={17} />
         </Button>
       </form>

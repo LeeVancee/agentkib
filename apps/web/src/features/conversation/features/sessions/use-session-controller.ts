@@ -47,7 +47,7 @@ import {
 } from "@agentkib/web-client";
 import { displaySessionTitle, isSessionVisible } from "@agentkib/session-catalog";
 import { answerRequestBody, interactionCopy } from "../interactions/question-form";
-import type { CatalogWorkspace } from "../catalog/session-catalog";
+import type { CatalogStatus, CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
 import { dictionaries, type Locale } from "../../i18n";
 import { unavailableReasonText } from "../../live-status";
@@ -125,6 +125,7 @@ export function useSessionController({
     [sessions, setSessions] = useState<ConversationSessionSummary[]>([]),
     [excludedSessionIds, setExcludedSessionIds] = useState<ReadonlySet<string>>(new Set()),
     [catalogNotice, setCatalogNotice] = useState(false),
+    [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("loading"),
     [workspaces, setWorkspaces] = useState<CatalogWorkspace[]>(),
     [selected, setSelected] = useState(""),
     [page, publishPage] = useState<ConversationEventPage>(),
@@ -134,6 +135,7 @@ export function useSessionController({
     [indexEnabled, setIndexEnabled] = useState(true),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(false),
+    [pairingError, setPairingError] = useState<string>(),
     [incompatible, setIncompatible] = useState(false),
     [notice, setNotice] = useState<"accepted" | "uncertain" | "notDispatched">(),
     [code, setCode] = useState(""),
@@ -233,6 +235,7 @@ export function useSessionController({
     excludedIds.current = new Set();
     setExcludedSessionIds(excludedIds.current);
     setCatalogNotice(false);
+    setCatalogStatus("loading");
     setWorkspaces(undefined);
     setPage(undefined);
     setLive(undefined);
@@ -260,8 +263,12 @@ export function useSessionController({
     durablePending.current = [];
   }, [setPage, setHistoryReferences]);
   const leaveSession = useCallback(() => {
-    generation.current++;
-    readinessEpoch.current++;
+    // Mounting the directory with no selected conversation must not invalidate
+    // its initial catalog read, which may still be waiting on the host.
+    if (selection.current) {
+      generation.current++;
+      readinessEpoch.current++;
+    }
     selection.current = "";
     deferredRefresh.current = undefined;
     streamReady.current = false;
@@ -287,6 +294,7 @@ export function useSessionController({
       catalogSessions.current = visible;
       setExcludedSessionIds(excluded);
       setSessions(visible);
+      setCatalogStatus("ready");
       if (excluded.has(selection.current)) {
         leaveSession();
         setCatalogNotice(true);
@@ -470,7 +478,11 @@ export function useSessionController({
   );
   const refresh = useCallback(
     async function refreshCurrent(manual = false, preserveHistory = false): Promise<void> {
+      // A retained successful catalog stays usable while refreshing. Before
+      // the first accepted snapshot, pending and failure are not empty data.
+      setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
       if (manual) {
+        setPairingError(undefined);
         retryCatalogObservation.current?.();
         setCapabilitiesEpoch((value) => value + 1);
       }
@@ -488,6 +500,7 @@ export function useSessionController({
       setError(!!nativeCoverage.current.historyRecoveryFailed);
       setControlReady(false);
       let historyScope: { epoch?: string } | undefined;
+      let catalogOrder: number | undefined;
       try {
         const next = await syncAccess();
         if (
@@ -506,7 +519,7 @@ export function useSessionController({
         flight.generation = g;
         await reconcilePending(selection.current || undefined);
         if (g !== generation.current) return;
-        const catalogOrder = ++catalogReadOrder.current;
+        catalogOrder = ++catalogReadOrder.current;
         const catalog = await client.catalog();
         if (g !== generation.current) return;
         if (contention !== readContention.current.version)
@@ -686,7 +699,16 @@ export function useSessionController({
                 readContention.current.wake !== refreshWake.current)
             )
               resumeDeferredRefresh();
-          } else fail(e, g);
+          } else {
+            if (
+              !historyScope &&
+              g === generation.current &&
+              (catalogOrder === undefined || catalogOrder === catalogReadOrder.current) &&
+              !(e instanceof DOMException && e.name === "AbortError")
+            )
+              setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
+            fail(e, g);
+          }
         } else if (g === generation.current && epoch === readinessEpoch.current)
           await refreshCurrent(
             manual,
@@ -781,6 +803,7 @@ export function useSessionController({
         if (++resets > 3) {
           exhausted = true;
           setCatalogObservationFailed(true);
+          setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
           return;
         }
         store.reset();
@@ -820,6 +843,7 @@ export function useSessionController({
         do {
           dirty = false;
           let g = generation.current;
+          let catalogOrder: number | undefined;
           try {
             const next = await syncAccess(active);
             if (!active()) break;
@@ -841,7 +865,8 @@ export function useSessionController({
             // syncAccess rejects superseded reads; protect subsequent reads using
             // the generation belonging to this newly accepted access instead.
             g = generation.current;
-            const catalogOrder = ++catalogReadOrder.current;
+            catalogOrder = ++catalogReadOrder.current;
+            setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
             const catalog = await client.catalog();
             if (!active()) break;
             if (g !== generation.current) {
@@ -872,7 +897,15 @@ export function useSessionController({
               // settlement/catalog event without fencing the selected conversation.
               if (error instanceof ApiError && error.code === "operation_busy")
                 retryAfterControl = true;
-              else fail(error, g);
+              else {
+                if (
+                  g === generation.current &&
+                  (catalogOrder === undefined || catalogOrder === catalogReadOrder.current) &&
+                  !(error instanceof DOMException && error.name === "AbortError")
+                )
+                  setCatalogStatus((previous) => (previous === "ready" ? previous : "error"));
+                fail(error, g);
+              }
             }
           }
         } while (dirty && active());
@@ -1159,8 +1192,32 @@ export function useSessionController({
   }
   async function pair(e: FormEvent) {
     e.preventDefault();
-    await post("pair", { code, name: name.trim() || "Web" });
-    setCode("");
+    if (mutating.current) return;
+    mutating.current = true;
+    setBusy(true);
+    setError(!!nativeCoverage.current.historyRecoveryFailed);
+    setPairingError(undefined);
+    const g = generation.current;
+    try {
+      await client.request("pair", { code, name: name.trim() || "Web" });
+      if (g !== generation.current) return;
+      // The host consumed the code. A later status-refresh failure must not
+      // invite resubmitting that one-time code as though pairing was rejected.
+      setCode("");
+      await refresh();
+    } catch (e) {
+      if (g !== generation.current) return;
+      if (
+        e instanceof ApiError &&
+        (e.code === "access_ended" || e.code === "incompatible_protocol")
+      )
+        fail(e, g);
+      else if (!(e instanceof DOMException && e.name === "AbortError"))
+        setPairingError(e instanceof ApiError ? e.code : "request_failed");
+    } finally {
+      mutating.current = false;
+      setBusy(false);
+    }
   }
   async function earlier() {
     if (!page?.next_cursor || busy) return;
@@ -1800,6 +1857,7 @@ export function useSessionController({
     sessions,
     excludedSessionIds,
     catalogNotice,
+    catalogStatus,
     workspaces,
     selected,
     page,
@@ -1808,6 +1866,7 @@ export function useSessionController({
     controlReady,
     indexEnabled,
     busy,
+    pairingError,
     error: error || catalogObservationFailed,
     incompatible,
     setIncompatible,

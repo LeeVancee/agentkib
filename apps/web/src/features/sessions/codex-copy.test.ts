@@ -103,9 +103,9 @@ describe("reasons a Claude session was stopped for", () => {
     }
   });
 
-  it("leaves Codex and the general reasons as they were", () => {
+  it("keeps general unknown outcomes separate from stopped Claude sessions", () => {
     expect(codexReason("en-US", "control-outcome-unconfirmed")).toEqual({
-      text: "The previous outcome is unknown. Check native state and the saved receipt first.",
+      text: "The previous outcome is unconfirmed. Check the original client and the saved request status; it will not be sent again automatically.",
     });
     expect(codexReason("en-US", "codex-connection-failed").technical).toBeUndefined();
     expect(codexReason("en-US", "Claude process exited (1)").technical).toBe(

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
@@ -117,6 +118,7 @@ it("shows the failed relay stage and retry time without exposing raw errors or a
     },
   });
   render(<WebAccessSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: "Connection diagnostics" }));
   expect(await screen.findByText("Preview public probe: Connection timed out")).toBeTruthy();
   expect(screen.getByText(/Next retry:/)).toBeTruthy();
   expect(screen.queryByRole("img", { name: "Open on your phone" })).toBeNull();
@@ -400,7 +402,10 @@ it("keeps manual pairing inside advanced settings without exposing an unready re
     await vi.advanceTimersByTimeAsync(2000);
   });
   expect(screen.queryByText("24681357")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Generate 8-digit pairing code" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Generate 8-digit pairing code" })).toBeDisabled();
+  expect(
+    screen.getByText("Wait for the remote connection to be ready. Check its status above."),
+  ).toBeVisible();
   expect(screen.queryByRole("img", { name: "Open on your phone" })).toBeNull();
 });
 
@@ -598,3 +603,420 @@ it("explains full code grants in all four locales without changing LAN pairing",
   expect(screen.getByRole("button", { name: "Authorize" })).toBeTruthy();
   expect(screen.queryByText(webSettingsCopy["en-US"].codeScope)).toBeNull();
 });
+
+it("shows the experimental-control warning in the selected locale without mixed Chinese scripts", async () => {
+  const { remoteEntryCopy } = await import("./remote-entry-copy");
+  const warnings = {
+    "zh-CN":
+      "实验功能仅在通过验证的主机与会话上可用；停止仅表示中断当前轮次，不保证后台命令已结束。",
+    "zh-TW":
+      "實驗功能僅在通過驗證的主機與對話上可用；停止僅表示中斷目前輪次，不保證背景命令已結束。",
+    "en-US":
+      "Experimental controls require a verified host and session. Stopping interrupts a turn; background commands may still run.",
+    "ja-JP":
+      "実験的な操作は検証済みのホストと会話のみで利用できます。停止は現在のターンを中断します。",
+  };
+  request.mockResolvedValue({ ...status, experimentalAvailable: true });
+  await act(() => changeLocale("en-US"));
+  render(<WebAccessSettings />);
+  fireEvent.click(await screen.findByRole("button", { name: remoteEntryCopy["en-US"].advanced }));
+  try {
+    for (const locale of ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const) {
+      await act(() => changeLocale(locale));
+      expect(await screen.findByText(warnings[locale])).toBeVisible();
+    }
+    expect(request.mock.calls.every(([body]) => body.operation === "status")).toBe(true);
+  } finally {
+    await act(() => changeLocale("en-US"));
+  }
+});
+
+it("keeps unsaved settings visible outside advanced controls and saves once while every editable field is locked", async () => {
+  const user = userEvent.setup();
+  render(<WebAccessSettings />);
+  const advanced = await screen.findByRole("button", {
+    name: "Advanced connection and permissions",
+  });
+  fireEvent.click(advanced);
+  const toggle = screen.getByRole("switch", { name: "Enable local Web service" });
+  const directories = screen.getByLabelText(
+    "Additional read-only directories (one absolute path per line)",
+  );
+  fireEvent.click(toggle);
+  fireEvent.change(directories, { target: { value: "/tmp/reports\n" } });
+  expect(toggle).toHaveAccessibleDescription(
+    "These settings, including switches, take effect only after choosing “Save settings”.",
+  );
+  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  fireEvent.click(advanced);
+  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+  fireEvent.click(advanced);
+
+  let finish!: (value: typeof status) => void;
+  request.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const save = screen.getByRole("button", { name: "Save settings" });
+  fireEvent.click(save);
+  fireEvent.click(save);
+  expect(request.mock.calls.filter(([input]) => input.operation === "configure")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Saving settings…" })).toBeDisabled();
+  expect(directories).toBeDisabled();
+  expect(screen.getByLabelText("Bridge service (official or self-hosted)")).toBeDisabled();
+  expect(screen.getByLabelText("Custom frpc executable (optional)")).toBeDisabled();
+  expect(screen.getByLabelText("Preview bandwidth (KiB/s; save settings to apply)")).toBeDisabled();
+  expect(screen.getByLabelText("Invitation (first connection only)")).toBeDisabled();
+  await user.type(directories, "/tmp/not-granted");
+  expect(directories).toHaveValue("/tmp/reports\n");
+  const savedStatus = {
+    ...status,
+    config: {
+      ...status.config,
+      enabled: true,
+      extraRoots: [{ id: "extra-0", name: "reports", path: "/tmp/reports" }],
+    },
+  };
+  await act(async () => finish(savedStatus));
+  expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+  expect(screen.getByText("Settings saved.")).toBeVisible();
+  expect(directories).toHaveValue("/tmp/reports");
+  expect(directories).toBeEnabled();
+});
+
+it("preserves save failure and the draft across a recovered poll, then clears them only after a successful save", async () => {
+  vi.useFakeTimers();
+  const active = { ...status, running: true };
+  request.mockResolvedValue(active);
+  render(<WebAccessSettings />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: "Advanced connection and permissions" }));
+  fireEvent.change(screen.getByLabelText("Port"), { target: { value: "1444" } });
+  request.mockRejectedValueOnce(new Error("save failed"));
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await act(async () => {});
+  expect(screen.getByRole("alert")).toHaveTextContent("Settings could not be saved");
+  expect(screen.getByLabelText("Port")).toHaveValue(1444);
+  // An in-memory server snapshot is not evidence that a failed disk write succeeded.
+  request.mockResolvedValue({ ...active, config: { ...active.config, port: 1444 } });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent("Settings could not be saved");
+  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await act(async () => {});
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+  expect(screen.getByText("Settings saved.")).toBeVisible();
+  expect(request.mock.calls.filter(([input]) => input.operation === "configure")).toHaveLength(2);
+});
+
+it("offers an explicit retry after the initial settings load fails", async () => {
+  request.mockRejectedValueOnce(new Error("offline"));
+  render(<WebAccessSettings />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Web settings unavailable");
+  fireEvent.click(screen.getByRole("button", { name: "Reload settings" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  fireEvent.click(screen.getByRole("button", { name: "Advanced connection and permissions" }));
+  expect(screen.getByLabelText("Port")).toHaveValue(1421);
+  expect(request.mock.calls).toEqual([[{ operation: "status" }], [{ operation: "status" }]]);
+});
+
+it("keeps directory edits and a single visible error when saving returns an explicit failure status", async () => {
+  render(<WebAccessSettings />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Advanced connection and permissions" }),
+  );
+  const directories = screen.getByLabelText(
+    "Additional read-only directories (one absolute path per line)",
+  );
+  fireEvent.change(directories, { target: { value: "/tmp/reports\n" } });
+  request.mockResolvedValue({ ...status, error: "web_state_save_failed" });
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Settings could not be saved");
+  expect(directories).toHaveValue("/tmp/reports\n");
+  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(screen.queryByText("Settings saved.")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled();
+});
+
+it("retains unrelated setting and directory drafts when remote enable updates the running configuration", async () => {
+  render(<WebAccessSettings />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Advanced connection and permissions" }),
+  );
+  fireEvent.change(screen.getByLabelText("Port"), { target: { value: "1444" } });
+  fireEvent.change(
+    screen.getByLabelText("Additional read-only directories (one absolute path per line)"),
+    {
+      target: { value: "/tmp/reports" },
+    },
+  );
+  const relay = { enabled: true, brokerUrl: "https://api.agentkib.com" };
+  const connected = {
+    ...status,
+    running: true,
+    config: {
+      ...status.config,
+      enabled: true,
+      externalOrigin: "https://device.example.com",
+      relay,
+    },
+    relay: { phase: "ready", publicUrl: "https://device.example.com" },
+  };
+  request.mockResolvedValue(connected);
+  fireEvent.click(screen.getByRole("button", { name: "Enable remote access" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Remote access is enabled" })).toBeDisabled(),
+  );
+  expect(screen.getByLabelText("Port")).toHaveValue(1444);
+  expect(screen.getByLabelText("External HTTPS origin")).toHaveValue("https://device.example.com");
+  expect(screen.getByRole("switch", { name: "Enable local Web service" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  expect(
+    screen.getByLabelText("Additional read-only directories (one absolute path per line)"),
+  ).toHaveValue("/tmp/reports");
+  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(request.mock.calls.filter(([input]) => input.operation === "configure")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({
+      operation: "configure",
+      ...connected.config,
+      port: 1444,
+      extraRoots: [{ id: "extra-0", name: "reports", path: "/tmp/reports" }],
+    }),
+  );
+});
+
+it("refreshes untouched fields but preserves edited ports and an intentionally cleared connector path", async () => {
+  vi.useFakeTimers();
+  const active = {
+    ...status,
+    running: true,
+    config: {
+      ...status.config,
+      relay: { enabled: true, brokerUrl: "https://bridge.example.com", frpcPath: "/tmp/frpc" },
+    },
+    relay: { phase: "offline" },
+  };
+  request.mockResolvedValue(active);
+  render(<WebAccessSettings />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: "Advanced connection and permissions" }));
+  fireEvent.change(screen.getByLabelText("Port"), { target: { value: "1444" } });
+  fireEvent.change(screen.getByLabelText("Custom frpc executable (optional)"), {
+    target: { value: "" },
+  });
+  request.mockResolvedValue({
+    ...active,
+    config: {
+      ...active.config,
+      enabled: true,
+      port: 1555,
+      relay: { ...active.config.relay, brokerUrl: "https://new.example.com" },
+    },
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(screen.getByLabelText("Port")).toHaveValue(1444);
+  expect(screen.getByRole("switch", { name: "Enable local Web service" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  expect(screen.getByLabelText("Bridge service (official or self-hosted)")).toHaveValue(
+    "https://new.example.com",
+  );
+  expect(screen.getByLabelText("Custom frpc executable (optional)")).toHaveValue("");
+  expect(screen.getByText("Unsaved changes")).toBeVisible();
+});
+
+it("retains an edited port while pausing remote access updates only the saved relay and origin", async () => {
+  const connected = {
+    ...status,
+    running: true,
+    config: {
+      ...status.config,
+      enabled: true,
+      externalOrigin: "https://device.example.com",
+      relay: { enabled: true, brokerUrl: "https://api.agentkib.com" },
+    },
+    relay: { phase: "ready" },
+  };
+  request.mockResolvedValue(connected);
+  render(<WebAccessSettings />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Advanced connection and permissions" }),
+  );
+  fireEvent.change(screen.getByLabelText("Port"), { target: { value: "1444" } });
+  request.mockResolvedValue({
+    ...connected,
+    config: {
+      ...connected.config,
+      externalOrigin: "",
+      relay: { ...connected.config.relay, enabled: false },
+    },
+    relay: { phase: "disabled" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Pause public access" }));
+  await waitFor(() => expect(screen.getByLabelText("External HTTPS origin")).toHaveValue(""));
+  expect(screen.getByLabelText("Port")).toHaveValue(1444);
+  expect(screen.getByText("Unsaved changes")).toBeVisible();
+  expect(request).toHaveBeenCalledWith({ operation: "relay-stop" });
+  expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "configure" }));
+});
+
+it.each([
+  { running: false, phase: "disabled", reason: "The Web service is not running." },
+  { running: true, phase: "connecting", reason: "Wait for the remote connection to be ready." },
+  { running: false, phase: "ready", reason: "The Web service is not running." },
+])(
+  "explains code generation while running=$running and relay=$phase without sending a request",
+  async ({ running, phase, reason }) => {
+    request.mockResolvedValue({
+      ...status,
+      pairingMode: "code",
+      running,
+      config: { ...status.config, relay: { enabled: true, brokerUrl: "https://api.agentkib.com" } },
+      relay: { phase },
+    });
+    render(<WebAccessSettings />);
+    const generate = await screen.findByRole("button", { name: "Generate 8-digit access code" });
+    expect(generate).toBeDisabled();
+    expect(generate).toHaveAccessibleDescription(expect.stringContaining(reason));
+    fireEvent.click(generate);
+    expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+  },
+);
+
+it("enables code generation only after the service and remote connection become ready", async () => {
+  request.mockResolvedValue({ ...status, pairingMode: "code" });
+  render(<WebAccessSettings />);
+  expect(
+    await screen.findByRole("button", { name: "Generate 8-digit access code" }),
+  ).toBeDisabled();
+  const connected = {
+    ...status,
+    pairingMode: "code",
+    running: true,
+    config: {
+      ...status.config,
+      enabled: true,
+      relay: { enabled: true, brokerUrl: "https://api.agentkib.com" },
+    },
+    relay: { phase: "ready" },
+  };
+  request.mockResolvedValue(connected);
+  fireEvent.click(screen.getByRole("button", { name: "Enable remote access" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Generate 8-digit access code" })).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Generate 8-digit access code" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({ operation: "generate-code", access: "full" }),
+  );
+  expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+});
+
+it("keeps relay phase and retry guidance visible while engineering details require keyboard expansion", async () => {
+  const user = userEvent.setup();
+  request.mockResolvedValue({
+    ...status,
+    relay: {
+      phase: "offline",
+      reason: "connector",
+      error: "internal-connector-text",
+      failure: { stage: "preview-probe", code: "timeout" },
+      connectorExit: { code: 17, signal: "SIGTERM" },
+      channels: { control: true, preview: false },
+      retryAt: Date.now() + 60_000,
+    },
+  });
+  render(<WebAccessSettings />);
+  const diagnostics = await screen.findByRole("button", { name: "Connection diagnostics" });
+  expect(screen.getByText(/Connector unavailable; retrying/)).toBeVisible();
+  expect(screen.getByText(/Next retry:/)).toBeVisible();
+  expect(screen.queryByText("Preview public probe: Connection timed out")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Process exit code/)).not.toBeInTheDocument();
+  expect(screen.queryByText("internal-connector-text")).not.toBeInTheDocument();
+  diagnostics.focus();
+  await user.keyboard("{Enter}");
+  expect(screen.getByText("Preview public probe: Connection timed out")).toBeVisible();
+  expect(screen.getByText(/Process exit code: 17/)).toBeVisible();
+  expect(screen.getByText(/Process termination signal: SIGTERM/)).toBeVisible();
+  expect(screen.getByText(/Control：✓/)).toBeVisible();
+  diagnostics.focus();
+  await user.keyboard(" ");
+  expect(screen.queryByText(/Process exit code/)).not.toBeInTheDocument();
+  expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+});
+
+it("retains an invitation when remote registration fails and permits an explicit retry", async () => {
+  render(<WebAccessSettings />);
+  const invitation = await screen.findByLabelText("Invitation (first connection only)");
+  fireEvent.change(invitation, { target: { value: "new-invitation" } });
+  request.mockRejectedValueOnce(new Error("failed"));
+  fireEvent.click(screen.getByRole("button", { name: "Enable remote access" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Web settings unavailable");
+  expect(invitation).toHaveValue("new-invitation");
+  fireEvent.click(screen.getByRole("button", { name: "Enable remote access" }));
+  await waitFor(() => expect(invitation).toHaveValue(""));
+  expect(request.mock.calls.filter(([input]) => input.operation === "remote-enable")).toHaveLength(
+    2,
+  );
+});
+
+it.each([
+  { locale: "zh-CN", unsaved: "有未保存的更改", diagnostics: "连接诊断" },
+  { locale: "zh-TW", unsaved: "有尚未儲存的變更", diagnostics: "連線診斷" },
+  { locale: "en-US", unsaved: "Unsaved changes", diagnostics: "Connection diagnostics" },
+  { locale: "ja-JP", unsaved: "未保存の変更があります", diagnostics: "接続の診断" },
+] as const)(
+  "renders setting state, disable reasons and distinct code purposes in $locale",
+  async ({ locale, unsaved, diagnostics }) => {
+    const { webSettingsCopy } = await import("./web-settings-copy");
+    const { remoteEntryCopy } = await import("./remote-entry-copy");
+    const c = webSettingsCopy[locale];
+    request.mockResolvedValue({
+      ...status,
+      pairingMode: "code",
+      relay: { phase: "offline", failure: { stage: "broker", code: "timeout" } },
+    });
+    await act(() => changeLocale(locale));
+    try {
+      const view = render(<WebAccessSettings />);
+      const generate = await screen.findByRole("button", { name: c.generateAccess });
+      expect(generate).toHaveAccessibleDescription(c.generateNeedsService);
+      expect(screen.getByText(c.accessCodeHint)).toBeVisible();
+      expect(screen.getByLabelText(remoteEntryCopy[locale].invitation)).toHaveAccessibleDescription(
+        c.invitationCodeHint,
+      );
+      expect(screen.getByRole("button", { name: diagnostics })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      fireEvent.click(screen.getByRole("button", { name: remoteEntryCopy[locale].advanced }));
+      fireEvent.click(screen.getByRole("switch", { name: c.enabled }));
+      expect(screen.getByText(unsaved)).toBeVisible();
+      expect(screen.getByRole("button", { name: c.save })).toBeEnabled();
+      view.unmount();
+      request.mockResolvedValue({ ...status, pairingMode: "confirmation" });
+      render(<WebAccessSettings target="lan" />);
+      expect(await screen.findByText(c.pairingCodeHint)).toBeVisible();
+      expect(screen.getByRole("button", { name: c.generate })).toHaveAccessibleDescription(
+        c.generateNeedsLanService,
+      );
+      expect(screen.queryByText(c.invitationCodeHint)).not.toBeInTheDocument();
+      expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
+    } finally {
+      await act(() => changeLocale("en-US"));
+    }
+  },
+);

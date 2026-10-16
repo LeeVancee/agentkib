@@ -17,6 +17,7 @@ import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopy } from "./context-usage-copy";
 import { subscribeSessionInvalidation } from "./session-events";
 import { sessionAgentCopy } from "./session-agent-copy";
+import { sessionNextAction } from "./session-display-state";
 
 export function CodexTools({
   open: controlledOpen,
@@ -31,6 +32,7 @@ export function CodexTools({
   ownership?: ReactNode;
   shortcuts?: ReactNode;
 } = {}) {
+  const session = useSession();
   const {
     current,
     selected,
@@ -44,7 +46,7 @@ export function CodexTools({
     access,
     live,
     refresh,
-  } = useSession();
+  } = session;
   const copy = codexCopy[locale];
   const agentCopy = sessionAgentCopy[locale];
   const isClaude = current?.agent === "claude-code";
@@ -289,7 +291,7 @@ export function CodexTools({
             <h3 className="font-medium">{layout.ownership}</h3>
             {ownership}
             {!isClaude && (
-              <details>
+              <details open={sessionNextAction(session) === "native-resume" || undefined}>
                 <summary className="cursor-pointer py-2 text-sm">{copy.resume}</summary>
                 <div className="space-y-3 pt-2">
                   <label className="flex items-start gap-2 text-xs">

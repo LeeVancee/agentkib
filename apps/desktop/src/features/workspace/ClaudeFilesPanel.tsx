@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button";
 /** Workspace-scoped opaque IDs only; executable previews open outside Electron. */
 export function ClaudeFilesPanel({ sessionId }: { sessionId: string }) {
   const { locale } = useI18n();
-  const text = (zh: string, en: string) => (locale === "en-US" ? en : zh);
+  const text = (zh: string, en: string, tw: string, ja: string) =>
+    ({ "zh-CN": zh, "en-US": en, "zh-TW": tw, "ja-JP": ja })[locale];
   const queryClient = useOptionalQueryClient();
   const [directory, setDirectory] = useState<{ sessionId: string; id?: string }>();
   const [selection, setSelection] = useState<{ sessionId: string; item: ArtifactEntry }>();
@@ -129,7 +130,7 @@ export function ClaudeFilesPanel({ sessionId }: { sessionId: string }) {
   return (
     <section
       className="rounded border p-3 space-y-2"
-      aria-label={text("文件与产物", "Files and artifacts")}
+      aria-label={text("文件与产物", "Files and artifacts", "檔案與產物", "ファイルと成果物")}
     >
       <div className="flex gap-2">
         <Button
@@ -137,14 +138,14 @@ export function ClaudeFilesPanel({ sessionId }: { sessionId: string }) {
           disabled={busy || !listing?.parentId}
           onClick={() => void load(listing?.parentId)}
         >
-          {text("上级目录", "Parent directory")}
+          {text("上级目录", "Parent directory", "上層目錄", "親ディレクトリ")}
         </Button>
         <Button variant="outline" disabled={busy} onClick={() => void load(listing?.directoryId)}>
-          {text("刷新文件", "Refresh files")}
+          {text("刷新文件", "Refresh files", "重新整理檔案", "ファイルを更新")}
         </Button>
       </div>
       {error && <p role="alert">{error}</p>}
-      {busy && <p role="status">{text("正在读取", "Loading")}</p>}
+      {busy && <p role="status">{text("正在读取", "Loading", "正在讀取", "読み込み中")}</p>}
       <ul className="max-h-48 overflow-y-auto">
         {listing?.entries.map((item) => (
           <li key={item.id}>
@@ -155,7 +156,11 @@ export function ClaudeFilesPanel({ sessionId }: { sessionId: string }) {
           </li>
         ))}
       </ul>
-      {listing && !listing.entries.length && <p>{text("此目录为空", "This directory is empty")}</p>}
+      {listing && !listing.entries.length && (
+        <p>
+          {text("此目录为空", "This directory is empty", "此目錄為空", "このディレクトリは空です")}
+        </p>
+      )}
       {preview && (
         <div>
           <strong>{preview.name}</strong>
@@ -168,6 +173,8 @@ export function ClaudeFilesPanel({ sessionId }: { sessionId: string }) {
         {text(
           "HTML 和媒体通过隔离的浏览器预览打开。",
           "HTML and media open in an isolated browser preview.",
+          "HTML 與媒體會透過隔離的瀏覽器預覽開啟。",
+          "HTML とメディアは隔離されたブラウザーのプレビューで開きます。",
         )}
       </p>
     </section>

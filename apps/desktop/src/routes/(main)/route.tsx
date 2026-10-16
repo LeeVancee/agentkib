@@ -6,7 +6,6 @@ import {
   useNavigate,
   useSearch,
 } from "@tanstack/react-router";
-import { CircleAlert } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
 import { AppSidebar, type AgentFilter } from "@/components/AppSidebar";
 import { Button } from "@/components/ui/button";
@@ -26,6 +25,7 @@ import { WindowToolbar } from "@/components/WindowToolbar";
 import { workspaceSearchForPage, type AppSearch, type Page } from "@/features/app/app-route";
 import { cn } from "cn";
 import { useAppDialogs } from "@/components/AppDialogProvider";
+import { AppMessageBanner } from "@/features/app/AppMessageBanner";
 
 function MainLayout() {
   const { app, history, searchOpen, onOpenSearch } = useAppNavigationContext();
@@ -60,7 +60,7 @@ function MainLayout() {
   const navigateWorkspace = (page: Page) => {
     if (route.kind !== "workspace") return;
     if (useWorkspaceStore.getState().applyingChanges) {
-      void dialogs.notify(tr("dialog.quit.changesApplying"));
+      void dialogs.notify(tr("workspace.changesApplying"));
       return;
     }
     void navigate({
@@ -156,12 +156,7 @@ function MainLayout() {
         )}
         <main className="app-shell-main !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm">
           <div ref={scrollRef} className="page-scroll-container min-h-0 flex-1">
-            {app.message && (
-              <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                <CircleAlert size={17} />
-                {app.message}
-              </div>
-            )}
+            <AppMessageBanner />
             {active === "workspaces" && discoveryFailure?.error && (
               <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
                 {discoveryFailure.error}

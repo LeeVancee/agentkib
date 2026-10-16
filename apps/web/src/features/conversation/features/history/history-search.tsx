@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { agentName } from "@agentkib/agent-identity";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Search } from "lucide-react";
 import {
   ApiError,
   literalHistoryMatchRanges,
   type Access,
+  type ConversationSessionSummary,
   type WebClient,
   type HistorySearchHit,
   type HistorySearchResult,
@@ -18,6 +20,19 @@ import { NativeSelect } from "../../components/ui/native-select";
 import { Dialog } from "../../components/dialog";
 import type { Locale } from "../../i18n";
 import { historyCopy } from "./history-copy";
+import {
+  createHistoryOpenLock,
+  historyLocationKey,
+  historySessionTarget,
+} from "./history-session-target";
+
+function HistoryTimestamp({ value, locale }: { value?: string | null; locale: Locale }) {
+  return value && Number.isFinite(Date.parse(value)) ? (
+    <time dateTime={value}>{new Date(value).toLocaleString(locale)}</time>
+  ) : (
+    <span>{historyCopy[locale].unknownTime}</span>
+  );
+}
 
 export function historyAccessScope(access: Access | undefined): string {
   return access?.status === "approved" && access.historySearch
@@ -75,7 +90,7 @@ export function HistoryCoverageStatus({
         <ul aria-label={c.sources} className="space-y-1">
           {status.sources.map((source) => (
             <li key={source.agent}>
-              {source.agent}: {c.messages} {c[source.body]} · {c.tools} {c[source.tools]}
+              {agentName(source.agent)}: {c.messages} {c[source.body]} · {c.tools} {c[source.tools]}
             </li>
           ))}
         </ul>
@@ -91,6 +106,10 @@ export interface HistorySearchPanelProps {
   scope: string;
   initialQuery?: string;
   onReference?: (reference: ResolvedHistoryReference) => void;
+  onOpenSession?: (session: ConversationSessionSummary) => void | Promise<void>;
+  currentSessionId?: string;
+  navigationContext?: string;
+  openDisabled?: boolean;
   onScopeEnded?: () => void;
 }
 function sourceSelectionRange(content: string, start: number, end: number): [number, number] {
@@ -117,6 +136,10 @@ export function HistorySearchPanel({
   scope,
   initialQuery = "",
   onReference,
+  onOpenSession,
+  currentSessionId,
+  navigationContext = "",
+  openDisabled = false,
   onScopeEnded,
 }: HistorySearchPanelProps) {
   const c = historyCopy[locale];
@@ -136,6 +159,15 @@ export function HistorySearchPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
+  const [openConfirmation, setOpenConfirmation] = useState<{
+    context: string;
+    source: string;
+  }>();
+  const opening = useRef(createHistoryOpenLock());
+  const navigation = useRef({ navigationContext, currentSessionId, openDisabled, onOpenSession });
+  useLayoutEffect(() => {
+    navigation.current = { navigationContext, currentSessionId, openDisabled, onOpenSession };
+  }, [navigationContext, currentSessionId, openDisabled, onOpenSession]);
   const request = useRef(0);
   const indexEnabled = useRef<boolean | undefined>(undefined);
   const indexGeneration = useRef<string | undefined>(undefined);
@@ -262,6 +294,7 @@ export function HistorySearchPanel({
     setBusy(true);
     setError("");
     setAdded(false);
+    setOpenConfirmation(undefined);
     return { abort, generation };
   }, []);
   const search = useCallback(
@@ -356,6 +389,72 @@ export function HistorySearchPanel({
     if (located) void locate(located.location);
     else void search();
   }, [status?.generation, result?.status.generation, located, locate, search]);
+  async function openSession(confirmed = false) {
+    if (
+      !located ||
+      !onOpenSession ||
+      opening.current.isPending(request.current) ||
+      openDisabled ||
+      scopeInvalid.current
+    )
+      return;
+    const source = historyLocationKey(located.location);
+    const expectedContext = confirmed ? openConfirmation?.context : navigationContext;
+    if (
+      expectedContext === undefined ||
+      expectedContext !== navigation.current.navigationContext ||
+      (confirmed && source !== openConfirmation?.source)
+    ) {
+      setOpenConfirmation(undefined);
+      setError(c.openChanged);
+      return;
+    }
+    const { abort, generation } = begin();
+    const release = opening.current.start(generation, abort.signal);
+    try {
+      const [fresh, currentCatalog, currentStatus] = await Promise.all([
+        client.historyLocate(located.location, abort.signal),
+        client.catalog(abort.signal),
+        client.historyStatus(abort.signal),
+      ]);
+      if (!(await current(generation, abort.signal))) return;
+      if (
+        historyLocationKey(fresh.location) !== source ||
+        fresh.contentHash !== located.contentHash ||
+        fresh.workspaceId !== located.workspaceId ||
+        fresh.agent !== located.agent
+      )
+        throw new ApiError(409, "history_source_changed");
+      const target =
+        currentCatalog.indexEnabled && currentStatus.enabled
+          ? historySessionTarget(fresh, currentCatalog.sessions)
+          : undefined;
+      if (!target) throw new Error("history_session_unavailable");
+      if (
+        navigation.current.navigationContext !== expectedContext ||
+        navigation.current.openDisabled
+      ) {
+        setError(c.openChanged);
+        return;
+      }
+      // The confirmation covers text, references and composer-local attachments.
+      // Revalidate again after confirmation instead of retaining an old grant.
+      if (
+        navigation.current.currentSessionId &&
+        navigation.current.currentSessionId !== target.id &&
+        !confirmed
+      ) {
+        setOpenConfirmation({ context: expectedContext, source });
+        return;
+      }
+      await navigation.current.onOpenSession?.(target);
+    } catch (e) {
+      if (generation === request.current && !abort.signal.aborted) fail(e);
+    } finally {
+      release();
+      if (generation === request.current) setBusy(false);
+    }
+  }
   async function quote() {
     if (!located || !onReference || selection[0] === selection[1]) return;
     const { abort, generation } = begin();
@@ -422,7 +521,7 @@ export function HistorySearchPanel({
           <option value="">{c.allAgents}</option>
           {[...new Set(catalog?.sessions.map((s) => s.agent) ?? [])].map((a) => (
             <option key={a} value={a}>
-              {a}
+              {agentName(a)}
             </option>
           ))}
         </NativeSelect>
@@ -470,13 +569,14 @@ export function HistorySearchPanel({
                 request.current++;
                 inFlight.current?.abort();
                 setLocated(undefined);
+                setOpenConfirmation(undefined);
                 setBusy(false);
               }}
             >
               {c.back}
             </Button>
             <strong className="min-w-0 break-words text-sm">
-              {located.title || located.agent}
+              {located.title || agentName(located.agent)}
             </strong>
             <span className="text-xs text-muted-foreground">
               {c[located.kind]} {located.toolName}
@@ -494,7 +594,16 @@ export function HistorySearchPanel({
               ranges={literalHistoryMatchRanges(located.content, query)}
             />
           </pre>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            {onOpenSession && (
+              <Button
+                variant="outline"
+                disabled={busy || openDisabled}
+                onClick={() => void openSession()}
+              >
+                {c.openSession}
+              </Button>
+            )}
             <Button
               variant="outline"
               disabled={!located.before || busy}
@@ -510,6 +619,24 @@ export function HistorySearchPanel({
               {c.next}
             </Button>
           </div>
+          {onOpenSession && <p className="text-xs text-muted-foreground">{c.openPosition}</p>}
+          {openConfirmation && (
+            <div role="group" aria-label={c.openConfirm} className="space-y-2 rounded border p-3">
+              <p className="text-sm">{c.openConfirm}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button disabled={busy || openDisabled} onClick={() => void openSession(true)}>
+                  {c.openDiscard}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setOpenConfirmation(undefined)}
+                >
+                  {c.openCancel}
+                </Button>
+              </div>
+            </div>
+          )}
           {onReference && (
             <>
               <label className="block text-xs">
@@ -552,19 +679,20 @@ export function HistorySearchPanel({
               onClick={() => void locate(hit.location)}
               className="block w-full space-y-1 rounded-lg border p-3 text-left hover:bg-accent"
             >
-              <strong className="block text-sm">{hit.title || hit.agent}</strong>
+              <strong className="block text-sm">{hit.title || agentName(hit.agent)}</strong>
               <span className="block break-words text-xs text-muted-foreground">
                 {c.workspace}: {workspaceName(hit.workspaceId)}
               </span>
               <span className="block text-xs text-muted-foreground">
-                {hit.agent} · {c[hit.kind]} {hit.toolName} · {hit.timestamp}
+                {agentName(hit.agent)} · {c[hit.kind]} {hit.toolName} ·{" "}
+                <HistoryTimestamp value={hit.timestamp} locale={locale} />
               </span>
               <p className="whitespace-pre-wrap break-words text-xs">
                 <HighlightedHistoryText text={hit.snippet} ranges={hit.matchRanges} />
               </p>
               {hit.indexedAt && (
                 <small className="block text-muted-foreground">
-                  {c.cachedAt}: {hit.indexedAt}
+                  {c.cachedAt}: <HistoryTimestamp value={hit.indexedAt} locale={locale} />
                 </small>
               )}
               {hit.stale && <small>{c.stale}</small>}
@@ -606,11 +734,13 @@ export function HistorySearchLauncher({
   locale,
   initialQuery = "",
   onOpen,
+  onOpenSession,
 }: {
   client: WebClient;
   locale: Locale;
   initialQuery?: string;
   onOpen?: () => void;
+  onOpenSession?: (session: ConversationSessionSummary) => void | Promise<void>;
 }) {
   const [access, setAccess] = useState<{ client: WebClient; value: Access }>();
   const [open, setOpen] = useState(false);
@@ -686,6 +816,14 @@ export function HistorySearchLauncher({
           locale={locale}
           scope={scope}
           initialQuery={initialQuery}
+          onOpenSession={
+            onOpenSession
+              ? async (session) => {
+                  await onOpenSession(session);
+                  setOpen(false);
+                }
+              : undefined
+          }
           onClose={() => setOpen(false)}
         />
       )}

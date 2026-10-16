@@ -1,10 +1,10 @@
 import { shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
-import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { WorkspaceContextSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useEffect, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { tr } from "@/core/i18n";
@@ -33,7 +33,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
-import type { AgentKind, ContextPreview } from "@/core/types";
+import type { AgentDetection, AgentKind, ContextPreview } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 // 与后端 CONTEXT_NOTE_PREFIX 同值（渲染进程不能引用 backend 包，后端测试断言该常量不变）。
 // 以它开头的条目只是提示，不是问题：用中性样式渲染并去掉前缀。
@@ -82,15 +82,33 @@ function scopeLabel(scope: string, agent: AgentKind) {
       : undefined;
   return key ? tr(key) : scope || tr("status.scope.project");
 }
-export function ContextPage({
-  project,
-  onOpenInstructions,
-}: {
+function supportedAgent(value: unknown): AgentKind | undefined {
+  return typeof value === "string" && Object.hasOwn(agentLabels, value)
+    ? (value as AgentKind)
+    : undefined;
+}
+interface ContextPageProps {
   project: string;
+  agents?: AgentDetection[];
+  selectedAgent?: AgentKind;
+  onAgentChange?: (agent: AgentKind) => void;
   onOpenInstructions: () => void;
-}) {
+}
+export function ContextPage(props: ContextPageProps) {
+  // A new project must not inherit a directory edit or a debounced request from the old one.
+  return <ContextPageContent key={props.project} {...props} />;
+}
+function ContextPageContent({
+  project,
+  agents,
+  selectedAgent,
+  onAgentChange,
+  onOpenInstructions,
+}: ContextPageProps) {
   const { localizeMessage, tr } = useI18n();
-  const [agent, setAgent] = useState<AgentKind>("codex");
+  const [manualAgent, setManualAgent] = useState<AgentKind>();
+  const detectedAgent = agents?.find((item) => item.detected && supportedAgent(item.agent))?.agent;
+  const agent = selectedAgent ?? manualAgent ?? detectedAgent ?? "codex";
   const [cwd, setCwd] = useState(project);
   // 输入工作目录时防抖，避免每敲一个字符都解析一次上下文。
   const debouncedCwd = useDebouncedValue(cwd, 350);
@@ -101,8 +119,12 @@ export function ContextPage({
       queryKey: ["workspace", "context", project, debouncedCwd, agent] as const,
       queryFn: () => api.context(project, debouncedCwd, agent),
       staleTime: 0,
-      // 切换参数时保留上一次结果，只在首次加载时显示骨架屏。
-      placeholderData: keepPreviousData,
+      // Directory edits can retain the same Agent's preview, but a different Agent must not
+      // display the old Agent's resources under its newly selected label.
+      placeholderData: (previous, previousQuery) =>
+        previousQuery?.queryKey[2] === project && previousQuery.queryKey[4] === agent
+          ? previous
+          : undefined,
     },
     queryClient,
   );
@@ -111,7 +133,18 @@ export function ContextPage({
   const error = contextQuery.error ? localizeMessage(contextQuery.error) : "";
   const run = () => void contextQuery.refetch();
   const empty = preview && !preview.sections.length;
-  if (resolving && !preview) return <WorkspaceContextSkeleton />;
+  const previewScope = (
+    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+      {tr("context.previewScope")}
+    </p>
+  );
+  if (resolving && !preview)
+    return (
+      <div className="grid gap-4">
+        {previewScope}
+        <WorkspaceContextSkeleton />
+      </div>
+    );
   return (
     <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(280px,.38fr)_minmax(0,1fr)]">
       <Card className="grid content-start overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
@@ -131,7 +164,10 @@ export function ContextPage({
             <Select
               value={agent}
               onValueChange={(value) => {
-                if (value !== null) setAgent(String(value) as AgentKind);
+                const next = supportedAgent(value);
+                if (!next) return;
+                if (onAgentChange) onAgentChange(next);
+                else setManualAgent(next);
               }}
             >
               <SelectTrigger className="h-10 w-full" aria-label={tr("context.agent")}>
@@ -199,6 +235,7 @@ export function ContextPage({
             </span>
             <div className="min-w-0">
               <h2 className="text-base font-semibold">{tr("context.effective")}</h2>
+              {previewScope}
             </div>
           </div>
           {preview && (
@@ -329,11 +366,28 @@ function contextWarningLabel(warning: string) {
 function WorkspaceContextRoute() {
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/context" });
-  const { project } = useWorkspaceStore();
-  if (!project) return <WorkspaceContextSkeleton />;
+  const search = useSearch({ strict: false });
+  const { project, selectedWorkspace, scan } = useWorkspaceStore();
+  if (
+    !project ||
+    selectedWorkspace?.id !== workspaceId ||
+    selectedWorkspace.path !== project ||
+    scan?.root !== project
+  )
+    return <WorkspaceContextSkeleton />;
   return (
     <ContextPage
+      key={`${workspaceId}:${project}`}
       project={project}
+      agents={scan.agents}
+      selectedAgent={supportedAgent(search.agent)}
+      onAgentChange={(agent) =>
+        void navigate({
+          to: "/workspace/$workspaceId/context",
+          params: { workspaceId },
+          search: (current) => ({ ...current, agent }),
+        })
+      }
       onOpenInstructions={() =>
         void navigate({
           to: "/workspace/$workspaceId/assets",

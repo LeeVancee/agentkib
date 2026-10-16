@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import {
   skillKeys,
@@ -61,7 +61,6 @@ import type {
   WorkspaceSummary,
   PrepareSkillSyncRequest,
 } from "@/core/types";
-import type { CatalogAssetGroup } from "@/features/catalog/catalog";
 import { cn } from "cn";
 import { isSkillDirectory, SkillFileBrowser } from "./SkillFileBrowser";
 import {
@@ -77,12 +76,24 @@ import { SkillImportDialog } from "./SkillImportDialog";
 import { SkillVersionDialog } from "./SkillVersionDialog";
 import { SkillSyncDialog, SkillSyncPolicyDialog, SkillSyncRunsDialog } from "./SkillSyncPanels";
 
-type SkillHubSection = "library" | "workspace" | "discover";
+export type SkillHubSection = "library" | "workspace" | "discover";
+type SkillLibrarySuccess = {
+  operation: "added" | "updated" | "rolledBack" | "movedToTrash" | "restored";
+  skills: Pick<InstalledSkill, "name" | "display_name">[];
+};
+const librarySuccessKeys = {
+  added: "skills.manager.libraryAdded",
+  updated: "skills.manager.libraryUpdated",
+  rolledBack: "skills.manager.libraryRolledBack",
+  movedToTrash: "skills.manager.libraryMovedToTrash",
+  restored: "skills.manager.libraryRestored",
+} as const;
 const noInstalledSkills: InstalledSkill[] = [];
 const noRemovedSkills: RemovedSkill[] = [];
 
 interface SkillHubPageProps {
-  workspaceAssets: CatalogAssetGroup[];
+  section?: SkillHubSection;
+  onSectionChange?: (section: SkillHubSection) => void;
   workspaces: WorkspaceSummary[];
   onOpen: (id: string) => void;
   onReload: () => Promise<void>;
@@ -135,10 +146,21 @@ function upsertRemovedSkill(items: RemovedSkill[], next: RemovedSkill) {
   return items.map((item, itemIndex) => (itemIndex === index ? next : item));
 }
 
-export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps) {
+export function SkillHubPage({
+  section: controlledSection,
+  onSectionChange,
+  workspaces,
+  onOpen,
+  onReload,
+}: SkillHubPageProps) {
   const { localizeMessage, tr, formatDateTime } = useI18n();
   const dialogs = useAppDialogs();
-  const [section, setSection] = useState<SkillHubSection>("library");
+  const [localSection, setLocalSection] = useState<SkillHubSection>("library");
+  const section = controlledSection ?? localSection;
+  const setSection = (next: SkillHubSection) => {
+    if (controlledSection === undefined) setLocalSection(next);
+    onSectionChange?.(next);
+  };
   const queryClient = useOptionalQueryClient();
   const libraryQuery = useSkillLibrary();
   const installed = libraryQuery.data?.installed ?? noInstalledSkills;
@@ -167,12 +189,29 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   const deploymentsQuery = useSkillDeployments();
   const syncQuery = useSkillSyncState();
   const syncStatus = useSkillSyncStatus();
-  const pendingSyncCount =
-    syncQuery.data?.deployments.filter(
-      (item) =>
-        (item.lifecycle_status ?? item.status) !== "inactive" &&
-        ["incoming", "conflict", "missing", "blocked", "unverified"].includes(item.sync_state),
-    ).length ?? 0;
+  const [pendingOnly, setPendingOnly] = useState(false);
+  const pendingHeading = useRef<HTMLHeadingElement>(null);
+  const pendingFocusRequested = useRef(false);
+  const usageId = useId();
+  const focusPendingSync = () => {
+    pendingHeading.current?.scrollIntoView?.({ block: "start" });
+    pendingHeading.current?.focus({ preventScroll: true });
+  };
+  useEffect(() => {
+    if (section !== "workspace" || !pendingOnly || !pendingFocusRequested.current) return;
+    pendingFocusRequested.current = false;
+    pendingHeading.current?.scrollIntoView?.({ block: "start" });
+    pendingHeading.current?.focus({ preventScroll: true });
+  }, [section, pendingOnly]);
+  const showPendingSync = () => {
+    if (section === "workspace" && pendingOnly) {
+      focusPendingSync();
+      return;
+    }
+    pendingFocusRequested.current = true;
+    setPendingOnly(true);
+    if (section !== "workspace") setSection("workspace");
+  };
   const [syncRequest, setSyncRequest] = useState<PrepareSkillSyncRequest>();
   const [syncPolicyOpen, setSyncPolicyOpen] = useState(false);
   const [syncRunsOpen, setSyncRunsOpen] = useState(false);
@@ -190,6 +229,29 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   const [errors, setErrors] = useState<unknown[]>([]);
   const inventory = inventoryQuery.data ?? { observations: [], warnings: [] };
   const deployments = deploymentsQuery.data ?? [];
+  const pendingSync =
+    syncQuery.data?.deployments.filter(
+      (item) =>
+        (item.lifecycle_status ?? item.status) !== "inactive" &&
+        ["incoming", "conflict", "missing", "blocked", "unverified"].includes(item.sync_state),
+    ) ?? [];
+  const pendingSyncCount = pendingSync.length;
+  // The two snapshots can refresh independently. Do not attach a pending status
+  // to a different target, library, or an already inactive deployment.
+  const pendingDeploymentIds = new Set(
+    pendingSync
+      .filter((sync) =>
+        deployments.some(
+          (item) =>
+            item.id === sync.id &&
+            item.target === sync.target &&
+            item.library_id === sync.library_id &&
+            item.status !== "inactive",
+        ),
+      )
+      .map((item) => item.id),
+  );
+  const unavailablePending = pendingSync.filter((item) => !pendingDeploymentIds.has(item.id));
   const managerLoading = inventoryQuery.isPending || deploymentsQuery.isPending;
   const [librarySearch, setLibrarySearch] = useState("");
   const [librarySource, setLibrarySource] = useState("all");
@@ -197,8 +259,7 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   const [libraryUsage, setLibraryUsage] = useState("all");
   const [detailRequest, setDetailRequest] = useState<SkillDetailRequest>();
   const [deploymentAction, setDeploymentAction] = useState<SkillDeploymentAction>();
-  const [success, setSuccess] = useState(false);
-  const [addedLibraryId, setAddedLibraryId] = useState<string>();
+  const [success, setSuccess] = useState<SkillLibrarySuccess>();
   const [operationWarnings, setOperationWarnings] = useState<string[]>([]);
   const visibleErrors = [
     ...new Set([
@@ -243,8 +304,7 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   const run = async (key: string, task: () => Promise<void>) => {
     setBusy(key);
     setErrors([]);
-    setSuccess(false);
-    setAddedLibraryId(undefined);
+    setSuccess(undefined);
     setOperationWarnings([]);
     await withAsyncCleanup(
       async () => {
@@ -301,8 +361,10 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
       setOperationWarnings(skill.warnings ?? []);
       setInstalled((items) => upsertSkill(items, skill));
       setPreview(undefined);
-      setSuccess(true);
-      setAddedLibraryId(skill.name);
+      setSuccess({
+        operation: preview.operation === "install" ? "added" : "updated",
+        skills: [skill],
+      });
       await refreshAfterMutation();
     });
   };
@@ -341,7 +403,7 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
       const rolledBack = await api.rollbackSkill(skill.name);
       setOperationWarnings(rolledBack.warnings ?? []);
       setInstalled((items) => upsertSkill(items, rolledBack));
-      setSuccess(true);
+      setSuccess({ operation: "rolledBack", skills: [rolledBack] });
       await refreshAfterMutation();
     });
   };
@@ -360,7 +422,7 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
       setOperationWarnings(removedSkill.warnings ?? []);
       setInstalled((items) => items.filter((item) => item.name !== skill.name));
       setRemoved((items) => upsertRemovedSkill(items, removedSkill));
-      setSuccess(true);
+      setSuccess({ operation: "movedToTrash", skills: [removedSkill] });
       await refreshAfterMutation();
     });
   };
@@ -371,7 +433,7 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
       setOperationWarnings(restored.warnings ?? []);
       setRemoved((items) => items.filter((item) => item.id !== skill.id));
       setInstalled((items) => upsertSkill(items, restored));
-      setSuccess(true);
+      setSuccess({ operation: "restored", skills: [restored] });
       await refreshAfterMutation();
     });
 
@@ -384,6 +446,17 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
     );
   }, [candidates, catalog, query, tr]);
   const activeDeployments = deployments.filter((item) => item.status !== "inactive");
+  const successHasDeployments = Boolean(
+    success?.skills.some((skill) =>
+      activeDeployments.some(
+        (item) => item.source_is_current_library === true && item.library_id === skill.name,
+      ),
+    ),
+  );
+  const deployableSuccessSkill =
+    success && success.operation !== "movedToTrash" && success.skills.length === 1
+      ? installed.find((skill) => skill.name === success.skills[0].name)
+      : undefined;
   const filteredInstalled = installed.filter((skill) => {
     const usage = activeDeployments.filter(
       (item) => item.source_is_current_library === true && item.library_id === skill.name,
@@ -453,9 +526,16 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
 
       <div className="flex flex-wrap items-center justify-end gap-2">
         {pendingSyncCount > 0 && (
-          <Badge variant="outline" className="border-amber-500/40 text-amber-700">
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-amber-500/40 text-amber-700"
+            aria-pressed={pendingOnly && section === "workspace"}
+            aria-controls={section === "workspace" ? usageId : undefined}
+            onClick={showPendingSync}
+          >
             {tr("skills.sync.pending", { count: pendingSyncCount })}
-          </Badge>
+          </Button>
         )}
         <Button variant="outline" size="sm" onClick={() => setSyncPolicyOpen(true)}>
           {tr("skills.sync.policy")}
@@ -492,19 +572,34 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
           className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm"
         >
           <span>
-            {tr("skills.manager.libraryChanged")}
+            {success.operation === "added" && success.skills.length > 1
+              ? tr("skills.manager.libraryAddedMultiple", { count: success.skills.length })
+              : tr(librarySuccessKeys[success.operation], { name: success.skills[0].display_name })}
+            {successHasDeployments ? ` ${tr("skills.manager.deploymentsUnchanged")}` : ""}
             {errors.length > 0 ? ` ${tr("skills.manager.refreshFailed")}` : ""}
           </span>
-          {addedLibraryId && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={Boolean(busy)}
-              onClick={() => openDeployment(addedLibraryId)}
-            >
-              {tr("skills.manager.deploy")}
-            </Button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            {deployableSuccessSkill && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={Boolean(busy)}
+                onClick={() => openDeployment(deployableSuccessSkill.name)}
+              >
+                {tr("skills.manager.deploy")}
+              </Button>
+            )}
+            {successHasDeployments && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={Boolean(busy)}
+                onClick={() => setSection("workspace")}
+              >
+                {tr("skills.manager.viewDeployments")}
+              </Button>
+            )}
+          </div>
         </div>
       )}
       {operationWarnings.map((warning) => (
@@ -518,21 +613,67 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
       ))}
 
       {section === "workspace" && (
-        <div className="grid gap-3">
-          <div className="flex justify-end">
-            <Button
-              variant="outline"
-              disabled={Boolean(busy)}
-              onClick={() =>
-                void run("refresh-inventory", async () => {
-                  await refreshAfterMutation();
-                })
-              }
-            >
-              <RefreshCw size={14} />
-              {tr("skills.manager.refresh")}
-            </Button>
+        <div
+          id={usageId}
+          role="region"
+          aria-labelledby={`${usageId}-heading`}
+          className="grid gap-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2
+                id={`${usageId}-heading`}
+                ref={pendingHeading}
+                tabIndex={-1}
+                className="font-semibold"
+              >
+                {pendingOnly
+                  ? tr("skills.sync.pending", { count: pendingSyncCount })
+                  : tr("skills.workspaceUsage")}
+              </h2>
+              {pendingOnly && (
+                <p className="text-xs text-muted-foreground">
+                  {tr("skills.sync.pendingDescription")}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {pendingOnly && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setPendingOnly(false);
+                    pendingHeading.current?.focus({ preventScroll: true });
+                  }}
+                >
+                  {tr("skills.sync.showAllUsage")}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                disabled={Boolean(busy)}
+                onClick={() =>
+                  void run("refresh-inventory", async () => {
+                    await refreshAfterMutation();
+                  })
+                }
+              >
+                <RefreshCw size={14} />
+                {tr("skills.manager.refresh")}
+              </Button>
+            </div>
           </div>
+          {pendingOnly &&
+            !managerLoading &&
+            unavailablePending.map((item) => (
+              <div key={item.id} className="grid gap-2 rounded-xl border border-amber-500/40 p-4">
+                <strong>{item.display_name ?? item.package_name}</strong>
+                <code className="break-all text-xs">{item.target}</code>
+                <p role="status" className="text-sm text-amber-700">
+                  {tr("skills.sync.pendingUnavailable")}
+                </p>
+              </div>
+            ))}
           <SkillUsageList
             inventory={inventory}
             deployments={deployments}
@@ -546,6 +687,14 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
             onOpen={onOpen}
             syncState={syncQuery.data}
             onSync={setSyncRequest}
+            pendingDeploymentIds={pendingOnly ? pendingDeploymentIds : undefined}
+            emptyMessage={
+              pendingOnly
+                ? unavailablePending.length
+                  ? null
+                  : tr("skills.sync.noPending")
+                : undefined
+            }
           />
         </div>
       )}
@@ -1027,9 +1176,8 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
             setInstalled((items) =>
               skills.reduce((current, skill) => upsertSkill(current, skill), items),
             );
-            setSuccess(true);
+            setSuccess(skills.length ? { operation: "added", skills } : undefined);
             setOperationWarnings(warnings);
-            setAddedLibraryId(skills.length === 1 ? skills[0].name : undefined);
             setErrors([]);
             return refreshAfterMutation();
           }}

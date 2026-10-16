@@ -24,7 +24,7 @@ export function useWorkspaceTransitions({
 
   const ensureWorkspaceChangeAllowed = useCallback(async () => {
     if (!useWorkspaceStore.getState().applyingChanges) return true;
-    await dialogs.notify(tr("dialog.quit.changesApplying"));
+    await dialogs.notify(tr("workspace.changesApplying"));
     return false;
   }, [dialogs, tr]);
 
@@ -32,23 +32,21 @@ export function useWorkspaceTransitions({
     const workspace = useWorkspaceStore.getState();
     const selectedWorkspace = workspace.selectedWorkspace;
     const manifest = workspace.manifest;
-    if (
-      selectedWorkspace &&
-      manifest &&
-      workspace.baselineManifest &&
-      JSON.stringify(manifest) !== workspace.baselineManifest
-    ) {
-      workspace.setWorkspaceDrafts((drafts) => ({
-        ...drafts,
-        [selectedWorkspace.id]: manifest,
-      }));
-    }
+    if (!selectedWorkspace || !manifest || !workspace.baselineManifest) return;
+    workspace.setWorkspaceDrafts((drafts) => {
+      if (JSON.stringify(manifest) !== workspace.baselineManifest)
+        return { ...drafts, [selectedWorkspace.id]: manifest };
+      if (!(selectedWorkspace.id in drafts)) return drafts;
+      const nextDrafts = { ...drafts };
+      delete nextDrafts[selectedWorkspace.id];
+      return nextDrafts;
+    });
   }, []);
 
   const leaveWorkspace = useCallback(
     async (next: () => void, clearRouteSearch = true): Promise<boolean> => {
       if (useWorkspaceStore.getState().applyingChanges) {
-        await dialogs.notify(tr("dialog.quit.changesApplying"));
+        await dialogs.notify(tr("workspace.changesApplying"));
         return false;
       }
       const current = useWorkspaceStore.getState();
@@ -67,7 +65,7 @@ export function useWorkspaceTransitions({
         return false;
       const latest = useWorkspaceStore.getState();
       if (latest.applyingChanges) {
-        await dialogs.notify(tr("dialog.quit.changesApplying"));
+        await dialogs.notify(tr("workspace.changesApplying"));
         return false;
       }
 
@@ -102,6 +100,8 @@ export function useWorkspaceTransitions({
     ) => {
       if (!(await ensureWorkspaceChangeAllowed())) return false;
       const current = useWorkspaceStore.getState();
+      // The first guard yields; applying may start before navigation resumes.
+      if (current.applyingChanges) return ensureWorkspaceChangeAllowed();
       const currentRouteWorkspaceId = route.kind === "workspace" ? route.workspaceId : undefined;
       const currentRoutePage = route.kind === "workspace" ? route.page : undefined;
       if (current.selectedWorkspace?.id === workspace.id && current.project === workspace.path) {

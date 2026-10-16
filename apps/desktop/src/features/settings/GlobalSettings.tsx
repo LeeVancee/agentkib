@@ -1,4 +1,5 @@
 import { HistorySearchSettings } from "./HistorySearchSettings";
+import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { useTranslation } from "react-i18next";
 import { useI18n } from "@/core/useI18n";
 import { useMemo, useState, type ReactNode } from "react";
@@ -134,6 +135,7 @@ export function GlobalSettings({
   onRefreshDiagnostics,
 }: GlobalSettingsProps) {
   const { tr, formatDateTime } = useI18n();
+  const navigation = useOptionalAppNavigationContext();
   if (section === "remote") return <RemoteConnectionSettings />;
 
   if (section === "appearance") {
@@ -292,6 +294,7 @@ export function GlobalSettings({
       <SettingsPage variant="management">
         <SettingsPageHeader title={tr("settings.section.integrations")} />
         <SettingsSection title={tr("settings.search.localService")} target="integrations-mcp">
+          <p className="text-sm text-muted-foreground">{tr("settings.mcpLocation")}</p>
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("mcp.network")}</strong>
@@ -303,6 +306,20 @@ export function GlobalSettings({
               {tr(runtime?.mcp_hub?.running ? "mcp.running" : "mcp.stopped")}
             </SettingsStatus>
           </SettingsRow>
+          {navigation && (
+            <Button
+              variant="outline"
+              className="justify-self-start"
+              onClick={() =>
+                navigation.app.navigateGlobal("catalog", false, {
+                  assetSection: "mcp",
+                  catalogTarget: "mcp-network",
+                })
+              }
+            >
+              {tr("settings.manageMcp")}
+            </Button>
+          )}
         </SettingsSection>
         <SettingsAnchor target="integrations-gateways">
           <RemoteGatewaysSettings gateways={remoteGateways} onChanged={onRemoteGatewaysChanged} />

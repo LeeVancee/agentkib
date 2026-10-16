@@ -1,4 +1,6 @@
 import { McpDisclosure } from "@/features/mcp/McpControls";
+import { McpPortField } from "@/features/mcp/McpPortField";
+import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
@@ -7,7 +9,7 @@ import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router"
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { SidebarPanel } from "@/features/app/SidebarPanel";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
-import { SkillHubPage } from "@/features/skills/SkillHubPage";
+import { SkillHubPage, type SkillHubSection } from "@/features/skills/SkillHubPage";
 import { McpManagementPanel, type McpEditorState } from "@/features/mcp/McpManagementPanel";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
 import { useAppDialogs } from "@/components/AppDialogProvider";
@@ -69,17 +71,26 @@ import { cn } from "cn";
 import { withAsyncCleanup } from "@/lib/utils";
 
 type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
-type CatalogSearch = { assetSection?: AssetSection };
+type CatalogSearch = {
+  assetSection?: AssetSection;
+  catalogTarget?: "mcp-network";
+  skillSection?: SkillHubSection;
+};
 
 function CatalogRoute() {
   const { localizeMessage } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as CatalogSearch;
-  const section = search.assetSection ?? "instructions";
-  const { data: assets = [], isPending: assetsPending } = useHomeCatalog();
-  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
-  const { data: memories = [], isPending: memoriesPending } = useHomeMemories();
+  const section =
+    search.assetSection ?? (search.catalogTarget === "mcp-network" ? "mcp" : "instructions");
+  const assetsQuery = useHomeCatalog();
+  const workspacesQuery = useHomeWorkspaces();
+  const memoriesQuery = useHomeMemories();
+  const assets = assetsQuery.data ?? [];
+  const workspaces = workspacesQuery.data ?? [];
+  const memories = memoriesQuery.data ?? [];
+  const retryPending = useRef(false);
   const runtime = useAppStore((state) => state.runtime);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const openRequest = useRef(0);
@@ -107,13 +118,46 @@ function CatalogRoute() {
   const setSection = (nextSection: AssetSection) => {
     void navigate({
       to: "/catalog",
-      search: (current) => ({ ...current, assetSection: nextSection }) as never,
+      search: (current) =>
+        ({ ...current, assetSection: nextSection, catalogTarget: undefined }) as never,
+    });
+  };
+  const setSkillSection = (skillSection: SkillHubSection) => {
+    void navigate({
+      to: "/catalog",
+      search: (current) => ({ ...current, skillSection }) as never,
     });
   };
   const reload = async () => {
     await queryClient.invalidateQueries({ queryKey: homeKeys.all });
   };
-  if (assetsPending || workspacesPending || memoriesPending) return <CatalogSkeleton />;
+  const sources = [
+    { labelKey: "query.catalog", query: assetsQuery },
+    { labelKey: "query.workspaces", query: workspacesQuery },
+    { labelKey: "query.memories", query: memoriesQuery },
+  ];
+  const failed = sources.filter(({ query }) => query.isError);
+  const initiallyFailed = failed.some(({ query }) => query.data === undefined);
+  const retryFailed = async () => {
+    if (retryPending.current) return;
+    retryPending.current = true;
+    try {
+      await Promise.allSettled(failed.map(({ query }) => query.refetch()));
+    } finally {
+      retryPending.current = false;
+    }
+  };
+  const feedback = failed.length ? (
+    <CatalogQueryFeedback
+      labels={failed.map(({ labelKey }) => labelKey)}
+      initial={initiallyFailed}
+      retrying={failed.some(({ query }) => query.isFetching)}
+      onRetry={() => void retryFailed()}
+    />
+  ) : null;
+  if (initiallyFailed) return feedback;
+  if (sources.some(({ query }) => query.isPending && query.data === undefined))
+    return <CatalogSkeleton />;
   const openWorkspace = async (workspace: WorkspaceSummary): Promise<boolean> => {
     const requestId = ++openRequest.current;
     setBusy(true);
@@ -179,24 +223,65 @@ function CatalogRoute() {
   };
 
   return (
-    <CatalogPage
-      section={section}
-      onSection={setSection}
-      assets={assets}
-      workspaces={workspaces}
-      memories={memories}
-      runtime={runtime}
-      onReload={reload}
-      onRuntimeChanged={setRuntime}
-      onOpen={(id) => void openWorkspaceById(id)}
-      onMigrationPlanned={planMigration}
-    />
+    <div className="grid gap-4">
+      {feedback}
+      <CatalogPage
+        section={section}
+        onSection={setSection}
+        skillSection={search.skillSection ?? "library"}
+        onSkillSection={setSkillSection}
+        assets={assets}
+        workspaces={workspaces}
+        memories={memories}
+        runtime={runtime}
+        onReload={reload}
+        onRuntimeChanged={setRuntime}
+        onOpen={(id) => void openWorkspaceById(id)}
+        onMigrationPlanned={planMigration}
+        focusMcpNetwork={section === "mcp" && search.catalogTarget === "mcp-network"}
+      />
+    </div>
+  );
+}
+
+function CatalogQueryFeedback({
+  labels,
+  initial,
+  retrying,
+  onRetry,
+}: {
+  labels: string[];
+  initial: boolean;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  const { tr } = useI18n();
+  return (
+    <section
+      role="alert"
+      className="grid gap-3 rounded-xl border border-destructive/30 bg-card p-5"
+    >
+      <h2 className="text-base font-semibold">{tr("query.loadFailed")}</h2>
+      <p className="text-sm text-muted-foreground">
+        {tr(initial ? "query.initialUnavailable" : "query.staleData")}
+      </p>
+      <ul className="list-inside list-disc text-sm">
+        {labels.map((label) => (
+          <li key={label}>{tr(label)}</li>
+        ))}
+      </ul>
+      <Button className="justify-self-start" disabled={retrying} onClick={onRetry}>
+        {tr("runtime.retry")}
+      </Button>
+    </section>
   );
 }
 
 function CatalogPage({
   section,
   onSection,
+  skillSection,
+  onSkillSection,
   assets,
   workspaces,
   memories,
@@ -205,9 +290,12 @@ function CatalogPage({
   onRuntimeChanged,
   onOpen,
   onMigrationPlanned,
+  focusMcpNetwork,
 }: {
   section: AssetSection;
   onSection: (section: AssetSection) => void;
+  skillSection: SkillHubSection;
+  onSkillSection: (section: SkillHubSection) => void;
   assets: CatalogAsset[];
   workspaces: WorkspaceSummary[];
   memories: MemoryRecord[];
@@ -216,6 +304,7 @@ function CatalogPage({
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
   onOpen: (id: string) => void;
   onMigrationPlanned: (project: string, changeSet: ChangeSet) => Promise<void>;
+  focusMcpNetwork?: boolean;
 }) {
   const { tr } = useI18n();
   const pending = memories.filter((item) => item.status === "pending").length;
@@ -224,8 +313,6 @@ function CatalogPage({
     [assets],
   );
   const instructionAssets = workspaceAssets.filter((asset) => asset.kind === "instruction");
-  const skillAssets = workspaceAssets.filter((asset) => asset.kind === "skill");
-  const connectionAssets = workspaceAssets.filter((asset) => asset.kind === "connection");
   const otherAssets = workspaceAssets.filter(
     (asset) => !["instruction", "skill", "connection", "memory"].includes(asset.kind),
   );
@@ -235,7 +322,7 @@ function CatalogPage({
     id: AssetSection;
     label: string;
     icon: ComponentType<{ size?: number }>;
-    count: number;
+    count?: number;
     badgeLabel?: string;
     highlight?: boolean;
   }> = [
@@ -245,8 +332,8 @@ function CatalogPage({
       icon: FileCode2,
       count: instructionAssets.length,
     },
-    { id: "skills", label: tr("assets.skills"), icon: Sparkles, count: skillAssets.length },
-    { id: "mcp", label: "MCP", icon: PlugZap, count: connectionAssets.length },
+    { id: "skills", label: tr("assets.skills"), icon: Sparkles },
+    { id: "mcp", label: "MCP", icon: PlugZap },
     {
       id: "memory",
       label: tr("assets.memories"),
@@ -278,18 +365,20 @@ function CatalogPage({
             >
               <Icon size={15} />
               {label}
-              <Badge
-                variant="secondary"
-                className={cn(
-                  "ml-auto min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
-                  highlight &&
-                    "border-[color-mix(in_srgb,var(--amber)_45%,transparent)] bg-[color-mix(in_srgb,var(--amber)_16%,transparent)] text-[var(--amber)]",
-                )}
-                aria-label={badgeLabel}
-                title={badgeLabel}
-              >
-                {count}
-              </Badge>
+              {count !== undefined && (
+                <Badge
+                  variant="secondary"
+                  className={cn(
+                    "ml-auto min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
+                    highlight &&
+                      "border-[color-mix(in_srgb,var(--amber)_45%,transparent)] bg-[color-mix(in_srgb,var(--amber)_16%,transparent)] text-[var(--amber)]",
+                  )}
+                  aria-label={badgeLabel}
+                  title={badgeLabel}
+                >
+                  {count}
+                </Badge>
+              )}
             </Button>
           ))}
         </nav>
@@ -299,7 +388,8 @@ function CatalogPage({
       )}
       {section === "skills" && (
         <SkillHubPage
-          workspaceAssets={skillAssets}
+          section={skillSection}
+          onSectionChange={onSkillSection}
           workspaces={workspaces}
           onOpen={onOpen}
           onReload={onReload}
@@ -317,6 +407,7 @@ function CatalogPage({
           workspaces={workspaces}
           onRuntimeChanged={onRuntimeChanged}
           onMigrationPlanned={onMigrationPlanned}
+          focusNetworkSettings={focusMcpNetwork}
         />
       )}
     </div>
@@ -433,13 +524,32 @@ export function McpHubPage({
   runtime,
   workspaces,
   onRuntimeChanged,
+  focusNetworkSettings = false,
 }: {
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
   onMigrationPlanned: (project: string, changeSet: ChangeSet) => Promise<void>;
+  focusNetworkSettings?: boolean;
 }) {
   const { localizeMessage, tr } = useI18n();
+  const navigation = useOptionalAppNavigationContext();
+  const networkSettings = useRef<HTMLDivElement>(null);
+  const [advanced, setAdvanced] = useState({
+    requested: focusNetworkSettings,
+    open: focusNetworkSettings,
+  });
+  // A new navigation request opens this panel without remounting its editable fields.
+  if (advanced.requested !== focusNetworkSettings) {
+    setAdvanced({ requested: focusNetworkSettings, open: advanced.open || focusNetworkSettings });
+  }
+  useEffect(() => {
+    if (!focusNetworkSettings) return;
+    const target = networkSettings.current;
+    target?.scrollIntoView?.({ block: "start" });
+    // Keep an active field focused: moving focus would trigger its blur-to-save handler.
+    if (target && !target.contains(document.activeElement)) target.focus({ preventScroll: true });
+  }, [focusNetworkSettings]);
   const dialogs = useAppDialogs();
   const queryClient = useQueryClient();
   const [registryRequest, setRegistryRequest] = useState<string>();
@@ -448,6 +558,16 @@ export function McpHubPage({
   const [drafts] = useState(() => new Map<string, McpEditorState>());
   const [actionBusy, setBusy] = useState(false);
   const [actionError, setError] = useState("");
+  const actionPending = useRef(false);
+  const scopeEpoch = useRef(0);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      scopeEpoch.current += 1;
+    };
+  }, []);
   const project = scope || undefined;
   const installationsQuery = useQuery({
     ...queryDefaults,
@@ -489,15 +609,39 @@ export function McpHubPage({
   useEffect(() => {
     if (runtimeQuery.data) runtimeChanged.current(runtimeQuery.data);
   }, [runtimeQuery.data]);
-  const load = async () => {
+  const load = async (targetProject = project) => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["mcp", "management", project], exact: true }),
+      queryClient.invalidateQueries({
+        queryKey: ["mcp", "management", targetProject],
+        exact: true,
+      }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "installations"] }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "runtimes"] }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "runtime"] }),
     ]);
   };
+  const runAction = async (
+    action: (isCurrent: () => boolean) => Promise<void>,
+    errorScope: "scope" | "global" = "scope",
+  ) => {
+    if (actionPending.current) return;
+    actionPending.current = true;
+    const epoch = scopeEpoch.current;
+    const isCurrent = () => alive.current && epoch === scopeEpoch.current;
+    setBusy(true);
+    setError("");
+    try {
+      await action(isCurrent);
+    } catch (reason) {
+      if (alive.current && (errorScope === "global" || isCurrent()))
+        setError(localizeMessage(reason));
+    } finally {
+      actionPending.current = false;
+      if (alive.current) setBusy(false);
+    }
+  };
   const searchRegistry = async () => {
+    if (actionPending.current || registryQuery.isFetching) return;
     setError("");
     if (registryRequest === query) await registryQuery.refetch({ cancelRefetch: false });
     else setRegistryRequest(query);
@@ -507,80 +651,70 @@ export function McpHubPage({
       entry.package_kind === "remote"
         ? entry.url
         : `${entry.package_kind === "npm" ? "npm" : "uv"} · ${entry.identifier}@${entry.version}`;
-    if (!(await dialogs.confirm(tr("mcp.installConfirm", { name: entry.name, command })))) return;
-    const env = await dialogs.requestSecrets(entry.required_env);
-    if (env === null) return;
-    setBusy(true);
-    setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const result = await api.installMcp(entry, project);
-          if (Object.keys(env).length)
-            await api.saveMcpLocalValues(result.server.id, env, {}, project);
-          await load();
-        } catch (reason) {
-          setError(localizeMessage(reason));
-        }
-      },
-      () => setBusy(false),
-    );
+    await runAction(async (isCurrent) => {
+      if (!(await dialogs.confirm(tr("mcp.installConfirm", { name: entry.name, command })))) return;
+      if (!isCurrent()) return;
+      const env = await dialogs.requestSecrets(entry.required_env);
+      if (env === null || !isCurrent()) return;
+      const result = await api.installMcp(entry, project);
+      if (Object.keys(env).length) await api.saveMcpLocalValues(result.server.id, env, {}, project);
+      await load();
+    });
   };
   const updateInstallation = async (installation: McpInstallation, entry: McpRegistryEntry) => {
-    if (
-      !(await dialogs.confirm(
-        tr("mcp.updateConfirm", { name: installation.name, version: entry.version }),
-      ))
-    )
-      return;
-    const env = await dialogs.requestSecrets(entry.required_env);
-    if (env === null) return;
-    setBusy(true);
-    setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const result = await api.updateMcp(installation.id, entry, project);
-          if (Object.keys(env).length)
-            await api.saveMcpLocalValues(result.server.id, env, {}, project);
-          await load();
-        } catch (reason) {
-          setError(localizeMessage(reason));
-        }
-      },
-      () => setBusy(false),
-    );
+    await runAction(async (isCurrent) => {
+      if (
+        !(await dialogs.confirm(
+          tr("mcp.updateConfirm", { name: installation.name, version: entry.version }),
+        )) ||
+        !isCurrent()
+      )
+        return;
+      const env = await dialogs.requestSecrets(entry.required_env);
+      if (env === null || !isCurrent()) return;
+      const result = await api.updateMcp(installation.id, entry, project);
+      if (Object.keys(env).length) await api.saveMcpLocalValues(result.server.id, env, {}, project);
+      await load();
+    });
   };
   const updateNetwork = async (lanEnabled: boolean) => {
-    if (
-      lanEnabled &&
-      !(await dialogs.confirm({ description: tr("mcp.lanWarning"), tone: "warning" }))
-    )
-      return;
-    try {
+    await runAction(async (isCurrent) => {
+      if (
+        lanEnabled &&
+        !(await dialogs.confirm({ description: tr("mcp.lanWarning"), tone: "warning" }))
+      )
+        return;
+      if (!isCurrent()) return;
       await api.updateMcpNetwork({
         port: runtime?.mcp_network?.port ?? 47653,
         lan_enabled: lanEnabled,
         lan_risk_accepted: lanEnabled,
       });
-      onRuntimeChanged(await api.runtime());
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    }
+      const nextRuntime = await api.runtime();
+      if (alive.current) onRuntimeChanged(nextRuntime);
+    }, "global");
   };
-  const updatePort = async (port: number) => {
-    if (!Number.isInteger(port) || port < 1 || port > 65535 || port === runtime?.mcp_network?.port)
-      return;
-    try {
+  const updatePort = async (port: number): Promise<number | undefined> => {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+    let confirmedPort: number | undefined;
+    await runAction(async () => {
+      // Retire an older runtime read before saving so it cannot overwrite the readback.
+      await queryClient.cancelQueries({ queryKey: ["mcp", "runtime"], exact: true });
       await api.updateMcpNetwork({
         port,
         lan_enabled: runtime?.mcp_network?.lan_enabled ?? false,
         lan_risk_accepted: runtime?.mcp_network?.lan_risk_accepted ?? false,
       });
-      onRuntimeChanged(await api.runtime());
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    }
+      const nextRuntime = await api.runtime();
+      if (!alive.current) return;
+      // Other MCP panels can refresh during the write; retire those older reads as well.
+      await queryClient.cancelQueries({ queryKey: ["mcp", "runtime"], exact: true });
+      if (!alive.current) return;
+      queryClient.setQueryData(["mcp", "runtime"], nextRuntime);
+      if (nextRuntime.mcp_network.port !== port) throw new Error(tr("mcp.portUnconfirmed"));
+      confirmedPort = nextRuntime.mcp_network.port;
+    }, "global");
+    return confirmedPort;
   };
   return (
     <div className="grid gap-5">
@@ -595,6 +729,8 @@ export function McpHubPage({
               if (value !== null) {
                 const nextScope = String(value);
                 const nextProject = nextScope === "__global_scope__" ? undefined : nextScope;
+                if (nextProject === project) return;
+                scopeEpoch.current += 1;
                 setError("");
                 setScope(nextProject ?? "");
               }
@@ -620,6 +756,18 @@ export function McpHubPage({
           </Select>
         </div>
       </div>
+      <p role="note" className="text-sm text-muted-foreground">
+        {tr("mcp.hubExplanation")}
+      </p>
+      {navigation && (
+        <Button
+          variant="outline"
+          className="justify-self-start"
+          onClick={() => navigation.app.openSettings("integrations", "integrations-mcp")}
+        >
+          {tr("mcp.openIntegrationSettings")}
+        </Button>
+      )}
       <McpManagementPanel
         key={project ?? "global"}
         project={project}
@@ -627,20 +775,31 @@ export function McpHubPage({
         onChanged={load}
         drafts={drafts}
       />
+      {error && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
+          <CircleAlert size={16} />
+          {error}
+        </div>
+      )}
+      {actionBusy && (
+        <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+          <RefreshCw size={14} className="animate-spin" />
+          {tr("common.loading")}
+        </div>
+      )}
       <McpDisclosure
         className="grid gap-4 rounded-xl border p-4"
         title={<>{tr("mcp.manage.advanced")}</>}
+        open={advanced.open}
+        onOpenChange={(open) => setAdvanced((current) => ({ ...current, open }))}
       >
-        {error && (
-          <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-            <CircleAlert size={16} />
-            {error}
-          </div>
-        )}
         <div className="grid gap-4 rounded-2xl border border-border bg-card p-5 md:grid-cols-[minmax(0,1fr)_auto]">
           <div className="grid gap-1.5">
             <span className="text-xs font-semibold uppercase tracking-[.12em] text-muted-foreground">
-              STREAMABLE HTTP MCP HUB
+              {tr("mcp.hubLabel")}
             </span>
             <h2>{tr("mcp.title")}</h2>
           </div>
@@ -657,25 +816,26 @@ export function McpHubPage({
             <small>{tr("mcp.runtimeCount", { count: runtime?.mcp_hub?.runtime_count ?? 0 })}</small>
           </div>
         </div>
-        <div className="grid gap-5 rounded-2xl border border-border bg-card p-5 shadow-sm md:grid-cols-[minmax(0,1fr)_auto]">
+        <div
+          ref={networkSettings}
+          id="catalog-mcp-network"
+          tabIndex={-1}
+          aria-label={tr("mcp.network")}
+          className="grid scroll-mt-6 gap-5 rounded-2xl border border-border bg-card p-5 shadow-sm outline-none md:grid-cols-[minmax(0,1fr)_auto]"
+        >
           <div className="grid gap-1.5">
             <h2>{tr("mcp.network")}</h2>
           </div>
           <div className="flex flex-wrap items-end gap-4">
-            <Label className="!grid gap-2">
-              <span>{tr("mcp.port")}</span>
-              <Input
-                className="w-32"
-                type="number"
-                min="1"
-                max="65535"
-                defaultValue={runtime?.mcp_network?.port ?? 47653}
-                onBlur={(event) => void updatePort(Number(event.target.value))}
-              />
-            </Label>
+            <McpPortField
+              port={runtime?.mcp_network?.port ?? 47653}
+              disabled={busy}
+              onCommit={updatePort}
+            />
             <Label className="!grid gap-2">
               <span>{tr("mcp.lanMode")}</span>
               <Switch
+                disabled={busy}
                 checked={runtime?.mcp_network?.lan_enabled ?? false}
                 onCheckedChange={(checked) => void updateNetwork(checked)}
               />
@@ -725,6 +885,7 @@ export function McpHubPage({
                   </div>
                   <Button
                     className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+                    disabled={busy}
                     onClick={() => void install(entry)}
                   >
                     {tr("mcp.install")}
@@ -732,7 +893,20 @@ export function McpHubPage({
                 </article>
               ))}
               {!registry.length && (
-                <p className="py-6 text-sm text-muted-foreground">{tr("mcp.registryEmpty")}</p>
+                <p
+                  role={registryQuery.isFetching ? "status" : undefined}
+                  className="py-6 text-sm text-muted-foreground"
+                >
+                  {tr(
+                    registryQuery.isFetching
+                      ? "mcp.registrySearching"
+                      : registryQuery.isError
+                        ? "mcp.registrySearchFailed"
+                        : registryRequest === undefined
+                          ? "mcp.registryEmpty"
+                          : "mcp.registryNoResults",
+                  )}
+                </p>
               )}
             </div>
           </div>
@@ -778,17 +952,22 @@ export function McpHubPage({
                       )}
                       <Button
                         className="text-destructive hover:bg-destructive/10"
-                        onClick={async () => {
-                          if (
-                            !(await dialogs.confirm({
-                              description: tr("mcp.uninstallConfirm", { name: item.name }),
-                              tone: "destructive",
-                            }))
-                          )
-                            return;
-                          await api.uninstallMcp(item.id);
-                          await load();
-                        }}
+                        disabled={busy}
+                        aria-label={`${tr("common.remove")} ${item.name}`}
+                        onClick={() =>
+                          void runAction(async (isCurrent) => {
+                            if (
+                              !(await dialogs.confirm({
+                                description: tr("mcp.uninstallConfirm", { name: item.name }),
+                                tone: "destructive",
+                              })) ||
+                              !isCurrent()
+                            )
+                              return;
+                            await api.uninstallMcp(item.id);
+                            await load();
+                          }, "global")
+                        }
                       >
                         <Trash2 size={14} />
                       </Button>
@@ -808,7 +987,8 @@ export function McpHubPage({
               </div>
               <Button
                 className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                onClick={() => void load()}
+                disabled={busy}
+                onClick={() => void runAction(async () => load())}
               >
                 <RefreshCw size={13} />
                 {tr("common.refresh")}
@@ -835,23 +1015,25 @@ export function McpHubPage({
                   <div className="flex flex-wrap gap-2">
                     <Button
                       className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                      onClick={async () => {
-                        try {
+                      disabled={busy}
+                      onClick={() =>
+                        void runAction(async () => {
                           await api.restartMcpRuntime(item.server_id, item.project ?? undefined);
                           await load();
-                        } catch (reason) {
-                          setError(localizeMessage(reason));
-                        }
-                      }}
+                        })
+                      }
                     >
                       {tr("mcp.restart")}
                     </Button>
                     <Button
                       className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                      onClick={async () => {
-                        await api.stopMcpRuntime(item.server_id);
-                        await load();
-                      }}
+                      disabled={busy}
+                      onClick={() =>
+                        void runAction(async () => {
+                          await api.stopMcpRuntime(item.server_id);
+                          await load();
+                        }, "global")
+                      }
                     >
                       {tr("mcp.stopAllScopes")}
                     </Button>

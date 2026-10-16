@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
@@ -110,6 +110,10 @@ async function mount(skills: Skills) {
       }) as ReturnType<typeof api.readSkillPreviewFile>,
   );
   const initial = await snapshot(skills);
+  const changed = vi.fn(async (publish: (value: typeof initial) => void) => {
+    publish(await snapshot(skills));
+    return [];
+  });
   function Flow() {
     const [data, setData] = useState(initial);
     const [request, setRequest] = useState<PrepareSkillSyncRequest>();
@@ -131,10 +135,7 @@ async function mount(skills: Skills) {
             request={request}
             state={data.syncState}
             onClose={() => setRequest(undefined)}
-            onChanged={async () => {
-              setData(await snapshot(skills));
-              return [];
-            }}
+            onChanged={() => changed(setData)}
           />
         )}
       </>
@@ -147,7 +148,20 @@ async function mount(skills: Skills) {
       <Flow />
     </QueryClientProvider>,
   );
-  return { user: userEvent.setup(), prepare, apply };
+  return { user: userEvent.setup(), prepare, apply, changed };
+}
+
+async function chooseUsageMenuAction(
+  flow: Awaited<ReturnType<typeof mount>>,
+  target: string,
+  name: string,
+) {
+  const card = screen
+    .getAllByText(target, { selector: "code" })[0]
+    .closest<HTMLDivElement>("div.rounded-xl");
+  if (!card) throw new Error("Usage card missing");
+  await flow.user.click(within(card).getByRole("button", { name: /^More actions/ }));
+  await flow.user.click(await screen.findByRole("menuitem", { name }));
 }
 
 async function confirmOnce(flow: Awaited<ReturnType<typeof mount>>) {
@@ -155,7 +169,14 @@ async function confirmOnce(flow: Awaited<ReturnType<typeof mount>>) {
   await waitFor(() => expect(confirm).toBeEnabled());
   await flow.user.dblClick(confirm);
   await waitFor(() => expect(flow.apply).toHaveBeenCalledTimes(1));
-  return (await flow.apply.mock.results[0].value) as SkillSyncReport;
+  const report = (await flow.apply.mock.results[0].value) as SkillSyncReport;
+  // Application admission is earlier than the UI's real post-apply reads.
+  // Settle those reads before disk assertions or teardown remove the fixture.
+  await waitFor(() => expect(flow.changed).toHaveBeenCalledOnce());
+  await act(async () => {
+    await flow.changed.mock.results[0].value;
+  });
+  return report;
 }
 
 describe("Skill synchronization through native usage controls", () => {
@@ -291,7 +312,7 @@ describe("Skill synchronization through native usage controls", () => {
     await mkdir(second, { recursive: true });
     await writeFile(path.join(second, "SKILL.md"), f.text("accepted original"));
     const flow = await mount(f.skills);
-    await flow.user.click(screen.getByRole("button", { name: tr("skills.sync.operation.adopt") }));
+    await chooseUsageMenuAction(flow, second, tr("skills.sync.operation.adopt"));
     const chooser = await screen.findByRole("combobox", { name: tr("skills.sync.adoptLibrary") });
     await flow.user.click(chooser);
     await flow.user.click(await screen.findByRole("option", { name: `reviewer · ${f.libraryId}` }));
@@ -319,9 +340,7 @@ describe("Skill synchronization through native usage controls", () => {
       await mkdir(second, { recursive: true });
       await writeFile(path.join(second, "SKILL.md"), f.text("second native version"));
       const flow = await mount(f.skills);
-      await flow.user.click(
-        screen.getByRole("button", { name: tr("skills.sync.operation.adopt") }),
-      );
+      await chooseUsageMenuAction(flow, second, tr("skills.sync.operation.adopt"));
       await flow.user.click(
         await screen.findByRole("combobox", { name: tr("skills.sync.adoptLibrary") }),
       );
@@ -378,7 +397,7 @@ describe("Skill synchronization through native usage controls", () => {
     await writeFile(path.join(f.target, "SKILL.md"), f.text("unwanted native edit"));
     expect((await f.state()).deployments[0].sync_state).toBe("incoming");
     const flow = await mount(f.skills);
-    await flow.user.click(screen.getByRole("button", { name: tr("skills.sync.useLibrary") }));
+    await chooseUsageMenuAction(flow, f.target, tr("skills.sync.useLibrary"));
     const report = await confirmOnce(flow);
     expect(flow.prepare).toHaveBeenCalledWith(
       expect.objectContaining({ operation: "push", resolution: "library" }),
@@ -415,7 +434,7 @@ describe("Skill synchronization through native usage controls", () => {
       const f = await fixture();
       await writeFile(path.join(f.target, "SKILL.md"), f.text("unwanted native edit"));
       const flow = await mount(f.skills);
-      await flow.user.click(screen.getByRole("button", { name: tr("skills.sync.useLibrary") }));
+      await chooseUsageMenuAction(flow, f.target, tr("skills.sync.useLibrary"));
       const confirm = await screen.findByRole("button", { name: tr("skills.sync.confirm") });
       await waitFor(() => expect(confirm).toBeEnabled());
       if (changed === "library") await writeFile(f.libraryFile, f.text("external library change"));

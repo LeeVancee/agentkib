@@ -195,6 +195,13 @@ export function SkillSyncDialog({
     }
   };
   const conflicts = current?.targets.flatMap((item) => item.conflicts) ?? [];
+  const reviewingConflict =
+    !resolution &&
+    (request.operation === "push" || request.operation === "pull") &&
+    (current
+      ? conflicts.length > 0
+      : state?.deployments.find((item) => item.id === request.deployment_id)?.sync_state ===
+        "conflict");
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && void close()}>
       <DialogContent
@@ -202,9 +209,20 @@ export function SkillSyncDialog({
         className="max-h-[85vh] w-[min(920px,calc(100vw-2rem))] !max-w-none overflow-y-auto"
       >
         <DialogHeader>
-          <DialogTitle>{tr(`skills.sync.operation.${operation}`)}</DialogTitle>
+          <DialogTitle>
+            {tr(
+              reviewingConflict
+                ? "skills.sync.reviewConflict"
+                : `skills.sync.operation.${operation}`,
+            )}
+          </DialogTitle>
           <DialogDescription>
-            {tr(`skills.sync.description.${operation}`)} {tr("skills.sync.reviewNotice")}
+            {tr(
+              reviewingConflict
+                ? "skills.sync.conflictDescription"
+                : `skills.sync.description.${operation}`,
+            )}{" "}
+            {tr("skills.sync.reviewNotice")}
           </DialogDescription>
         </DialogHeader>
         {request.operation === "adopt" && !report && (

@@ -11,7 +11,7 @@ import type {
   SkillSyncPreview,
   SkillSyncState,
 } from "@/core/types";
-import { initializeI18n, tr } from "@/core/i18n";
+import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import { SkillSyncDialog, SkillSyncPolicyDialog, SkillSyncRunsDialog } from "./SkillSyncPanels";
 import { skillKeys } from "./skills-query";
 
@@ -122,9 +122,10 @@ beforeEach(() => {
   mocks.skillSyncPolicy.mockResolvedValue(policy);
   mocks.saveSkillSyncPolicy.mockImplementation(async ({ policy }) => ({ ...policy, revision: 3 }));
 });
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   vi.resetAllMocks();
+  await changeLocale("en-US");
 });
 
 describe("Skill synchronization controls", () => {
@@ -822,4 +823,76 @@ describe("Skill synchronization controls", () => {
     await waitFor(() => expect(mocks.recoverSkillSync).toHaveBeenCalledWith("saved", false));
     expect(await screen.findByRole("alert")).toHaveTextContent("location changed");
   });
+});
+
+describe("Skill conflict review hierarchy", () => {
+  it.each(
+    (
+      [
+        ["en-US", "Review conflicting versions"],
+        ["zh-CN", "比较冲突版本"],
+        ["zh-TW", "比較衝突版本"],
+        ["ja-JP", "競合するバージョンを比較"],
+      ] as const
+    ).flatMap(([locale, title]) =>
+      (["library", "deployment"] as const).map((resolution) => ({ locale, title, resolution })),
+    ),
+  )(
+    "requires an explicit $resolution choice before applying the reviewed token in $locale",
+    async ({ locale, title, resolution }) => {
+      await changeLocale(locale);
+      mocks.prepareSkillSync.mockImplementation(async (input: PrepareSkillSyncRequest) => ({
+        ...preview,
+        token: input.resolution ? `chosen-${input.resolution}` : "unresolved-conflict",
+        operation: input.operation,
+        requires_home_approval: false,
+        targets: [
+          {
+            ...preview.targets[0],
+            state: input.resolution ? "current" : "conflict",
+            conflicts: input.resolution ? [] : ["Both copies changed"],
+          },
+        ],
+      }));
+      mount(
+        <SkillSyncDialog
+          request={{ operation: "push", deployment_id: "deployment" }}
+          state={{ ...state, deployments: [{ ...state.deployments[0], sync_state: "conflict" }] }}
+          onClose={vi.fn()}
+          onChanged={async () => []}
+        />,
+      );
+      await screen.findByText("Both copies changed");
+      expect(screen.getByRole("heading", { name: title })).toBeVisible();
+      expect(screen.getByText(new RegExp(tr("skills.sync.conflictDescription")))).toBeVisible();
+      expect(mocks.prepareSkillSync).toHaveBeenCalledExactlyOnceWith({
+        operation: "push",
+        deployment_id: "deployment",
+      });
+      const confirm = screen.getByRole("button", { name: tr("skills.sync.confirm") });
+      expect(confirm).toBeDisabled();
+      expect(mocks.applySkillSync).not.toHaveBeenCalled();
+      const user = userEvent.setup();
+      await user.click(
+        screen.getByRole("button", {
+          name: tr(
+            resolution === "library" ? "skills.sync.useLibrary" : "skills.sync.useDeployment",
+          ),
+        }),
+      );
+      await waitFor(() =>
+        expect(mocks.prepareSkillSync).toHaveBeenLastCalledWith({
+          operation: resolution === "library" ? "push" : "pull",
+          deployment_id: "deployment",
+          resolution,
+        }),
+      );
+      await waitFor(() => expect(confirm).toBeEnabled());
+      await user.click(confirm);
+      await waitFor(() =>
+        expect(mocks.applySkillSync).toHaveBeenCalledExactlyOnceWith(`chosen-${resolution}`, false),
+      );
+      expect(mocks.discardSkillPreview).toHaveBeenCalledWith("unresolved-conflict");
+    },
+  );
 });

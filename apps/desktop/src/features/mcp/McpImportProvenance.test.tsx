@@ -78,7 +78,7 @@ async function previewIdentical() {
   await user.click(screen.getByRole("button", { name: "mcp.manage.scanNative" }));
   await user.click(await screen.findByRole("checkbox", { name: /tool/ }));
   await user.click(screen.getByRole("button", { name: "mcp.manage.previewNative" }));
-  const choice = await screen.findByRole("combobox", { name: "source-id action" });
+  const choice = await screen.findByRole("combobox", { name: "mcp.manage.importAction" });
   await waitFor(() => expect(choice).toBeEnabled());
   return { user, choice, onSaved };
 }

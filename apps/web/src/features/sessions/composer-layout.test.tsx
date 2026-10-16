@@ -38,9 +38,19 @@ function settings(id = "s"): CodexSessionSettings {
 beforeEach(() => {
   state = {
     selected: "s",
+    current: {
+      id: "s",
+      workspace_id: "workspace",
+      agent: "codex",
+      availability: "readable",
+      archived: false,
+      sidechain: false,
+    },
     locale: "zh-CN",
     t: dictionaries["zh-CN"],
     access: {
+      status: "approved",
+      protocolVersion: 2,
       experimentalEnabled: true,
       device: { accessMode: "full", send: true, attachments: true, advancedControl: true },
     },
@@ -254,7 +264,7 @@ describe("native Plan and Goal projection", () => {
     const view = render(<CodexComposer />);
     fireEvent.click(await screen.findByRole("button", { name: /Test Model.*下一轮/ }));
     expect(screen.getByRole("combobox", { name: "协作模式" })).toHaveValue("plan");
-    expect(screen.getByRole("option", { name: "原生模式待确认" })).toBeDisabled();
+    expect(screen.getByRole("option", { name: "Codex 模式待确认" })).toBeDisabled();
     expect(screen.getByRole("option", { name: "执行" })).toHaveValue("default");
     expect(screen.getByText(composerLayoutCopy["zh-CN"].settingsPending)).toBeVisible();
     expect(screen.queryByText(codexCopy["zh-CN"].settingsSaved)).not.toBeInTheDocument();

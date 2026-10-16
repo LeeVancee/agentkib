@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createFileRoute,
   Outlet,
@@ -27,7 +27,7 @@ import { api } from "@/core/api";
 import { tr } from "@/core/i18n";
 import { cn } from "cn";
 import { withAsyncCleanup } from "@/lib/utils";
-import type { Manifest, WorkspaceSummary } from "@/core/types";
+import type { Manifest, WorkspaceScan, WorkspaceSummary } from "@/core/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,21 +35,28 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
+import { useAppDialogs } from "@/components/AppDialogProvider";
+import { AppliedChangesNotice } from "@/features/workspace/AppliedChangesNotice";
+import { draftSectionCount } from "@/features/workspace/manifest-draft";
 import { Copy, MoreHorizontal, RefreshCw } from "lucide-react";
 function WorkspaceActions({
   workspace,
   onError,
   onScan,
   busy,
+  locked,
   onReview,
   reviewDisabled,
+  reviewDisabledReason,
 }: {
   workspace: WorkspaceSummary;
   onError: (message: string) => void;
   onScan: () => void | Promise<void>;
   busy: boolean;
+  locked: boolean;
   onReview: () => void | Promise<void>;
   reviewDisabled: boolean;
+  reviewDisabledReason?: string;
 }) {
   const { tr } = useI18n();
   return (
@@ -82,18 +89,26 @@ function WorkspaceActions({
         title={tr("common.scan")}
         aria-label={tr("common.scan")}
         onClick={() => void onScan()}
-        disabled={busy}
+        disabled={busy || locked}
       >
         <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
       </Button>
-      <Button
-        className="h-9 rounded-lg px-3"
-        onClick={() => void onReview()}
-        disabled={reviewDisabled}
-      >
-        <GitCompareArrows size={15} />
-        {tr("workspace.reviewChanges")}
-      </Button>
+      <span className="inline-flex" title={reviewDisabledReason}>
+        <Button
+          className="h-9 rounded-lg px-3"
+          onClick={() => void onReview()}
+          disabled={reviewDisabled || locked}
+          aria-describedby={reviewDisabledReason ? "workspace-review-reason" : undefined}
+        >
+          <GitCompareArrows size={15} />
+          {tr("workspace.reviewChanges")}
+        </Button>
+        {reviewDisabledReason && (
+          <span id="workspace-review-reason" className="sr-only">
+            {reviewDisabledReason}
+          </span>
+        )}
+      </span>
     </div>
   );
 }
@@ -107,6 +122,7 @@ type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | 
 function WorkspaceLayout() {
   const { localizeMessage, tr } = useI18n();
   const navigate = useNavigate();
+  const dialogs = useAppDialogs();
   const location = useLocation();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId" });
   const setRuntime = useAppStore((state) => state.setRuntime);
@@ -120,6 +136,10 @@ function WorkspaceLayout() {
     manifest,
     baselineManifest,
     busy,
+    applyingChanges,
+    appliedChanges,
+    setAppliedChanges,
+    discardWorkspaceDraft,
     setScan,
     setManifest,
     setChangeSet,
@@ -133,11 +153,39 @@ function WorkspaceLayout() {
   const currentPage = getPage(location.pathname);
   const activeWorkspace =
     workspace ?? (selectedWorkspace?.id === workspaceId ? selectedWorkspace : undefined);
+  const matchesWorkspace =
+    selectedWorkspace?.id === workspaceId && project === activeWorkspace?.path;
+  const hasWorkspaceContent = Boolean(
+    matchesWorkspace && scan && (manifest || currentPage === "doctor"),
+  );
+  const showPageSkeleton =
+    !matchesWorkspace || ((busy || currentPage !== "doctor") && !hasWorkspaceContent);
   const hasUnsavedDraft = Boolean(
     manifest && baselineManifest && JSON.stringify(manifest) !== baselineManifest,
   );
   const operationRequest = useRef(0);
+  const discardPending = useRef(false);
+  const [discarding, setDiscarding] = useState(false);
+  const [draftError, setDraftError] = useState<{
+    workspaceId: string;
+    project: string;
+    key: string;
+  }>();
+  const dirtySections = draftSectionCount(manifest, baselineManifest);
   const loadStartedWorkspace = useRef<string | undefined>(undefined);
+  const [loadFailure, setLoadFailure] = useState<{
+    workspaceId: string;
+    project: string;
+    reason: unknown;
+    scan?: WorkspaceScan;
+  }>();
+  // A scan loaded by another refresh entry point also supersedes this failure.
+  const currentLoadFailure =
+    loadFailure?.workspaceId === workspaceId &&
+    loadFailure.project === project &&
+    loadFailure.scan === scan
+      ? loadFailure
+      : undefined;
 
   useEffect(() => {
     operationRequest.current += 1;
@@ -148,13 +196,25 @@ function WorkspaceLayout() {
   }, [workspaceId]);
 
   const loadWorkspace = async (draft?: Manifest) => {
-    if (!project) return;
+    if (!project || useWorkspaceStore.getState().applyingChanges) return;
     const requestId = ++operationRequest.current;
     const targetProject = project;
+    const initialState = useWorkspaceStore.getState();
+    const scanAtStart = initialState.scan;
+    const manifestAtStart = JSON.stringify(initialState.manifest);
+    const targetDraft = initialState.manifest ?? draft;
     const isCurrentRequest = () =>
       requestId === operationRequest.current &&
       useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
       useWorkspaceStore.getState().project === targetProject;
+    const failLoad = (reason: unknown) => {
+      setLoadFailure({
+        workspaceId,
+        project: targetProject,
+        reason,
+        scan: scanAtStart,
+      });
+    };
     setBusy(true);
     setMessage("");
     await withAsyncCleanup(
@@ -167,23 +227,30 @@ function WorkspaceLayout() {
           ]);
           if (!isCurrentRequest()) return;
           if (scanResult.status === "rejected") {
-            setMessage(localizeMessage(scanResult.reason));
+            failLoad(scanResult.reason);
             return;
           }
           if (runtimeResult.status === "rejected") {
-            setMessage(localizeMessage(runtimeResult.reason));
+            failLoad(runtimeResult.reason);
             return;
           }
           const nextScan = scanResult.value;
           const nextManifest =
             manifestResult.status === "fulfilled" ? manifestResult.value : undefined;
-          const resolvedManifest = draft ?? nextManifest;
+          // The editor stays mounted while refreshing. A later edit, including
+          // a revert to the old baseline, must survive the older disk response.
+          const currentManifest = useWorkspaceStore.getState().manifest;
+          const resolvedManifest =
+            JSON.stringify(currentManifest) !== manifestAtStart
+              ? currentManifest
+              : (targetDraft ?? nextManifest);
           if (manifestResult.status === "rejected")
             setMessage(localizeMessage(manifestResult.reason));
           setScan(nextScan);
           setManifest(resolvedManifest);
           setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
           setRuntime(runtimeResult.value);
+          setLoadFailure(undefined);
           if (!resolvedManifest && currentPage !== "doctor") {
             void navigate({
               to: "/workspace/$workspaceId/doctor",
@@ -191,13 +258,19 @@ function WorkspaceLayout() {
             });
           }
         } catch (error) {
-          if (isCurrentRequest()) setMessage(localizeMessage(error));
+          if (isCurrentRequest()) failLoad(error);
         }
       },
       () => {
         if (isCurrentRequest()) setBusy(false);
       },
     );
+  };
+
+  const refreshWorkspace = () => {
+    const current = useWorkspaceStore.getState();
+    if (current.busy || current.applyingChanges) return;
+    return loadWorkspace(current.manifest ?? current.workspaceDrafts[workspaceId]);
   };
 
   useEffect(() => {
@@ -214,7 +287,13 @@ function WorkspaceLayout() {
   }, [activeWorkspace, manifest, project, scan, workspaceDrafts, workspaceId]);
 
   const plan = async (includeHome = false) => {
-    if (!project || !manifest) return;
+    if (
+      !project ||
+      !manifest ||
+      useWorkspaceStore.getState().applyingChanges ||
+      useWorkspaceStore.getState().busy
+    )
+      return;
     const requestId = ++operationRequest.current;
     const targetProject = project;
     const targetManifest = manifest;
@@ -229,7 +308,11 @@ function WorkspaceLayout() {
         try {
           const nextChangeSet = await api.plan(targetProject, targetManifest, includeHome);
           if (!isCurrentRequest()) return;
-          setChangeSet(nextChangeSet);
+          if (
+            JSON.stringify(useWorkspaceStore.getState().manifest) !== JSON.stringify(targetManifest)
+          )
+            return;
+          setChangeSet(nextChangeSet, targetManifest);
           setChangeSetOrigin("standard");
           setHandoffLaunchRequest(undefined);
           void navigate({
@@ -244,6 +327,46 @@ function WorkspaceLayout() {
         if (isCurrentRequest()) setBusy(false);
       },
     );
+  };
+
+  const discardDraft = async () => {
+    if (discardPending.current || busy || applyingChanges || !manifest || !hasUnsavedDraft) return;
+    discardPending.current = true;
+    setDiscarding(true);
+    setDraftError(undefined);
+    const targetProject = project;
+    const expectedManifest = JSON.stringify(manifest);
+    try {
+      if (
+        !(await dialogs.confirm({
+          description: tr("workspace.leaveDraftConfirm"),
+          tone: "destructive",
+        }))
+      )
+        return;
+      const current = useWorkspaceStore.getState();
+      if (current.selectedWorkspace?.id !== workspaceId || current.project !== targetProject)
+        return;
+      if (!discardWorkspaceDraft(expectedManifest))
+        setDraftError({
+          workspaceId,
+          project: targetProject,
+          key:
+            JSON.stringify(current.manifest) !== expectedManifest
+              ? "workspace.discardDraftChanged"
+              : "workspace.discardDraftUnavailable",
+        });
+    } catch {
+      if (useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId)
+        setDraftError({
+          workspaceId,
+          project: targetProject,
+          key: "workspace.discardDraftUnavailable",
+        });
+    } finally {
+      discardPending.current = false;
+      setDiscarding(false);
+    }
   };
 
   if (!activeWorkspace) {
@@ -277,27 +400,97 @@ function WorkspaceLayout() {
               >
                 {workspaceStatusLabel(activeWorkspace.status)}
               </Badge>
+              {hasUnsavedDraft && (
+                <Badge variant="outline">
+                  {tr("workspace.draftSections", { count: dirtySections })}
+                </Badge>
+              )}
             </div>
             <code className="mt-1 block truncate text-xs text-muted-foreground">
               {activeWorkspace.path}
             </code>
           </div>
         </div>
-        <WorkspaceActions
-          workspace={activeWorkspace}
-          onError={setMessage}
-          onScan={() => loadWorkspace(manifest)}
-          busy={busy}
-          onReview={() => plan(false)}
-          reviewDisabled={busy || !hasUnsavedDraft}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          {currentPage === "assets" && hasUnsavedDraft && (
+            <Button
+              variant="outline"
+              onClick={() => void discardDraft()}
+              disabled={busy || applyingChanges || discarding}
+            >
+              {tr("workspace.discardDraft")}
+            </Button>
+          )}
+          <WorkspaceActions
+            workspace={activeWorkspace}
+            onError={setMessage}
+            onScan={refreshWorkspace}
+            busy={busy}
+            locked={applyingChanges || discarding}
+            onReview={() => plan(false)}
+            reviewDisabled={busy || !hasUnsavedDraft}
+            reviewDisabledReason={
+              applyingChanges
+                ? tr("changes.applying")
+                : busy || discarding
+                  ? tr("common.loading")
+                  : !hasUnsavedDraft
+                    ? tr("workspace.noDraftChanges")
+                    : undefined
+            }
+          />
+        </div>
       </section>
 
-      <section className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-118px)]")}>
-        {busy || (currentPage !== "doctor" && (!scan || !manifest)) ? (
-          <WorkspacePageSkeleton page={currentPage} />
+      {appliedChanges?.workspaceId === workspaceId && appliedChanges.project === project && (
+        <AppliedChangesNotice
+          key={appliedChanges.changeSet.id}
+          result={appliedChanges}
+          onDismiss={() => setAppliedChanges(undefined)}
+        />
+      )}
+      {draftError?.workspaceId === workspaceId && draftError.project === project && (
+        <p role="alert" className="text-sm text-destructive">
+          {tr(draftError.key)}
+        </p>
+      )}
+
+      <section
+        aria-busy={busy}
+        className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-118px)]")}
+      >
+        {busy && hasWorkspaceContent && (
+          <p role="status" className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+            <RefreshCw size={13} className="animate-spin" />
+            {tr("workspace.updating")}
+          </p>
+        )}
+        {currentLoadFailure && (
+          <div
+            role="alert"
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+          >
+            <div className="grid gap-1">
+              <strong>{tr("workspace.scanFailed")}</strong>
+              <p>{localizeMessage(currentLoadFailure.reason)}</p>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => void refreshWorkspace()}
+              disabled={busy || applyingChanges}
+              aria-busy={busy}
+            >
+              <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
+              {tr("workspace.retryScan")}
+            </Button>
+          </div>
+        )}
+        {showPageSkeleton ? (
+          currentLoadFailure ? null : (
+            <WorkspacePageSkeleton page={currentPage} />
+          )
         ) : (
-          <Outlet />
+          <Outlet key={workspaceId} />
         )}
       </section>
     </div>

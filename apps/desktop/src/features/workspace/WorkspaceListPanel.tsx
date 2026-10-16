@@ -9,6 +9,7 @@ import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 export function WorkspaceListPanel({
   workspaces,
+  totalCount,
   selectedId,
   pageStart,
   pageEnd,
@@ -22,6 +23,7 @@ export function WorkspaceListPanel({
   onPageChange,
 }: {
   workspaces: WorkspaceSummary[];
+  totalCount: number;
   selectedId: string;
   pageStart: number;
   pageEnd: number;
@@ -142,7 +144,14 @@ export function WorkspaceListPanel({
           );
         })}
         {!workspaces.length && (
-          <WorkspaceEmptyState title={tr("workspace.noMatch")} text={tr("workspace.noMatchText")} />
+          <WorkspaceEmptyState
+            title={tr(totalCount ? "workspace.noMatch" : "workspace.emptyTitle")}
+            text={
+              totalCount
+                ? tr("workspace.noMatchText")
+                : tr("workspace.emptyText", { action: tr("workspace.addManually") })
+            }
+          />
         )}
       </div>
       {filteredCount > 0 && (

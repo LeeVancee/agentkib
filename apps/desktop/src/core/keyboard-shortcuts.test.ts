@@ -8,7 +8,9 @@ import {
   isEditableTarget,
   matchesShortcut,
   shouldHandleInFrontend,
+  shortcutsForGroup,
 } from "./keyboard-shortcuts";
+import { createGlobalNavigation } from "@/features/app/global-navigation";
 
 describe("keyboard shortcuts", () => {
   beforeEach(() => {
@@ -46,6 +48,47 @@ describe("keyboard shortcuts", () => {
         "windows",
       ),
     ).toBe(false);
+  });
+
+  it("assigns seven page shortcuts in sidebar order using the same translation keys", () => {
+    const entries = createGlobalNavigation(3);
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "home",
+      "workspaces",
+      "agents",
+      "sessions",
+      "catalog",
+      "quota",
+      "insights",
+    ]);
+    expect(entries.map((entry) => entry.shortcut)).toEqual([
+      "navigate-home",
+      "navigate-workspaces",
+      "navigate-agents",
+      "navigate-sessions",
+      "navigate-catalog",
+      "navigate-quota",
+      "navigate-insights",
+    ]);
+    const definitions = shortcutsForGroup("navigation").slice(0, 7);
+    expect(definitions.map((definition) => definition.id)).toEqual(
+      entries.map((entry) => entry.shortcut),
+    );
+    expect(definitions.map((definition) => definition.labelKey)).toEqual(
+      entries.map((entry) => entry.label),
+    );
+    expect(definitions.map((definition) => definition.key)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+    ]);
+    expect(entries.find((entry) => entry.id === "catalog")?.badge).toBe(3);
+    expect(formatShortcut(getShortcutDefinition("navigate-sessions"), "macos")).toBe("⌘4");
+    expect(ariaShortcut(getShortcutDefinition("navigate-sessions"), "linux")).toBe("Control+4");
   });
 
   it("matches shifted shortcuts without accepting the unshifted key", () => {

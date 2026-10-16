@@ -16,7 +16,11 @@ import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
 import { useLayoutEffect, useRef, useState } from "react";
 import { webLayoutCopy } from "./web-layout-copy";
+import { sessionDisplayState } from "./session-display-state";
+import { codexCopy } from "./codex-copy";
+import { approvalSummary } from "./approval-summary";
 export function SessionReader() {
+  const session = useSession();
   const {
     historyReferences = [],
     t,
@@ -38,8 +42,9 @@ export function SessionReader() {
     setMessage,
     control,
     liveContentVersion,
-  } = useSession();
+  } = session;
   const panels = useSessionPanels();
+  const display = sessionDisplayState(session);
   const hasNativeReply =
     !!live?.turnId &&
     page?.events.some((event) => event.kind === "agent-message" && event.turn_id === live.turnId);
@@ -184,11 +189,16 @@ export function SessionReader() {
                 <Button
                   variant="ghost"
                   key={a.requestId}
-                  className="mx-5 my-2 shrink-0 justify-start whitespace-normal border border-amber-500/25 bg-amber-500/5 text-left text-xs text-amber-700 dark:text-amber-300 [&>svg:last-child]:ml-auto"
+                  className="mx-5 my-2 h-auto min-h-8 min-w-0 shrink-0 justify-start whitespace-normal border border-amber-500/25 bg-amber-500/5 text-left text-xs text-amber-700 dark:text-amber-300 [&>svg:last-child]:ml-auto"
                   onClick={() => setModal(a)}
                 >
                   <ShieldCheck size={19} />
-                  {t.approval}
+                  <span className="grid min-w-0 gap-1">
+                    <span className="break-all">
+                      {t.approval} · {approvalSummary(a, locale, t.unknownTool)}
+                    </span>
+                    <span className="break-all text-xs text-muted-foreground">#{a.requestId}</span>
+                  </span>
                   <ChevronRight size={18} />
                 </Button>
               ))}
@@ -212,6 +222,22 @@ export function SessionReader() {
                 {t[notice]}
               </p>
             )}
+            {panels && display.nextAction && current?.agent !== "claude-code" && (
+              <div className="mx-auto w-full max-w-3xl space-y-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs">
+                <strong>{display.label}</strong>
+                <p>{display.reason}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => panels.setActionsOpen(true)}
+                >
+                  {display.nextAction === "managed-handoff"
+                    ? t.confirmHandoff
+                    : codexCopy[locale].resume}
+                </Button>
+              </div>
+            )}
             {(current?.agent === "codex" ||
               current?.agent === "claude-code" ||
               current?.agent === "antigravity") &&
@@ -226,6 +252,7 @@ export function SessionReader() {
                   onSubmit={(event) => {
                     event.preventDefault();
                     if (
+                      online &&
                       canSend &&
                       live?.activity !== "compacting" &&
                       validHistoryMessage(message, historyReferences)
@@ -245,7 +272,7 @@ export function SessionReader() {
                     rows={1}
                     onChange={(e) => setMessage(e.target.value)}
                     placeholder={t.message}
-                    disabled={!online || busy}
+                    disabled={busy}
                   />
                   <div className="flex items-center justify-between gap-2 px-2 pb-1">
                     <small className="max-w-lg text-xs leading-5 text-muted-foreground">
@@ -269,6 +296,7 @@ export function SessionReader() {
                           className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-30"
                           aria-label={t.send}
                           disabled={
+                            !online ||
                             !canSend ||
                             live?.activity === "compacting" ||
                             !validHistoryMessage(message, historyReferences)

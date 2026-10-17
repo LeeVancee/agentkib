@@ -94,6 +94,13 @@ afterEach(async () => {
 });
 
 describe("Context disk preview scope", () => {
+  it("does not ask to apply a draft when the editor matches the saved manifest", async () => {
+    useWorkspaceStore.getState().setManifest(baseline);
+    renderPage();
+    expect(screen.getByText(tr("context.previewScopeSaved"))).toBeVisible();
+    expect(screen.queryByText(tr("context.previewScope"))).toBeNull();
+    await screen.findByText(tr("context.noInstructions"));
+  });
   it.each([
     ["en-US", "disk", "Unapplied", "does not reload"],
     ["zh-CN", "磁盘", "尚未应用", "不会让 Agent 重新加载"],

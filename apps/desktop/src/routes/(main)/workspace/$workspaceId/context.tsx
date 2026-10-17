@@ -106,6 +106,14 @@ function ContextPageContent({
   onOpenInstructions,
 }: ContextPageProps) {
   const { localizeMessage, tr } = useI18n();
+  const hasDraft = useWorkspaceStore((state) =>
+    Boolean(
+      state.project === project &&
+      state.manifest &&
+      state.baselineManifest &&
+      JSON.stringify(state.manifest) !== state.baselineManifest,
+    ),
+  );
   const [manualAgent, setManualAgent] = useState<AgentKind>();
   const detectedAgent = agents?.find((item) => item.detected && supportedAgent(item.agent))?.agent;
   const agent = selectedAgent ?? manualAgent ?? detectedAgent ?? "codex";
@@ -135,7 +143,7 @@ function ContextPageContent({
   const empty = preview && !preview.sections.length;
   const previewScope = (
     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-      {tr("context.previewScope")}
+      {tr(hasDraft ? "context.previewScope" : "context.previewScopeSaved")}
     </p>
   );
   if (resolving && !preview)

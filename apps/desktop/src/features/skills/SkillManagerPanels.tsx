@@ -1188,10 +1188,7 @@ export function SkillUsageList({
               operation: "pull",
               deployment_id: item.id,
             });
-          if (
-            ["outgoing", "converged", "conflict"].includes(sync.sync_state) ||
-            (sync.sync_state === "unverified" && localSource)
-          )
+          if (sync.sync_state === "outgoing" || (sync.sync_state === "unverified" && localSource))
             syncAction("push", tr("skills.sync.operation.push"), {
               operation: "push",
               deployment_id: item.id,

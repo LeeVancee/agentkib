@@ -259,9 +259,9 @@ describe("Skill deployment workflow", () => {
       />,
     );
     const user = userEvent.setup();
-    await screen.findByRole("button", { name: "Apply eligible locations" });
+    await screen.findByRole("button", { name: "Apply available changes" });
     await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
-    await user.click(screen.getByRole("button", { name: "Apply eligible locations" }));
+    await user.click(screen.getByRole("button", { name: "Apply available changes" }));
     await user.click(await screen.findByRole("button", { name: "Recover operation" }));
     expect(screen.getByRole("button", { name: "Recover operation" }).hasAttribute("disabled")).toBe(
       true,
@@ -453,7 +453,7 @@ describe("Skill deployment workflow", () => {
       target_ids: selectedTargets.map((item) => item.id),
     });
     await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
-    await user.click(screen.getByRole("button", { name: "Apply eligible locations" }));
+    await user.click(screen.getByRole("button", { name: "Apply available changes" }));
     await user.click(await screen.findByRole("button", { name: "Recover operation" }));
     expect(screen.queryByText(targetPreviews[0].path)).toBeNull();
     expect(screen.getByText(targetPreviews[1].path)).toBeTruthy();
@@ -496,7 +496,7 @@ describe("Skill deployment workflow", () => {
       );
       const user = userEvent.setup();
       await user.click(await screen.findByRole("checkbox", { name: /I approve these changes/ }));
-      await user.click(screen.getByRole("button", { name: "Apply eligible locations" }));
+      await user.click(screen.getByRole("button", { name: "Apply available changes" }));
       expect(await screen.findByText("1 of 1 locations completed.")).toBeTruthy();
       if (retryLookup) {
         expect(
@@ -556,7 +556,7 @@ describe("Skill deployment workflow", () => {
       "physical-shared",
     );
     expect(
-      screen.getByRole("button", { name: "Apply eligible locations" }).hasAttribute("disabled"),
+      screen.getByRole("button", { name: "Apply available changes" }).hasAttribute("disabled"),
     ).toBe(true);
   });
   it("previews and applies directory-only changes without requesting file contents", async () => {
@@ -602,7 +602,7 @@ describe("Skill deployment workflow", () => {
     expect(screen.getByTitle("old/")).toBeTruthy();
     expect(screen.getByText(/Only directories are listed here/)).toBeTruthy();
     expect(mocks.readSkillPreviewFile).not.toHaveBeenCalled();
-    const apply = screen.getByRole("button", { name: "Apply eligible locations" });
+    const apply = screen.getByRole("button", { name: "Apply available changes" });
     expect(apply.hasAttribute("disabled")).toBe(false);
     await userEvent.setup().click(apply);
     await waitFor(() =>
@@ -655,7 +655,7 @@ describe("Skill deployment workflow", () => {
         onChanged={onChanged}
       />,
     );
-    const apply = await screen.findByRole("button", { name: "Apply eligible locations" });
+    const apply = await screen.findByRole("button", { name: "Apply available changes" });
     expect(apply.hasAttribute("disabled")).toBe(true);
     const user = userEvent.setup();
     await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
@@ -1361,19 +1361,25 @@ describe("Skill deployment action hierarchy", () => {
       expect(f.onAction).not.toHaveBeenCalled();
     },
   );
-  it("keeps both conflict directions in more actions without selecting a resolution", async () => {
-    const state = structuredClone(syncState);
-    state.deployments[0].sync_state = "conflict";
-    const f = usage(state);
-    await openUsageMenu();
-    expect(screen.getByRole("menuitem", { name: "Save to Skill library" })).toBeTruthy();
-    await userEvent.setup().click(screen.getByRole("menuitem", { name: "Update deployment" }));
-    expect(f.onSync).toHaveBeenCalledExactlyOnceWith({
-      operation: "push",
-      deployment_id: deployment.id,
-    });
-    expect(f.onAction).not.toHaveBeenCalled();
-  });
+  it.each(["conflict", "converged"] as const)(
+    "avoids duplicating the primary push review in the %s menu",
+    async (sync) => {
+      const state = structuredClone(syncState);
+      state.deployments[0].sync_state = sync;
+      const f = usage(state);
+      await openUsageMenu();
+      expect(screen.getByRole("menuitem", { name: "Save to Skill library" })).toBeTruthy();
+      expect(screen.queryByRole("menuitem", { name: "Update deployment" })).toBeNull();
+      await userEvent
+        .setup()
+        .click(screen.getByRole("menuitem", { name: "Save to Skill library" }));
+      expect(f.onSync).toHaveBeenCalledExactlyOnceWith({
+        operation: "pull",
+        deployment_id: deployment.id,
+      });
+      expect(f.onAction).not.toHaveBeenCalled();
+    },
+  );
   it("keeps busy writes disabled inside the menu while leaving content inspection available", async () => {
     const f = usage(syncState, true);
     expect(
@@ -1463,15 +1469,15 @@ describe("Skill deployment action hierarchy", () => {
       />,
     );
     const user = userEvent.setup();
-    await screen.findByRole("button", { name: "Apply eligible locations" });
+    await screen.findByRole("button", { name: "Apply available changes" });
     await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
     await user.click(screen.getByRole("button", { name: "Generate a new plan" }));
     await waitFor(() => expect(mocks.prepareSkillDeployment).toHaveBeenCalledTimes(2));
     expect(
-      screen.getByRole("button", { name: "Apply eligible locations" }).hasAttribute("disabled"),
+      screen.getByRole("button", { name: "Apply available changes" }).hasAttribute("disabled"),
     ).toBe(true);
     await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
-    await user.click(screen.getByRole("button", { name: "Apply eligible locations" }));
+    await user.click(screen.getByRole("button", { name: "Apply available changes" }));
     await waitFor(() =>
       expect(mocks.applySkillDeployment).toHaveBeenCalledExactlyOnceWith("fresh-preview", true),
     );
@@ -1495,9 +1501,9 @@ describe("Skill deployment action hierarchy", () => {
       />,
     );
     const user = userEvent.setup();
-    await screen.findByRole("button", { name: "Apply eligible locations" });
+    await screen.findByRole("button", { name: "Apply available changes" });
     await user.click(screen.getByRole("checkbox", { name: /I approve these changes/ }));
-    await user.click(screen.getByRole("button", { name: "Apply eligible locations" }));
+    await user.click(screen.getByRole("button", { name: "Apply available changes" }));
     await user.click(await screen.findByRole("button", { name: "Retry recovery status check" }));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Retry recovery status check" })).toBeNull(),

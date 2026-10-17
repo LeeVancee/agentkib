@@ -158,6 +158,7 @@ export interface DesktopRuntimeStatus {
 }
 
 export interface ClaudeBridgeStatus {
+  connectionError?: string;
   supported: boolean;
   connected: boolean;
   sessionId: string;

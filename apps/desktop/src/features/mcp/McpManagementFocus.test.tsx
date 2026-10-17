@@ -66,7 +66,9 @@ async function renderRow(enabled: boolean, inherited: boolean) {
     </QueryClientProvider>,
   );
   const row = (await screen.findByText("Reviewed service", { selector: "strong" })).closest("tr")!;
-  const [primary, more] = within(row).getAllByRole("button");
+  const buttons = within(row).getAllByRole("button");
+  const primary = enabled ? buttons[0] : undefined;
+  const more = buttons.at(-1)!;
   return { primary, more };
 }
 
@@ -85,17 +87,17 @@ describe("MCP action focus in a horizontally scrollable table", () => {
     ["disabled", false, false],
     ["inherited", false, true],
   ] as const)(
-    "reveals the focused %s primary and more actions without dispatching them",
+    "reveals the available %s actions without dispatching them",
     async (_state, enabled, inherited) => {
       const { primary, more } = await renderRow(enabled, inherited);
       const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
       const user = userEvent.setup();
-      for (let index = 0; index < 40 && document.activeElement !== primary; index++)
-        await user.tab();
-      expect(primary).toHaveFocus();
+      const first = primary ?? more;
+      for (let index = 0; index < 40 && document.activeElement !== first; index++) await user.tab();
+      expect(first).toHaveFocus();
       expect(scroll).toHaveBeenLastCalledWith({ block: "nearest", inline: "nearest" });
-      expect(scroll.mock.contexts.at(-1)).toBe(primary);
-      await user.tab();
+      expect(scroll.mock.contexts.at(-1)).toBe(first);
+      if (primary) await user.tab();
       expect(more).toHaveFocus();
       expect(scroll).toHaveBeenLastCalledWith({ block: "nearest", inline: "nearest" });
       expect(scroll.mock.contexts.at(-1)).toBe(more);

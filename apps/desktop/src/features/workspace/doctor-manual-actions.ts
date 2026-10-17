@@ -5,7 +5,7 @@ const manualActions: Record<string, { guidanceKey: string; destination?: DoctorI
     "manifest.invalid": { guidanceKey: "doctor.manual.manifest" },
     "native.invalid": { guidanceKey: "doctor.manual.native" },
     "skill.source-unavailable": { guidanceKey: "doctor.manual.skillSource", destination: "skills" },
-    "skill.target-missing": { guidanceKey: "doctor.manual.skillTarget", destination: "skills" },
+    "skill.target-missing": { guidanceKey: "doctor.manual.skillTarget" },
     "managed.missing": { guidanceKey: "doctor.manual.managed" },
     "managed.drift": { guidanceKey: "doctor.manual.managed" },
     "instruction.missing": { guidanceKey: "doctor.manual.instruction", destination: "context" },
@@ -20,7 +20,7 @@ const manualActions: Record<string, { guidanceKey: string; destination?: DoctorI
     "context.warning": { guidanceKey: "doctor.manual.context", destination: "context" },
     "context.unavailable": { guidanceKey: "doctor.manual.context", destination: "context" },
     "mcp.config-unavailable": { guidanceKey: "doctor.manual.mcpConfig" },
-    "mcp.target-missing": { guidanceKey: "doctor.manual.mcpTarget", destination: "mcp" },
+    "mcp.target-missing": { guidanceKey: "doctor.manual.mcpTarget" },
     "agent.read-only": { guidanceKey: "doctor.manual.readOnly" },
   };
 

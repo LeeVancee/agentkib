@@ -191,12 +191,12 @@ async function identity($, state) {
   const nativeId = await $.session.id();
   const cwd = await $.session.cwd();
   const version = await $.session.version();
+  if (version?.version !== CLI_VERSION) throw new Error("bridge-version-mismatch");
   if (
     typeof nativeId !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId) ||
     typeof cwd !== "string" ||
-    !cwd.startsWith("/") ||
-    version?.version !== CLI_VERSION
+    !cwd.startsWith("/")
   )
     throw new Error("unsupported-native-identity");
   if (state.identity && (state.identity.nativeId !== nativeId || state.identity.cwd !== cwd)) {
@@ -352,7 +352,21 @@ async function request($, state, path, body, authenticated = true) {
     invalidate(state, "binding-revoked");
     throw new Error("binding-revoked");
   }
-  if (!response?.ok || typeof response.text !== "string") throw new Error("bridge-unavailable");
+  if (!response?.ok || typeof response.text !== "string")
+    throw new Error(
+      [
+        "invalid-bridge-challenge",
+        "expired-bridge-challenge",
+        "bridge-version-mismatch",
+        "bridge-identity-mismatch",
+        "control-outcome-unconfirmed",
+        "claude-bridge-binding-limit",
+        "unsupported-native-identity",
+        "native-identity-changed",
+      ].includes(decoded?.error)
+        ? decoded.error
+        : "bridge-unavailable",
+    );
   return decoded;
 }
 
@@ -669,9 +683,33 @@ async function connect($, state, ticket) {
     throw new Error("already-connected");
   const generation = ++state.generation;
   state.connection = null;
-  const observed = await identity($, state);
-  if (state.generation !== generation) throw new Error("stale-connect");
   state.socketPath = ticket.socketPath;
+  let observed;
+  try {
+    observed = await identity($, state);
+  } catch (error) {
+    if (
+      [
+        "bridge-version-mismatch",
+        "unsupported-native-identity",
+        "native-identity-changed",
+      ].includes(error?.message)
+    ) {
+      try {
+        await request(
+          $,
+          state,
+          "/v1/pair",
+          { ticket: ticket.ticket, connectionError: error.message },
+          false,
+        );
+      } catch {
+        // Preserve the native validation error even when the broker is offline.
+      }
+    }
+    throw error;
+  }
+  if (state.generation !== generation) throw new Error("stale-connect");
   const response = await request(
     $,
     state,
@@ -741,13 +779,35 @@ async function reconnect($, state) {
   state.dirty = true;
 }
 
+export function connectionFailureText(reason) {
+  switch (reason) {
+    case "invalid-ticket":
+    case "invalid-bridge-challenge":
+      return "The connection code is invalid or already used. Generate a new connection code in AgentKib and copy the full command.";
+    case "expired-bridge-challenge":
+      return "The connection code has expired. Generate a new connection code in AgentKib and run the new command.";
+    case "bridge-version-mismatch":
+      return `This connection requires Claude Code ${CLI_VERSION} and AgentKib bridge ${PLUGIN_VERSION}. Check the CLI version, reinstall the plugin from AgentKib, then generate a new connection code.`;
+    case "bridge-identity-mismatch":
+    case "unsupported-native-identity":
+    case "native-identity-changed":
+      return "This terminal does not match the selected session or workspace. Open the original Claude Code session in the registered workspace and use a new connection code.";
+    case "already-connected":
+      return "This terminal is already connected to AgentKib. Use /agentkib-status to check the connection.";
+    case "control-outcome-unconfirmed":
+      return "A previous operation still needs to be checked. Open session actions in AgentKib and check its outcome before connecting again.";
+    default:
+      return "AgentKib could not connect. Check that AgentKib is running on this computer, then generate a new connection code and retry.";
+  }
+}
+
 export function register(on) {
   const state = initialState();
   on("session.start", async ($, e, next) => {
     await $.command.register({
       name: "agentkib-connect",
-      description: "Connect this session using the one-time ticket shown in AgentKib",
-      argumentHint: "<one-time-ticket>",
+      description: "Connect this session using the one-time connection code shown in AgentKib",
+      argumentHint: "<connection-code>",
       immediate: true,
     });
     await $.command.register({
@@ -774,9 +834,9 @@ export function register(on) {
       return {
         text: "AgentKib connected to this Claude Code session. Approvals and questions stay here.",
       };
-    } catch {
+    } catch (error) {
       return {
-        text: "AgentKib could not connect. Generate a new ticket and check the CLI version and workspace.",
+        text: connectionFailureText(error?.message),
       };
     }
   });

@@ -205,6 +205,41 @@ describe("McpHubPage management", () => {
     vi.mocked(api.saveMcpConfiguration).mockResolvedValue(state());
   });
   afterEach(cleanup);
+  it("requires confirmation before stopping a service in every scope", async () => {
+    const confirmation = deferred<boolean>();
+    dialogs.confirm.mockReturnValueOnce(confirmation.promise).mockResolvedValueOnce(true);
+    vi.mocked(api.mcpRuntimes).mockResolvedValue([runtimeInstance("Global runtime", null)]);
+    vi.mocked(api.stopMcpRuntime).mockResolvedValue(undefined);
+    renderHub();
+    await screen.findByText("Blender");
+    openAdvanced();
+    const stop = await screen.findByRole("button", { name: tr("mcp.stopAllScopes") });
+    fireEvent.click(stop);
+    expect(dialogs.confirm).toHaveBeenCalledExactlyOnceWith({
+      description: tr("mcp.stopAllScopesConfirm", { name: "Global runtime" }),
+      tone: "warning",
+    });
+    expect(api.stopMcpRuntime).not.toHaveBeenCalled();
+    expect(stop).toBeDisabled();
+    await act(async () => confirmation.resolve(false));
+    expect(api.stopMcpRuntime).not.toHaveBeenCalled();
+    fireEvent.click(stop);
+    await waitFor(() => expect(api.stopMcpRuntime).toHaveBeenCalledExactlyOnceWith("blender"));
+  });
+
+  it("labels installed-package removal as an uninstall with a destructive icon control", async () => {
+    vi.mocked(api.mcpInstallations).mockResolvedValue([installation]);
+    renderHub();
+    await screen.findByText("Blender");
+    openAdvanced();
+    const uninstall = await screen.findByRole("button", {
+      name: `${tr("mcp.uninstall")} ${installation.name}`,
+    });
+    expect(uninstall).toHaveAttribute("title", `${tr("mcp.uninstall")} ${installation.name}`);
+    expect(uninstall).toHaveClass("bg-destructive/10");
+    expect(screen.getByText(tr("mcp.checkUpdatesHint"))).toBeVisible();
+    expect(api.searchMcpRegistry).not.toHaveBeenCalled();
+  });
   it("validates ports before mutation and refreshes the same field from runtime props", async () => {
     const client = new QueryClient();
     const view = (port: number) => (
@@ -399,8 +434,10 @@ describe("McpHubPage management", () => {
         target: { value: "fixture" },
       });
       fireEvent.click(screen.getByRole("button", { name: tr("common.search") }));
-      expect(await screen.findByText(tr("mcp.registrySearchFailed"))).toBeVisible();
-      expect(screen.getByRole("alert")).toHaveTextContent("Registry unavailable");
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(tr("mcp.registrySearchFailed"));
+      expect(alert).toHaveTextContent("Registry unavailable");
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
       expect(screen.queryByText(tr("mcp.registryEmpty"))).not.toBeInTheDocument();
       expect(screen.queryByText(tr("mcp.registryNoResults"))).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: tr("common.search") }));
@@ -552,7 +589,7 @@ describe("McpHubPage management", () => {
     await waitFor(() => expect(dialogs.requestSecrets).toHaveBeenCalledTimes(1));
     expect(update).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: `${tr("common.remove")} ${installation.name}` }),
+      screen.getByRole("button", { name: `${tr("mcp.uninstall")} ${installation.name}` }),
     ).toBeDisabled();
     expect(api.updateMcp).not.toHaveBeenCalled();
     await act(async () => secrets.resolve({ API_KEY: "local-value" }));
@@ -575,7 +612,7 @@ describe("McpHubPage management", () => {
     await screen.findByText("Blender");
     openAdvanced();
     const remove = await screen.findByRole("button", {
-      name: `${tr("common.remove")} ${installation.name}`,
+      name: `${tr("mcp.uninstall")} ${installation.name}`,
     });
     fireEvent.click(remove);
     fireEvent.click(remove);
@@ -611,7 +648,7 @@ describe("McpHubPage management", () => {
     const action = await screen.findByRole("button", { name: tr(label) });
     fireEvent.click(action);
     fireEvent.click(action);
-    expect(api[method]).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(api[method]).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("button", { name: tr("mcp.restart") })).toBeDisabled();
     expect(screen.getByRole("button", { name: tr("mcp.stopAllScopes") })).toBeDisabled();
     await act(async () => request.reject(new Error("Runtime operation failed")));
@@ -679,7 +716,7 @@ describe("McpHubPage management", () => {
       openAdvanced();
       if (operation === "uninstall") {
         fireEvent.click(
-          screen.getByRole("button", { name: `${tr("common.remove")} ${installation.name}` }),
+          screen.getByRole("button", { name: `${tr("mcp.uninstall")} ${installation.name}` }),
         );
         await waitFor(() => expect(api.uninstallMcp).toHaveBeenCalledTimes(1));
       } else if (operation === "port") {
@@ -704,7 +741,7 @@ describe("McpHubPage management", () => {
         );
       } else {
         fireEvent.click(screen.getByRole("button", { name: tr("mcp.stopAllScopes") }));
-        expect(api.stopMcpRuntime).toHaveBeenCalledExactlyOnceWith("blender");
+        await waitFor(() => expect(api.stopMcpRuntime).toHaveBeenCalledExactlyOnceWith("blender"));
       }
       await user.click(screen.getByRole("combobox", { name: tr("mcp.scope") }));
       await user.click(await screen.findByRole("option", { name: "Workspace two" }));
@@ -723,7 +760,7 @@ describe("McpHubPage management", () => {
     await screen.findByText("Blender");
     openAdvanced();
     fireEvent.click(
-      screen.getByRole("button", { name: `${tr("common.remove")} ${installation.name}` }),
+      screen.getByRole("button", { name: `${tr("mcp.uninstall")} ${installation.name}` }),
     );
     await user.click(screen.getByRole("combobox", { name: tr("mcp.scope") }));
     await user.click(await screen.findByRole("option", { name: "Workspace two" }));
@@ -732,7 +769,7 @@ describe("McpHubPage management", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: `${tr("common.remove")} ${installation.name}` }),
+      screen.getByRole("button", { name: `${tr("mcp.uninstall")} ${installation.name}` }),
     ).toBeEnabled();
   });
   it("finishes an already-started installation in its original scope without replacing the new scope", async () => {

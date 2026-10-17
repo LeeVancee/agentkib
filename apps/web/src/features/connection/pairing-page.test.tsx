@@ -68,7 +68,7 @@ it.each(Object.keys(pairingErrorCopy) as Locale[])(
     render(<PairingPage />);
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      pairingErrorCopy[value].invalid_pairing_code,
+      pairingErrorText(value, "invalid_pairing_code", "access"),
     );
     expect(screen.getByLabelText(codePairingCopy[value].code)).toHaveValue("12345678");
     expect(screen.getByLabelText(codePairingCopy[value].code)).toHaveAttribute(
@@ -108,3 +108,20 @@ it("disables both fields and shows progress while the pairing request is pending
     screen.getByRole("button", { name: pairingErrorCopy[locale].requesting }).closest("form"),
   ).toHaveAttribute("aria-busy", "true");
 });
+
+it.each(Object.keys(pairingErrorCopy) as Locale[])(
+  "keeps pairing code terminology in confirmation mode in %s",
+  (value) => {
+    locale = value;
+    pairingMode = "confirmation";
+    connectionType = "same-origin";
+    pairingError = "invalid_pairing_code";
+    render(<PairingPage />);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      pairingErrorCopy[value].invalid_pairing_code,
+    );
+    expect(pairingErrorText(value, "invalid_pairing_code", "access")).not.toBe(
+      pairingErrorCopy[value].invalid_pairing_code,
+    );
+  },
+);

@@ -17,6 +17,7 @@ import {
   useObservedContextUsage,
 } from "@/features/sessions/conversation/features/sessions/context-usage";
 import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
+import { claudeConnectionCopy } from "@/features/sessions/conversation/features/sessions/claude-connection-copy";
 import { contextUsageCopy } from "@/features/sessions/conversation/features/sessions/context-usage-copy";
 import { PermissionModeNotice } from "@/features/sessions/conversation/features/sessions/permission-mode-notice";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
@@ -37,6 +38,7 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { isClaudeReadBusy, useClaudeSessionObservation } from "./useClaudeSessionObservation";
 import { mergeNativeCoverage, mergeOrderedPersistedHistory } from "@agentkib/conversation-state";
@@ -78,6 +80,20 @@ async function request<T>(operation: string, body: Record<string, unknown> = {})
   return (await api.claudeRequest({ operation, ...body })) as T;
 }
 
+function TechnicalDetails({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
+  return (
+    <Collapsible className="text-xs">
+      <CollapsibleTrigger className="cursor-pointer text-left underline underline-offset-2">
+        {label}
+      </CollapsibleTrigger>
+      <CollapsibleContent keepMounted>
+        <pre className="whitespace-pre-wrap">{value}</pre>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 /** Desktop uses the same owner service and receipts as Web; no CLI lives in the renderer. */
 export function ClaudeSessionPanel({
   workspaceId,
@@ -89,25 +105,100 @@ export function ClaudeSessionPanel({
   onClose: () => void;
 }) {
   const { locale } = useI18n();
+  const connectionCopy = claudeConnectionCopy[locale];
   const text = (zh: string, en: string, tw: string, ja: string) =>
     ({ "zh-CN": zh, "en-US": en, "zh-TW": tw, "ja-JP": ja })[locale];
+  const detailsLabel = text("技术详情", "Technical details", "技術詳情", "技術的な詳細");
+  const explainError = (reason: string) => {
+    const normalized = reason.replaceAll("_", "-");
+    const messages: Record<string, string> = {
+      "attachment-limit": text(
+        "最多添加 10 个附件，请移除后重试。",
+        "Choose at most 10 attachments. Remove one and retry.",
+        "最多新增 10 個附件，請移除後重試。",
+        "添付は 10 件までです。削除して再試行してください。",
+      ),
+      "attachment-too-large": text(
+        "附件不能超过 25 MB，请选择较小的文件。",
+        "Attachments must be at most 25 MB. Choose a smaller file.",
+        "附件不能超過 25 MB，請選擇較小的檔案。",
+        "添付は 25 MB 以下にしてください。小さいファイルを選択してください。",
+      ),
+      "upload-failed": text(
+        "附件上传失败，请重新选择文件。",
+        "The attachment upload failed. Choose the file again.",
+        "附件上傳失敗，請重新選擇檔案。",
+        "添付をアップロードできませんでした。ファイルを選び直してください。",
+      ),
+      "inspect-failed": text(
+        "无法检查原客户端状态，请检查原终端后重试。",
+        "Could not inspect the original client. Check the terminal and retry.",
+        "無法檢查原客戶端狀態，請檢查原終端機後重試。",
+        "元のクライアントの状態を確認できません。ターミナルを確認して再試行してください。",
+      ),
+      "connection-failed": text(
+        "连接失败，请检查原终端并刷新。",
+        "The connection failed. Check the original terminal and refresh.",
+        "連線失敗，請檢查原終端機並重新整理。",
+        "接続できませんでした。元のターミナルを確認して更新してください。",
+      ),
+      "claude-session-unavailable": text(
+        "此 Claude 会话暂不可用，请检查原终端并刷新。",
+        "This Claude session is unavailable. Check the original terminal and refresh.",
+        "此 Claude 對話暫時無法使用，請檢查原終端機並重新整理。",
+        "この Claude 会話を利用できません。元のターミナルを確認して更新してください。",
+      ),
+    };
+    if (messages[normalized]) return { text: messages[normalized], technical: reason };
+    const mapped = codexReason(locale, normalized);
+    return mapped.technical === normalized
+      ? {
+          text: text(
+            "操作未完成，请刷新状态后重试。",
+            "The operation could not be completed. Refresh the state before retrying.",
+            "操作未完成，請重新整理狀態後重試。",
+            "操作を完了できませんでした。状態を更新してから再試行してください。",
+          ),
+          technical: reason,
+        }
+      : { ...mapped, technical: mapped.technical ?? reason };
+  };
   const [filesOpen, setFilesOpen] = useState(false);
   const [sessionId, setSessionId] = useState(initialSessionId ?? "");
   const [observedSessionId, setObservedSessionId] = useState("");
   const [catalog, setCatalog] = useState<ConversationCatalog>();
   const [options, setOptions] = useState<ManagedOptions>();
   const [live, setLive] = useState<Live>();
-  // A session AgentKib stopped for a stated reason shows the explanation; any other reason is
-  // shown as before.
-  const stoppedReason =
-    live?.reason &&
-    /^claude-(background-task|unrequested-turn|protocol-violation)(: |$)/.test(live.reason)
-      ? codexReason(locale, live.reason)
-      : undefined;
+  const stoppedReason = live?.reason ? explainError(live.reason) : undefined;
   const [capabilities, setCapabilities] = useState<SessionCapabilities>();
   const [history, setHistory] = useState<ConversationEventPage>();
   const [inspection, setInspection] = useState<ManagedInspection>();
   const [confirmed, setConfirmed] = useState(false);
+  const inspectionReleased = live?.status === "released";
+  const [inspectionSource, setInspectionSource] = useState({
+    workspaceId,
+    sessionId,
+    executionMode: live?.executionMode,
+    connectionGeneration: live?.connectionGeneration,
+    released: inspectionReleased,
+  });
+  if (
+    inspectionSource.workspaceId !== workspaceId ||
+    inspectionSource.sessionId !== sessionId ||
+    inspectionSource.executionMode !== live?.executionMode ||
+    inspectionSource.connectionGeneration !== live?.connectionGeneration ||
+    inspectionSource.released !== inspectionReleased
+  ) {
+    setInspectionSource({
+      workspaceId,
+      sessionId,
+      executionMode: live?.executionMode,
+      connectionGeneration: live?.connectionGeneration,
+      released: inspectionReleased,
+    });
+    setInspection(undefined);
+    setConfirmed(false);
+  }
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
   const [busy, setBusy] = useState(false);
@@ -120,12 +211,18 @@ export function ClaudeSessionPanel({
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
   const epoch = useRef(0),
+    inspectionRequest = useRef(0),
     flight = useRef(false),
     loading = useRef(false);
   const liveRef = useRef(live);
   useEffect(() => {
     liveRef.current = live;
   }, [live]);
+  useLayoutEffect(() => {
+    // A source inspected before terminal ownership changed needs a new proof.
+    // Keep this separate from the history stream's session generation.
+    inspectionRequest.current++;
+  }, [workspaceId, sessionId, live?.executionMode, live?.connectionGeneration, inspectionReleased]);
   const shown = useRef(new Set<string>());
   const refreshRef = useRef<(details?: boolean) => Promise<void>>(async () => {});
   const queuedRefresh = useRef<boolean | undefined>(undefined);
@@ -188,6 +285,10 @@ export function ClaudeSessionPanel({
     hasPending,
   });
   const online = connected && catalogReady && !refreshError;
+  const displayError = error || refreshError || catalogError;
+  const errorCopy = displayError ? explainError(displayError) : undefined;
+  const optionsReason =
+    !options?.available && options?.reason ? explainError(options.reason) : undefined;
   const compacting = live?.activity === "compacting";
   const usageView = useObservedContextUsage({
     selected: sessionId,
@@ -378,6 +479,8 @@ export function ClaudeSessionPanel({
       storageBlocked ||
       !online ||
       !controlReady ||
+      (liveRef.current?.executionMode === "claude-follower" &&
+        ["adopt", "release"].includes(operation)) ||
       (compacting && ["send", "adopt", "release"].includes(operation))
     )
       return;
@@ -435,14 +538,33 @@ export function ClaudeSessionPanel({
     setBusy(false);
   }
   async function inspect() {
+    if (
+      flight.current ||
+      blocked ||
+      compacting ||
+      hasPending() ||
+      liveRef.current?.executionMode === "claude-follower"
+    )
+      return;
+    flight.current = true;
+    setBusy(true);
+    setError("");
     const generation = epoch.current;
+    const requestId = ++inspectionRequest.current;
+    const isCurrentInspection = () =>
+      generation === epoch.current &&
+      requestId === inspectionRequest.current &&
+      liveRef.current?.executionMode !== "claude-follower";
     setConfirmed(false);
     setInspection(undefined);
     try {
       const next = await request<ManagedInspection>("inspect", { sessionId });
-      if (generation === epoch.current && next.sessionId === sessionId) setInspection(next);
+      if (isCurrentInspection() && next.sessionId === sessionId) setInspection(next);
     } catch (e) {
-      if (generation === epoch.current) setError(e instanceof Error ? e.message : "inspect_failed");
+      if (isCurrentInspection()) setError(e instanceof Error ? e.message : "inspect_failed");
+    } finally {
+      flight.current = false;
+      setBusy(false);
     }
   }
   async function upload(files: File[]) {
@@ -495,7 +617,7 @@ export function ClaudeSessionPanel({
     "awaiting-approval": text("等待审批", "Awaiting approval", "等待審批", "承認待ち"),
     "awaiting-input": text("等待回答", "Awaiting answer", "等待回答", "回答待ち"),
     "outcome-unknown": text("结果待核对", "Outcome unknown", "結果待核對", "結果の確認が必要"),
-    released: text("已释放", "Released", "已釋放", "解放済み"),
+    released: text("已交还", "Returned", "已交還", "返却済み"),
     failed: text("执行失败", "Failed", "執行失敗", "実行に失敗"),
     unavailable: text("不可用", "Unavailable", "無法使用", "利用できません"),
     readonly: text("只读", "Read only", "唯讀", "閲覧のみ"),
@@ -582,7 +704,12 @@ export function ClaudeSessionPanel({
           </p>
         )}
         <PermissionModeNotice permission={live?.permission} locale={locale} />
-        {!options?.available && options?.reason && <p role="status">{options.reason}</p>}
+        {optionsReason && (
+          <div role="status">
+            <p>{optionsReason.text}</p>
+            <TechnicalDetails label={detailsLabel} value={optionsReason.technical} />
+          </div>
+        )}
         <label>
           {text("会话", "Session", "對話", "会話")}
           <Select
@@ -613,10 +740,11 @@ export function ClaudeSessionPanel({
             </SelectContent>
           </Select>
         </label>
-        {(error || refreshError || catalogError) && (
-          <p role="alert" className="text-destructive break-words">
-            {error || refreshError || catalogError}
-          </p>
+        {errorCopy && (
+          <div role="alert" className="text-destructive break-words">
+            <p>{errorCopy.text}</p>
+            <TechnicalDetails label={detailsLabel} value={errorCopy.technical} />
+          </div>
         )}
         {pending && (
           <p role="status">
@@ -637,11 +765,11 @@ export function ClaudeSessionPanel({
                   ? statusLabels[live.status] ||
                     text("状态待核对", "State unavailable", "狀態待核對", "状態を確認できません")
                   : text("正在读取", "Loading", "正在讀取", "読み込み中")}
-              {live?.reason ? ` · ${stoppedReason?.text ?? live.reason}` : ""}
-              {stoppedReason?.technical && (
-                <span className="block text-xs opacity-70">{stoppedReason.technical}</span>
-              )}
+              {stoppedReason ? ` · ${stoppedReason.text}` : ""}
             </p>
+            {stoppedReason?.technical && (
+              <TechnicalDetails label={detailsLabel} value={stoppedReason.technical} />
+            )}
             {filesAvailable && (
               <div className="space-y-2">
                 <Button
@@ -654,10 +782,38 @@ export function ClaudeSessionPanel({
                 {filesOpen && <ClaudeFilesPanel key={sessionId} sessionId={sessionId} />}
               </div>
             )}
-            {!managed ? (
+            {live?.executionMode === "claude-follower" ? (
+              <div role="status" className="space-y-1 text-sm text-muted-foreground">
+                <p>{connectionCopy.disconnectFirst}</p>
+                <p>
+                  {text(
+                    `请关闭此面板，在会话页选择“${connectionCopy.manage}”，然后选择“${connectionCopy.disconnect}”。`,
+                    `Close this panel, choose “${connectionCopy.manage}” on the session page, then choose “${connectionCopy.disconnect}”.`,
+                    `請關閉此面板，在對話頁面選擇「${connectionCopy.manage}」，然後選擇「${connectionCopy.disconnect}」。`,
+                    `このパネルを閉じ、会話ページで「${connectionCopy.manage}」、次に「${connectionCopy.disconnect}」を選択してください。`,
+                  )}
+                </p>
+              </div>
+            ) : !managed ? (
               <div className="space-y-2">
-                <Button disabled={blocked} onClick={() => void inspect()}>
-                  {text("准备接管", "Prepare handoff", "準備接管", "引き渡しを準備")}
+                <Button
+                  variant={inspection?.handoffFingerprint ? "outline" : "default"}
+                  disabled={blocked || compacting}
+                  onClick={() => void inspect()}
+                >
+                  {inspection?.handoffFingerprint
+                    ? text(
+                        "重新检查原会话",
+                        "Recheck original session",
+                        "重新檢查原對話",
+                        "元の会話を再確認",
+                      )
+                    : text(
+                        "交给 AgentKib",
+                        "Hand over to AgentKib",
+                        "交給 AgentKib",
+                        "AgentKib に引き渡す",
+                      )}
                 </Button>
                 {inspection?.handoffFingerprint && (
                   <>
@@ -700,9 +856,9 @@ export function ClaudeSessionPanel({
                   onClick={() => void mutate("release")}
                 >
                   {text(
-                    "释放给原客户端",
-                    "Release to original client",
-                    "釋放給原客戶端",
+                    "交还原客户端",
+                    "Return to original client",
+                    "交還原客戶端",
                     "元のクライアントに戻す",
                   )}
                 </Button>

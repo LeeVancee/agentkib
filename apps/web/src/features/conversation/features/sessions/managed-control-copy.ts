@@ -23,9 +23,9 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
     fingerprintLoading:
       "Verifying Claude Code history before handoff. Wait for this check to finish.",
     fingerprintUnavailable:
-      "Claude Code history could not be verified. Check the source on the host, then close and reopen Execution management to retry. Handoff remains disabled.",
+      "Claude Code history could not be verified. Check the source on the host, then reopen Session actions to retry. Handoff remains disabled.",
     session:
-      "The selected session and its control state do not match. Refresh the session, then reopen Execution management.",
+      "The selected session and its control state do not match. Refresh the session, then reopen Session actions.",
     capability:
       "This session is not currently eligible for handoff. Refresh it and check the host Agent; continue in the original client if it remains unavailable.",
     ownership:
@@ -57,8 +57,8 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
     confirmation: "交接前请停止原客户端，并完成上方确认。",
     fingerprintLoading: "正在核验 Claude Code 历史，核验完成后才能交接。请稍候。",
     fingerprintUnavailable:
-      "无法核验 Claude Code 历史。请在主机检查来源，再关闭并重新打开执行管理重试；核验前无法交接。",
-    session: "所选会话与控制状态不一致。请刷新会话，再重新打开执行管理。",
+      "无法核验 Claude Code 历史。请在主机检查来源，再重新打开会话操作重试；核验前无法交接。",
+    session: "所选会话与控制状态不一致。请刷新会话，再重新打开会话操作。",
     capability:
       "此会话目前不具备交接条件。请刷新并检查主机上的 Agent；仍不可用时请在原客户端继续。",
     ownership: "此会话当前不处于等待交接状态。请刷新执行状态后重试。",
@@ -82,8 +82,8 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
     confirmation: "交接前請停止原客戶端，並完成上方確認。",
     fingerprintLoading: "正在核驗 Claude Code 歷史，核驗完成後才能交接。請稍候。",
     fingerprintUnavailable:
-      "無法核驗 Claude Code 歷史。請在主機檢查來源，再關閉並重新開啟執行管理重試；核驗前無法交接。",
-    session: "所選對話與控制狀態不一致。請重新整理對話，再重新開啟執行管理。",
+      "無法核驗 Claude Code 歷史。請在主機檢查來源，再重新開啟對話操作重試；核驗前無法交接。",
+    session: "所選對話與控制狀態不一致。請重新整理對話，再重新開啟對話操作。",
     capability:
       "此對話目前不具備交接條件。請重新整理並檢查主機上的 Agent；仍不可用時請在原客戶端繼續。",
     ownership: "此對話目前不處於等待交接狀態。請重新整理執行狀態後重試。",
@@ -109,8 +109,8 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
     confirmation: "引き渡す前に元のクライアントを停止し、上の確認項目にチェックを入れてください。",
     fingerprintLoading: "引き渡しのために Claude Code の履歴を検証中です。完了までお待ちください。",
     fingerprintUnavailable:
-      "Claude Code の履歴を検証できません。ホストのソースを確認し、実行管理を閉じて開き直してください。検証前は引き渡せません。",
-    session: "選択した会話と制御状態が一致しません。会話を更新し、実行管理を開き直してください。",
+      "Claude Code の履歴を検証できません。ホストのソースを確認し、会話の操作を開き直してください。検証前は引き渡せません。",
+    session: "選択した会話と制御状態が一致しません。会話を更新し、会話の操作を開き直してください。",
     capability:
       "この会話は現在引き渡せません。会話を更新してホストの Agent を確認してください。利用できない場合は元のクライアントで続けてください。",
     ownership:

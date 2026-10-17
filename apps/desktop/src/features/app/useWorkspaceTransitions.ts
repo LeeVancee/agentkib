@@ -33,14 +33,7 @@ export function useWorkspaceTransitions({
     const selectedWorkspace = workspace.selectedWorkspace;
     const manifest = workspace.manifest;
     if (!selectedWorkspace || !manifest || !workspace.baselineManifest) return;
-    workspace.setWorkspaceDrafts((drafts) => {
-      if (JSON.stringify(manifest) !== workspace.baselineManifest)
-        return { ...drafts, [selectedWorkspace.id]: manifest };
-      if (!(selectedWorkspace.id in drafts)) return drafts;
-      const nextDrafts = { ...drafts };
-      delete nextDrafts[selectedWorkspace.id];
-      return nextDrafts;
-    });
+    workspace.cacheWorkspaceDraft(selectedWorkspace.id, manifest, workspace.baselineManifest);
   }, []);
 
   const leaveWorkspace = useCallback(
@@ -86,6 +79,7 @@ export function useWorkspaceTransitions({
       latest.setChangeSetOrigin("standard");
       latest.setHandoffLaunchRequest(undefined);
       latest.setBaselineManifest("");
+      latest.setAppliedChanges(undefined);
       next();
       return true;
     },
@@ -120,6 +114,7 @@ export function useWorkspaceTransitions({
       const nextState = useWorkspaceStore.getState();
       nextState.setMessage("");
       nextState.setChangeSet(undefined);
+      nextState.setAppliedChanges(undefined);
       nextState.setChangeSetOrigin("standard");
       nextState.setHandoffLaunchRequest(undefined);
       nextState.setProject(workspace.path);

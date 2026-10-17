@@ -262,7 +262,8 @@ describe("catalog Skills URL navigation", () => {
     vi.mocked(api.rollbackSkill).mockResolvedValue(skill);
     const { router } = await start();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: tr("skills.rollback") }));
+    await user.click(await screen.findByRole("button", { name: /^More actions · Reviewer$/ }));
+    await user.click(await screen.findByRole("menuitem", { name: tr("skills.rollback") }));
     await user.click(screen.getByRole("button", { name: tr("common.confirm") }));
     const action = await screen.findByRole("button", {
       name: tr("skills.manager.viewDeployments"),

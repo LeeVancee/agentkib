@@ -396,27 +396,13 @@ export function McpManagementPanel({
                         event.target.scrollIntoView({ block: "nearest", inline: "nearest" });
                     }}
                   >
-                    {entry.config.enabled ? (
+                    {entry.config.enabled && (
                       <McpRuntimeProbe
                         key={JSON.stringify([project, entry.config, state?.revision])}
                         serverId={entry.config.id}
                         project={project}
                         onProbed={refresh}
                       />
-                    ) : (
-                      <Button
-                        disabled={busy || !!editor}
-                        onClick={() => {
-                          setEditor({
-                            entry,
-                            revision: state!.revision,
-                            draft: newMcpDraft(entry),
-                          });
-                          setOpen(undefined);
-                        }}
-                      >
-                        {tr(entry.inherited ? "mcp.manage.createOverride" : "mcp.manage.edit")}
-                      </Button>
                     )}
                     <DropdownMenu>
                       <DropdownMenuTrigger
@@ -427,21 +413,19 @@ export function McpManagementPanel({
                         <MoreHorizontal size={16} aria-hidden="true" />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="min-w-52">
-                        {entry.config.enabled && (
-                          <DropdownMenuItem
-                            disabled={busy || !!editor}
-                            onClick={() => {
-                              setEditor({
-                                entry,
-                                revision: state!.revision,
-                                draft: newMcpDraft(entry),
-                              });
-                              setOpen(undefined);
-                            }}
-                          >
-                            {tr(entry.inherited ? "mcp.manage.createOverride" : "mcp.manage.edit")}
-                          </DropdownMenuItem>
-                        )}
+                        <DropdownMenuItem
+                          disabled={busy || !!editor}
+                          onClick={() => {
+                            setEditor({
+                              entry,
+                              revision: state!.revision,
+                              draft: newMcpDraft(entry),
+                            });
+                            setOpen(undefined);
+                          }}
+                        >
+                          {tr(entry.inherited ? "mcp.manage.createOverride" : "mcp.manage.edit")}
+                        </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={() =>
                             void navigator.clipboard

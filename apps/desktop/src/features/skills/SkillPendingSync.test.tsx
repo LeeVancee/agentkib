@@ -172,7 +172,9 @@ describe("pending synchronization navigation", () => {
       expect(api.applySkillSync).not.toHaveBeenCalled();
       button.focus();
       await user.keyboard(" ");
-      await waitFor(() => expect(within(region).getByRole("heading")).toHaveFocus());
+      expect(button).toHaveAttribute("aria-pressed", "false");
+      const all = screen.getByRole("region", { name: tr("skills.workspaceUsage") });
+      expect(within(all).getByText("Skill current", { selector: "strong" })).toBeVisible();
     },
   );
 

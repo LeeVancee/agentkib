@@ -171,7 +171,7 @@ describe("GlobalHome", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /View context health/i }));
+    fireEvent.click(screen.getByRole("button", { name: "View diagnostics" }));
 
     expect(onOpenDoctor).toHaveBeenCalledWith(workspace);
   });

@@ -37,6 +37,7 @@ export function MemoryCard({
     setError("");
     try {
       await onReview(record.id, status, status === "approved" && editing ? draft : undefined);
+      if (alive.current) setEditing(false);
     } catch (reason) {
       if (alive.current) setError(localizeMessage(reason));
     } finally {
@@ -64,7 +65,7 @@ export function MemoryCard({
         </span>
         <time>{formatDateTime(record.created_at)}</time>
       </div>
-      {editing ? (
+      {editing && record.status === "pending" ? (
         <Textarea
           className="min-h-24 resize-y"
           value={draft}

@@ -120,10 +120,17 @@ describe("composer sending shortcuts", () => {
       } as unknown as SessionController["client"],
     };
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
 
   it("submits Enter through the same form path as the send button", async () => {
     const { input, form } = renderComposer();
+    expect(screen.getByRole("button", { name: "Send" })).toHaveClass("size-11");
+    expect(screen.getByRole("button", { name: codexCopy["en-US"].attachment })).toHaveClass(
+      "size-11",
+    );
     const requestSubmit = vi.spyOn(form, "requestSubmit");
     expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
     await waitFor(() => expect(input).toHaveValue(""));
@@ -141,6 +148,20 @@ describe("composer sending shortcuts", () => {
     fireEvent.change(input, { target: { value: "Second message" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps coarse-pointer Enter as a newline and sends only with the button", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+    );
+    const { input } = renderComposer();
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(true);
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(screen.queryByText(composerLayoutCopy["en-US"].sendShortcut)).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "Line one\nLine two" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(1));
   });
 
   it("leaves Shift+Enter available for the browser's newline input", () => {
@@ -211,6 +232,7 @@ describe("composer sending shortcuts", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(doubles.control).not.toHaveBeenCalled();
     expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(screen.queryByText(composerLayoutCopy["en-US"].sendShortcut)).not.toBeInTheDocument();
   });
 
   it.each(["", " \n "])("does not send an empty text draft (%j)", (message) => {
@@ -307,6 +329,10 @@ describe("composer sending shortcuts", () => {
       fireEvent.keyDown(input, { key: "Enter" });
       expect(doubles.control).not.toHaveBeenCalled();
       expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Stop" })).toHaveClass("size-11");
+      expect(screen.getByRole("button", { name: codexCopy["en-US"].advanced })).toHaveClass(
+        "size-11",
+      );
       fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
       fireEvent.click(
         await screen.findByRole("menuitem", {

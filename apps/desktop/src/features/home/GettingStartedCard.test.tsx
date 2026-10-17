@@ -74,7 +74,7 @@ describe("GettingStartedCard", () => {
         onOpenDoctor={vi.fn()}
       />,
     );
-    expect(screen.getByRole("button", { name: "Run Context Doctor" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run diagnostics" })).toBeTruthy();
   });
 
   it("returns to a workspace while repairable issues remain", async () => {

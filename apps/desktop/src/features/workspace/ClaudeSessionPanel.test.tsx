@@ -7,6 +7,7 @@ import { ClaudeSessionPanel } from "./ClaudeSessionPanel";
 import type { Live } from "../../../../../packages/web-client/src/index";
 import type { SessionStreamHandlers } from "@agentkib/web-client";
 import { permissionModeCopy } from "@/features/sessions/conversation/features/sessions/permission-mode-copy";
+import { claudeConnectionCopy } from "@/features/sessions/conversation/features/sessions/claude-connection-copy";
 import type { SupportedLocale as Locale } from "@/core/types";
 vi.mock("@/core/api", () => ({ api: { claudeRequest: vi.fn() } }));
 vi.mock("@/core/useI18n", () => ({ useI18n: () => ({ locale }) }));
@@ -176,6 +177,41 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 describe("Claude local owner panel", () => {
+  it("explains an unverified installation with its reason code available in details", async () => {
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "options"
+        ? Promise.resolve({ available: false, reason: "unverified-installation", workspaces: [] })
+        : original(value),
+    );
+    mount();
+    const copy = (
+      await import("@/features/sessions/conversation/features/sessions/codex-copy")
+    ).codexReason("en-US", "unverified-installation");
+    expect(await screen.findByText(copy.text)).toBeVisible();
+    expect(screen.getByText("unverified-installation")).not.toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Technical details" }));
+    expect(screen.getByText("unverified-installation")).toBeVisible();
+    expect(screen.getByRole("button", { name: "New Claude task" })).toBeDisabled();
+  });
+  it("shows an actionable handoff error with the original code in collapsed details", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "inspect" ? Promise.reject(new Error("inspect_failed")) : original(value),
+    );
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not inspect the original client. Check the terminal and retry.",
+    );
+    const detail = screen.getByText("inspect_failed");
+    expect(detail).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(detail).toBeVisible();
+    expect(calls("adopt")).toHaveLength(0);
+  });
   it("shares native usage and compaction state while preserving native stop", async () => {
     live = {
       ...live,
@@ -200,7 +236,7 @@ describe("Claude local owner panel", () => {
       "Compacting context",
     );
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Release to original client" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Return to original client" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
     act(() => emitNative(2, "state", { revision: 3, activity: null }));
     expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent(
@@ -296,7 +332,7 @@ describe("Claude local owner panel", () => {
       const liveReads = calls("live").length;
       const capabilityReads = calls("capabilities").length;
       await act(async () => catalog.error(new Error("catalog_subscription_failed")));
-      expect(await screen.findByText("catalog_subscription_failed")).toBeVisible();
+      expect(await screen.findByText("catalog_subscription_failed")).toBeInTheDocument();
       expect(screen.getByLabelText("Message")).toBeDisabled();
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
       expect(screen.getByLabelText("Add images or files")).toBeDisabled();
@@ -337,7 +373,7 @@ describe("Claude local owner panel", () => {
       // A healthy detail stream cannot prove that the separate catalog recovered.
       emitNative(1, "state", { revision: 2, sendEnabled: true });
     });
-    expect(screen.getByText("catalog_subscription_failed")).toBeVisible();
+    expect(screen.getByText("catalog_subscription_failed")).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(screen.getByLabelText("Add images or files")).toBeDisabled();
@@ -365,7 +401,7 @@ describe("Claude local owner panel", () => {
       current.error(new Error("current_catalog_failure"));
       previous.event("session-ready", JSON.stringify({ cursor: ":0" }));
     });
-    expect(screen.getByText("current_catalog_failure")).toBeVisible();
+    expect(screen.getByText("current_catalog_failure")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     await act(async () => current.event("session-ready", JSON.stringify({ cursor: ":0" })));
     await enabled(screen.getByRole("button", { name: "Send" }));
@@ -395,7 +431,7 @@ describe("Claude local owner panel", () => {
         else emitNative(1, "invalidate", { domains: ["catalog"] }, "");
       });
       if (failure === "metadata")
-        expect(await screen.findByText("metadata_unavailable")).toBeVisible();
+        expect(await screen.findByText("metadata_unavailable")).toBeInTheDocument();
       await act(async () => catalog.error(new Error("catalog_subscription_failed")));
       const capabilityReads = calls("capabilities").length;
       await act(async () => {
@@ -413,7 +449,8 @@ describe("Claude local owner panel", () => {
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
       expect(screen.getByLabelText("Add images or files")).toBeDisabled();
       expect(screen.getByLabelText("Message")).toHaveValue("Preserved draft");
-      if (failure === "metadata") expect(screen.getByText("metadata_unavailable")).toBeVisible();
+      if (failure === "metadata")
+        expect(screen.getByText("metadata_unavailable")).toBeInTheDocument();
       expect(calls("send")).toHaveLength(0);
     },
   );
@@ -508,7 +545,7 @@ describe("Claude local owner panel", () => {
       const historyReads = calls("events").length;
       const liveReads = calls("live").length;
       await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
-      expect(await screen.findByText("transient_metadata_failure")).toBeVisible();
+      expect(await screen.findByText("transient_metadata_failure")).toBeInTheDocument();
       expect(screen.getByLabelText("Message")).toBeDisabled();
       expect(screen.getByLabelText("Add images or files")).toBeDisabled();
       failed = false;
@@ -538,13 +575,13 @@ describe("Claude local owner panel", () => {
         : original(value),
     );
     await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
-    expect(await screen.findByText("transient_metadata_failure")).toBeVisible();
+    expect(await screen.findByText("transient_metadata_failure")).toBeInTheDocument();
     await act(async () => {
       emitNative(1, "text-delta", { itemId: "reply", text: "Still observing", offset: 0 });
       emitNative(2, "state", { revision: 2, status: "idle", sendEnabled: true });
     });
     expect(await screen.findByText("Still observing")).toBeVisible();
-    expect(screen.getByText("transient_metadata_failure")).toBeVisible();
+    expect(screen.getByText("transient_metadata_failure")).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(screen.getByLabelText("Add images or files")).toBeDisabled();
@@ -562,12 +599,12 @@ describe("Claude local owner panel", () => {
         : original(value),
     );
     fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
-    expect(await screen.findByText("history_refresh_failed")).toBeVisible();
+    expect(await screen.findByText("history_refresh_failed")).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     const failedReads = calls("events").length;
     await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
     await waitFor(() => expect(calls("events").length).toBeGreaterThan(failedReads));
-    expect(screen.getByText("history_refresh_failed")).toBeVisible();
+    expect(screen.getByText("history_refresh_failed")).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     expect(screen.getByLabelText("Add images or files")).toBeDisabled();
     historyFailed = false;
@@ -619,7 +656,7 @@ describe("Claude local owner panel", () => {
           screen.queryByRole("button", { name: "Files and artifacts" }),
         ).not.toBeInTheDocument();
         expect(screen.queryByText("result.txt")).not.toBeInTheDocument();
-        if (failure === "control") expect(screen.getByText("host_offline")).toBeVisible();
+        if (failure === "control") expect(screen.getByText("host_offline")).toBeInTheDocument();
       };
       expectDisconnected();
       await act(async () => release());
@@ -852,7 +889,7 @@ describe("Claude local owner panel", () => {
     live = { ...live, executionMode: "managed-resume", sendEnabled: false };
     mount();
     await screen.findByText("Synthetic history");
-    const prepare = screen.getByRole("button", { name: "Prepare handoff" });
+    const prepare = screen.getByRole("button", { name: "Hand over to AgentKib" });
     await waitFor(() => expect(prepare).toBeEnabled());
     fireEvent.click(prepare);
     fireEvent.click(await enabled(await screen.findByRole("checkbox")));
@@ -863,6 +900,343 @@ describe("Claude local owner panel", () => {
       handoffConfirmed: true,
       handoffFingerprint: "frozen-history",
     });
+  });
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "explains the follower handoff prerequisite without offering ownership controls in %s",
+    async (language) => {
+      locale = language;
+      live = { ...live, executionMode: "claude-follower", sendEnabled: false };
+      mount();
+      expect(await screen.findByText(claudeConnectionCopy[language].disconnectFirst)).toBeVisible();
+      expect(
+        screen.getByText(claudeConnectionCopy[language].manage, { exact: false }),
+      ).toBeVisible();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /AgentKib/ })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: /^(Return to original client|交还原客户端|交還原客戶端|元のクライアントに戻す)$/,
+        }),
+      ).not.toBeInTheDocument();
+      expect(calls("inspect")).toHaveLength(0);
+      expect(calls("adopt")).toHaveLength(0);
+      expect(calls("release")).toHaveLength(0);
+    },
+  );
+  it.each(["send", "stop"] as const)(
+    "retains the follower's verified %s capability while excluding handoff",
+    async (operation) => {
+      live = {
+        ...live,
+        executionMode: "claude-follower",
+        status: operation === "send" ? "idle" : "running",
+        sendEnabled: operation === "send",
+        stopEnabled: operation === "stop",
+        turnId: operation === "stop" ? "native-turn" : undefined,
+      };
+      mount();
+      await screen.findByText(claudeConnectionCopy["en-US"].disconnectFirst);
+      if (operation === "send") await enterMessage("continue in the original terminal");
+      fireEvent.click(
+        await enabled(screen.getByRole("button", { name: operation === "send" ? "Send" : "Stop" })),
+      );
+      await waitFor(() => expect(calls(operation)).toHaveLength(1));
+      expect(calls(operation)[0][0]).toMatchObject({
+        sessionId: "session",
+        ...(operation === "stop" ? { turnId: "native-turn" } : {}),
+      });
+      expect(calls("inspect")).toHaveLength(0);
+      expect(calls("adopt")).toHaveLength(0);
+      expect(calls("release")).toHaveLength(0);
+    },
+  );
+  it("discards an inspected confirmation when the original terminal connects and requires a fresh fingerprint after disconnect", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let fingerprint = "before-connection";
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "inspect"
+        ? Promise.resolve({ sessionId: "session", handoffFingerprint: fingerprint })
+        : original(value),
+    );
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    expect(screen.getByRole("checkbox")).toBeChecked();
+    live = { ...live, executionMode: "claude-follower", revision: 2 };
+    act(() => emitNative(1, "state", live));
+    expect(await screen.findByText(claudeConnectionCopy["en-US"].disconnectFirst)).toBeVisible();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Hand over to AgentKib" })).not.toBeInTheDocument();
+    expect(calls("inspect")).toHaveLength(1);
+    expect(calls("adopt")).toHaveLength(0);
+    fingerprint = "after-disconnection";
+    live = { ...live, executionMode: "managed-resume", revision: 3 };
+    act(() => emitNative(2, "state", live));
+    const inspect = await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" }));
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    fireEvent.click(inspect);
+    expect(await screen.findByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    await waitFor(() => expect(calls("adopt")).toHaveLength(1));
+    expect(calls("adopt")[0][0]).toMatchObject({
+      sessionId: "session",
+      handoffConfirmed: true,
+      handoffFingerprint: "after-disconnection",
+    });
+  });
+  it.each([
+    ["while connected", "resolve"],
+    ["while connected", "reject"],
+    ["after disconnect", "resolve"],
+    ["after disconnect", "reject"],
+  ] as const)(
+    "ignores an inspection that settles %s with %s after an ownership-mode change",
+    async (boundary, result) => {
+      live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      let finish!: (value: unknown) => void;
+      let fail!: (reason: Error) => void;
+      let inspections = 0;
+      vi.mocked(api.claudeRequest).mockImplementation((value) => {
+        if (value.operation !== "inspect") return original(value);
+        if (++inspections === 1)
+          return new Promise((resolve, reject) => {
+            finish = resolve;
+            fail = reject;
+          });
+        return Promise.resolve({ sessionId: "session", handoffFingerprint: "current-history" });
+      });
+      mount();
+      await screen.findByText("Synthetic history");
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+      await waitFor(() => expect(calls("inspect")).toHaveLength(1));
+      live = { ...live, executionMode: "claude-follower", revision: 2 };
+      act(() => emitNative(1, "state", live));
+      await screen.findByText(claudeConnectionCopy["en-US"].disconnectFirst);
+      const disconnect = () => {
+        live = { ...live, executionMode: "managed-resume", revision: 3 };
+        act(() => emitNative(2, "state", live));
+      };
+      if (boundary === "after disconnect") disconnect();
+      await act(async () => {
+        if (result === "resolve")
+          finish({ sessionId: "session", handoffFingerprint: "stale-history" });
+        else fail(new Error("inspect_failed"));
+      });
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      if (boundary === "while connected") disconnect();
+      const inspect = await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" }));
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      fireEvent.click(inspect);
+      expect(await screen.findByRole("checkbox")).not.toBeChecked();
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+      await waitFor(() => expect(calls("adopt")).toHaveLength(1));
+      expect(calls("adopt")[0][0]).toMatchObject({
+        sessionId: "session",
+        handoffConfirmed: true,
+        handoffFingerprint: "current-history",
+      });
+    },
+  );
+  it.each(["released ownership", "connection generation"] as const)(
+    "requires a fresh confirmation after the %s changes without changing execution mode",
+    async (boundary) => {
+      live = {
+        ...live,
+        status: boundary === "released ownership" ? "released" : "idle",
+        executionMode: boundary === "released ownership" ? "claude-managed" : "managed-resume",
+        connectionGeneration: boundary === "connection generation" ? "first-binding" : undefined,
+        sendEnabled: false,
+      };
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      let fingerprint = "previous-history";
+      vi.mocked(api.claudeRequest).mockImplementation((value) =>
+        value.operation === "inspect"
+          ? Promise.resolve({ sessionId: "session", handoffFingerprint: fingerprint })
+          : original(value),
+      );
+      mount();
+      await screen.findByText("Synthetic history");
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+      fireEvent.click(await screen.findByRole("checkbox"));
+      expect(screen.getByRole("checkbox")).toBeChecked();
+      if (boundary === "released ownership") {
+        live = { ...live, status: "idle", revision: 2 };
+        act(() => emitNative(1, "state", live));
+        await screen.findByRole("button", { name: "Return to original client" });
+        live = { ...live, status: "released", revision: 3 };
+        act(() => emitNative(2, "state", live));
+      } else {
+        live = { ...live, connectionGeneration: "next-binding", revision: 2 };
+        act(() => emitNative(1, "state", live));
+      }
+      fingerprint = "current-history";
+      const inspect = await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" }));
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      fireEvent.click(inspect);
+      expect(await screen.findByRole("checkbox")).not.toBeChecked();
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+      await waitFor(() => expect(calls("adopt")).toHaveLength(1));
+      expect(calls("adopt")[0][0]).toMatchObject({ handoffFingerprint: "current-history" });
+    },
+  );
+  it.each(["resolve", "reject"] as const)(
+    "ignores a late inspection %s across a released ownership cycle with the same execution mode",
+    async (result) => {
+      live = { ...live, executionMode: "claude-managed", status: "released", sendEnabled: false };
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      let finish!: (value: unknown) => void;
+      let fail!: (reason: Error) => void;
+      vi.mocked(api.claudeRequest).mockImplementation((value) =>
+        value.operation === "inspect"
+          ? new Promise((resolve, reject) => {
+              finish = resolve;
+              fail = reject;
+            })
+          : original(value),
+      );
+      mount();
+      await screen.findByText("Synthetic history");
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+      await waitFor(() => expect(calls("inspect")).toHaveLength(1));
+      live = { ...live, status: "idle", revision: 2 };
+      act(() => emitNative(1, "state", live));
+      await screen.findByRole("button", { name: "Return to original client" });
+      live = { ...live, status: "released", revision: 3 };
+      act(() => emitNative(2, "state", live));
+      await act(async () => {
+        if (result === "resolve")
+          finish({ sessionId: "session", handoffFingerprint: "stale-history" });
+        else fail(new Error("inspect_failed"));
+      });
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(calls("adopt")).toHaveLength(0);
+    },
+  );
+  it("rechecks changed source history and requires confirmation of the new fingerprint", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let finishInspection!: (value: unknown) => void;
+    let inspections = 0;
+    let sourceChanged = false;
+    vi.mocked(api.claudeRequest).mockImplementation((value) => {
+      if (value.operation === "inspect" && ++inspections === 2)
+        return new Promise((resolve) => {
+          finishInspection = resolve;
+        });
+      if (value.operation === "events" && sourceChanged)
+        return Promise.resolve({
+          events: [{ id: "next", kind: "agent-message", content: "Native session continued" }],
+          warnings: [],
+        });
+      return original(value);
+    });
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    sourceChanged = true;
+    const historyReads = calls("events").length;
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+    await waitFor(() => expect(calls("events").length).toBeGreaterThan(historyReads));
+    expect(await screen.findByText("Native session continued")).toBeVisible();
+    expect(calls("inspect")).toHaveLength(1);
+    expect(screen.getByRole("checkbox")).toBeChecked();
+    fireEvent.click(
+      await enabled(screen.getByRole("button", { name: "Recheck original session" })),
+    );
+    await waitFor(() => expect(calls("inspect")).toHaveLength(2));
+    expect(calls("inspect")[1][0]).toMatchObject({ sessionId: "session" });
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
+    expect(calls("adopt")).toHaveLength(0);
+    await act(async () =>
+      finishInspection({ sessionId: "session", handoffFingerprint: "history-after-native-turn" }),
+    );
+    expect(await screen.findByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    await waitFor(() => expect(calls("adopt")).toHaveLength(1));
+    expect(calls("adopt")[0][0]).toMatchObject({
+      sessionId: "session",
+      handoffConfirmed: true,
+      handoffFingerprint: "history-after-native-turn",
+    });
+  });
+  it("recovers from a failed recheck without retaining the old confirmation or error", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let inspections = 0;
+    vi.mocked(api.claudeRequest).mockImplementation((value) => {
+      if (value.operation === "inspect") {
+        inspections++;
+        if (inspections === 2) return Promise.reject(new Error("inspect_failed"));
+      }
+      return original(value);
+    });
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(
+      await enabled(screen.getByRole("button", { name: "Recheck original session" })),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not inspect");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    expect(await screen.findByRole("checkbox")).not.toBeChecked();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(calls("inspect")).toHaveLength(3);
+    expect(calls("adopt")).toHaveLength(0);
+  });
+  it("cannot recheck or discard a handoff whose outcome is still pending", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "adopt" ? Promise.reject(new Error("lost_response")) : original(value),
+    );
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    await screen.findByRole("alert");
+    const saved = localStorage.getItem("agentkib:claude-owner-pending:v1:workspace");
+    expect(saved).not.toBeNull();
+    const recheck = screen.getByRole("button", { name: "Recheck original session" });
+    expect(recheck).toBeDisabled();
+    fireEvent.click(recheck);
+    const receipts = calls("receipt").length;
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+    await waitFor(() => expect(calls("receipt").length).toBeGreaterThan(receipts));
+    expect(recheck).toBeDisabled();
+    expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBe(saved);
+    expect(calls("inspect")).toHaveLength(1);
+    expect(calls("adopt")).toHaveLength(1);
+  });
+  it("keeps rechecking and handoff disabled while the original session is compacting", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    act(() => emitNative(1, "state", { revision: 2, activity: "compacting" }));
+    const recheck = screen.getByRole("button", { name: "Recheck original session" });
+    expect(recheck).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
+    fireEvent.click(recheck);
+    expect(calls("inspect")).toHaveLength(1);
+    act(() => emitNative(2, "state", { revision: 3, activity: null }));
+    await enabled(recheck);
   });
   it("persists a lost send receipt across reopening and never replays it during refresh", async () => {
     const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
@@ -1104,9 +1478,10 @@ describe("Claude local owner panel translated controls", () => {
       message: "消息",
       files: "文件与产物",
       idle: "空闲",
-      release: "释放给原客户端",
+      release: "交还原客户端",
       send: "发送",
-      prepare: "准备接管",
+      prepare: "交给 AgentKib",
+      recheck: "重新检查原会话",
       handoff: "交给 AgentKib",
       confirmation: "我已停止原终端和其他客户端，按原 UUID 继续。",
       approval: "处理审批",
@@ -1125,9 +1500,10 @@ describe("Claude local owner panel translated controls", () => {
       message: "訊息",
       files: "檔案與產物",
       idle: "閒置",
-      release: "釋放給原客戶端",
+      release: "交還原客戶端",
       send: "傳送",
-      prepare: "準備接管",
+      prepare: "交給 AgentKib",
+      recheck: "重新檢查原對話",
       handoff: "交給 AgentKib",
       confirmation: "我已停止原終端機與其他客戶端，使用原 UUID 繼續。",
       approval: "處理審批",
@@ -1146,9 +1522,10 @@ describe("Claude local owner panel translated controls", () => {
       message: "Message",
       files: "Files and artifacts",
       idle: "Idle",
-      release: "Release to original client",
+      release: "Return to original client",
       send: "Send",
-      prepare: "Prepare handoff",
+      prepare: "Hand over to AgentKib",
+      recheck: "Recheck original session",
       handoff: "Hand over to AgentKib",
       confirmation:
         "I have stopped the original terminal and other clients. Continue the same UUID.",
@@ -1170,7 +1547,8 @@ describe("Claude local owner panel translated controls", () => {
       idle: "待機中",
       release: "元のクライアントに戻す",
       send: "送信",
-      prepare: "引き渡しを準備",
+      prepare: "AgentKib に引き渡す",
+      recheck: "元の会話を再確認",
       handoff: "AgentKib に引き渡す",
       confirmation: "元のターミナルと他のクライアントを停止しました。同じ UUID で続けます。",
       approval: "承認内容を確認",
@@ -1212,6 +1590,7 @@ describe("Claude local owner panel translated controls", () => {
       await screen.findByText("Synthetic history");
       fireEvent.click(await enabled(screen.getByRole("button", { name: expected.prepare })));
       expect(await screen.findByText(expected.confirmation)).toBeVisible();
+      expect(screen.getByRole("button", { name: expected.recheck })).toBeEnabled();
       const handoff = screen.getByRole("button", { name: expected.handoff });
       expect(handoff).toBeDisabled();
       fireEvent.click(screen.getByRole("checkbox"));

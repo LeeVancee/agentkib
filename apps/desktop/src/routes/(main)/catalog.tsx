@@ -3,7 +3,15 @@ import { McpPortField } from "@/features/mcp/McpPortField";
 import { useOptionalAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
-import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -40,6 +48,7 @@ import {
   useHomeWorkspaces,
 } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
 import {
   Boxes,
   Brain,
@@ -78,7 +87,8 @@ type CatalogSearch = {
 };
 
 function CatalogRoute() {
-  const { localizeMessage } = useI18n();
+  const { localizeMessage, tr } = useI18n();
+  const dialogs = useAppDialogs();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as CatalogSearch;
@@ -105,7 +115,6 @@ function CatalogRoute() {
     setHandoffLaunchRequest,
     setBusy,
     setMessage,
-    workspaceDrafts,
   } = useWorkspaceStore();
 
   useEffect(
@@ -128,6 +137,13 @@ function CatalogRoute() {
       search: (current) => ({ ...current, skillSection }) as never,
     });
   };
+  const consumeMcpNetworkTarget = useCallback(() => {
+    void navigate({
+      to: "/catalog",
+      replace: true,
+      search: (current) => ({ ...current, assetSection: "mcp", catalogTarget: undefined }) as never,
+    });
+  }, [navigate]);
   const reload = async () => {
     await queryClient.invalidateQueries({ queryKey: homeKeys.all });
   };
@@ -136,8 +152,19 @@ function CatalogRoute() {
     { labelKey: "query.workspaces", query: workspacesQuery },
     { labelKey: "query.memories", query: memoriesQuery },
   ];
-  const failed = sources.filter(({ query }) => query.isError);
+  const dependencies =
+    section === "memory"
+      ? ["query.workspaces", "query.memories"]
+      : section === "skills" || section === "mcp"
+        ? ["query.workspaces"]
+        : ["query.catalog", "query.workspaces"];
+  const activeSources = sources.filter(({ labelKey }) => dependencies.includes(labelKey));
+  // Skills and global MCP load their own data. Workspace enumeration only adds
+  // project choices there; its failure must remain visible without hiding them.
+  const requiredSources = section === "skills" || section === "mcp" ? [] : activeSources;
+  const failed = activeSources.filter(({ query }) => query.isError);
   const initiallyFailed = failed.some(({ query }) => query.data === undefined);
+  const contentUnavailable = requiredSources.some(({ query }) => query.data === undefined);
   const retryFailed = async () => {
     if (retryPending.current) return;
     retryPending.current = true;
@@ -155,11 +182,12 @@ function CatalogRoute() {
       onRetry={() => void retryFailed()}
     />
   ) : null;
-  if (initiallyFailed) return feedback;
-  if (sources.some(({ query }) => query.isPending && query.data === undefined))
-    return <CatalogSkeleton />;
+  const loading = requiredSources.some(({ query }) => query.isPending && query.data === undefined);
   const openWorkspace = async (workspace: WorkspaceSummary): Promise<boolean> => {
     const requestId = ++openRequest.current;
+    const initialState = useWorkspaceStore.getState();
+    const initialDraft = initialState.workspaceDrafts[workspace.id];
+    const initialBaseline = initialState.workspaceDraftBaselines[workspace.id] ?? "";
     setBusy(true);
     setMessage("");
     return withAsyncCleanup(
@@ -180,21 +208,34 @@ function CatalogRoute() {
             if (requestId === openRequest.current) setMessage(localizeMessage(error));
           }
           if (requestId !== openRequest.current) return false;
+          const resolvedManifest = await resolveRefreshedManifest({
+            initialManifest: initialDraft,
+            initialBaseline,
+            diskManifest: nextManifest,
+            getCurrentManifest: () => useWorkspaceStore.getState().workspaceDrafts[workspace.id],
+            confirmDiskVersion: () =>
+              dialogs.confirm({ description: tr("workspace.refreshConflict"), tone: "warning" }),
+          });
+          if (requestId !== openRequest.current) return false;
           setChangeSet(undefined);
           setChangeSetOrigin("standard");
           setHandoffLaunchRequest(undefined);
           setProject(workspace.path);
           setScan(nextScan);
-          setManifest(nextManifest ? (workspaceDrafts[workspace.id] ?? nextManifest) : undefined);
-          setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
+          setManifest(resolvedManifest);
+          const nextBaseline = nextManifest ? JSON.stringify(nextManifest) : initialBaseline;
+          setBaselineManifest(nextBaseline);
+          useWorkspaceStore
+            .getState()
+            .cacheWorkspaceDraft(workspace.id, resolvedManifest, nextBaseline);
           setRuntime(nextRuntime);
           setSelectedWorkspace(workspace);
           setBusy(false);
           await navigate({
-            to: nextManifest ? "/workspace/$workspaceId" : "/workspace/$workspaceId/doctor",
+            to: resolvedManifest ? "/workspace/$workspaceId" : "/workspace/$workspaceId/doctor",
             params: { workspaceId: workspace.id },
           });
-          return Boolean(nextManifest);
+          return Boolean(resolvedManifest);
         } catch (error) {
           if (requestId === openRequest.current) setMessage(localizeMessage(error));
           return false;
@@ -224,21 +265,26 @@ function CatalogRoute() {
 
   return (
     <div className="grid gap-4">
-      {feedback}
       <CatalogPage
         section={section}
         onSection={setSection}
         skillSection={search.skillSection ?? "library"}
         onSkillSection={setSkillSection}
         assets={assets}
+        assetsAvailable={assetsQuery.data !== undefined}
         workspaces={workspaces}
         memories={memories}
+        memoriesAvailable={memoriesQuery.data !== undefined}
         runtime={runtime}
         onReload={reload}
         onRuntimeChanged={setRuntime}
         onOpen={(id) => void openWorkspaceById(id)}
         onMigrationPlanned={planMigration}
         focusMcpNetwork={section === "mcp" && search.catalogTarget === "mcp-network"}
+        onMcpNetworkFocused={consumeMcpNetworkTarget}
+        feedback={feedback}
+        contentUnavailable={contentUnavailable}
+        loading={loading}
       />
     </div>
   );
@@ -283,28 +329,40 @@ function CatalogPage({
   skillSection,
   onSkillSection,
   assets,
+  assetsAvailable,
   workspaces,
   memories,
+  memoriesAvailable,
   runtime,
   onReload,
   onRuntimeChanged,
   onOpen,
   onMigrationPlanned,
   focusMcpNetwork,
+  onMcpNetworkFocused,
+  feedback,
+  contentUnavailable,
+  loading,
 }: {
   section: AssetSection;
   onSection: (section: AssetSection) => void;
   skillSection: SkillHubSection;
   onSkillSection: (section: SkillHubSection) => void;
   assets: CatalogAsset[];
+  assetsAvailable: boolean;
   workspaces: WorkspaceSummary[];
   memories: MemoryRecord[];
+  memoriesAvailable: boolean;
   runtime?: RuntimeInfo;
   onReload: () => Promise<void>;
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
   onOpen: (id: string) => void;
   onMigrationPlanned: (project: string, changeSet: ChangeSet) => Promise<void>;
   focusMcpNetwork?: boolean;
+  onMcpNetworkFocused: () => void;
+  feedback: ReactNode;
+  contentUnavailable: boolean;
+  loading: boolean;
 }) {
   const { tr } = useI18n();
   const pending = memories.filter((item) => item.status === "pending").length;
@@ -330,7 +388,7 @@ function CatalogPage({
       id: "instructions",
       label: tr("assets.instructions"),
       icon: FileCode2,
-      count: instructionAssets.length,
+      count: assetsAvailable ? instructionAssets.length : undefined,
     },
     { id: "skills", label: tr("assets.skills"), icon: Sparkles },
     { id: "mcp", label: "MCP", icon: PlugZap },
@@ -338,11 +396,16 @@ function CatalogPage({
       id: "memory",
       label: tr("assets.memories"),
       icon: Brain,
-      count: memories.length,
+      count: memoriesAvailable ? memories.length : undefined,
       badgeLabel: pendingMemoryLabel,
       highlight: !!pending,
     },
-    { id: "other", label: tr("assets.hooksProfiles"), icon: Boxes, count: otherAssets.length },
+    {
+      id: "other",
+      label: tr("assets.hooksProfiles"),
+      icon: Boxes,
+      count: assetsAvailable ? otherAssets.length : undefined,
+    },
   ];
   return (
     <div className="relative grid gap-5 pb-8">
@@ -383,10 +446,12 @@ function CatalogPage({
           ))}
         </nav>
       </SidebarPanel>
-      {section === "instructions" && (
+      {feedback}
+      {loading && <CatalogSkeleton />}
+      {!contentUnavailable && section === "instructions" && (
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />
       )}
-      {section === "skills" && (
+      {!contentUnavailable && section === "skills" && (
         <SkillHubPage
           section={skillSection}
           onSectionChange={onSkillSection}
@@ -395,19 +460,20 @@ function CatalogPage({
           onReload={onReload}
         />
       )}
-      {section === "other" && (
+      {!contentUnavailable && section === "other" && (
         <AssetPage assets={otherAssets} workspaces={workspaces} onOpen={onOpen} />
       )}
-      {section === "memory" && (
+      {!contentUnavailable && section === "memory" && (
         <GlobalMemoryInbox records={memories} workspaces={workspaces} onReload={onReload} />
       )}
-      {section === "mcp" && (
+      {!contentUnavailable && section === "mcp" && (
         <McpHubPage
           runtime={runtime}
           workspaces={workspaces}
           onRuntimeChanged={onRuntimeChanged}
           onMigrationPlanned={onMigrationPlanned}
           focusNetworkSettings={focusMcpNetwork}
+          onNetworkSettingsFocused={onMcpNetworkFocused}
         />
       )}
     </div>
@@ -525,16 +591,19 @@ export function McpHubPage({
   workspaces,
   onRuntimeChanged,
   focusNetworkSettings = false,
+  onNetworkSettingsFocused,
 }: {
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
   onMigrationPlanned: (project: string, changeSet: ChangeSet) => Promise<void>;
   focusNetworkSettings?: boolean;
+  onNetworkSettingsFocused?: () => void;
 }) {
   const { localizeMessage, tr } = useI18n();
   const navigation = useOptionalAppNavigationContext();
   const networkSettings = useRef<HTMLDivElement>(null);
+  const networkFocusHandled = useRef(false);
   const [advanced, setAdvanced] = useState({
     requested: focusNetworkSettings,
     open: focusNetworkSettings,
@@ -544,12 +613,20 @@ export function McpHubPage({
     setAdvanced({ requested: focusNetworkSettings, open: advanced.open || focusNetworkSettings });
   }
   useEffect(() => {
-    if (!focusNetworkSettings) return;
+    if (!focusNetworkSettings) {
+      networkFocusHandled.current = false;
+      return;
+    }
+    if (networkFocusHandled.current) return;
     const target = networkSettings.current;
     target?.scrollIntoView?.({ block: "start" });
     // Keep an active field focused: moving focus would trigger its blur-to-save handler.
     if (target && !target.contains(document.activeElement)) target.focus({ preventScroll: true });
-  }, [focusNetworkSettings]);
+    if (target) {
+      networkFocusHandled.current = true;
+      onNetworkSettingsFocused?.();
+    }
+  }, [focusNetworkSettings, onNetworkSettingsFocused]);
   const dialogs = useAppDialogs();
   const queryClient = useQueryClient();
   const [registryRequest, setRegistryRequest] = useState<string>();
@@ -599,8 +676,7 @@ export function McpHubPage({
   const installations = installationsQuery.data ?? [];
   // Older runtimes do not report ownership; never infer it from the selected scope.
   const runtimes = (runtimesQuery.data ?? []).filter((item) => item.project === (project ?? null));
-  const queryError =
-    installationsQuery.error ?? runtimesQuery.error ?? runtimeQuery.error ?? registryQuery.error;
+  const queryError = installationsQuery.error ?? runtimesQuery.error ?? runtimeQuery.error;
   const error = actionError || (queryError ? localizeMessage(queryError) : "");
   const runtimeChanged = useRef(onRuntimeChanged);
   useEffect(() => {
@@ -892,7 +968,12 @@ export function McpHubPage({
                   </Button>
                 </article>
               ))}
-              {!registry.length && (
+              {registryQuery.isError && (
+                <p role="alert" className="py-6 text-sm text-destructive">
+                  {tr("mcp.registrySearchFailed")} {localizeMessage(registryQuery.error)}
+                </p>
+              )}
+              {!registry.length && !registryQuery.isError && (
                 <p
                   role={registryQuery.isFetching ? "status" : undefined}
                   className="py-6 text-sm text-muted-foreground"
@@ -900,11 +981,9 @@ export function McpHubPage({
                   {tr(
                     registryQuery.isFetching
                       ? "mcp.registrySearching"
-                      : registryQuery.isError
-                        ? "mcp.registrySearchFailed"
-                        : registryRequest === undefined
-                          ? "mcp.registryEmpty"
-                          : "mcp.registryNoResults",
+                      : registryRequest === undefined
+                        ? "mcp.registryEmpty"
+                        : "mcp.registryNoResults",
                   )}
                 </p>
               )}
@@ -917,6 +996,7 @@ export function McpHubPage({
               <div className="grid gap-1.5">
                 <h2>{tr("mcp.installations")}</h2>
                 <p>{runtime?.mcp_package_root}</p>
+                <p className="text-sm text-muted-foreground">{tr("mcp.checkUpdatesHint")}</p>
               </div>
               <Badge variant="outline">{installations.length}</Badge>
             </div>
@@ -951,9 +1031,11 @@ export function McpHubPage({
                         </Button>
                       )}
                       <Button
-                        className="text-destructive hover:bg-destructive/10"
+                        variant="destructive"
+                        size="icon"
                         disabled={busy}
-                        aria-label={`${tr("common.remove")} ${item.name}`}
+                        aria-label={`${tr("mcp.uninstall")} ${item.name}`}
+                        title={`${tr("mcp.uninstall")} ${item.name}`}
                         onClick={() =>
                           void runAction(async (isCurrent) => {
                             if (
@@ -1029,7 +1111,17 @@ export function McpHubPage({
                       className="border border-transparent bg-transparent text-foreground hover:bg-muted"
                       disabled={busy}
                       onClick={() =>
-                        void runAction(async () => {
+                        void runAction(async (isCurrent) => {
+                          if (
+                            !(await dialogs.confirm({
+                              description: tr("mcp.stopAllScopesConfirm", {
+                                name: item.server_name,
+                              }),
+                              tone: "warning",
+                            })) ||
+                            !isCurrent()
+                          )
+                            return;
                           await api.stopMcpRuntime(item.server_id);
                           await load();
                         }, "global")

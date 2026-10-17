@@ -1,3 +1,4 @@
+import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
 import type { SessionController } from "./use-session-controller";
 import { codexReason } from "./codex-copy";
 import { contextUsageCopy } from "./context-usage-copy";
@@ -138,6 +139,17 @@ export function sessionDisplayState(state: State): DisplayState {
     )
   )
     return { label: c.running, reason: codexReason(locale, live.reason).text, tone: "warning" };
+  if (live?.executionMode === "claude-follower" && live.reason === "claude-bridge-event-gap")
+    return { label: c.verifying, reason: claudeConnectionCopy[locale].gap, tone: "warning" };
+  if (
+    live?.executionMode === "claude-follower" &&
+    (live.status === "unsupported" || live.reason === "claude-bridge-disconnected")
+  )
+    return {
+      label: claudeConnectionCopy[locale].lostTitle,
+      reason: claudeConnectionCopy[locale].lost,
+      tone: "warning",
+    };
   if (live?.status === "running") return { label: c.running, reason: c.running, tone: "active" };
   if (busy) return { label: c.busy, reason: c.busy, tone: "active", loading: true };
   if (access?.status !== "approved")
@@ -156,6 +168,19 @@ export function sessionDisplayState(state: State): DisplayState {
     };
   if (!access.device?.send)
     return { label: c.permissionRequired, reason: managedControlCopy[locale].send, tone: "muted" };
+  if (live?.executionMode === "claude-follower" && live.status === "idle")
+    return {
+      label: claudeConnectionCopy[locale].connected,
+      reason: claudeConnectionReason(locale, reason) ?? claudeConnectionCopy[locale].info,
+      tone: "active",
+    };
+  if (live?.executionMode === "claude-managed" && live.status === "released")
+    return {
+      label: claudeConnectionCopy[locale].released,
+      reason: claudeConnectionCopy[locale].releasedInfo,
+      tone: "muted",
+      nextAction: sessionNextAction(state),
+    };
   if (
     !canSend &&
     (((!controlReady || !live) && (!reason || reason === "handoff-required")) ||

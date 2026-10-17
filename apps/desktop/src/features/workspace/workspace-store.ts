@@ -14,6 +14,7 @@ export interface AppliedWorkspaceChanges {
   changeSet: ChangeSet;
   applied: string[];
   backupDir: string;
+  origin?: ChangeSetOrigin;
 }
 type Updater<T> = T | ((current: T) => T);
 
@@ -24,10 +25,13 @@ interface WorkspaceState {
   manifest?: Manifest;
   changeSet?: ChangeSet;
   changeSetManifest?: string;
+  changeSetIncludesHome: boolean;
   changeSetOrigin: ChangeSetOrigin;
   handoffLaunchRequest?: SessionHandoffLaunchRequest;
+  handoffRecoveryChanges?: Pick<AppliedWorkspaceChanges, "workspaceId" | "project" | "changeSet">;
   baselineManifest: string;
   workspaceDrafts: Record<string, Manifest>;
+  workspaceDraftBaselines: Record<string, string>;
   busy: boolean;
   message: string;
   messageRevision: number;
@@ -41,7 +45,11 @@ interface WorkspaceActions {
   setSelectedWorkspace: (value: Updater<WorkspaceSummary | undefined>) => void;
   setScan: (value: Updater<WorkspaceScan | undefined>) => void;
   setManifest: (value: Updater<Manifest | undefined>) => void;
-  setChangeSet: (value: Updater<ChangeSet | undefined>, plannedManifest?: Manifest) => void;
+  setChangeSet: (
+    value: Updater<ChangeSet | undefined>,
+    plannedManifest?: Manifest,
+    includesHome?: boolean,
+  ) => void;
   acceptAppliedManifest: (
     manifest: Manifest,
     plannedManifest?: string,
@@ -49,8 +57,14 @@ interface WorkspaceActions {
   ) => void;
   setChangeSetOrigin: (value: Updater<ChangeSetOrigin>) => void;
   setHandoffLaunchRequest: (value: Updater<SessionHandoffLaunchRequest | undefined>) => void;
+  setHandoffRecoveryChanges: (value: WorkspaceState["handoffRecoveryChanges"]) => void;
   setBaselineManifest: (value: Updater<string>) => void;
   setWorkspaceDrafts: (value: Updater<Record<string, Manifest>>) => void;
+  cacheWorkspaceDraft: (
+    workspaceId: string,
+    manifest: Manifest | undefined,
+    baseline: string,
+  ) => void;
   setBusy: (value: Updater<boolean>) => void;
   setMessage: (value: Updater<string>) => void;
   dismissMessage: (revision: number) => void;
@@ -63,11 +77,32 @@ interface WorkspaceActions {
 const resolve = <T>(value: Updater<T>, current: T): T =>
   typeof value === "function" ? (value as (current: T) => T)(current) : value;
 
+function cachedDraftState(
+  state: WorkspaceState,
+  workspaceId: string,
+  manifest: Manifest | undefined,
+  baseline: string,
+) {
+  const workspaceDrafts = { ...state.workspaceDrafts };
+  const workspaceDraftBaselines = { ...state.workspaceDraftBaselines };
+  if (manifest && JSON.stringify(manifest) !== baseline) {
+    workspaceDrafts[workspaceId] = manifest;
+    if (baseline) workspaceDraftBaselines[workspaceId] = baseline;
+    else delete workspaceDraftBaselines[workspaceId];
+  } else {
+    delete workspaceDrafts[workspaceId];
+    delete workspaceDraftBaselines[workspaceId];
+  }
+  return { workspaceDrafts, workspaceDraftBaselines };
+}
+
 export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set) => ({
   project: "",
   changeSetOrigin: "standard",
+  changeSetIncludesHome: false,
   baselineManifest: "",
   workspaceDrafts: {},
+  workspaceDraftBaselines: {},
   busy: false,
   message: "",
   messageRevision: 0,
@@ -80,21 +115,34 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
   setManifest: (value) =>
     set((state) => {
       const manifest = resolve(value, state.manifest);
-      if (state.changeSet && JSON.stringify(manifest) !== JSON.stringify(state.manifest)) {
+      if (
+        state.changeSet &&
+        state.changeSetOrigin === "standard" &&
+        JSON.stringify(manifest) !== JSON.stringify(state.manifest)
+      ) {
         return {
           manifest,
           changeSet: undefined,
           changeSetManifest: undefined,
+          changeSetIncludesHome: false,
           handoffLaunchRequest: undefined,
+          handoffRecoveryChanges: undefined,
         };
       }
       return { manifest };
     }),
-  setChangeSet: (value, plannedManifest) =>
-    set((state) => ({
-      changeSet: resolve(value, state.changeSet),
-      changeSetManifest: plannedManifest ? JSON.stringify(plannedManifest) : undefined,
-    })),
+  setChangeSet: (value, plannedManifest, includesHome = false) =>
+    set((state) => {
+      const changeSet = resolve(value, state.changeSet);
+      return {
+        changeSet,
+        changeSetManifest: plannedManifest ? JSON.stringify(plannedManifest) : undefined,
+        changeSetIncludesHome: includesHome,
+        ...(changeSet && changeSet !== state.changeSet
+          ? { appliedChanges: undefined, handoffRecoveryChanges: undefined }
+          : {}),
+      };
+    }),
   acceptAppliedManifest: (diskManifest, plannedManifest, draftAtApply) =>
     set((state) => {
       const baselineManifest = JSON.stringify(diskManifest);
@@ -106,22 +154,39 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
         ((draftAtApply !== undefined && currentManifest !== draftAtApply) ||
           (currentManifest !== state.baselineManifest && currentManifest !== plannedManifest));
       const manifest = preserveDraft && state.manifest ? state.manifest : diskManifest;
-      const workspaceDrafts = { ...state.workspaceDrafts };
-      if (state.selectedWorkspace) {
-        if (JSON.stringify(manifest) !== baselineManifest)
-          workspaceDrafts[state.selectedWorkspace.id] = manifest;
-        else delete workspaceDrafts[state.selectedWorkspace.id];
-      }
-      return { manifest, baselineManifest, workspaceDrafts };
+      return {
+        manifest,
+        baselineManifest,
+        ...(state.selectedWorkspace
+          ? cachedDraftState(state, state.selectedWorkspace.id, manifest, baselineManifest)
+          : {}),
+      };
     }),
   setChangeSetOrigin: (value) =>
     set((state) => ({ changeSetOrigin: resolve(value, state.changeSetOrigin) })),
   setHandoffLaunchRequest: (value) =>
-    set((state) => ({ handoffLaunchRequest: resolve(value, state.handoffLaunchRequest) })),
+    set((state) => {
+      const handoffLaunchRequest = resolve(value, state.handoffLaunchRequest);
+      return {
+        handoffLaunchRequest,
+        ...(!handoffLaunchRequest || handoffLaunchRequest !== state.handoffLaunchRequest
+          ? { handoffRecoveryChanges: undefined }
+          : {}),
+      };
+    }),
+  setHandoffRecoveryChanges: (handoffRecoveryChanges) => set({ handoffRecoveryChanges }),
   setBaselineManifest: (value) =>
     set((state) => ({ baselineManifest: resolve(value, state.baselineManifest) })),
   setWorkspaceDrafts: (value) =>
-    set((state) => ({ workspaceDrafts: resolve(value, state.workspaceDrafts) })),
+    set((state) => {
+      const workspaceDrafts = resolve(value, state.workspaceDrafts);
+      const workspaceDraftBaselines = Object.fromEntries(
+        Object.entries(state.workspaceDraftBaselines).filter(([id]) => id in workspaceDrafts),
+      );
+      return { workspaceDrafts, workspaceDraftBaselines };
+    }),
+  cacheWorkspaceDraft: (workspaceId, manifest, baseline) =>
+    set((state) => cachedDraftState(state, workspaceId, manifest, baseline)),
   setBusy: (value) => set((state) => ({ busy: resolve(value, state.busy) })),
   setMessage: (value) =>
     set((state) => {
@@ -163,17 +228,20 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
         !Array.isArray(manifest.connections)
       )
         return state;
-      const workspaceDrafts = { ...state.workspaceDrafts };
-      delete workspaceDrafts[state.selectedWorkspace.id];
       discarded = true;
       return {
         manifest,
-        workspaceDrafts,
-        changeSet: undefined,
-        changeSetManifest: undefined,
-        changeSetOrigin: "standard",
-        // A completed/unknown import without a plan still needs its recovery request.
-        handoffLaunchRequest: state.changeSet ? undefined : state.handoffLaunchRequest,
+        ...cachedDraftState(state, state.selectedWorkspace.id, manifest, state.baselineManifest),
+        ...(state.changeSetOrigin === "standard"
+          ? {
+              changeSet: undefined,
+              changeSetManifest: undefined,
+              changeSetIncludesHome: false,
+              // A completed/unknown import still needs its recovery request.
+              handoffLaunchRequest: state.changeSet ? undefined : state.handoffLaunchRequest,
+              handoffRecoveryChanges: state.changeSet ? undefined : state.handoffRecoveryChanges,
+            }
+          : {}),
       };
     });
     return discarded;
@@ -186,8 +254,10 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       manifest: undefined,
       changeSet: undefined,
       changeSetManifest: undefined,
+      changeSetIncludesHome: false,
       changeSetOrigin: "standard",
       handoffLaunchRequest: undefined,
+      handoffRecoveryChanges: undefined,
       baselineManifest: "",
       busy: false,
       message: "",

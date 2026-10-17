@@ -1,4 +1,5 @@
-import { claudeConnectionCopy } from "./claude-connection-copy";
+import { isSendEnter, useEnterSends } from "./composer-shortcuts";
+import { claudeSessionBanner } from "./claude-session-banner";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
@@ -43,6 +44,10 @@ export function SessionReader() {
     control,
     liveContentVersion,
   } = session;
+  const enterSends = useEnterSends();
+  const composing = useRef(false);
+  const submitPending = useRef(false);
+  const banner = claudeSessionBanner(session);
   const panels = useSessionPanels();
   const display = sessionDisplayState(session);
   const hasNativeReply =
@@ -57,6 +62,8 @@ export function SessionReader() {
   useLayoutEffect(() => {
     if (previousSession.current !== selected) {
       previousSession.current = selected;
+      composing.current = false;
+      submitPending.current = false;
       following.current = true;
       setHasNewMessages(false);
     } else if (!following.current && previousLiveContentVersion.current !== liveContentVersion) {
@@ -120,24 +127,8 @@ export function SessionReader() {
                   className="info mx-auto mb-5 max-w-3xl"
                   data-execution-mode={live?.executionMode}
                 >
-                  <strong className="block mb-1">
-                    {live?.executionMode === "claude-follower"
-                      ? live.status === "outcome-unknown"
-                        ? t.controlUnconfirmed
-                        : !online ||
-                            live.status === "unsupported" ||
-                            live.reason === "claude-bridge-disconnected"
-                          ? claudeConnectionCopy[locale].history
-                          : claudeConnectionCopy[locale].connected
-                      : live?.executionMode === "claude-managed"
-                        ? claudeConnectionCopy[locale].managed
-                        : claudeConnectionCopy[locale].history}
-                  </strong>
-                  {live?.executionMode === "claude-follower"
-                    ? claudeConnectionCopy[locale].info
-                    : live?.executionMode === "claude-managed"
-                      ? t.managedResumeInfo
-                      : claudeConnectionCopy[locale].disconnected}
+                  <strong className="block mb-1">{banner.title}</strong>
+                  {banner.body}
                 </aside>
               )}
               {page?.warnings.length ? (
@@ -245,7 +236,7 @@ export function SessionReader() {
             access.protocolVersion === 2 &&
             access.device?.send ? (
               current?.agent === "codex" || current?.agent === "claude-code" ? (
-                <SessionComposer key={`composer-${selected}`} />
+                <SessionComposer connectionStatusInBanner key={`composer-${selected}`} />
               ) : (
                 <form
                   className="w-full max-w-3xl shrink-0 self-center space-y-2 rounded-3xl border bg-background p-2 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/20"
@@ -253,11 +244,19 @@ export function SessionReader() {
                     event.preventDefault();
                     if (
                       online &&
+                      !busy &&
                       canSend &&
                       live?.activity !== "compacting" &&
                       validHistoryMessage(message, historyReferences)
-                    )
-                      void control("send");
+                    ) {
+                      if (submitPending.current) return;
+                      submitPending.current = true;
+                      const requestSession = selected;
+                      void Promise.resolve(control("send")).finally(() => {
+                        if (previousSession.current === requestSession)
+                          submitPending.current = false;
+                      });
+                    }
                   }}
                 >
                   <HistoryReferenceChips />
@@ -273,6 +272,21 @@ export function SessionReader() {
                     onChange={(e) => setMessage(e.target.value)}
                     placeholder={t.message}
                     disabled={busy}
+                    onCompositionStart={() => {
+                      composing.current = true;
+                    }}
+                    onCompositionEnd={() => {
+                      composing.current = false;
+                    }}
+                    onBlur={() => {
+                      composing.current = false;
+                    }}
+                    onKeyDown={(event) => {
+                      if (!enterSends || !isSendEnter(event, composing.current)) return;
+                      event.preventDefault();
+                      if (!event.repeat && !busy && !submitPending.current)
+                        event.currentTarget.form?.requestSubmit();
+                    }}
                   />
                   <div className="flex items-center justify-between gap-2 px-2 pb-1">
                     <small className="max-w-lg text-xs leading-5 text-muted-foreground">
@@ -284,7 +298,7 @@ export function SessionReader() {
                         <Button
                           type="button"
                           variant="destructive"
-                          className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+                          className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
                           aria-label={t.stop}
                           onClick={() => void control("stop")}
                         >
@@ -293,7 +307,7 @@ export function SessionReader() {
                       ) : (
                         <Button
                           type="submit"
-                          className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-30"
+                          className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-30"
                           aria-label={t.send}
                           disabled={
                             !online ||

@@ -79,6 +79,9 @@ describe("Web session touch targets", () => {
       render(<SessionWorkspace />);
       const refresh = screen.getByRole("button", { name: dictionaries[locale].refresh });
       expect(refresh).toHaveClass("size-11");
+      expect(screen.getByRole("button", { name: dictionaries[locale].logout })).toHaveClass(
+        "size-11",
+      );
       fireEvent.click(refresh);
       expect(fixture.refresh).toHaveBeenCalledExactlyOnceWith(true);
       expect(fixture.choose).not.toHaveBeenCalled();

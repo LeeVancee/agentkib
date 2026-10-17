@@ -60,6 +60,7 @@ function Empty({
 export function Changes({
   changeSet,
   origin,
+  homeIncluded = false,
   launchRequest,
   onPlanHome,
   onApplied,
@@ -69,6 +70,7 @@ export function Changes({
 }: {
   changeSet?: ChangeSet;
   origin: ChangeSetOrigin;
+  homeIncluded?: boolean;
   launchRequest?: SessionHandoffLaunchRequest;
   onPlanHome: () => void | Promise<void>;
   onApplied: (
@@ -131,13 +133,13 @@ export function Changes({
       },
     );
   };
-  if (!changeSet && launchRequest && (appliedLaunchFailure || isNativeImport))
+  if (!changeSet && launchRequest)
     return (
       <Card className="rounded-xl border border-border bg-card shadow-sm grid items-center gap-4 p-5 md:grid-cols-[auto_minmax(0,1fr)_auto]">
         <CircleAlert size={24} />
         <div>
           <h2>{tr(isNativeImport ? "handoff.importNeedsCheck" : "handoff.savedLaunchFailed")}</h2>
-          <p>{error || appliedLaunchFailure}</p>
+          <p>{error || appliedLaunchFailure || tr("overview.pendingHandoffRecoveryText")}</p>
           <code>
             {launchRequest.mode === "native-import"
               ? launchRequest.operation_id
@@ -220,11 +222,16 @@ export function Changes({
         return;
       }
       if (!active.current) return;
+      const appliedReport = {
+        applied: changeSet.changes.map((change) => change.target),
+        backup_dir: "",
+      };
       if (result.status === "launched") {
-        await onApplied(false);
+        await onApplied(false, appliedReport);
       } else {
         setAppliedLaunchFailure(localizeMessage(result.error));
-        await onApplied(true);
+        if (result.status === "applied-launch-failed") await onApplied(true, appliedReport);
+        else await onApplied(true);
       }
     });
   };
@@ -261,7 +268,7 @@ export function Changes({
             <h2>{tr("changes.title")}</h2>
             <p className="mt-1 text-xs text-muted-foreground">{tr("changes.explanation")}</p>
             <p>
-              {changeSet.id.slice(0, 8)} · {changeSet.changes.length} {tr("common.files")}
+              {changeSet.changes.length} {tr("common.files")}
             </p>
           </div>
         </div>
@@ -313,11 +320,11 @@ export function Changes({
             <Button
               className="border border-transparent bg-transparent text-foreground hover:bg-muted"
               onClick={() => void planHome()}
-              disabled={busy || planningHome || workspaceBusy}
+              disabled={busy || planningHome || workspaceBusy || homeIncluded}
               aria-busy={planningHome}
             >
               {planningHome && <LoaderCircle size={14} className="animate-spin" />}
-              {tr("changes.includeHome")}
+              {tr(homeIncluded ? "changes.homeIncluded" : "changes.includeHome")}
             </Button>
           </div>
         )}
@@ -425,7 +432,7 @@ export function Changes({
 }
 
 function WorkspaceChangesRoute() {
-  const { localizeMessage } = useI18n();
+  const { localizeMessage, tr } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/changes" });
@@ -434,11 +441,13 @@ function WorkspaceChangesRoute() {
     project,
     changeSet,
     changeSetManifest,
+    changeSetIncludesHome,
     changeSetOrigin,
     handoffLaunchRequest,
     manifest,
     setChangeSet,
     setHandoffLaunchRequest,
+    setHandoffRecoveryChanges,
     setApplyingChanges,
     setScan,
     acceptAppliedManifest,
@@ -522,7 +531,9 @@ function WorkspaceChangesRoute() {
       useWorkspaceStore.getState().changeSet?.id === targetChangeSetId &&
       JSON.stringify(useWorkspaceStore.getState().manifest) === JSON.stringify(targetManifest);
     const nextChangeSet = await api.plan(targetProject, targetManifest, true);
-    if (isCurrentRequest()) setChangeSet(nextChangeSet, targetManifest);
+    if (isCurrentRequest()) setChangeSet(nextChangeSet, targetManifest, true);
+    else if (useWorkspaceStore.getState().project === targetProject)
+      throw new Error(tr("workspace.planSuperseded"));
   };
   const reload = async (plannedManifest?: string, draftAtApply?: string) => {
     const requestId = ++reloadRequest.current;
@@ -546,6 +557,7 @@ function WorkspaceChangesRoute() {
     <Changes
       changeSet={changeSet}
       origin={changeSetOrigin}
+      homeIncluded={changeSetIncludesHome}
       launchRequest={handoffLaunchRequest}
       onPlanHome={planHome}
       onApplied={async (keepLaunchRequest, result) => {
@@ -560,9 +572,16 @@ function WorkspaceChangesRoute() {
             changeSet,
             applied: result.applied,
             backupDir: result.backup_dir,
+            origin: changeSetOrigin,
           });
         }
         setChangeSet(undefined);
+        // Preserve the reviewed diff without claiming an unknown write succeeded.
+        setHandoffRecoveryChanges(
+          keepLaunchRequest && !result && changeSet
+            ? { workspaceId, project: targetProject, changeSet }
+            : undefined,
+        );
         if (!keepLaunchRequest) setHandoffLaunchRequest(undefined);
         if (appliedDoctorRepair) {
           try {
@@ -593,6 +612,15 @@ function WorkspaceChangesRoute() {
         );
       }}
       onLaunchCompleted={() => {
+        const recovery = useWorkspaceStore.getState().handoffRecoveryChanges;
+        if (recovery?.workspaceId === workspaceId && recovery.project === project) {
+          setAppliedChanges({
+            ...recovery,
+            applied: recovery.changeSet.changes.map((change) => change.target),
+            backupDir: "",
+            origin: "handoff",
+          });
+        }
         setHandoffLaunchRequest(undefined);
         navigateTo("sessions");
       }}

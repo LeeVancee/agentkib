@@ -1,3 +1,7 @@
+import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
+import { codexReason } from "./codex-copy";
+import { managedErrorCopy } from "./managed-error-copy";
+import { claudeConnectionCopy } from "./claude-connection-copy";
 import { managedText } from "./managed-copy";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useSessionNavigate } from "./session-navigation";
@@ -60,6 +64,10 @@ export function ManagedTasks({
     : current?.agent === "claude-code"
       ? "claude-code"
       : "codex";
+  const handoffMode = !create && agent === "claude-code" ? live?.executionMode : undefined;
+  const handoffGeneration =
+    !create && agent === "claude-code" ? live?.connectionGeneration : undefined;
+  const handoffReleased = !create && agent === "claude-code" && live?.status === "released";
   const [handoffFingerprint, setHandoffFingerprint] = useState<string>();
   const [handoffInspectPending, setHandoffInspectPending] = useState(false);
   const controlHintId = useId();
@@ -71,6 +79,23 @@ export function ManagedTasks({
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [errorDetail, setErrorDetail] = useState("");
+  function reportError(value: unknown) {
+    if (value instanceof ApiError) {
+      const reason = codexReason(locale, value.code.replaceAll("_", "-"));
+      setError(
+        value.controlOutcome === "unknown"
+          ? managedErrorCopy[locale].unconfirmed
+          : reason.technical
+            ? managedErrorCopy[locale].failed
+            : reason.text,
+      );
+      setErrorDetail(value.code);
+    } else {
+      setError(managedErrorCopy[locale].connection);
+      setErrorDetail("");
+    }
+  }
   const [uncertain, setUncertain] = useState(false);
   const [pending, setPending] = useState<PendingControl>();
   const scope =
@@ -209,10 +234,6 @@ export function ManagedTasks({
     locale,
   ]);
   useEffect(() => {
-    setConfirmed(false);
-    setHandoffFingerprint(undefined);
-    setHandoffInspectPending(false);
-    setError("");
     if (!open || !access?.device?.manage || !access.experimentalEnabled) return;
     const abort = new AbortController();
     setOptions(undefined);
@@ -231,23 +252,8 @@ export function ManagedTasks({
         setPermissionMode("");
       })
       .catch((e: unknown) => {
-        if (!abort.signal.aborted) setError(e instanceof ApiError ? e.code : "connection_failed");
+        if (!abort.signal.aborted) reportError(e);
       });
-    if (!create && agent === "claude-code") {
-      setHandoffInspectPending(true);
-      void client
-        .managedInspect(selected, agent, abort.signal)
-        .then((value) => {
-          if (!abort.signal.aborted && value.sessionId === selected)
-            setHandoffFingerprint(value.handoffFingerprint);
-        })
-        .catch((e: unknown) => {
-          if (!abort.signal.aborted) setError(e instanceof ApiError ? e.code : "connection_failed");
-        })
-        .finally(() => {
-          if (!abort.signal.aborted) setHandoffInspectPending(false);
-        });
-    }
     return () => {
       abort.abort();
     };
@@ -257,6 +263,52 @@ export function ManagedTasks({
     create,
     client,
     selected,
+    access?.bootId,
+    access?.device?.id,
+    access?.device?.manage,
+    access?.experimentalEnabled,
+  ]);
+  useEffect(() => {
+    // Ownership changes invalidate read-only proof, not a dispatched command or receipt.
+    setConfirmed(false);
+    setHandoffFingerprint(undefined);
+    setHandoffInspectPending(false);
+    setError("");
+    setErrorDetail("");
+    if (
+      !open ||
+      !access?.device?.manage ||
+      !access.experimentalEnabled ||
+      create ||
+      agent !== "claude-code"
+    )
+      return;
+    const abort = new AbortController();
+    setHandoffInspectPending(true);
+    void client
+      .managedInspect(selected, agent, abort.signal)
+      .then((value) => {
+        if (!abort.signal.aborted && value.sessionId === selected)
+          setHandoffFingerprint(value.handoffFingerprint);
+      })
+      .catch((e: unknown) => {
+        if (!abort.signal.aborted) reportError(e);
+      })
+      .finally(() => {
+        if (!abort.signal.aborted) setHandoffInspectPending(false);
+      });
+    return () => {
+      abort.abort();
+    };
+  }, [
+    open,
+    agent,
+    create,
+    client,
+    selected,
+    handoffMode,
+    handoffGeneration,
+    handoffReleased,
     access?.bootId,
     access?.device?.id,
     access?.device?.manage,
@@ -306,6 +358,7 @@ export function ManagedTasks({
     flight.current = true;
     setBusy(true);
     setError("");
+    setErrorDetail("");
     const generation = epoch.current;
     const requestId = crypto.randomUUID();
     const entry: PendingControl = {
@@ -380,16 +433,7 @@ export function ManagedTasks({
       ) {
         setUncertain(true);
       }
-      if (generation === epoch.current)
-        setError(
-          e instanceof ApiError
-            ? `${e.code}${e.controlOutcome === "unknown" ? managedText(locale, ": refresh and check the outcome; do not repeat the operation", "：请刷新检查结果，勿重复操作") : ""}`
-            : managedText(
-                locale,
-                "Connection lost. Verify the task list before retrying.",
-                "连接中断，请先检查任务列表再重试。",
-              ),
-        );
+      if (generation === epoch.current) reportError(e);
     } finally {
       flight.current = false;
       setBusy(false);
@@ -419,9 +463,15 @@ export function ManagedTasks({
         </label>
       )}
       {error && (
-        <p role="alert" className="break-words text-sm text-destructive">
-          {error}
-        </p>
+        <div role="alert" className="break-words text-sm text-destructive">
+          <p>{error}</p>
+          {errorDetail && (
+            <Disclosure className="mt-2">
+              <DisclosureSummary>{managedErrorCopy[locale].details}</DisclosureSummary>
+              <code>{errorDetail}</code>
+            </Disclosure>
+          )}
+        </div>
       )}
       {uncertain && (
         <div className="space-y-2 rounded border p-3 text-sm">
@@ -446,9 +496,19 @@ export function ManagedTasks({
       ) : (
         <>
           {!options.available && (
-            <p role="status">
-              {options.reason || managedText(locale, "Agent unavailable", "执行工具暂不可用")}
-            </p>
+            <div role="status">
+              <p>
+                {options.reason
+                  ? codexReason(locale, options.reason).text
+                  : managedText(locale, "Agent unavailable", "执行工具暂不可用")}
+              </p>
+              {options.reason && (
+                <Disclosure className="mt-2">
+                  <DisclosureSummary>{managedErrorCopy[locale].details}</DisclosureSummary>
+                  <code>{options.reason}</code>
+                </Disclosure>
+              )}
+            </div>
           )}
           {create ? (
             <>
@@ -571,6 +631,11 @@ export function ManagedTasks({
                       "此会话尚未交给 AgentKib",
                     )}
               </p>
+              {live?.executionMode === "claude-follower" && (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {claudeConnectionCopy[locale].disconnectFirst}
+                </p>
+              )}
               {!managed && live?.executionMode !== "claude-follower" && (
                 <label className="flex items-start gap-2 text-sm">
                   <NativeCheckbox

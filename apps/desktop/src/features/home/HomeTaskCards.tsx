@@ -98,6 +98,7 @@ export function PendingTasksCard({
   onOpenAssets: (section: "memory") => void;
 }) {
   const { tr } = useI18n();
+  const doctorWorkspace = attention[0] ?? workspaces[0];
 
   return (
     <Card
@@ -181,12 +182,11 @@ export function PendingTasksCard({
             <span className="min-w-0 flex-1">
               <strong className="block text-sm">{tr("home.allClear")}</strong>
             </span>
-            {(attention[0] ?? workspaces[0]) && (
-              <Button
-                variant="outline"
-                onClick={() => void onOpenDoctor(attention[0] ?? workspaces[0])}
-              >
-                {tr("home.openDoctor")}
+            {doctorWorkspace && (
+              <Button variant="outline" onClick={() => void onOpenDoctor(doctorWorkspace)}>
+                {workspaces.length > 1
+                  ? tr("home.openDoctorForWorkspace", { workspace: doctorWorkspace.name })
+                  : tr("home.openDoctor")}
               </Button>
             )}
           </div>

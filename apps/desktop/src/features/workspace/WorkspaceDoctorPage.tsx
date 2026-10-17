@@ -18,6 +18,8 @@ import { withAsyncCleanup } from "@/lib/utils";
 import { useHomeDoctorReport } from "@/features/home/home-query";
 import { AGENT_LABELS } from "@/core/agents";
 import { doctorManualAction, type DoctorIssueDestination } from "./doctor-manual-actions";
+import { useWorkspaceStore } from "./workspace-store";
+import { AppliedChangesNotice } from "./AppliedChangesNotice";
 
 export function WorkspaceDoctorPage({
   workspace,
@@ -41,6 +43,15 @@ export function WorkspaceDoctorPage({
     refetch,
   } = useHomeDoctorReport(workspace.id);
   const [repairing, setRepairing] = useState(false);
+  const [repairError, setRepairError] = useState("");
+  const applied = useWorkspaceStore((state) => state.appliedChanges);
+  const appliedRepair =
+    applied?.workspaceId === workspace.id &&
+    applied.project === workspace.path &&
+    applied.origin === "doctor"
+      ? applied
+      : undefined;
+  const [enteredWithAppliedRepair] = useState(Boolean(appliedRepair));
 
   useEffect(() => {
     if (report?.summary.workspace_id === workspace.id) void onDiagnosed(report.summary);
@@ -66,10 +77,29 @@ export function WorkspaceDoctorPage({
         : repairableCount > 0
           ? tr("doctor.conclusionRepairable", { count: repairableCount })
           : tr("doctor.conclusionManual", { count: issueCount });
+  const verificationText =
+    verification && activeReport
+      ? issueCount === 0
+        ? tr("doctor.recheckHealthy")
+        : tr("doctor.recheckResult", {
+            issues: issueCount,
+            repairable: repairableCount,
+          })
+      : undefined;
 
   const repair = async () => {
     setRepairing(true);
-    await withAsyncCleanup(onRepair, () => setRepairing(false));
+    setRepairError("");
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await onRepair();
+        } catch (error) {
+          setRepairError(localizeMessage(error));
+        }
+      },
+      () => setRepairing(false),
+    );
   };
 
   if (loading && !activeReport) {
@@ -78,7 +108,14 @@ export function WorkspaceDoctorPage({
 
   return (
     <div className="mx-auto grid max-w-[1120px] gap-4">
-      {verification && activeReport && (
+      {appliedRepair && (
+        <AppliedChangesNotice
+          result={appliedRepair}
+          verificationText={verificationText}
+          onDismiss={() => useWorkspaceStore.getState().setAppliedChanges(undefined)}
+        />
+      )}
+      {verification && activeReport && !appliedRepair && !enteredWithAppliedRepair && (
         <div
           className={cn(
             "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm",
@@ -136,10 +173,13 @@ export function WorkspaceDoctorPage({
           )}
         </div>
       </Card>
-      {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+      {(repairError || error) && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
           <CircleAlert size={16} />
-          {localizeMessage(error)}
+          {repairError || localizeMessage(error)}
         </div>
       )}
       {activeReport && (

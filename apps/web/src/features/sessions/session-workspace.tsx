@@ -276,6 +276,7 @@ export function SessionWorkspace() {
               </div>
               <Button
                 ref={logoutTrigger}
+                className="size-11"
                 variant="ghost"
                 size="icon"
                 aria-label={t.logout}

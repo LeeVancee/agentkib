@@ -1,4 +1,3 @@
-import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton";
@@ -9,7 +8,6 @@ import { useAppStore } from "@/stores/app-store";
 import type { ContextDoctorSummary } from "@/core/types";
 
 function WorkspaceDoctorRoute() {
-  const { localizeMessage } = useI18n();
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/doctor" });
   const search = useSearch({ strict: false }) as { doctorVerification?: "applied" };
@@ -21,7 +19,7 @@ function WorkspaceDoctorRoute() {
     setChangeSet,
     setChangeSetOrigin,
     setHandoffLaunchRequest,
-    setMessage,
+    setAppliedChanges,
   } = useWorkspaceStore();
   const repairRequest = useRef(0);
   const diagnosisSignature = useRef("");
@@ -69,21 +67,16 @@ function WorkspaceDoctorRoute() {
     if (!project) return;
     const requestId = ++repairRequest.current;
     const targetProject = project;
-    const draftSnapshot = JSON.stringify(useWorkspaceStore.getState().manifest);
-    try {
-      const currentManifest = await api.manifest(targetProject);
-      if (requestId !== repairRequest.current) return;
-      const nextChangeSet = await api.plan(targetProject, currentManifest, false);
-      if (requestId !== repairRequest.current) return;
-      if (useWorkspaceStore.getState().selectedWorkspace?.id !== workspaceId) return;
-      if (JSON.stringify(useWorkspaceStore.getState().manifest) !== draftSnapshot) return;
-      setChangeSet(nextChangeSet, currentManifest);
-      setChangeSetOrigin("doctor");
-      setHandoffLaunchRequest(undefined);
-      void navigate({ to: "/workspace/$workspaceId/changes", params: { workspaceId } });
-    } catch (error) {
-      if (requestId === repairRequest.current) setMessage(localizeMessage(error));
-    }
+    setAppliedChanges(undefined);
+    const currentManifest = await api.manifest(targetProject);
+    if (requestId !== repairRequest.current) return;
+    const nextChangeSet = await api.plan(targetProject, currentManifest, false);
+    if (requestId !== repairRequest.current) return;
+    if (useWorkspaceStore.getState().selectedWorkspace?.id !== workspaceId) return;
+    setChangeSet(nextChangeSet, currentManifest);
+    setChangeSetOrigin("doctor");
+    setHandoffLaunchRequest(undefined);
+    void navigate({ to: "/workspace/$workspaceId/changes", params: { workspaceId } });
   };
   return (
     <WorkspaceDoctorPage

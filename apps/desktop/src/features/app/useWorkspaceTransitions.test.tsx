@@ -60,7 +60,7 @@ describe("workspace draft transitions", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     useWorkspaceStore.getState().resetWorkspace();
-    useWorkspaceStore.setState({ workspaceDrafts: {} });
+    useWorkspaceStore.getState().setWorkspaceDrafts({});
     dialogs.notify.mockReset().mockResolvedValue(undefined);
     dialogs.confirm.mockReset().mockResolvedValue(false);
   });
@@ -109,6 +109,7 @@ describe("workspace draft transitions", () => {
         [workspace.id]: manifest("older cached edit"),
         [nextWorkspace.id]: otherDraft,
       },
+      workspaceDraftBaselines: { [nextWorkspace.id]: "other baseline" },
     });
     const { result, navigateWorkspacePageFor } = renderTransitions();
 
@@ -121,6 +122,10 @@ describe("workspace draft transitions", () => {
       [nextWorkspace.id]: otherDraft,
     });
     expect(useWorkspaceStore.getState().workspaceDrafts[workspace.id]).toBe(draft);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual({
+      [workspace.id]: JSON.stringify(baseline),
+      [nextWorkspace.id]: "other baseline",
+    });
     expect(useWorkspaceStore.getState().manifest).toBeUndefined();
     expect(navigateWorkspacePageFor).toHaveBeenCalledWith(nextWorkspace.id, "overview", undefined);
 
@@ -144,6 +149,10 @@ describe("workspace draft transitions", () => {
         [workspace.id]: manifest("already applied edit"),
         [nextWorkspace.id]: otherDraft,
       },
+      workspaceDraftBaselines: {
+        [workspace.id]: "old baseline",
+        [nextWorkspace.id]: "other baseline",
+      },
     });
     const { result } = renderTransitions();
 
@@ -154,6 +163,9 @@ describe("workspace draft transitions", () => {
 
     expect(useWorkspaceStore.getState().selectedWorkspace).toBe(workspace);
     expect(useWorkspaceStore.getState().workspaceDrafts[workspace.id]).toBeUndefined();
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual({
+      [nextWorkspace.id]: "other baseline",
+    });
     expect(useWorkspaceStore.getState().workspaceDrafts[nextWorkspace.id]).toBe(otherDraft);
   });
 
@@ -201,4 +213,36 @@ describe("workspace draft transitions", () => {
     expect(invalidatePendingLoad).not.toHaveBeenCalled();
     expect(dialogs.notify).toHaveBeenCalledOnce();
   });
+
+  it.each(["leave", "switch"])(
+    "clears an applied result when the user chooses to %s workspaces",
+    async (transition) => {
+      const saved = manifest("saved");
+      useWorkspaceStore.setState({
+        selectedWorkspace: workspace,
+        project: workspace.path,
+        manifest: saved,
+        baselineManifest: JSON.stringify(saved),
+        appliedChanges: {
+          workspaceId: workspace.id,
+          project: workspace.path,
+          applied: ["AGENTS.md"],
+          backupDir: "",
+          changeSet: {
+            id: "applied",
+            project_root: workspace.path,
+            created_at: "",
+            changes: [],
+            requires_home_approval: false,
+          },
+        },
+      });
+      const { result } = renderTransitions();
+      await act(async () => {
+        if (transition === "leave") await result.current.leaveWorkspace(vi.fn());
+        else await result.current.openWorkspace(nextWorkspace);
+      });
+      expect(useWorkspaceStore.getState().appliedChanges).toBeUndefined();
+    },
+  );
 });

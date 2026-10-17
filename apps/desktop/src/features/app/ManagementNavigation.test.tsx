@@ -97,14 +97,13 @@ describe("management destinations", () => {
   );
   it("offers the supported management pages for Agent assets", () => {
     renderAssets();
-    fireEvent.click(screen.getByRole("button", { name: "Open Skill management: Example skill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open skill library" }));
     expect(navigateGlobal).toHaveBeenLastCalledWith("catalog", false, {
       assetSection: "skills",
+      skillSection: "library",
       catalogTarget: undefined,
     });
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open MCP management: Example connection" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Open MCP management" }));
     expect(navigateGlobal).toHaveBeenLastCalledWith("catalog", false, {
       assetSection: "mcp",
       catalogTarget: undefined,

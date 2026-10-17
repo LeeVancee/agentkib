@@ -523,7 +523,6 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
       {unsaved && (
         <SettingsNotice tone="warning" role="status">
           <strong>{c.unsaved}</strong>
-          <p>{c.saveHint}</p>
         </SettingsNotice>
       )}
       {!unsaved && saveState === "saved" && (

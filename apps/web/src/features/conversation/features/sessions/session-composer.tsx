@@ -1,3 +1,4 @@
+import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { claudeConnectionCopy } from "./claude-connection-copy";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
@@ -47,7 +48,11 @@ type Upload = {
   failed?: boolean;
   previewUrl?: string;
 };
-export function SessionComposer() {
+export function SessionComposer({
+  connectionStatusInBanner = false,
+}: {
+  connectionStatusInBanner?: boolean;
+}) {
   const session = useSession();
   const panels = useSessionPanels();
   const {
@@ -82,6 +87,7 @@ export function SessionComposer() {
   const [submitted, setSubmitted] = useState(false);
   const submitPending = useRef(false);
   const composing = useRef(false);
+  const enterSends = useEnterSends();
   const shortcutHintId = useId();
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
@@ -297,7 +303,7 @@ export function SessionComposer() {
     <Button
       type="button"
       variant="destructive"
-      className="inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0"
+      className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
       aria-label={t.stop}
       onClick={() => void control("stop")}
     >
@@ -306,7 +312,7 @@ export function SessionComposer() {
   ) : (
     <Button
       type="submit"
-      className="inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0"
+      className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
       aria-label={t.send}
       disabled={!canSubmit || compacting || !valid || submitted}
     >
@@ -321,7 +327,7 @@ export function SessionComposer() {
       <DropdownMenu>
         <DropdownMenuTrigger
           type="button"
-          className="inline-flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
           aria-label={copy.advanced}
           title={copy.advanced}
         >
@@ -391,7 +397,11 @@ export function SessionComposer() {
           onChange={(event) => setMessage(event.target.value)}
           placeholder={t.message}
           disabled={busy || submitted}
-          aria-describedby={shortcutHintId}
+          aria-describedby={
+            enterSends && canSubmit && !compacting && !busy && !submitted
+              ? shortcutHintId
+              : undefined
+          }
           onCompositionStart={() => {
             composing.current = true;
           }}
@@ -402,18 +412,7 @@ export function SessionComposer() {
             composing.current = false;
           }}
           onKeyDown={(event) => {
-            if (
-              event.defaultPrevented ||
-              event.key !== "Enter" ||
-              event.shiftKey ||
-              event.ctrlKey ||
-              event.metaKey ||
-              event.altKey ||
-              composing.current ||
-              event.nativeEvent.isComposing ||
-              event.nativeEvent.keyCode === 229
-            )
-              return;
+            if (!enterSends || !isSendEnter(event, composing.current)) return;
             event.preventDefault();
             if (
               !event.repeat &&
@@ -433,9 +432,11 @@ export function SessionComposer() {
             }
           }}
         />
-        <p id={shortcutHintId} className="px-3 text-xs leading-5 text-muted-foreground">
-          {layout.sendShortcut}
-        </p>
+        {enterSends && canSubmit && !compacting && !busy && !submitted && (
+          <p id={shortcutHintId} className="px-3 text-xs leading-5 text-muted-foreground">
+            {layout.sendShortcut}
+          </p>
+        )}
         <HistoryReferenceChips />
         {uploads.length > 0 && (
           <ul className="space-y-2">
@@ -533,7 +534,7 @@ export function SessionComposer() {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="size-9 rounded-full"
+                className="size-11 rounded-full"
                 disabled={!uploadPermission || busy || submitted}
                 title={
                   uploadPermission
@@ -561,6 +562,7 @@ export function SessionComposer() {
           </p>
         )}
         {!canSend &&
+          !(connectionStatusInBanner && live?.executionMode === "claude-follower") &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&
           !connectionFailure &&

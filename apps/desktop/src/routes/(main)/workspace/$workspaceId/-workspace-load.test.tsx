@@ -2,7 +2,15 @@
 
 import "@testing-library/jest-dom/vitest";
 import { Suspense, useState } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
@@ -14,6 +22,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useWorkspaceTransitions } from "@/features/app/useWorkspaceTransitions";
 import { Route } from "./route";
 
 const doubles = vi.hoisted(() => ({
@@ -21,6 +30,7 @@ const doubles = vi.hoisted(() => ({
   pathname: "/workspace/workspace/assets",
   navigate: vi.fn(),
   workspaces: vi.fn(),
+  confirm: vi.fn(),
 }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -34,7 +44,9 @@ vi.mock("@/features/home/home-query", () => ({
   useHomeWorkspaces: () => ({ data: doubles.workspaces(), isPending: false }),
 }));
 vi.mock("@/features/workspace/WorkspaceOpenWith", () => ({ WorkspaceOpenWith: () => null }));
-vi.mock("@/components/AppDialogProvider", () => ({ useAppDialogs: () => ({ confirm: vi.fn() }) }));
+vi.mock("@/components/AppDialogProvider", () => ({
+  useAppDialogs: () => ({ confirm: doubles.confirm }),
+}));
 vi.mock("@/core/api", () => ({
   api: { scan: vi.fn(), manifest: vi.fn(), runtime: vi.fn(), plan: vi.fn() },
 }));
@@ -128,6 +140,7 @@ describe("workspace load recovery", () => {
     doubles.workspaceId = workspace.id;
     doubles.pathname = "/workspace/workspace/assets";
     doubles.workspaces.mockReturnValue([workspace, otherWorkspace]);
+    doubles.confirm.mockResolvedValue(false);
     useWorkspaceStore.setState(useWorkspaceStore.getInitialState(), true);
     useWorkspaceStore.setState({ project: workspace.path, selectedWorkspace: workspace });
     vi.mocked(api.scan).mockResolvedValue(scan);
@@ -135,6 +148,78 @@ describe("workspace load recovery", () => {
     vi.mocked(api.runtime).mockResolvedValue({ app_name: "AgentKib" } as RuntimeInfo);
   });
   afterEach(cleanup);
+
+  it.each([true, false, "unchanged"] as const)(
+    "retains a draft's disk baseline across workspace switches (resolution: %s)",
+    async (resolution) => {
+      const draft = {
+        ...manifest,
+        instructions: { ...manifest.instructions, shared: "cached edit" },
+      };
+      const disk =
+        resolution === "unchanged"
+          ? manifest
+          : {
+              ...manifest,
+              instructions: { ...manifest.instructions, shared: "external edit while away" },
+            };
+      useWorkspaceStore.setState({
+        manifest: draft,
+        scan,
+        baselineManifest: JSON.stringify(manifest),
+      });
+      const transitions = renderHook(() =>
+        useWorkspaceTransitions({
+          route: { kind: "workspace", workspaceId: workspace.id, page: "assets" },
+          navigateWorkspacePageFor: doubles.navigate,
+          clearGitSubview: vi.fn(),
+          invalidatePendingLoad: vi.fn(),
+        }),
+      );
+      await act(async () => {
+        await transitions.result.current.openWorkspace(otherWorkspace);
+        await transitions.result.current.openWorkspace(workspace);
+      });
+      transitions.unmount();
+      expect(useWorkspaceStore.getState().baselineManifest).toBe("");
+      expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
+        JSON.stringify(manifest),
+      );
+      doubles.confirm.mockResolvedValue(resolution === true);
+      vi.mocked(api.manifest).mockResolvedValueOnce(disk);
+      await renderRoute();
+      await screen.findByRole("textbox", { name: "Workspace draft" });
+      expect(doubles.confirm).toHaveBeenCalledTimes(resolution === "unchanged" ? 0 : 1);
+      const expected = resolution === true ? disk : draft;
+      expect(useWorkspaceStore.getState().manifest).toEqual(expected);
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+      expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
+        resolution === true ? undefined : JSON.stringify(disk),
+      );
+    },
+  );
+
+  it("preserves the cached baseline after a failed manifest read so retry detects external edits", async () => {
+    const draft = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "cached edit" },
+    };
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(manifest));
+    vi.mocked(api.manifest).mockRejectedValueOnce(new Error("manifest unavailable"));
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(manifest));
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
+      JSON.stringify(manifest),
+    );
+    vi.mocked(api.manifest).mockResolvedValueOnce({
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "external update" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    await waitFor(() => expect(doubles.confirm).toHaveBeenCalledOnce());
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+  });
 
   it("replaces a failed first scan with a visible cause and a working retry", async () => {
     vi.mocked(api.scan).mockRejectedValueOnce(new Error("scan unavailable"));
@@ -187,6 +272,52 @@ describe("workspace load recovery", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(useWorkspaceStore.getState().manifest).toEqual(draft);
   });
+
+  it("loads external manifest updates without creating a false draft", async () => {
+    useWorkspaceStore.setState({ scan, manifest, baselineManifest: JSON.stringify(manifest) });
+    const disk = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "external update" },
+    };
+    vi.mocked(api.manifest).mockResolvedValueOnce(disk);
+    await renderRoute();
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Workspace draft" })).toHaveValue(
+        "external update",
+      ),
+    );
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+    expect(screen.getByRole("button", { name: "Review changes" })).toBeDisabled();
+    expect(doubles.confirm).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "asks before resolving external edits against an unsaved draft (load disk: %s)",
+    async (loadDisk) => {
+      const draft = {
+        ...manifest,
+        instructions: { ...manifest.instructions, shared: "unsaved edit" },
+      };
+      const disk = {
+        ...manifest,
+        instructions: { ...manifest.instructions, shared: "external update" },
+      };
+      useWorkspaceStore.setState({
+        scan,
+        manifest: draft,
+        baselineManifest: JSON.stringify(manifest),
+      });
+      vi.mocked(api.manifest).mockResolvedValueOnce(disk);
+      doubles.confirm.mockResolvedValueOnce(loadDisk);
+      await renderRoute();
+      fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+      await waitFor(() => expect(useWorkspaceStore.getState().busy).toBe(false));
+      expect(doubles.confirm).toHaveBeenCalledWith(expect.objectContaining({ tone: "warning" }));
+      expect(useWorkspaceStore.getState().manifest).toEqual(loadDisk ? disk : draft);
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+    },
+  );
 
   it("does not apply an old workspace's failure after switching workspaces", async () => {
     const oldRequest = deferred<WorkspaceScan>();
@@ -361,7 +492,7 @@ describe("workspace load recovery", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
     expect(screen.getByTestId("workspace-scroll")).toBe(viewport);
-    expect(screen.getByRole("status")).toHaveTextContent("Updating workspace");
+    expect(screen.getByRole("status")).toHaveTextContent("Generating change plan");
     expect(screen.getByRole("button", { name: "Review changes" })).toBeDisabled();
     fireEvent.change(screen.getByRole("textbox", { name: "Workspace draft" }), {
       target: { value: "newer draft" },
@@ -383,5 +514,69 @@ describe("workspace load recovery", () => {
     );
     expect(screen.getByRole("textbox", { name: "Workspace draft" })).toHaveValue("newer draft");
     expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("The draft changed. Review changes again.");
+  });
+
+  it("shows a failed change plan locally without leaving an error in the global banner", async () => {
+    const draft = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "unsaved edit" },
+    };
+    useWorkspaceStore.setState({
+      scan,
+      manifest: draft,
+      baselineManifest: JSON.stringify(manifest),
+    });
+    vi.mocked(api.plan).mockRejectedValueOnce(new Error("planning unavailable"));
+    await renderRoute();
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("planning unavailable");
+    expect(useWorkspaceStore.getState().message).toBe("");
+    expect(screen.getByRole("button", { name: "Review changes" })).toBeEnabled();
+  });
+
+  it("does not carry the planning label into another workspace's scan", async () => {
+    const pendingPlan = deferred<ChangeSet>();
+    const draft = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "unsaved edit" },
+    };
+    useWorkspaceStore.setState({
+      scan,
+      manifest: draft,
+      baselineManifest: JSON.stringify(manifest),
+    });
+    vi.mocked(api.plan).mockReturnValueOnce(pendingPlan.promise);
+    await renderRoute();
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Generating change plan");
+    const nextScan = deferred<WorkspaceScan>();
+    vi.mocked(api.scan).mockReturnValueOnce(nextScan.promise);
+    act(() => {
+      doubles.workspaceId = otherWorkspace.id;
+      doubles.pathname = "/workspace/other/assets";
+      useWorkspaceStore.setState({
+        selectedWorkspace: otherWorkspace,
+        project: otherWorkspace.path,
+        busy: false,
+        manifest,
+        scan: { ...scan, root: otherWorkspace.path },
+        baselineManifest: JSON.stringify(manifest),
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Updating workspace");
+    await act(async () => nextScan.resolve({ ...scan, root: otherWorkspace.path }));
+    await act(async () =>
+      pendingPlan.resolve({
+        id: "old",
+        project_root: workspace.path,
+        created_at: "",
+        requires_home_approval: false,
+        changes: [],
+      }),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(useWorkspaceStore.getState().changeSet).toBeUndefined();
   });
 });

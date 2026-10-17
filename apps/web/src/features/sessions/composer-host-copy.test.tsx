@@ -201,7 +201,7 @@ describe("Web access attachment and permission copy", () => {
       const f = await start(locale);
       const c = codexCopy[locale];
       const input = screen.getByLabelText(c.attachment, { selector: "input" });
-      expect(input).toBeEnabled();
+      await waitFor(() => expect(input).toBeEnabled());
       const picker = vi.spyOn(input, "click");
       fireEvent.click(screen.getByRole("button", { name: c.addContext }));
       const dialog = await screen.findByRole("dialog", { name: c.addContext });

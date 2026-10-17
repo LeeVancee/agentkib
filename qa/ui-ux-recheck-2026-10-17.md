@@ -464,3 +464,22 @@ UX-03、UX-06、UX-13 的判定已由开发者收窄（见上一轮清单各条�
 - 修复后两轴独立审查完整 PR 与本次改动，Standards：0 finding；Spec：0 finding。Spec 审查另外独立运行桌面 5 个目标文件，196 个用例全部通过。
 
 本次继续不处理待设计确认项、待实机/待确认部分及后续增强，不新增依赖、公共协议或持久化结构，不合并 PR。
+
+## PR #127 继续 goal 查漏记录（2026-10-17）
+
+用户要求继续防遗漏审查。本轮以 `0e02f6a49` 为固定比较基线，重新审查完整 PR，并对 `bcbb7bb78` 之后的修复进行独立 Standards / Spec 复核，补齐两类交接边界：
+
+- UX-63.5、UX-07：工作区本地 Claude 面板此前把原终端 follower 当作可交接会话；实际检查只返回连接状态、不返回交接指纹，反复点击也没有下一步提示。现显示四语“先断开连接”，指向会话页实际的“管理原终端连接”及“断开”操作，隐藏并阻止交接/交还入口，保留已验证的发送与停止能力。本机工作区面板没有对应 Web 页面；共享会话面板的四语断开前提保持一致。
+- Claude 交接证明的所有权边界：本地面板以及桌面/Web 共享会话操作在执行模式、连接代次或交还状态变化后清除旧指纹和确认，旧只读检查晚到也不能重新生效。尤其 `claude-managed` 在接管/交还时模式不变、没有连接代次，现单独跟踪 `released` 边界。共享面板拆开工具选项加载和只读检查，重新核验历史不会重置工具选项；已发出的命令、未知结果及持久化回执继续使用原有生命周期，不会因所有权变化解锁或重发。
+
+回归证据：本地 follower 相关新增 11 例先失败后通过；共享面板每端 7 条旧证明/重新取证明反例先失败，另补未知结果锁定保护；独立终审进一步确认本地同模式交还状态的 3 条反例先失败，并补连接代次保护。最终本地面板 99 例、桌面与 Web 共享交接反馈各 56 例通过，覆盖四语前提、真实新指纹、迟到成功/失败、发送/停止能力及未知结果门禁。
+
+最终验证：
+
+- 桌面最终快照：`cd apps/desktop && node node_modules/vitest/vitest.mjs run --maxWorkers=4`，351 个文件通过、1 个文件跳过；6587 个用例通过、3 个用例跳过，退出码 0。此前首轮全量 6583 例通过；本次完整复跑包含终审最后补充的 4 条本地边界回归。
+- Web：`cd apps/web && node node_modules/vitest/vitest.mjs run --maxWorkers=2`，57 个文件、1124 个用例通过，退出码 0。
+- 桌面 `node node_modules/typescript/bin/tsc -b --pretty false`；Web 和后端 `node node_modules/typescript/bin/tsc --noEmit --pretty false`，均通过。桌面和 Web 的 `node node_modules/vite/bin/vite.js build` 均通过。本轮未修改后端生产代码，未重复后端打包与原生 staging。
+- 最终 6 个源码/测试文件的 `oxfmt --check`、`git diff --check` 通过；定向 `oxlint` 及项目 `node_modules/.bin/oxlint apps/desktop/src apps/desktop/electron apps/web/src packages/backend/src` 退出码 0，有 warning、无 error。
+- 两轴独立终审覆盖完整 PR 及本轮修复，包含最后补充的本地交还状态边界；最终 Standards：0 finding，Spec：0 finding。Spec 终审独立执行 11 个测试文件、345 个用例全部通过。
+
+本轮继续不处理待设计确认项、待实机/待确认部分及后续增强；不新增依赖，不修改后端执行权校验、公共协议或持久化结构，不合并 PR。

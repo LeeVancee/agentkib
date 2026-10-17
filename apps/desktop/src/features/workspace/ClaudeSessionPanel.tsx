@@ -17,6 +17,7 @@ import {
   useObservedContextUsage,
 } from "@/features/sessions/conversation/features/sessions/context-usage";
 import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
+import { claudeConnectionCopy } from "@/features/sessions/conversation/features/sessions/claude-connection-copy";
 import { contextUsageCopy } from "@/features/sessions/conversation/features/sessions/context-usage-copy";
 import { PermissionModeNotice } from "@/features/sessions/conversation/features/sessions/permission-mode-notice";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
@@ -104,6 +105,7 @@ export function ClaudeSessionPanel({
   onClose: () => void;
 }) {
   const { locale } = useI18n();
+  const connectionCopy = claudeConnectionCopy[locale];
   const text = (zh: string, en: string, tw: string, ja: string) =>
     ({ "zh-CN": zh, "en-US": en, "zh-TW": tw, "ja-JP": ja })[locale];
   const detailsLabel = text("技术详情", "Technical details", "技術詳情", "技術的な詳細");
@@ -172,6 +174,31 @@ export function ClaudeSessionPanel({
   const [history, setHistory] = useState<ConversationEventPage>();
   const [inspection, setInspection] = useState<ManagedInspection>();
   const [confirmed, setConfirmed] = useState(false);
+  const inspectionReleased = live?.status === "released";
+  const [inspectionSource, setInspectionSource] = useState({
+    workspaceId,
+    sessionId,
+    executionMode: live?.executionMode,
+    connectionGeneration: live?.connectionGeneration,
+    released: inspectionReleased,
+  });
+  if (
+    inspectionSource.workspaceId !== workspaceId ||
+    inspectionSource.sessionId !== sessionId ||
+    inspectionSource.executionMode !== live?.executionMode ||
+    inspectionSource.connectionGeneration !== live?.connectionGeneration ||
+    inspectionSource.released !== inspectionReleased
+  ) {
+    setInspectionSource({
+      workspaceId,
+      sessionId,
+      executionMode: live?.executionMode,
+      connectionGeneration: live?.connectionGeneration,
+      released: inspectionReleased,
+    });
+    setInspection(undefined);
+    setConfirmed(false);
+  }
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
   const [busy, setBusy] = useState(false);
@@ -184,12 +211,18 @@ export function ClaudeSessionPanel({
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
   const epoch = useRef(0),
+    inspectionRequest = useRef(0),
     flight = useRef(false),
     loading = useRef(false);
   const liveRef = useRef(live);
   useEffect(() => {
     liveRef.current = live;
   }, [live]);
+  useLayoutEffect(() => {
+    // A source inspected before terminal ownership changed needs a new proof.
+    // Keep this separate from the history stream's session generation.
+    inspectionRequest.current++;
+  }, [workspaceId, sessionId, live?.executionMode, live?.connectionGeneration, inspectionReleased]);
   const shown = useRef(new Set<string>());
   const refreshRef = useRef<(details?: boolean) => Promise<void>>(async () => {});
   const queuedRefresh = useRef<boolean | undefined>(undefined);
@@ -446,6 +479,8 @@ export function ClaudeSessionPanel({
       storageBlocked ||
       !online ||
       !controlReady ||
+      (liveRef.current?.executionMode === "claude-follower" &&
+        ["adopt", "release"].includes(operation)) ||
       (compacting && ["send", "adopt", "release"].includes(operation))
     )
       return;
@@ -503,18 +538,30 @@ export function ClaudeSessionPanel({
     setBusy(false);
   }
   async function inspect() {
-    if (flight.current || blocked || compacting || hasPending()) return;
+    if (
+      flight.current ||
+      blocked ||
+      compacting ||
+      hasPending() ||
+      liveRef.current?.executionMode === "claude-follower"
+    )
+      return;
     flight.current = true;
     setBusy(true);
     setError("");
     const generation = epoch.current;
+    const requestId = ++inspectionRequest.current;
+    const isCurrentInspection = () =>
+      generation === epoch.current &&
+      requestId === inspectionRequest.current &&
+      liveRef.current?.executionMode !== "claude-follower";
     setConfirmed(false);
     setInspection(undefined);
     try {
       const next = await request<ManagedInspection>("inspect", { sessionId });
-      if (generation === epoch.current && next.sessionId === sessionId) setInspection(next);
+      if (isCurrentInspection() && next.sessionId === sessionId) setInspection(next);
     } catch (e) {
-      if (generation === epoch.current) setError(e instanceof Error ? e.message : "inspect_failed");
+      if (isCurrentInspection()) setError(e instanceof Error ? e.message : "inspect_failed");
     } finally {
       flight.current = false;
       setBusy(false);
@@ -735,7 +782,19 @@ export function ClaudeSessionPanel({
                 {filesOpen && <ClaudeFilesPanel key={sessionId} sessionId={sessionId} />}
               </div>
             )}
-            {!managed ? (
+            {live?.executionMode === "claude-follower" ? (
+              <div role="status" className="space-y-1 text-sm text-muted-foreground">
+                <p>{connectionCopy.disconnectFirst}</p>
+                <p>
+                  {text(
+                    `请关闭此面板，在会话页选择“${connectionCopy.manage}”，然后选择“${connectionCopy.disconnect}”。`,
+                    `Close this panel, choose “${connectionCopy.manage}” on the session page, then choose “${connectionCopy.disconnect}”.`,
+                    `請關閉此面板，在對話頁面選擇「${connectionCopy.manage}」，然後選擇「${connectionCopy.disconnect}」。`,
+                    `このパネルを閉じ、会話ページで「${connectionCopy.manage}」、次に「${connectionCopy.disconnect}」を選択してください。`,
+                  )}
+                </p>
+              </div>
+            ) : !managed ? (
               <div className="space-y-2">
                 <Button
                   variant={inspection?.handoffFingerprint ? "outline" : "default"}

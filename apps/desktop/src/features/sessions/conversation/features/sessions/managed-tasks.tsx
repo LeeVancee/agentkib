@@ -64,6 +64,10 @@ export function ManagedTasks({
     : current?.agent === "claude-code"
       ? "claude-code"
       : "codex";
+  const handoffMode = !create && agent === "claude-code" ? live?.executionMode : undefined;
+  const handoffGeneration =
+    !create && agent === "claude-code" ? live?.connectionGeneration : undefined;
+  const handoffReleased = !create && agent === "claude-code" && live?.status === "released";
   const [handoffFingerprint, setHandoffFingerprint] = useState<string>();
   const [handoffInspectPending, setHandoffInspectPending] = useState(false);
   const controlHintId = useId();
@@ -230,11 +234,6 @@ export function ManagedTasks({
     locale,
   ]);
   useEffect(() => {
-    setConfirmed(false);
-    setHandoffFingerprint(undefined);
-    setHandoffInspectPending(false);
-    setError("");
-    setErrorDetail("");
     if (!open || !access?.device?.manage || !access.experimentalEnabled) return;
     const abort = new AbortController();
     setOptions(undefined);
@@ -255,21 +254,6 @@ export function ManagedTasks({
       .catch((e: unknown) => {
         if (!abort.signal.aborted) reportError(e);
       });
-    if (!create && agent === "claude-code") {
-      setHandoffInspectPending(true);
-      void client
-        .managedInspect(selected, agent, abort.signal)
-        .then((value) => {
-          if (!abort.signal.aborted && value.sessionId === selected)
-            setHandoffFingerprint(value.handoffFingerprint);
-        })
-        .catch((e: unknown) => {
-          if (!abort.signal.aborted) reportError(e);
-        })
-        .finally(() => {
-          if (!abort.signal.aborted) setHandoffInspectPending(false);
-        });
-    }
     return () => {
       abort.abort();
     };
@@ -279,6 +263,52 @@ export function ManagedTasks({
     create,
     client,
     selected,
+    access?.bootId,
+    access?.device?.id,
+    access?.device?.manage,
+    access?.experimentalEnabled,
+  ]);
+  useEffect(() => {
+    // Ownership changes invalidate read-only proof, not a dispatched command or receipt.
+    setConfirmed(false);
+    setHandoffFingerprint(undefined);
+    setHandoffInspectPending(false);
+    setError("");
+    setErrorDetail("");
+    if (
+      !open ||
+      !access?.device?.manage ||
+      !access.experimentalEnabled ||
+      create ||
+      agent !== "claude-code"
+    )
+      return;
+    const abort = new AbortController();
+    setHandoffInspectPending(true);
+    void client
+      .managedInspect(selected, agent, abort.signal)
+      .then((value) => {
+        if (!abort.signal.aborted && value.sessionId === selected)
+          setHandoffFingerprint(value.handoffFingerprint);
+      })
+      .catch((e: unknown) => {
+        if (!abort.signal.aborted) reportError(e);
+      })
+      .finally(() => {
+        if (!abort.signal.aborted) setHandoffInspectPending(false);
+      });
+    return () => {
+      abort.abort();
+    };
+  }, [
+    open,
+    agent,
+    create,
+    client,
+    selected,
+    handoffMode,
+    handoffGeneration,
+    handoffReleased,
     access?.bootId,
     access?.device?.id,
     access?.device?.manage,

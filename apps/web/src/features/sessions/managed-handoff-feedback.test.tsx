@@ -83,6 +83,7 @@ function createSession() {
     live: {
       sessionId: "session",
       executionMode: "external",
+      connectionGeneration: undefined as string | undefined,
       status: "idle",
       reason: "handoff-required",
       activity: undefined as string | undefined,
@@ -102,7 +103,7 @@ function createSession() {
       device: { id: "device", manage: true, send: true },
     },
     client: {
-      request: vi.fn(async (path: string) =>
+      request: vi.fn(async (path: string, _body?: unknown) =>
         path.startsWith("managed/options") ? options : { sessionId: "session" },
       ),
       managedInspect: vi.fn(async () => ({
@@ -283,6 +284,132 @@ describe("managed handoff feedback", () => {
     await act(async () => complete({ sessionId: "session", handoffFingerprint: undefined }));
     expect(button).toBeDisabled();
     expect(button).toHaveAccessibleDescription(managedControlCopy["en-US"].fingerprintUnavailable);
+    expect(mutations()).toEqual([]);
+  });
+  it.each(managementLocales)(
+    "invalidates reviewed Claude handoff proof across original-terminal binding changes in $locale",
+    async (copy) => {
+      session.locale = copy.locale;
+      const view = render(<ManagedTasks initialOpen />);
+      const initial = await screen.findByRole("button", { name: copy.handoff });
+      fireEvent.click(screen.getByRole("checkbox"));
+      await waitFor(() => expect(initial).toBeEnabled());
+      session.client.managedInspect.mockImplementation(async () => ({
+        sessionId: "session",
+        handoffFingerprint:
+          session.live.executionMode === "claude-follower" ? undefined : "history-after-disconnect",
+      }));
+      session.live.executionMode = "claude-follower";
+      session.live.reason = "claude-follower-send-unverified";
+      view.rerender(<ManagedTasks initialOpen />);
+      expect(screen.queryByRole("button", { name: copy.handoff })).toBeNull();
+      session.live.executionMode = "managed-resume";
+      session.live.reason = "handoff-required";
+      view.rerender(<ManagedTasks initialOpen />);
+      const next = await screen.findByRole("button", { name: copy.handoff });
+      expect(screen.getByRole("checkbox")).not.toBeChecked();
+      expect(next).toBeDisabled();
+      fireEvent.click(screen.getByRole("checkbox"));
+      await waitFor(() => expect(next).toBeEnabled());
+      fireEvent.click(next);
+      await waitFor(() => expect(mutations()).toHaveLength(1));
+      expect(mutations()[0][1]).toMatchObject({
+        sessionId: "session",
+        handoffConfirmed: true,
+        handoffFingerprint: "history-after-disconnect",
+      });
+    },
+  );
+  it("does not revive a late inspection from before an original-terminal connection", async () => {
+    let finish!: (value: { sessionId: string; handoffFingerprint: string }) => void;
+    session.client.managedInspect.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const view = await show();
+    session.live.executionMode = "claude-follower";
+    session.live.reason = "claude-follower-send-unverified";
+    view.rerender(<ManagedTasks initialOpen />);
+    session.client.managedInspect.mockResolvedValue({
+      sessionId: "session",
+      handoffFingerprint: "history-after-disconnect",
+    });
+    session.live.executionMode = "managed-resume";
+    session.live.reason = "handoff-required";
+    view.rerender(<ManagedTasks initialOpen />);
+    await act(async () =>
+      finish({ sessionId: "session", handoffFingerprint: "history-before-connect" }),
+    );
+    const next = await screen.findByRole("button", { name: "Hand over to AgentKib" });
+    fireEvent.click(screen.getByRole("checkbox"));
+    await waitFor(() => expect(next).toBeEnabled());
+    fireEvent.click(next);
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    expect(mutations()[0][1]).toMatchObject({ handoffFingerprint: "history-after-disconnect" });
+  });
+  it("invalidates confirmed proof when the original-terminal connection generation changes", async () => {
+    session.live.connectionGeneration = "first-binding";
+    const view = await show();
+    fireEvent.click(screen.getByRole("checkbox"));
+    const handoff = screen.getByRole("button", { name: "Hand over to AgentKib" });
+    await waitFor(() => expect(handoff).toBeEnabled());
+    session.client.managedInspect.mockResolvedValue({
+      sessionId: "session",
+      handoffFingerprint: "new-binding-history",
+    });
+    session.live.connectionGeneration = "next-binding";
+    view.rerender(<ManagedTasks initialOpen />);
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(handoff).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    await waitFor(() => expect(handoff).toBeEnabled());
+    fireEvent.click(handoff);
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    expect(mutations()[0][1]).toMatchObject({ handoffFingerprint: "new-binding-history" });
+  });
+  it("checks fresh history after a managed Claude session is returned to its original client", async () => {
+    session.live.executionMode = "claude-managed";
+    session.client.managedInspect.mockResolvedValue({
+      sessionId: "session",
+      handoffFingerprint: undefined,
+    });
+    const view = render(<ManagedTasks initialOpen />);
+    await screen.findByRole("button", { name: "Return to original client" });
+    await waitFor(() => expect(session.client.managedInspect).toHaveBeenCalledTimes(1));
+    session.client.managedInspect.mockResolvedValue({
+      sessionId: "session",
+      handoffFingerprint: "returned-session-history",
+    });
+    session.live.status = "released";
+    view.rerender(<ManagedTasks initialOpen />);
+    const handoff = await screen.findByRole("button", { name: "Hand over to AgentKib" });
+    fireEvent.click(screen.getByRole("checkbox"));
+    await waitFor(() => expect(handoff).toBeEnabled());
+    fireEvent.click(handoff);
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    expect(mutations()[0][1]).toMatchObject({ handoffFingerprint: "returned-session-history" });
+  });
+  it("keeps a saved unknown outcome locked through original-terminal ownership transitions", async () => {
+    rememberPending(pendingScope(session.origin, session.access.device.id), {
+      kind: "adopt",
+      requestId: "saved-request",
+      sessionId: "session",
+      agent: "claude-code",
+    });
+    const view = await show();
+    await screen.findByText(managementLocales[0].pending);
+    session.live.executionMode = "claude-follower";
+    session.live.reason = "claude-follower-send-unverified";
+    view.rerender(<ManagedTasks initialOpen />);
+    session.live.executionMode = "managed-resume";
+    session.live.reason = "handoff-required";
+    view.rerender(<ManagedTasks initialOpen />);
+    expect(await screen.findByText(managementLocales[0].pending)).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox"));
+    const handoff = screen.getByRole("button", { name: "Hand over to AgentKib" });
+    expect(handoff).toBeDisabled();
+    fireEvent.click(handoff);
     expect(mutations()).toEqual([]);
   });
   it.each(managementLocales)(

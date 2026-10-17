@@ -900,6 +900,123 @@ describe("Claude local owner panel", () => {
       handoffFingerprint: "frozen-history",
     });
   });
+  it("rechecks changed source history and requires confirmation of the new fingerprint", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let finishInspection!: (value: unknown) => void;
+    let inspections = 0;
+    let sourceChanged = false;
+    vi.mocked(api.claudeRequest).mockImplementation((value) => {
+      if (value.operation === "inspect" && ++inspections === 2)
+        return new Promise((resolve) => {
+          finishInspection = resolve;
+        });
+      if (value.operation === "events" && sourceChanged)
+        return Promise.resolve({
+          events: [{ id: "next", kind: "agent-message", content: "Native session continued" }],
+          warnings: [],
+        });
+      return original(value);
+    });
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    sourceChanged = true;
+    const historyReads = calls("events").length;
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+    await waitFor(() => expect(calls("events").length).toBeGreaterThan(historyReads));
+    expect(await screen.findByText("Native session continued")).toBeVisible();
+    expect(calls("inspect")).toHaveLength(1);
+    expect(screen.getByRole("checkbox")).toBeChecked();
+    fireEvent.click(
+      await enabled(screen.getByRole("button", { name: "Recheck original session" })),
+    );
+    await waitFor(() => expect(calls("inspect")).toHaveLength(2));
+    expect(calls("inspect")[1][0]).toMatchObject({ sessionId: "session" });
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
+    expect(calls("adopt")).toHaveLength(0);
+    await act(async () =>
+      finishInspection({ sessionId: "session", handoffFingerprint: "history-after-native-turn" }),
+    );
+    expect(await screen.findByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    await waitFor(() => expect(calls("adopt")).toHaveLength(1));
+    expect(calls("adopt")[0][0]).toMatchObject({
+      sessionId: "session",
+      handoffConfirmed: true,
+      handoffFingerprint: "history-after-native-turn",
+    });
+  });
+  it("recovers from a failed recheck without retaining the old confirmation or error", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let inspections = 0;
+    vi.mocked(api.claudeRequest).mockImplementation((value) => {
+      if (value.operation === "inspect") {
+        inspections++;
+        if (inspections === 2) return Promise.reject(new Error("inspect_failed"));
+      }
+      return original(value);
+    });
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(
+      await enabled(screen.getByRole("button", { name: "Recheck original session" })),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not inspect");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    expect(await screen.findByRole("checkbox")).not.toBeChecked();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(calls("inspect")).toHaveLength(3);
+    expect(calls("adopt")).toHaveLength(0);
+  });
+  it("cannot recheck or discard a handoff whose outcome is still pending", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "adopt" ? Promise.reject(new Error("lost_response")) : original(value),
+    );
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    await screen.findByRole("alert");
+    const saved = localStorage.getItem("agentkib:claude-owner-pending:v1:workspace");
+    expect(saved).not.toBeNull();
+    const recheck = screen.getByRole("button", { name: "Recheck original session" });
+    expect(recheck).toBeDisabled();
+    fireEvent.click(recheck);
+    const receipts = calls("receipt").length;
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+    await waitFor(() => expect(calls("receipt").length).toBeGreaterThan(receipts));
+    expect(recheck).toBeDisabled();
+    expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBe(saved);
+    expect(calls("inspect")).toHaveLength(1);
+    expect(calls("adopt")).toHaveLength(1);
+  });
+  it("keeps rechecking and handoff disabled while the original session is compacting", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    fireEvent.click(await screen.findByRole("checkbox"));
+    act(() => emitNative(1, "state", { revision: 2, activity: "compacting" }));
+    const recheck = screen.getByRole("button", { name: "Recheck original session" });
+    expect(recheck).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
+    fireEvent.click(recheck);
+    expect(calls("inspect")).toHaveLength(1);
+    act(() => emitNative(2, "state", { revision: 3, activity: null }));
+    await enabled(recheck);
+  });
   it("persists a lost send receipt across reopening and never replays it during refresh", async () => {
     const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
     vi.mocked(api.claudeRequest).mockImplementation((value) =>
@@ -1143,6 +1260,7 @@ describe("Claude local owner panel translated controls", () => {
       release: "交还原客户端",
       send: "发送",
       prepare: "交给 AgentKib",
+      recheck: "重新检查原会话",
       handoff: "交给 AgentKib",
       confirmation: "我已停止原终端和其他客户端，按原 UUID 继续。",
       approval: "处理审批",
@@ -1164,6 +1282,7 @@ describe("Claude local owner panel translated controls", () => {
       release: "交還原客戶端",
       send: "傳送",
       prepare: "交給 AgentKib",
+      recheck: "重新檢查原對話",
       handoff: "交給 AgentKib",
       confirmation: "我已停止原終端機與其他客戶端，使用原 UUID 繼續。",
       approval: "處理審批",
@@ -1185,6 +1304,7 @@ describe("Claude local owner panel translated controls", () => {
       release: "Return to original client",
       send: "Send",
       prepare: "Hand over to AgentKib",
+      recheck: "Recheck original session",
       handoff: "Hand over to AgentKib",
       confirmation:
         "I have stopped the original terminal and other clients. Continue the same UUID.",
@@ -1207,6 +1327,7 @@ describe("Claude local owner panel translated controls", () => {
       release: "元のクライアントに戻す",
       send: "送信",
       prepare: "AgentKib に引き渡す",
+      recheck: "元の会話を再確認",
       handoff: "AgentKib に引き渡す",
       confirmation: "元のターミナルと他のクライアントを停止しました。同じ UUID で続けます。",
       approval: "承認内容を確認",
@@ -1248,6 +1369,7 @@ describe("Claude local owner panel translated controls", () => {
       await screen.findByText("Synthetic history");
       fireEvent.click(await enabled(screen.getByRole("button", { name: expected.prepare })));
       expect(await screen.findByText(expected.confirmation)).toBeVisible();
+      expect(screen.getByRole("button", { name: expected.recheck })).toBeEnabled();
       const handoff = screen.getByRole("button", { name: expected.handoff });
       expect(handoff).toBeDisabled();
       fireEvent.click(screen.getByRole("checkbox"));

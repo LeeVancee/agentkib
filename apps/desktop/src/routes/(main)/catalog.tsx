@@ -159,8 +159,12 @@ function CatalogRoute() {
         ? ["query.workspaces"]
         : ["query.catalog", "query.workspaces"];
   const activeSources = sources.filter(({ labelKey }) => dependencies.includes(labelKey));
+  // Skills and global MCP load their own data. Workspace enumeration only adds
+  // project choices there; its failure must remain visible without hiding them.
+  const requiredSources = section === "skills" || section === "mcp" ? [] : activeSources;
   const failed = activeSources.filter(({ query }) => query.isError);
   const initiallyFailed = failed.some(({ query }) => query.data === undefined);
+  const contentUnavailable = requiredSources.some(({ query }) => query.data === undefined);
   const retryFailed = async () => {
     if (retryPending.current) return;
     retryPending.current = true;
@@ -178,7 +182,7 @@ function CatalogRoute() {
       onRetry={() => void retryFailed()}
     />
   ) : null;
-  const loading = activeSources.some(({ query }) => query.isPending && query.data === undefined);
+  const loading = requiredSources.some(({ query }) => query.isPending && query.data === undefined);
   const openWorkspace = async (workspace: WorkspaceSummary): Promise<boolean> => {
     const requestId = ++openRequest.current;
     const initialState = useWorkspaceStore.getState();
@@ -279,7 +283,7 @@ function CatalogRoute() {
         focusMcpNetwork={section === "mcp" && search.catalogTarget === "mcp-network"}
         onMcpNetworkFocused={consumeMcpNetworkTarget}
         feedback={feedback}
-        contentUnavailable={initiallyFailed || loading}
+        contentUnavailable={contentUnavailable}
         loading={loading}
       />
     </div>

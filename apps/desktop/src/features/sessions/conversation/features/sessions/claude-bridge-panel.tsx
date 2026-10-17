@@ -60,6 +60,7 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
   const [copyError, setCopyError] = useState(false);
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
+  const statusRequest = useRef(0);
   const copyRequest = useRef(0);
   const pending = useRef(false);
   const lastConnected = useRef(false);
@@ -102,17 +103,25 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
     if (!canManage) return;
     const request = generation.current;
     let disposed = false;
-    let checking = false;
+    let checking: number | undefined;
     async function check(showLoading: boolean) {
-      if (checking || pending.current || disposed) return;
-      checking = true;
+      if (
+        (checking !== undefined && checking === statusRequest.current) ||
+        pending.current ||
+        disposed
+      )
+        return;
+      const query = ++statusRequest.current;
+      checking = query;
+      const isCurrent = () =>
+        !disposed && generation.current === request && statusRequest.current === query;
       if (showLoading) setLoading(true);
       try {
         const result = statusResponse(
           await desktopApi().claude.request({ operation: "bridge-status", sessionId: selected }),
           selected,
         );
-        if (!disposed && generation.current === request) {
+        if (isCurrent()) {
           setStatus(result);
           setError(false);
           if (result.connected) {
@@ -123,13 +132,13 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
           lastConnected.current = result.connected;
         }
       } catch {
-        if (!disposed && generation.current === request) {
+        if (isCurrent()) {
           setStatus(undefined);
           setError(true);
         }
       } finally {
-        checking = false;
-        if (!disposed && generation.current === request && showLoading) setLoading(false);
+        if (checking === query) checking = undefined;
+        if (isCurrent() && showLoading) setLoading(false);
       }
     }
     void check(true);
@@ -185,6 +194,8 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
       pending.current
     )
       return;
+    // A lookup started before this operation cannot describe its connection code or result.
+    statusRequest.current++;
     pending.current = true;
     const request = generation.current;
     setLoading(true);

@@ -285,6 +285,77 @@ describe("managed handoff feedback", () => {
     expect(button).toHaveAccessibleDescription(managedControlCopy["en-US"].fingerprintUnavailable);
     expect(mutations()).toEqual([]);
   });
+  it.each(managementLocales)(
+    "rechecks changed Claude history and resets confirmation when operations reopen in $locale",
+    async (copy) => {
+      session.locale = copy.locale;
+      const content = (active: boolean) => (
+        <ManagedTasks active={active} renderContent={(children) => (active ? children : null)} />
+      );
+      const view = render(content(true));
+      const first = await screen.findByRole("button", { name: copy.handoff });
+      fireEvent.click(screen.getByRole("checkbox"));
+      await waitFor(() => expect(first).toBeEnabled());
+      expect(session.client.managedInspect).toHaveBeenCalledTimes(1);
+      view.rerender(content(false));
+      expect(screen.queryByRole("checkbox")).toBeNull();
+      let finish!: (value: { sessionId: string; handoffFingerprint: string }) => void;
+      session.client.managedInspect.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      view.rerender(content(true));
+      const next = await screen.findByRole("button", { name: copy.handoff });
+      expect(screen.getByRole("checkbox")).not.toBeChecked();
+      fireEvent.click(screen.getByRole("checkbox"));
+      expect(next).toBeDisabled();
+      expect(next).toHaveAccessibleDescription(managedControlCopy[copy.locale].fingerprintLoading);
+      fireEvent.click(next);
+      expect(mutations()).toEqual([]);
+      await act(async () =>
+        finish({ sessionId: "session", handoffFingerprint: "history-after-native-turn" }),
+      );
+      await waitFor(() => expect(next).toBeEnabled());
+      fireEvent.click(next);
+      await waitFor(() => expect(mutations()).toHaveLength(1));
+      expect(mutations()[0]).toEqual([
+        "managed/adopt",
+        expect.objectContaining({
+          sessionId: "session",
+          handoffConfirmed: true,
+          handoffFingerprint: "history-after-native-turn",
+        }),
+      ]);
+      expect(session.client.managedInspect).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each(managementLocales)(
+    "preserves unknown-outcome protection when operations reopen in $locale",
+    async (copy) => {
+      session.locale = copy.locale;
+      rememberPending(pendingScope(session.origin, session.access.device.id), {
+        kind: "adopt",
+        requestId: "saved-request",
+        sessionId: "session",
+        agent: "claude-code",
+      });
+      const content = (active: boolean) => (
+        <ManagedTasks active={active} renderContent={(children) => (active ? children : null)} />
+      );
+      const view = render(content(true));
+      await screen.findByText(copy.pending);
+      view.rerender(content(false));
+      view.rerender(content(true));
+      await screen.findByText(copy.pending);
+      const handoff = await screen.findByRole("button", { name: copy.handoff });
+      expect(handoff).toBeDisabled();
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(handoff);
+      expect(mutations()).toEqual([]);
+      expect(session.refresh).not.toHaveBeenCalled();
+    },
+  );
   it("keeps an inspection failure visible and supplies a retry path without handing over", async () => {
     session.client.managedInspect.mockRejectedValue(new Error("inspection failed"));
     await show();

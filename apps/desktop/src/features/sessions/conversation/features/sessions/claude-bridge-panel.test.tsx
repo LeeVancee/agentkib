@@ -22,6 +22,15 @@ const challenge = {
   expiresAt: new Date(Date.now() + 120_000).toISOString(),
   instructions: "/agentkib:connect one-time-code",
 };
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
 beforeEach(() => {
   state.request.mockReset();
   state.session = {
@@ -258,6 +267,134 @@ describe("Claude terminal connection management", () => {
     await waitFor(() => expect(state.request).toHaveBeenCalledTimes(4));
     expect(screen.getByText("one-time-code", { selector: "code" })).toBeVisible();
   });
+  it.each(
+    ["connected", "connection-error", "rejected"].flatMap((outcome) =>
+      ["before", "after"].map((order) => ({ outcome, order })),
+    ),
+  )(
+    "ignores an old $outcome poll arriving $order a replacement code",
+    async ({ outcome, order }) => {
+      vi.useFakeTimers();
+      const previous = deferred<unknown>();
+      const replacement = deferred<unknown>();
+      state.request
+        .mockResolvedValueOnce(status())
+        .mockResolvedValueOnce(challenge)
+        .mockReturnValueOnce(previous.promise)
+        .mockReturnValueOnce(replacement.promise);
+      render(<ClaudeBridgePanel active />);
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+      await act(async () => {});
+      await act(async () => vi.advanceTimersByTime(2500));
+      fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+      async function settlePrevious() {
+        await act(async () => {
+          if (outcome === "rejected") previous.reject(new Error("previous lookup failed"));
+          else
+            previous.resolve({
+              ...status(),
+              connected: outcome === "connected",
+              connectionError:
+                outcome === "connection-error" ? "bridge-version-mismatch" : undefined,
+            });
+        });
+      }
+      if (order === "before") {
+        await settlePrevious();
+        expect(screen.getByText("正在检查连接…")).toBeVisible();
+        expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      }
+      await act(async () => replacement.resolve({ ...challenge, challenge: "replacement-code" }));
+      if (order === "after") await settlePrevious();
+      expect(screen.getByText("replacement-code", { selector: "code" })).toBeVisible();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(state.session.refresh).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTime(2500));
+      expect(state.request).toHaveBeenLastCalledWith({
+        operation: "bridge-status",
+        sessionId: "s",
+      });
+      expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeEnabled();
+    },
+  );
+  it("continues polling while an invalidated lookup is unresolved and preserves the newer result", async () => {
+    vi.useFakeTimers();
+    const previous = deferred<unknown>();
+    const latest = deferred<unknown>();
+    state.request
+      .mockResolvedValueOnce(status())
+      .mockResolvedValueOnce(challenge)
+      .mockReturnValueOnce(previous.promise)
+      .mockResolvedValueOnce({ ...challenge, challenge: "replacement-code" })
+      .mockReturnValueOnce(latest.promise);
+    render(<ClaudeBridgePanel active />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    await act(async () => {});
+    await act(async () => vi.advanceTimersByTime(2500));
+    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    await act(async () => {});
+    await act(async () => vi.advanceTimersByTime(2500));
+    expect(state.request).toHaveBeenCalledTimes(5);
+    await act(async () => previous.resolve({ ...status(), connected: true }));
+    await act(async () => vi.advanceTimersByTime(2500));
+    expect(state.request).toHaveBeenCalledTimes(5);
+    expect(screen.getByText("replacement-code", { selector: "code" })).toBeVisible();
+    expect(state.session.refresh).not.toHaveBeenCalled();
+    await act(async () =>
+      latest.resolve({ ...status(), connectionError: "bridge-identity-mismatch" }),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("目标终端与所选会话不匹配");
+    await act(async () => vi.advanceTimersByTime(2500));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("replacement-code", { selector: "code" })).toBeVisible();
+    state.request.mockResolvedValueOnce({ ...status(), connected: true });
+    await act(async () => vi.advanceTimersByTime(2500));
+    expect(screen.queryByText("replacement-code", { selector: "code" })).not.toBeInTheDocument();
+    expect(state.session.refresh).toHaveBeenCalledExactlyOnceWith(true);
+  });
+  it.each(["connected", "connection-error", "rejected"])(
+    "ignores an old %s poll while disconnecting",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const previous = deferred<unknown>();
+      const disconnect = deferred<unknown>();
+      state.session.live = {
+        ...state.session.live!,
+        executionMode: "claude-follower",
+        status: "unsupported",
+        reason: "claude-bridge-disconnected",
+      };
+      state.request
+        .mockResolvedValueOnce(status())
+        .mockReturnValueOnce(previous.promise)
+        .mockReturnValueOnce(disconnect.promise);
+      render(<ClaudeBridgePanel active />);
+      await act(async () => {});
+      await act(async () => vi.advanceTimersByTime(2500));
+      fireEvent.click(screen.getByRole("button", { name: "断开原终端连接" }));
+      fireEvent.click(screen.getByRole("button", { name: "确认断开" }));
+      await act(async () => {
+        if (outcome === "rejected") previous.reject(new Error("previous lookup failed"));
+        else
+          previous.resolve({
+            ...status(),
+            connected: outcome === "connected",
+            connectionError: outcome === "connection-error" ? "bridge-version-mismatch" : undefined,
+          });
+      });
+      expect(screen.queryByRole("alert", { hidden: true })).not.toBeInTheDocument();
+      expect(state.session.refresh).not.toHaveBeenCalled();
+      expect(screen.getByText("正在检查连接…")).toBeVisible();
+      expect(screen.getByRole("button", { name: "确认断开" })).toBeDisabled();
+      await act(async () => disconnect.resolve({ disconnected: true }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByText("正在检查连接…")).not.toBeInTheDocument();
+      expect(state.session.refresh).toHaveBeenCalledExactlyOnceWith(true);
+    },
+  );
   it("retains the code but disables a new challenge after a failed status refresh", async () => {
     render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");

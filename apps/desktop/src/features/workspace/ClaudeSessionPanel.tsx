@@ -503,6 +503,10 @@ export function ClaudeSessionPanel({
     setBusy(false);
   }
   async function inspect() {
+    if (flight.current || blocked || compacting || hasPending()) return;
+    flight.current = true;
+    setBusy(true);
+    setError("");
     const generation = epoch.current;
     setConfirmed(false);
     setInspection(undefined);
@@ -511,6 +515,9 @@ export function ClaudeSessionPanel({
       if (generation === epoch.current && next.sessionId === sessionId) setInspection(next);
     } catch (e) {
       if (generation === epoch.current) setError(e instanceof Error ? e.message : "inspect_failed");
+    } finally {
+      flight.current = false;
+      setBusy(false);
     }
   }
   async function upload(files: File[]) {
@@ -730,16 +737,25 @@ export function ClaudeSessionPanel({
             )}
             {!managed ? (
               <div className="space-y-2">
-                {!inspection?.handoffFingerprint && (
-                  <Button disabled={blocked} onClick={() => void inspect()}>
-                    {text(
-                      "交给 AgentKib",
-                      "Hand over to AgentKib",
-                      "交給 AgentKib",
-                      "AgentKib に引き渡す",
-                    )}
-                  </Button>
-                )}
+                <Button
+                  variant={inspection?.handoffFingerprint ? "outline" : "default"}
+                  disabled={blocked || compacting}
+                  onClick={() => void inspect()}
+                >
+                  {inspection?.handoffFingerprint
+                    ? text(
+                        "重新检查原会话",
+                        "Recheck original session",
+                        "重新檢查原對話",
+                        "元の会話を再確認",
+                      )
+                    : text(
+                        "交给 AgentKib",
+                        "Hand over to AgentKib",
+                        "交給 AgentKib",
+                        "AgentKib に引き渡す",
+                      )}
+                </Button>
                 {inspection?.handoffFingerprint && (
                   <>
                     <label className="flex gap-2">

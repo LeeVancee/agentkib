@@ -306,6 +306,35 @@ it("keeps skills and MCP usable after the initial memory query fails", async () 
   expect(screen.getByRole("navigation")).toBeVisible();
 });
 
+it.each(["instructions", "memory", "other"])(
+  "keeps a missing workspace dependency blocking the %s section until it resolves",
+  async (section) => {
+    const pending = deferred<WorkspaceSummary[]>();
+    doubles.search.assetSection = section;
+    doubles.workspaces.mockReturnValueOnce(pending.promise);
+    const { client } = start();
+    expect(await screen.findByRole("status", { name: tr("loading.assets") })).toBeVisible();
+    expect(screen.queryByText(tr("catalog.noMatch"))).not.toBeInTheDocument();
+    expect(screen.queryByText(tr("memory.empty"))).not.toBeInTheDocument();
+    await act(async () => pending.reject(new Error("Workspace list unavailable")));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(tr("query.workspaces"));
+    expect(alert).toHaveTextContent(tr("query.initialUnavailable"));
+    expect(
+      screen.queryByRole("textbox", { name: tr("catalog.searchPlaceholder") }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(tr("memory.empty"))).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation")).toBeVisible();
+    doubles.workspaces.mockResolvedValue([workspace]);
+    await act(async () => client.invalidateQueries({ queryKey: homeKeys.workspaces() }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(screen.queryByRole("status", { name: tr("loading.assets") })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(tr(section === "memory" ? "memory.empty" : "catalog.noMatch")),
+    ).toBeVisible();
+  },
+);
+
 it("consumes the MCP network focus target with replace after focusing once", async () => {
   doubles.search.assetSection = "mcp";
   doubles.search.catalogTarget = "mcp-network";

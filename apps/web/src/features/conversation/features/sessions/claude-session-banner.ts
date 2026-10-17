@@ -6,23 +6,24 @@ export function claudeSessionBanner({
   locale,
   live,
   online,
+  notice,
   t,
-}: Pick<SessionController, "locale" | "live" | "online" | "t">) {
+}: Pick<SessionController, "locale" | "live" | "online" | "notice" | "t">) {
   const copy = claudeConnectionCopy[locale];
   if (live?.executionMode === "claude-managed")
     return live.status === "released"
       ? { title: copy.released, body: copy.releasedInfo }
       : { title: copy.managed, body: t.managedResumeInfo };
   if (live?.executionMode === "claude-follower") {
-    if (online && live.reason === "claude-bridge-event-gap")
-      return { title: copy.connected, body: copy.gap };
-    if (!online || live.reason === "claude-bridge-disconnected" || live.status === "unsupported")
-      return { title: copy.lostTitle, body: copy.lost };
-    if (live.status === "outcome-unknown")
+    if (notice === "uncertain" || live.status === "outcome-unknown")
       return {
         title: t.controlUnconfirmed,
-        body: claudeConnectionReason(locale, live.reason) ?? t.controlUnconfirmed,
+        body: copy.connectionUnconfirmed,
       };
+    if (!online) return { title: copy.hostDisconnected, body: copy.hostDisconnectedInfo };
+    if (live.reason === "claude-bridge-event-gap") return { title: copy.connected, body: copy.gap };
+    if (live.reason === "claude-bridge-disconnected" || live.status === "unsupported")
+      return { title: copy.lostTitle, body: copy.lost };
     return {
       title: copy.connected,
       body: claudeConnectionReason(locale, live.reason) ?? copy.info,

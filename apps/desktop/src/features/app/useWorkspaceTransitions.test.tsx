@@ -60,7 +60,7 @@ describe("workspace draft transitions", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     useWorkspaceStore.getState().resetWorkspace();
-    useWorkspaceStore.setState({ workspaceDrafts: {} });
+    useWorkspaceStore.getState().setWorkspaceDrafts({});
     dialogs.notify.mockReset().mockResolvedValue(undefined);
     dialogs.confirm.mockReset().mockResolvedValue(false);
   });
@@ -109,6 +109,7 @@ describe("workspace draft transitions", () => {
         [workspace.id]: manifest("older cached edit"),
         [nextWorkspace.id]: otherDraft,
       },
+      workspaceDraftBaselines: { [nextWorkspace.id]: "other baseline" },
     });
     const { result, navigateWorkspacePageFor } = renderTransitions();
 
@@ -121,6 +122,10 @@ describe("workspace draft transitions", () => {
       [nextWorkspace.id]: otherDraft,
     });
     expect(useWorkspaceStore.getState().workspaceDrafts[workspace.id]).toBe(draft);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual({
+      [workspace.id]: JSON.stringify(baseline),
+      [nextWorkspace.id]: "other baseline",
+    });
     expect(useWorkspaceStore.getState().manifest).toBeUndefined();
     expect(navigateWorkspacePageFor).toHaveBeenCalledWith(nextWorkspace.id, "overview", undefined);
 
@@ -144,6 +149,10 @@ describe("workspace draft transitions", () => {
         [workspace.id]: manifest("already applied edit"),
         [nextWorkspace.id]: otherDraft,
       },
+      workspaceDraftBaselines: {
+        [workspace.id]: "old baseline",
+        [nextWorkspace.id]: "other baseline",
+      },
     });
     const { result } = renderTransitions();
 
@@ -154,6 +163,9 @@ describe("workspace draft transitions", () => {
 
     expect(useWorkspaceStore.getState().selectedWorkspace).toBe(workspace);
     expect(useWorkspaceStore.getState().workspaceDrafts[workspace.id]).toBeUndefined();
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual({
+      [nextWorkspace.id]: "other baseline",
+    });
     expect(useWorkspaceStore.getState().workspaceDrafts[nextWorkspace.id]).toBe(otherDraft);
   });
 

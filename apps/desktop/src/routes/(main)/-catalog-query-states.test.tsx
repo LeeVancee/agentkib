@@ -6,13 +6,24 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import { homeKeys } from "@/features/home/home-query";
-import type { CatalogAsset, MemoryRecord, WorkspaceSummary } from "@/core/types";
+import type {
+  CatalogAsset,
+  Manifest,
+  MemoryRecord,
+  WorkspaceScan,
+  WorkspaceSummary,
+} from "@/core/types";
+import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useAppStore } from "@/stores/app-store";
 import { Route } from "./catalog";
 
 const doubles = vi.hoisted(() => ({
   catalog: vi.fn(),
   workspaces: vi.fn(),
   memories: vi.fn(),
+  scan: vi.fn(),
+  manifest: vi.fn(),
+  confirm: vi.fn(),
   navigate: vi.fn(),
   search: {
     assetSection: "instructions",
@@ -25,6 +36,8 @@ vi.mock("@/core/api", () => ({
     catalogAssets: doubles.catalog,
     workspaces: doubles.workspaces,
     globalMemories: doubles.memories,
+    scan: doubles.scan,
+    manifest: doubles.manifest,
     mcpInstallations: async () => [],
     mcpRuntimes: async () => [],
     runtime: async () => null,
@@ -36,7 +49,9 @@ vi.mock("@/features/skills/SkillHubPage", () => ({
 vi.mock("@/features/mcp/McpManagementPanel", () => ({
   McpManagementPanel: () => <h2>Available MCP services</h2>,
 }));
-vi.mock("@/components/AppDialogProvider", () => ({ useAppDialogs: () => ({}) }));
+vi.mock("@/components/AppDialogProvider", () => ({
+  useAppDialogs: () => ({ confirm: doubles.confirm }),
+}));
 vi.mock("@tanstack/react-router", async (original) => ({
   ...(await original<typeof import("@tanstack/react-router")>()),
   createFileRoute: () => (options: unknown) => ({ options }),
@@ -72,6 +87,27 @@ const memory: MemoryRecord = {
   status: "pending",
   created_at: "2026-10-16T00:00:00Z",
 };
+const savedManifest: Manifest = {
+  schema_version: 2,
+  workspace: { id: workspace.id, name: workspace.name },
+  instructions: { shared: "Saved instructions", scoped: [], platform_overrides: {} },
+  skills: [],
+  connections: [],
+  mcp: { config: "mcp.json" },
+  memories: { require_approval: true },
+  adapters: {},
+};
+const scan: WorkspaceScan = {
+  root: workspace.path,
+  manifest_exists: true,
+  agents: [],
+  assets: [],
+  warnings: [],
+};
+const withInstructions = (shared: string): Manifest => ({
+  ...savedManifest,
+  instructions: { ...savedManifest.instructions, shared },
+});
 const sources = [
   {
     read: doubles.catalog,
@@ -129,6 +165,9 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   vi.resetAllMocks();
+  useWorkspaceStore.getState().resetWorkspace();
+  useWorkspaceStore.getState().setWorkspaceDrafts({});
+  useAppStore.getState().setRuntime(undefined);
   doubles.search = {
     assetSection: "instructions",
     skillSection: "workspace",
@@ -137,9 +176,101 @@ beforeEach(async () => {
   doubles.catalog.mockResolvedValue([]);
   doubles.workspaces.mockResolvedValue([]);
   doubles.memories.mockResolvedValue([]);
+  doubles.scan.mockResolvedValue(scan);
+  doubles.manifest.mockResolvedValue(savedManifest);
+  doubles.confirm.mockResolvedValue(false);
   await initializeI18n("en-US");
 });
 afterEach(cleanup);
+
+async function openAssetWorkspace() {
+  fireEvent.click(await screen.findByRole("button", { name: /Policy Alpha/ }));
+  fireEvent.click(screen.getByRole("button", { name: tr("catalog.openWorkspace") }));
+}
+
+it.each([true, false])(
+  "resolves a cached workspace draft against changed disk content after confirmation=%s",
+  async (loadDisk) => {
+    const draft = withInstructions("Cached draft");
+    const disk = withInstructions("Externally updated instructions");
+    useWorkspaceStore
+      .getState()
+      .cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(savedManifest));
+    doubles.manifest.mockResolvedValue(disk);
+    doubles.confirm.mockResolvedValue(loadDisk);
+    start(true);
+    await openAssetWorkspace();
+    await waitFor(() =>
+      expect(doubles.navigate).toHaveBeenCalledWith({
+        to: "/workspace/$workspaceId",
+        params: { workspaceId: workspace.id },
+      }),
+    );
+    expect(doubles.confirm).toHaveBeenCalledExactlyOnceWith({
+      description: tr("workspace.refreshConflict"),
+      tone: "warning",
+    });
+    expect(useWorkspaceStore.getState()).toMatchObject({
+      project: workspace.path,
+      selectedWorkspace: workspace,
+      manifest: loadDisk ? disk : draft,
+      baselineManifest: JSON.stringify(disk),
+      busy: false,
+    });
+    expect(useWorkspaceStore.getState().workspaceDrafts).toEqual(
+      loadDisk ? {} : { [workspace.id]: draft },
+    );
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual(
+      loadDisk ? {} : { [workspace.id]: JSON.stringify(disk) },
+    );
+  },
+);
+
+it("keeps a cached workspace draft without confirmation when disk content has not changed", async () => {
+  const draft = withInstructions("Cached draft");
+  useWorkspaceStore
+    .getState()
+    .cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(savedManifest));
+  start(true);
+  await openAssetWorkspace();
+  await waitFor(() => expect(doubles.navigate).toHaveBeenCalledOnce());
+  expect(doubles.confirm).not.toHaveBeenCalled();
+  expect(useWorkspaceStore.getState()).toMatchObject({
+    manifest: draft,
+    baselineManifest: JSON.stringify(savedManifest),
+    workspaceDrafts: { [workspace.id]: draft },
+    workspaceDraftBaselines: { [workspace.id]: JSON.stringify(savedManifest) },
+  });
+});
+
+it("ignores an older conflict confirmation after a newer workspace open finishes", async () => {
+  const draft = withInstructions("Cached draft");
+  const disk = withInstructions("Externally updated instructions");
+  useWorkspaceStore
+    .getState()
+    .cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(savedManifest));
+  doubles.manifest.mockResolvedValue(disk);
+  const firstConfirmation = deferred<boolean>();
+  doubles.confirm.mockReturnValueOnce(firstConfirmation.promise).mockResolvedValueOnce(false);
+  start(true);
+  await openAssetWorkspace();
+  await waitFor(() => expect(doubles.confirm).toHaveBeenCalledOnce());
+  await openAssetWorkspace();
+  await waitFor(() => expect(doubles.navigate).toHaveBeenCalledOnce());
+  const current = useWorkspaceStore.getState();
+  expect(current.manifest).toEqual(draft);
+  expect(current.baselineManifest).toBe(JSON.stringify(disk));
+  await act(async () => firstConfirmation.resolve(true));
+  expect(doubles.confirm).toHaveBeenCalledTimes(2);
+  expect(doubles.navigate).toHaveBeenCalledOnce();
+  expect(useWorkspaceStore.getState()).toMatchObject({
+    manifest: draft,
+    baselineManifest: JSON.stringify(disk),
+    workspaceDrafts: { [workspace.id]: draft },
+    workspaceDraftBaselines: { [workspace.id]: JSON.stringify(disk) },
+    busy: false,
+  });
+});
 
 it("does not show an empty catalog before the initial query settles", async () => {
   const pending = deferred<CatalogAsset[]>();

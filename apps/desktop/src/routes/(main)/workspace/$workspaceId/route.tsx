@@ -208,6 +208,8 @@ function WorkspaceLayout() {
     const requestId = ++operationRequest.current;
     const targetProject = project;
     const initialState = useWorkspaceStore.getState();
+    const initialBaseline =
+      initialState.baselineManifest || initialState.workspaceDraftBaselines[workspaceId] || "";
     const scanAtStart = initialState.scan;
     const isCurrentRequest = () =>
       requestId === operationRequest.current &&
@@ -245,7 +247,7 @@ function WorkspaceLayout() {
             manifestResult.status === "fulfilled" ? manifestResult.value : undefined;
           const resolvedManifest = await resolveRefreshedManifest({
             initialManifest: initialState.manifest,
-            initialBaseline: initialState.baselineManifest,
+            initialBaseline,
             cachedDraft: draft,
             diskManifest: nextManifest,
             getCurrentManifest: () => useWorkspaceStore.getState().manifest,
@@ -260,17 +262,11 @@ function WorkspaceLayout() {
             setMessage(localizeMessage(manifestResult.reason));
           setScan(nextScan);
           setManifest(resolvedManifest);
-          setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
-          useWorkspaceStore.getState().setWorkspaceDrafts((drafts) => {
-            const next = { ...drafts };
-            if (
-              resolvedManifest &&
-              JSON.stringify(resolvedManifest) !== JSON.stringify(nextManifest)
-            )
-              next[workspaceId] = resolvedManifest;
-            else delete next[workspaceId];
-            return next;
-          });
+          const nextBaseline = nextManifest ? JSON.stringify(nextManifest) : initialBaseline;
+          setBaselineManifest(nextBaseline);
+          useWorkspaceStore
+            .getState()
+            .cacheWorkspaceDraft(workspaceId, resolvedManifest, nextBaseline);
           setRuntime(runtimeResult.value);
           setLoadFailure(undefined);
           if (!resolvedManifest && currentPage !== "doctor") {

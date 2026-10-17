@@ -51,6 +51,52 @@ describe("transient workspace notices", () => {
   beforeEach(resetStore);
   afterEach(resetStore);
 
+  it("keeps cached baselines aligned with dirty drafts after apply, discard, and cache cleanup", () => {
+    const baseline = manifest("saved");
+    const draft = manifest("unsaved");
+    const applied = manifest("doctor update");
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      manifest: draft,
+      baselineManifest: JSON.stringify(baseline),
+    });
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(baseline));
+    useWorkspaceStore.getState().cacheWorkspaceDraft("other", draft, "other baseline");
+    useWorkspaceStore.getState().acceptAppliedManifest(applied);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual({
+      [workspace.id]: JSON.stringify(applied),
+      other: "other baseline",
+    });
+    expect(useWorkspaceStore.getState().discardWorkspaceDraft(JSON.stringify(draft))).toBe(true);
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual({
+      other: "other baseline",
+    });
+    useWorkspaceStore.getState().setWorkspaceDrafts({});
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines).toEqual({});
+  });
+
+  it.each(["new request", "clear request", "new plan", "reset"])(
+    "clears an unknown import snapshot on %s while retaining it for unrelated editor changes",
+    (action) => {
+      const recovery = { workspaceId: workspace.id, project: workspace.path, changeSet: plan };
+      useWorkspaceStore.getState().setHandoffLaunchRequest(launchRequest);
+      useWorkspaceStore.getState().setHandoffRecoveryChanges(recovery);
+      useWorkspaceStore.getState().setManifest(manifest("unrelated draft"));
+      useWorkspaceStore.getState().setChangeSet(undefined);
+      useWorkspaceStore.getState().setHandoffLaunchRequest(launchRequest);
+      expect(useWorkspaceStore.getState().handoffRecoveryChanges).toBe(recovery);
+      if (action === "new request")
+        useWorkspaceStore
+          .getState()
+          .setHandoffLaunchRequest({ ...launchRequest, operation_id: "new" });
+      else if (action === "clear request")
+        useWorkspaceStore.getState().setHandoffLaunchRequest(undefined);
+      else if (action === "new plan") useWorkspaceStore.getState().setChangeSet(plan);
+      else useWorkspaceStore.getState().resetWorkspace();
+      expect(useWorkspaceStore.getState().handoffRecoveryChanges).toBeUndefined();
+    },
+  );
+
   it("dismisses only the presentation and preserves the active workspace operation", () => {
     const draft = manifest("keep this draft");
     useWorkspaceStore.setState({ manifest: draft, applyingChanges: true });

@@ -2,7 +2,15 @@
 
 import "@testing-library/jest-dom/vitest";
 import { Suspense, useState } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
@@ -14,6 +22,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useWorkspaceTransitions } from "@/features/app/useWorkspaceTransitions";
 import { Route } from "./route";
 
 const doubles = vi.hoisted(() => ({
@@ -139,6 +148,78 @@ describe("workspace load recovery", () => {
     vi.mocked(api.runtime).mockResolvedValue({ app_name: "AgentKib" } as RuntimeInfo);
   });
   afterEach(cleanup);
+
+  it.each([true, false, "unchanged"] as const)(
+    "retains a draft's disk baseline across workspace switches (resolution: %s)",
+    async (resolution) => {
+      const draft = {
+        ...manifest,
+        instructions: { ...manifest.instructions, shared: "cached edit" },
+      };
+      const disk =
+        resolution === "unchanged"
+          ? manifest
+          : {
+              ...manifest,
+              instructions: { ...manifest.instructions, shared: "external edit while away" },
+            };
+      useWorkspaceStore.setState({
+        manifest: draft,
+        scan,
+        baselineManifest: JSON.stringify(manifest),
+      });
+      const transitions = renderHook(() =>
+        useWorkspaceTransitions({
+          route: { kind: "workspace", workspaceId: workspace.id, page: "assets" },
+          navigateWorkspacePageFor: doubles.navigate,
+          clearGitSubview: vi.fn(),
+          invalidatePendingLoad: vi.fn(),
+        }),
+      );
+      await act(async () => {
+        await transitions.result.current.openWorkspace(otherWorkspace);
+        await transitions.result.current.openWorkspace(workspace);
+      });
+      transitions.unmount();
+      expect(useWorkspaceStore.getState().baselineManifest).toBe("");
+      expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
+        JSON.stringify(manifest),
+      );
+      doubles.confirm.mockResolvedValue(resolution === true);
+      vi.mocked(api.manifest).mockResolvedValueOnce(disk);
+      await renderRoute();
+      await screen.findByRole("textbox", { name: "Workspace draft" });
+      expect(doubles.confirm).toHaveBeenCalledTimes(resolution === "unchanged" ? 0 : 1);
+      const expected = resolution === true ? disk : draft;
+      expect(useWorkspaceStore.getState().manifest).toEqual(expected);
+      expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
+      expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
+        resolution === true ? undefined : JSON.stringify(disk),
+      );
+    },
+  );
+
+  it("preserves the cached baseline after a failed manifest read so retry detects external edits", async () => {
+    const draft = {
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "cached edit" },
+    };
+    useWorkspaceStore.getState().cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(manifest));
+    vi.mocked(api.manifest).mockRejectedValueOnce(new Error("manifest unavailable"));
+    await renderRoute();
+    await screen.findByRole("textbox", { name: "Workspace draft" });
+    expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(manifest));
+    expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
+      JSON.stringify(manifest),
+    );
+    vi.mocked(api.manifest).mockResolvedValueOnce({
+      ...manifest,
+      instructions: { ...manifest.instructions, shared: "external update" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    await waitFor(() => expect(doubles.confirm).toHaveBeenCalledOnce());
+    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+  });
 
   it("replaces a failed first scan with a visible cause and a working retry", async () => {
     vi.mocked(api.scan).mockRejectedValueOnce(new Error("scan unavailable"));

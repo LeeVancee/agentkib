@@ -33,14 +33,7 @@ export function useWorkspaceTransitions({
     const selectedWorkspace = workspace.selectedWorkspace;
     const manifest = workspace.manifest;
     if (!selectedWorkspace || !manifest || !workspace.baselineManifest) return;
-    workspace.setWorkspaceDrafts((drafts) => {
-      if (JSON.stringify(manifest) !== workspace.baselineManifest)
-        return { ...drafts, [selectedWorkspace.id]: manifest };
-      if (!(selectedWorkspace.id in drafts)) return drafts;
-      const nextDrafts = { ...drafts };
-      delete nextDrafts[selectedWorkspace.id];
-      return nextDrafts;
-    });
+    workspace.cacheWorkspaceDraft(selectedWorkspace.id, manifest, workspace.baselineManifest);
   }, []);
 
   const leaveWorkspace = useCallback(

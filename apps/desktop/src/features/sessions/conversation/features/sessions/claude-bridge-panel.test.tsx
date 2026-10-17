@@ -54,6 +54,43 @@ afterEach(() => {
 });
 
 describe("Claude terminal connection management", () => {
+  it("can revoke an offline follower binding before handing it over", async () => {
+    state.session.live = {
+      ...state.session.live!,
+      executionMode: "claude-follower",
+      status: "unsupported",
+      reason: "claude-bridge-disconnected",
+    };
+    render(<ClaudeBridgePanel active />);
+    await screen.findByText("Install isolated plugin");
+    const disconnect = screen.getByRole("button", { name: "断开原终端连接" });
+    expect(disconnect).toBeEnabled();
+    fireEvent.click(disconnect);
+    fireEvent.click(await screen.findByRole("button", { name: "确认断开" }));
+    await waitFor(() =>
+      expect(state.request).toHaveBeenCalledWith({
+        operation: "bridge-disconnect",
+        sessionId: "s",
+      }),
+    );
+    expect(state.session.refresh).toHaveBeenCalledExactlyOnceWith(true);
+  });
+  it("cannot revoke an unbound session or another session's follower", async () => {
+    const view = render(<ClaudeBridgePanel active />);
+    await screen.findByText("Install isolated plugin");
+    expect(screen.getByRole("button", { name: "断开原终端连接" })).toBeDisabled();
+    state.session.live = {
+      ...state.session.live!,
+      sessionId: "other",
+      executionMode: "claude-follower",
+      status: "idle",
+    };
+    view.rerender(<ClaudeBridgePanel active />);
+    expect(screen.getByRole("button", { name: "断开原终端连接" })).toBeDisabled();
+    expect(
+      state.request.mock.calls.some(([request]) => request.operation === "bridge-disconnect"),
+    ).toBe(false);
+  });
   it("can revoke when status lookup fails and the pending outcome is unknown", async () => {
     state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
     state.request.mockImplementation(async ({ operation }) => {
@@ -158,6 +195,53 @@ describe("Claude terminal connection management", () => {
     fireEvent.click(screen.getByRole("button", { name: "复制连接码" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("复制失败，请手动选择并复制。");
   });
+  it.each(["copied", "failed"])(
+    "ignores a %s clipboard result from the previously selected session",
+    async (result) => {
+      let finish!: () => void;
+      const writeText = vi.fn(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            finish = () => (result === "copied" ? resolve() : reject(new Error("copy failed")));
+          }),
+      );
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      const view = render(<ClaudeBridgePanel active />);
+      await screen.findByText("Install isolated plugin");
+      fireEvent.click(screen.getByRole("button", { name: "复制安装命令" }));
+      state.session = {
+        ...state.session,
+        selected: "other",
+        current: { ...state.session.current!, id: "other" },
+        live: { ...state.session.live!, sessionId: "other" },
+      };
+      view.rerender(<ClaudeBridgePanel active />);
+      await act(async () => finish());
+      expect(screen.queryByText(/· 已复制/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+  it.each(["copied", "failed"])(
+    "does not let an older %s clipboard result replace the latest copy feedback",
+    async (result) => {
+      let finish!: () => void;
+      const previous = new Promise<void>((resolve, reject) => {
+        finish = () => (result === "copied" ? resolve() : reject(new Error("copy failed")));
+      });
+      const writeText = vi.fn().mockReturnValueOnce(previous).mockResolvedValueOnce(undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      render(<ClaudeBridgePanel active />);
+      await screen.findByText("Install isolated plugin");
+      fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+      await screen.findByText("one-time-code", { selector: "code" });
+      fireEvent.click(screen.getByRole("button", { name: "复制连接码" }));
+      fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
+      await screen.findByText("复制连接命令 · 已复制");
+      await act(async () => finish());
+      expect(screen.getByText("复制连接命令 · 已复制")).toBeVisible();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
   it("keeps a valid code through explicit status refresh, busy and uncertain transitions", async () => {
     const view = render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");

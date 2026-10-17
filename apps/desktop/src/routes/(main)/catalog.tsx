@@ -48,6 +48,7 @@ import {
   useHomeWorkspaces,
 } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
 import {
   Boxes,
   Brain,
@@ -86,7 +87,8 @@ type CatalogSearch = {
 };
 
 function CatalogRoute() {
-  const { localizeMessage } = useI18n();
+  const { localizeMessage, tr } = useI18n();
+  const dialogs = useAppDialogs();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as CatalogSearch;
@@ -113,7 +115,6 @@ function CatalogRoute() {
     setHandoffLaunchRequest,
     setBusy,
     setMessage,
-    workspaceDrafts,
   } = useWorkspaceStore();
 
   useEffect(
@@ -180,6 +181,9 @@ function CatalogRoute() {
   const loading = activeSources.some(({ query }) => query.isPending && query.data === undefined);
   const openWorkspace = async (workspace: WorkspaceSummary): Promise<boolean> => {
     const requestId = ++openRequest.current;
+    const initialState = useWorkspaceStore.getState();
+    const initialDraft = initialState.workspaceDrafts[workspace.id];
+    const initialBaseline = initialState.workspaceDraftBaselines[workspace.id] ?? "";
     setBusy(true);
     setMessage("");
     return withAsyncCleanup(
@@ -200,21 +204,34 @@ function CatalogRoute() {
             if (requestId === openRequest.current) setMessage(localizeMessage(error));
           }
           if (requestId !== openRequest.current) return false;
+          const resolvedManifest = await resolveRefreshedManifest({
+            initialManifest: initialDraft,
+            initialBaseline,
+            diskManifest: nextManifest,
+            getCurrentManifest: () => useWorkspaceStore.getState().workspaceDrafts[workspace.id],
+            confirmDiskVersion: () =>
+              dialogs.confirm({ description: tr("workspace.refreshConflict"), tone: "warning" }),
+          });
+          if (requestId !== openRequest.current) return false;
           setChangeSet(undefined);
           setChangeSetOrigin("standard");
           setHandoffLaunchRequest(undefined);
           setProject(workspace.path);
           setScan(nextScan);
-          setManifest(nextManifest ? (workspaceDrafts[workspace.id] ?? nextManifest) : undefined);
-          setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
+          setManifest(resolvedManifest);
+          const nextBaseline = nextManifest ? JSON.stringify(nextManifest) : initialBaseline;
+          setBaselineManifest(nextBaseline);
+          useWorkspaceStore
+            .getState()
+            .cacheWorkspaceDraft(workspace.id, resolvedManifest, nextBaseline);
           setRuntime(nextRuntime);
           setSelectedWorkspace(workspace);
           setBusy(false);
           await navigate({
-            to: nextManifest ? "/workspace/$workspaceId" : "/workspace/$workspaceId/doctor",
+            to: resolvedManifest ? "/workspace/$workspaceId" : "/workspace/$workspaceId/doctor",
             params: { workspaceId: workspace.id },
           });
-          return Boolean(nextManifest);
+          return Boolean(resolvedManifest);
         } catch (error) {
           if (requestId === openRequest.current) setMessage(localizeMessage(error));
           return false;

@@ -96,7 +96,7 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-async function renderRoute(withLayout = false) {
+async function renderRoute(withLayout = false, expectedHeading = "Change plan") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const WorkspaceChangesRoute = Route.options.component!;
   const Component = withLayout ? WorkspaceRoute.options.component! : WorkspaceChangesRoute;
@@ -113,7 +113,7 @@ async function renderRoute(withLayout = false) {
       </QueryClientProvider>,
     );
   });
-  await screen.findByText("Change plan");
+  await screen.findByText(expectedHeading);
 }
 async function renderDoctor() {
   const Component = DoctorRoute.options.component!;
@@ -401,7 +401,71 @@ describe("workspace changes lifecycle", () => {
     expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(diskAfterApply));
   });
 
-  it("retains unknown native imports and the draft for reconciliation without replay", async () => {
+  it.each(["transport interruption", "unknown outcome"])(
+    "retains the reviewed diff through %s and only reports success after reconciliation",
+    async (outcome) => {
+      const request: SessionHandoffLaunchRequest = {
+        mode: "native-import",
+        operation_id: "operation",
+        plan_hash: "hash",
+        target_agent: "opencode",
+        workspace_id: "workspace",
+      };
+      useWorkspaceStore.getState().setChangeSet(changeSet);
+      useWorkspaceStore.getState().setChangeSetOrigin("handoff");
+      useWorkspaceStore.getState().setHandoffLaunchRequest(request);
+      if (outcome === "transport interruption")
+        vi.mocked(api.continueSessionHandoff).mockRejectedValue(new Error("transport interrupted"));
+      else
+        vi.mocked(api.continueSessionHandoff).mockResolvedValue({
+          status: "import-outcome-unknown",
+          error: { key: "runtime.unknown" },
+        });
+      vi.mocked(api.launchSessionHandoff)
+        .mockRejectedValueOnce(new Error("verification still pending"))
+        .mockResolvedValue({ target_agent: "opencode", terminal: "Terminal" });
+      await renderRoute(true);
+      fireEvent.click(screen.getByRole("button", { name: "Apply and continue in OpenCode" }));
+      await screen.findByRole("button", { name: "Check import and continue" });
+      await waitFor(() => expect(useWorkspaceStore.getState().applyingChanges).toBe(false));
+      expect(useWorkspaceStore.getState().manifest).toEqual(draft);
+      expect(useWorkspaceStore.getState().handoffLaunchRequest).toEqual(request);
+      expect(useWorkspaceStore.getState().handoffRecoveryChanges).toEqual({
+        workspaceId: "workspace",
+        project: "/workspace",
+        changeSet,
+      });
+      expect(useWorkspaceStore.getState().appliedChanges).toBeUndefined();
+      expect(screen.queryByText("Applied files: 1")).toBeNull();
+
+      cleanup();
+      await renderRoute(true, "Import needs verification");
+      fireEvent.click(screen.getByRole("button", { name: "Check import and continue" }));
+      await screen.findByText(/verification still pending/);
+      expect(useWorkspaceStore.getState().handoffRecoveryChanges?.changeSet).toEqual(changeSet);
+      expect(useWorkspaceStore.getState().appliedChanges).toBeUndefined();
+      expect(screen.queryByText("Applied files: 1")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Check import and continue" }));
+      expect(await screen.findByText("Applied files: 1")).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "View applied changes" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent("/workspace/AGENTS.md");
+      expect(dialog).toHaveTextContent("saved instructions");
+      expect(dialog).toHaveTextContent("planned instructions");
+      expect(useWorkspaceStore.getState().handoffRecoveryChanges).toBeUndefined();
+      expect(useWorkspaceStore.getState().handoffLaunchRequest).toBeUndefined();
+      expect(navigate).toHaveBeenCalledWith(
+        expect.objectContaining({ to: "/workspace/$workspaceId/sessions" }),
+      );
+      expect(api.launchSessionHandoff).toHaveBeenCalledTimes(2);
+      expect(api.launchSessionHandoff).toHaveBeenLastCalledWith(request);
+      expect(api.continueSessionHandoff).toHaveBeenCalledOnce();
+      expect(api.apply).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps known applied results while retrying a failed handoff launch", async () => {
     const request: SessionHandoffLaunchRequest = {
       mode: "native-import",
       operation_id: "operation",
@@ -412,19 +476,23 @@ describe("workspace changes lifecycle", () => {
     useWorkspaceStore.getState().setChangeSet(changeSet);
     useWorkspaceStore.getState().setChangeSetOrigin("handoff");
     useWorkspaceStore.getState().setHandoffLaunchRequest(request);
-    vi.mocked(api.continueSessionHandoff).mockRejectedValue(new Error("transport interrupted"));
+    vi.mocked(api.continueSessionHandoff).mockResolvedValue({
+      status: "applied-launch-failed",
+      error: { key: "runtime.unknown" },
+    });
     vi.mocked(api.launchSessionHandoff).mockResolvedValue({
       target_agent: "opencode",
       terminal: "Terminal",
     });
-    await renderRoute();
+    await renderRoute(true);
     fireEvent.click(screen.getByRole("button", { name: "Apply and continue in OpenCode" }));
-    await screen.findByRole("button", { name: "Check import and continue" });
+    expect(await screen.findByText("Applied files: 1")).toBeVisible();
     await waitFor(() => expect(useWorkspaceStore.getState().applyingChanges).toBe(false));
-    expect(useWorkspaceStore.getState().manifest).toEqual(draft);
-    expect(useWorkspaceStore.getState().handoffLaunchRequest).toEqual(request);
+    const applied = useWorkspaceStore.getState().appliedChanges;
+    expect(useWorkspaceStore.getState().handoffRecoveryChanges).toBeUndefined();
     fireEvent.click(screen.getByRole("button", { name: "Check import and continue" }));
-    await waitFor(() => expect(api.launchSessionHandoff).toHaveBeenCalledWith(request));
+    await waitFor(() => expect(useWorkspaceStore.getState().handoffLaunchRequest).toBeUndefined());
+    expect(useWorkspaceStore.getState().appliedChanges).toBe(applied);
     expect(api.continueSessionHandoff).toHaveBeenCalledOnce();
     expect(api.apply).not.toHaveBeenCalled();
   });

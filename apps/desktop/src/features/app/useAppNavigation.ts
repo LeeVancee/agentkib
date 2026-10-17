@@ -150,6 +150,10 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     const requestId = ++workspaceOpenRequest.current;
     const targetWorkspaceId = selectedWorkspace?.id;
     const initialState = useWorkspaceStore.getState();
+    const initialBaseline =
+      initialState.baselineManifest ||
+      (targetWorkspaceId && initialState.workspaceDraftBaselines[targetWorkspaceId]) ||
+      "";
     const isCurrentRequest = () =>
       requestId === workspaceOpenRequest.current &&
       useWorkspaceStore.getState().project === path &&
@@ -167,8 +171,10 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
           if (!isCurrentRequest()) return;
           const resolvedManifest = await resolveRefreshedManifest({
             initialManifest: initialState.manifest,
-            initialBaseline: initialState.baselineManifest,
-            cachedDraft: draft,
+            initialBaseline,
+            cachedDraft:
+              draft ??
+              (targetWorkspaceId ? initialState.workspaceDrafts[targetWorkspaceId] : undefined),
             diskManifest: nextManifest,
             getCurrentManifest: () => useWorkspaceStore.getState().manifest,
             confirmDiskVersion: () =>
@@ -181,18 +187,12 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
           setProject(path);
           setScan(nextScan);
           setManifest(resolvedManifest);
-          setBaselineManifest(JSON.stringify(nextManifest));
+          const nextBaseline = nextManifest ? JSON.stringify(nextManifest) : initialBaseline;
+          setBaselineManifest(nextBaseline);
           if (targetWorkspaceId)
-            useWorkspaceStore.getState().setWorkspaceDrafts((drafts) => {
-              const next = { ...drafts };
-              if (
-                resolvedManifest &&
-                JSON.stringify(resolvedManifest) !== JSON.stringify(nextManifest)
-              )
-                next[targetWorkspaceId] = resolvedManifest;
-              else delete next[targetWorkspaceId];
-              return next;
-            });
+            useWorkspaceStore
+              .getState()
+              .cacheWorkspaceDraft(targetWorkspaceId, resolvedManifest, nextBaseline);
           useAppStore.getState().setRuntime(nextRuntime);
         } catch (error) {
           if (isCurrentRequest()) setMessage(localizeMessage(error));

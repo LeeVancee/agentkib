@@ -389,6 +389,57 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       expect.any(String),
     );
   });
+  it.each(["replaced", "revoked", "paired"] as const)(
+    "ignores a pending pair failure after its connection code was %s",
+    async (transition) => {
+      const f = await fixture();
+      await f.manage("bridge-disconnect");
+      const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+      const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+      const target = f.options.target;
+      let entered!: () => void;
+      let resume!: () => void;
+      const paused = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let held = false;
+      vi.spyOn(f.options, "target").mockImplementation(async (id, nativeId) => {
+        if (nativeId && !held) {
+          held = true;
+          entered();
+          await paused;
+        }
+        return target(id, nativeId);
+      });
+      const previousPair = f.http("/v1/pair", { ...f.hello, ticket: ticket.ticket });
+      await started;
+      try {
+        if (transition === "revoked") await f.manage("bridge-disconnect");
+        else {
+          const next = (await f.manage("bridge-challenge")) as { challenge: string };
+          if (transition === "paired") {
+            const current = JSON.parse(Buffer.from(next.challenge, "base64url").toString());
+            expect((await f.http("/v1/pair", { ...f.hello, ticket: current.ticket })).status).toBe(
+              200,
+            );
+          }
+        }
+      } finally {
+        resume();
+      }
+      expect(await previousPair).toMatchObject({
+        status: 409,
+        body: { error: "invalid-bridge-challenge" },
+      });
+      expect(await f.manage("bridge-status")).not.toHaveProperty(
+        "connectionError",
+        expect.any(String),
+      );
+    },
+  );
   it.each([
     [{ cliVersion: "2.1.302" }, "bridge-version-mismatch"],
     [{ cwd: "/another/workspace" }, "bridge-identity-mismatch"],

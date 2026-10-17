@@ -447,6 +447,7 @@ function WorkspaceChangesRoute() {
     manifest,
     setChangeSet,
     setHandoffLaunchRequest,
+    setHandoffRecoveryChanges,
     setApplyingChanges,
     setScan,
     acceptAppliedManifest,
@@ -575,6 +576,12 @@ function WorkspaceChangesRoute() {
           });
         }
         setChangeSet(undefined);
+        // Preserve the reviewed diff without claiming an unknown write succeeded.
+        setHandoffRecoveryChanges(
+          keepLaunchRequest && !result && changeSet
+            ? { workspaceId, project: targetProject, changeSet }
+            : undefined,
+        );
         if (!keepLaunchRequest) setHandoffLaunchRequest(undefined);
         if (appliedDoctorRepair) {
           try {
@@ -605,6 +612,15 @@ function WorkspaceChangesRoute() {
         );
       }}
       onLaunchCompleted={() => {
+        const recovery = useWorkspaceStore.getState().handoffRecoveryChanges;
+        if (recovery?.workspaceId === workspaceId && recovery.project === project) {
+          setAppliedChanges({
+            ...recovery,
+            applied: recovery.changeSet.changes.map((change) => change.target),
+            backupDir: "",
+            origin: "handoff",
+          });
+        }
         setHandoffLaunchRequest(undefined);
         navigateTo("sessions");
       }}

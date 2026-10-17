@@ -60,6 +60,7 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
   const [copyError, setCopyError] = useState(false);
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
+  const copyRequest = useRef(0);
   const pending = useRef(false);
   const lastConnected = useRef(false);
   const canRevoke = !!(
@@ -142,17 +143,25 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
   }, [canManage, selected, live?.connectionGeneration, revision]);
   const connected =
     (status?.sessionId === selected && status.connected) ||
-    (live?.executionMode === "claude-follower" &&
+    (live?.sessionId === selected &&
+      live.executionMode === "claude-follower" &&
       live.status !== "unsupported" &&
       live.reason !== "claude-bridge-disconnected");
+  const hasBinding =
+    connected || (live?.sessionId === selected && live.executionMode === "claude-follower");
   async function copyText(value: string, label: string) {
+    const request = ++copyRequest.current;
+    const scope = generation.current;
+    setCopied("");
     setCopyError(false);
     try {
       await navigator.clipboard.writeText(value);
-      setCopied(label);
+      if (generation.current === scope && copyRequest.current === request) setCopied(label);
     } catch {
-      setCopied("");
-      setCopyError(true);
+      if (generation.current === scope && copyRequest.current === request) {
+        setCopied("");
+        setCopyError(true);
+      }
     }
   }
   useEffect(() => {
@@ -171,7 +180,7 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
     if (
       (operation === "bridge-challenge"
         ? !canManage || status?.sessionId !== selected || !status.supported || connected
-        : !canRevoke || !connected) ||
+        : !canRevoke || !hasBinding) ||
       loading ||
       pending.current
     )
@@ -181,7 +190,9 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
     setLoading(true);
     setError(false);
     setStatus((value) => (value ? { ...value, connectionError: undefined } : value));
+    copyRequest.current++;
     setCopied("");
+    setCopyError(false);
     setChallenge(undefined);
     setExpired(false);
     try {
@@ -259,7 +270,7 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
         </Button>
         <Button
           variant="outline"
-          disabled={!canRevoke || !connected || loading}
+          disabled={!canRevoke || !hasBinding || loading}
           onClick={() => setConfirmDisconnect(true)}
         >
           {copy.disconnect}
@@ -288,7 +299,7 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
           </Button>
           <Button
             variant="destructive"
-            disabled={loading || !canRevoke || !connected}
+            disabled={loading || !canRevoke || !hasBinding}
             onClick={() => void run("bridge-disconnect")}
           >
             {copy.confirmDisconnect}

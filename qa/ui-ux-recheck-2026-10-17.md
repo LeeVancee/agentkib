@@ -416,3 +416,29 @@ UX-03、UX-06、UX-13 的判定已由开发者收窄（见上一轮清单各条�
 - 本次未修改“待设计确认”事项。
 
 提交前复核：以 `0e02f6a49` 为比较基线，项目约定、QA 需求以及 Claude 连接流程的只读检查未发现阻止提交的明确问题；再次运行上述 66 个首页相关用例、桌面 TypeScript、格式、lint 和差异检查均通过。本轮仅提交 UI/UX 修复（包括 UX-64）、相关测试与本 QA 记录；已有的 `.agents/`、`prototypes/` 不纳入，不推送。
+
+## PR #127 审查修复记录（2026-10-17）
+
+用户随后授权推送并创建 PR #127，并要求按 Standards / Spec 两轴独立审查，修复后复查至无可操作发现。比较基线为 `0e02f6a49ceaa70dd913de144194f1d77eba9e6c`。
+
+第一轮审查及修复过程中确认并修复 6 处问题：
+
+- UX-48：缓存工作区草稿时同时缓存原磁盘基线；切换后返回、从资源库打开及全局刷新均使用该基线检查外部冲突。读取失败保留基线，应用、放弃及清理草稿时同步更新缓存。回归覆盖加载磁盘/保留草稿、磁盘未变以及旧确认晚到。
+- UX-08：未知结果的交接保留原差异快照，后端核对成功后显示已应用文件与 Diff。离开页面后返回仍可恢复；核对失败不会提前显示成功，也不会重发原应用请求；新请求、新计划及切换工作区清除过期快照。
+- UX-57：旧配对请求在换码、撤销或新配对成功后失败时，不再覆盖当前连接反馈。错误归属于当前 challenge，现有身份、过期及核对校验保持有效。
+- UX-63.4–5：主机可访问、原终端已离线但仍有 follower 绑定时，可以撤销绑定后交接；没有绑定或属于其他会话时仍不可撤销。
+- UX-58、UX-63.6：区分客户端到主机断线与原终端断线；结果未知优先提示待确认，避免误报原终端已断开。桌面和 Web 的简中、繁中、英文、日文同步。
+- UX-55：复制操作按会话代次及请求顺序校验反馈，旧复制结果不再污染切换后的会话或覆盖后续复制。成功/失败、切换会话/重叠请求 4 条回归先复现失败，再通过修复验证。
+
+定向验证：工作区及导航 4 文件 / 111 用例；交接应用及恢复 3 文件 / 42 用例；Claude 桥接及桌面状态 3 文件 / 68 用例；Web 横幅及 Claude 同源校验 2 文件 / 45 用例；资源库入口 1 文件 / 17 用例，均通过。
+
+修复后的完整验证（包含 UX-64 及本次审查修改）：
+
+- 桌面：`cd apps/desktop && node node_modules/vitest/vitest.mjs run --maxWorkers=4`，350 个文件通过、1 个文件跳过；6527 个用例通过、3 个用例跳过，退出码 0。
+- Web：`cd apps/web && node node_modules/vitest/vitest.mjs run --maxWorkers=4`，57 个文件、1108 个用例全部通过，退出码 0。
+- 桌面：`node node_modules/typescript/bin/tsc -b --pretty false`；Web 和后端：`node node_modules/typescript/bin/tsc --noEmit --pretty false`，均通过。
+- 桌面和 Web：`node node_modules/vite/bin/vite.js build`，均通过；桌面后端构建及 staging：`node scripts/stage-claude-bridge.mjs && node node_modules/vite/bin/vite.js build --config vite.backend.config.ts && node scripts/stage-backend-native.mjs`，通过。
+- 本次 22 个源码/测试文件的 `oxfmt --check`、`git diff --check` 通过；`node_modules/.bin/oxlint apps/desktop/src apps/desktop/electron packages/backend/src` 退出码 0，有 warning、无 error。
+- 第二轮两轴独立审查覆盖原 PR 和本次修复，最终 Standards：0 finding；Spec：0 finding。审查为源码及测试只读检查，自动化执行结果由上述完整验证提供。
+
+待设计确认项及原有实机验收限制保持原状态；没有新增依赖或持久化结构变更，未纳入 `.agents/`、`prototypes/`。

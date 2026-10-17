@@ -449,6 +449,65 @@ describe("useAppNavigation guards", () => {
     expect(useWorkspaceStore.getState().busy).toBe(false);
   });
 
+  it.each([true, false])(
+    "resolves restored draft conflicts from the global refresh (load disk: %s)",
+    async (loadDisk) => {
+      const workspace: WorkspaceSummary = {
+        id: "workspace-1",
+        path: "/workspace",
+        name: "Workspace",
+        status: "healthy",
+        asset_count: 0,
+        warning_count: 0,
+        sources: [],
+      };
+      const baseline: Manifest = {
+        schema_version: 2,
+        workspace: { id: workspace.id, name: workspace.name },
+        instructions: { shared: "saved", scoped: [], platform_overrides: {} },
+        skills: [],
+        connections: [],
+        adapters: {},
+        mcp: { config: "mcp.json" },
+        memories: { require_approval: true },
+      };
+      const draft = {
+        ...baseline,
+        instructions: { ...baseline.instructions, shared: "cached edit" },
+      };
+      const disk = {
+        ...baseline,
+        instructions: { ...baseline.instructions, shared: "external edit" },
+      };
+      useWorkspaceStore.setState({
+        selectedWorkspace: workspace,
+        project: workspace.path,
+        manifest: draft,
+      });
+      useWorkspaceStore
+        .getState()
+        .cacheWorkspaceDraft(workspace.id, draft, JSON.stringify(baseline));
+      testDoubles.location.pathname = "/workspace/workspace-1/assets";
+      testDoubles.confirm.mockResolvedValue(loadDisk);
+      vi.spyOn(api, "scan").mockResolvedValue({
+        root: workspace.path,
+        manifest_exists: true,
+        agents: [],
+        assets: [],
+        warnings: [],
+      });
+      vi.spyOn(api, "manifest").mockResolvedValue(disk);
+      vi.spyOn(api, "runtime").mockResolvedValue({ app_name: "AgentKib" } as RuntimeInfo);
+      const { result } = renderHook(() => useAppNavigation());
+      await act(async () => result.current.refreshCurrentView());
+      expect(testDoubles.confirm).toHaveBeenCalledOnce();
+      expect(useWorkspaceStore.getState().manifest).toEqual(loadDisk ? disk : draft);
+      expect(useWorkspaceStore.getState().workspaceDraftBaselines[workspace.id]).toBe(
+        loadDisk ? undefined : JSON.stringify(disk),
+      );
+    },
+  );
+
   it("blocks direct workspace navigation while a ChangeSet is applying", async () => {
     const currentWorkspace: WorkspaceSummary = {
       id: "workspace-1",

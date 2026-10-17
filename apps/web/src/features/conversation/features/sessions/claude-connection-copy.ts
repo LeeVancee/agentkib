@@ -14,6 +14,8 @@ const zh = {
   released: "已交还原客户端",
   releasedInfo: "此会话已交还原客户端。请在原客户端继续，或重新交给 AgentKib。",
   lostTitle: "原终端连接已断开",
+  hostDisconnected: "与主机的连接已中断",
+  hostDisconnectedInfo: "暂时无法核实原终端状态。请检查与主机的连接，恢复后再操作。",
   manage: "管理原终端连接",
   platformUnsupported: "连接原 Claude 终端仅支持 macOS。请在 macOS 主机上操作。",
   bridgeUnavailable: "原终端桥接服务无法启动。请检查主机日志并重新启动 AgentKib 后重试。",
@@ -71,6 +73,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     released: "已交還原客戶端",
     releasedInfo: "此對話已交還原客戶端。請在原客戶端繼續，或重新交給 AgentKib。",
     lostTitle: "原終端連線已中斷",
+    hostDisconnected: "與主機的連線已中斷",
+    hostDisconnectedInfo: "暫時無法核實原終端狀態。請檢查與主機的連線，恢復後再操作。",
     manage: "管理原終端連線",
     platformUnsupported: "連接原 Claude 終端僅支援 macOS。請在 macOS 主機上操作。",
     bridgeUnavailable: "原終端橋接服務無法啟動。請檢查主機記錄並重新啟動 AgentKib 後重試。",
@@ -134,6 +138,9 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     releasedInfo:
       "This session was returned to the original client. Continue there or hand it over to AgentKib again.",
     lostTitle: "Original terminal disconnected",
+    hostDisconnected: "Host connection lost",
+    hostDisconnectedInfo:
+      "The original terminal's state cannot be checked. Restore the connection to the host before continuing.",
     manage: "Manage terminal connection",
     platformUnsupported:
       "Connecting the original Claude terminal requires macOS. Use a macOS host.",
@@ -207,6 +214,9 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     releasedInfo:
       "元のクライアントに返却しました。元のクライアントで続けるか、再度 AgentKib に引き渡してください。",
     lostTitle: "元のターミナルとの接続が切断",
+    hostDisconnected: "ホストとの接続が切れました",
+    hostDisconnectedInfo:
+      "元のターミナルの状態を確認できません。ホストとの接続を復旧してから操作してください。",
     manage: "ターミナル接続を管理",
     platformUnsupported:
       "元の Claude ターミナルへの接続は macOS のみ対応です。macOS ホストで操作してください。",

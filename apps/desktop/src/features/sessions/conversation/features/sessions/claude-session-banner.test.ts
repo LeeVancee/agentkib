@@ -56,6 +56,26 @@ describe("Claude execution and terminal connection presentation", () => {
       );
       expect(claudeSessionBanner(connected).title).toBe(copy.connected);
       expect(sessionDisplayState(connected).label).toBe(copy.connected);
+      const hostOffline = { ...connected, online: false };
+      expect(claudeSessionBanner(hostOffline)).toEqual({
+        title: copy.hostDisconnected,
+        body: copy.hostDisconnectedInfo,
+      });
+      for (const unconfirmed of [
+        {
+          ...fixture(locale, "claude-follower", "outcome-unknown", "control-outcome-unconfirmed"),
+          online: false,
+        },
+        { ...hostOffline, notice: "uncertain" as const },
+      ]) {
+        expect(claudeSessionBanner(unconfirmed)).toEqual({
+          title: unconfirmed.t.controlUnconfirmed,
+          body: copy.connectionUnconfirmed,
+        });
+        expect(sessionDisplayState(unconfirmed).tone).toBe("warning");
+      }
+      const gap = fixture(locale, "claude-follower", "unsupported", "claude-bridge-event-gap");
+      expect(claudeSessionBanner(gap)).toEqual({ title: copy.connected, body: copy.gap });
       for (const status of ["idle", "unsupported"]) {
         const lost = fixture(locale, "claude-follower", status, "claude-bridge-disconnected");
         expect(claudeSessionBanner(lost)).toEqual({ title: copy.lostTitle, body: copy.lost });

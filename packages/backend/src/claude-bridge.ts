@@ -69,6 +69,7 @@ const bindingSchema = z
   })
   .strict();
 type Binding = z.infer<typeof bindingSchema>;
+type Challenge = { target: ClaudeBridgeTarget; expires: number };
 type Pending = {
   command: ClaudeBridgeCommand;
   requestId: string;
@@ -152,8 +153,8 @@ export class ClaudeBridge {
   readonly root: string;
   #bindings = new Map<string, Binding>();
   #connections = new Map<string, Connection>();
-  #challenges = new Map<string, { target: ClaudeBridgeTarget; expires: number }>();
-  #connectionErrors = new Map<string, string>();
+  #challenges = new Map<string, Challenge>();
+  #connectionAttempts = new Map<string, { challenge: Challenge; error?: string }>();
   #server?: Server;
   #listening?: Promise<void>;
   #socketPath?: string;
@@ -250,7 +251,7 @@ export class ClaudeBridge {
       };
     }
     if (input.operation === "bridge-disconnect") {
-      this.#connectionErrors.delete(input.sessionId);
+      this.#connectionAttempts.delete(input.sessionId);
       for (const [ticket, item] of this.#challenges)
         if (item.target.sessionId === input.sessionId) this.#challenges.delete(ticket);
       const row = this.#bindings.get(input.sessionId);
@@ -285,7 +286,7 @@ export class ClaudeBridge {
         connected: this.#online(input.sessionId),
         sessionId: input.sessionId,
         version: CLAUDE_BRIDGE_CLI_VERSION,
-        connectionError: this.#connectionErrors.get(input.sessionId),
+        connectionError: this.#connectionAttempts.get(input.sessionId)?.error,
         reason: this.supported
           ? this.#startupFailed
             ? "claude-bridge-unavailable"
@@ -313,13 +314,14 @@ export class ClaudeBridge {
       // its session and explained in the desktop panel. The map remains bounded.
       if (item.expires + 300_000 < Date.now() || item.target.sessionId === input.sessionId) {
         this.#challenges.delete(ticket);
-        this.#connectionErrors.delete(item.target.sessionId);
+        this.#connectionAttempts.delete(item.target.sessionId);
       }
     if (this.#challenges.size >= 64) throw new Error("claude-bridge-busy");
-    this.#connectionErrors.delete(input.sessionId);
     const ticket = randomBytes(32).toString("hex");
     const expires = Date.now() + 120_000;
-    this.#challenges.set(ticket, { target, expires });
+    const attempt = { target, expires };
+    this.#challenges.set(ticket, attempt);
+    this.#connectionAttempts.set(input.sessionId, { challenge: attempt });
     const challenge = Buffer.from(
       JSON.stringify({ protocol: 1, socketPath: this.#socketPath, ticket }),
     ).toString("base64url");
@@ -794,7 +796,7 @@ export class ClaudeBridge {
     });
   }
   async #http(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    let attemptedSession: string | undefined;
+    let attemptedChallenge: Challenge | undefined;
     const reply = (status: number, value: unknown) => {
       if (response.destroyed || response.writableEnded) return;
       response.writeHead(status, {
@@ -828,7 +830,7 @@ export class ClaudeBridge {
       if (request.url === CLAUDE_BRIDGE_PATHS.pair) {
         const ticket = z.object({ ticket: z.string().regex(/^[a-f0-9]{64}$/) }).parse(value).ticket;
         const challenge = this.#challenges.get(ticket);
-        attemptedSession = challenge?.target.sessionId;
+        attemptedChallenge = challenge;
         if (!challenge) throw new Error("invalid-bridge-challenge");
         if (challenge.expires < Date.now()) throw new Error("expired-bridge-challenge");
         // Native validation may fail before a complete identity is available.
@@ -908,7 +910,7 @@ export class ClaudeBridge {
         this.#writeCredential(row);
         if (old) rmSync(this.#credentialPath(old.bindingId), { force: true });
         const connection = this.#newConnection(row, hello.instanceId);
-        this.#connectionErrors.delete(target.sessionId);
+        this.#connectionAttempts.delete(target.sessionId);
         reply(200, {
           protocol: 1,
           bindingId: row.bindingId,
@@ -1143,7 +1145,11 @@ export class ClaudeBridge {
         ].includes(error.message)
           ? error.message
           : "bridge-request-rejected";
-      if (attemptedSession) this.#connectionErrors.set(attemptedSession, reason);
+      const attempt = attemptedChallenge
+        ? this.#connectionAttempts.get(attemptedChallenge.target.sessionId)
+        : undefined;
+      // A replaced, revoked or successfully paired code no longer owns the panel's feedback.
+      if (attempt && attempt.challenge === attemptedChallenge) attempt.error = reason;
       reply(409, { error: reason });
     }
   }

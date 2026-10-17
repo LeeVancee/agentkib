@@ -108,10 +108,10 @@ export function AgentAssetsPanel({
                 <Button
                   variant="outline"
                   size="sm"
-                  aria-label={`${tr(asset.kind === "skill" ? "agents.openSkillManagement" : "agents.openMcpManagement")}: ${asset.name}`}
                   onClick={() =>
                     navigation.app.navigateGlobal("catalog", false, {
                       assetSection: asset.kind === "skill" ? "skills" : "mcp",
+                      ...(asset.kind === "skill" ? { skillSection: "library" as const } : {}),
                       catalogTarget: undefined,
                     })
                   }

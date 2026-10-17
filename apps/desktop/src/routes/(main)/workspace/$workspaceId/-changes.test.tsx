@@ -134,6 +134,55 @@ describe("Changes", () => {
     expect(api.continueSessionHandoff).toHaveBeenCalledTimes(1);
     expect(api.launchSessionHandoff).toHaveBeenCalledWith(request);
   });
+
+  it("reports the written files after applying and continuing a session handoff", async () => {
+    vi.mocked(api.continueSessionHandoff).mockResolvedValue({
+      status: "launched",
+      receipt: { target_agent: "codex", terminal: "Terminal" },
+    });
+    const onApplied = vi.fn();
+    render(
+      <Changes
+        changeSet={{ ...changeSet, requires_home_approval: false }}
+        origin="handoff"
+        launchRequest={launchRequest}
+        onPlanHome={vi.fn()}
+        onApplied={onApplied}
+        onLaunchCompleted={vi.fn()}
+        onRejected={vi.fn()}
+        onApplyingChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Apply and continue in Codex" }));
+    await waitFor(() =>
+      expect(onApplied).toHaveBeenCalledWith(false, {
+        applied: ["/agent-home/sessions/import.jsonl"],
+        backup_dir: "",
+      }),
+    );
+  });
+
+  it("offers handoff recovery after returning to a file handoff without its completed plan", async () => {
+    vi.mocked(api.launchSessionHandoff).mockResolvedValue({
+      target_agent: "codex",
+      terminal: "Terminal",
+    });
+    const onLaunchCompleted = vi.fn();
+    render(
+      <Changes
+        origin="handoff"
+        launchRequest={launchRequest}
+        onPlanHome={vi.fn()}
+        onApplied={vi.fn()}
+        onLaunchCompleted={onLaunchCompleted}
+        onRejected={vi.fn()}
+        onApplyingChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Retry/ }));
+    await waitFor(() => expect(onLaunchCompleted).toHaveBeenCalledOnce());
+    expect(api.launchSessionHandoff).toHaveBeenLastCalledWith(launchRequest);
+  });
   describe("writes to Claude Code's global configuration file", () => {
     const claudeChange = (target: string, scope: "agent-home" | "project" = "agent-home") => ({
       target,

@@ -110,10 +110,9 @@ describe("MCP row action hierarchy", () => {
   it.each([true, false])("keeps one recommended action when enabled=%s", async (enabled) => {
     renderPanel([entry("blender", enabled)]);
     const row = await serviceRow();
-    expect(within(row).getAllByRole("button")).toHaveLength(2);
-    expect(
-      within(row).getByRole("button", { name: tr(enabled ? "mcp.probe" : "mcp.manage.edit") }),
-    ).toBeVisible();
+    expect(within(row).getAllByRole("button")).toHaveLength(enabled ? 2 : 1);
+    if (enabled) expect(within(row).getByRole("button", { name: tr("mcp.probe") })).toBeVisible();
+    expect(within(row).queryByRole("button", { name: tr("mcp.manage.edit") })).toBeNull();
     expect(screen.queryByRole("button", { name: tr("mcp.manage.copy") })).toBeNull();
     const user = userEvent.setup();
     const menu = await openMore(user);
@@ -125,9 +124,7 @@ describe("MCP row action hierarchy", () => {
     ])
       expect(within(menu).getByRole("menuitem", { name: tr(key) })).toBeVisible();
     expect(within(menu).queryByRole("menuitem", { name: tr("mcp.probe") })).toBeNull();
-    expect(within(menu).queryByRole("menuitem", { name: tr("mcp.manage.edit") }) !== null).toBe(
-      enabled,
-    );
+    expect(within(menu).getByRole("menuitem", { name: tr("mcp.manage.edit") })).toBeVisible();
   });
 
   it("preserves public copying, policy editing and scoped OAuth in the menu", async () => {

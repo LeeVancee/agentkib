@@ -201,4 +201,36 @@ describe("workspace draft transitions", () => {
     expect(invalidatePendingLoad).not.toHaveBeenCalled();
     expect(dialogs.notify).toHaveBeenCalledOnce();
   });
+
+  it.each(["leave", "switch"])(
+    "clears an applied result when the user chooses to %s workspaces",
+    async (transition) => {
+      const saved = manifest("saved");
+      useWorkspaceStore.setState({
+        selectedWorkspace: workspace,
+        project: workspace.path,
+        manifest: saved,
+        baselineManifest: JSON.stringify(saved),
+        appliedChanges: {
+          workspaceId: workspace.id,
+          project: workspace.path,
+          applied: ["AGENTS.md"],
+          backupDir: "",
+          changeSet: {
+            id: "applied",
+            project_root: workspace.path,
+            created_at: "",
+            changes: [],
+            requires_home_approval: false,
+          },
+        },
+      });
+      const { result } = renderTransitions();
+      await act(async () => {
+        if (transition === "leave") await result.current.leaveWorkspace(vi.fn());
+        else await result.current.openWorkspace(nextWorkspace);
+      });
+      expect(useWorkspaceStore.getState().appliedChanges).toBeUndefined();
+    },
+  );
 });

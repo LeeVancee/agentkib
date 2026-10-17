@@ -132,6 +132,25 @@ describe("overview pending changes", () => {
     expect(useWorkspaceStore.getState().manifest).toBe(manifest);
   });
 
+  it("offers the remaining handoff recovery after file changes have been applied", async () => {
+    useWorkspaceStore.setState({
+      changeSet: undefined,
+      handoffLaunchRequest: {
+        mode: "handoff-file",
+        workspace_id: workspace.id,
+        target_agent: "codex",
+        filename: "handoff.md",
+      },
+    });
+    await renderRoute();
+    expect(screen.getByText("Handoff needs attention")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Continue handoff" }));
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/workspace/$workspaceId/changes",
+      params: { workspaceId: workspace.id },
+    });
+  });
+
   it.each(["busy", "applyingChanges"] as const)(
     "does not navigate away through the new entry while %s",
     async (key) => {

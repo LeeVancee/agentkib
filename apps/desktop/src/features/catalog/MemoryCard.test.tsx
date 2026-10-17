@@ -22,6 +22,33 @@ describe("MemoryCard review", () => {
   });
   afterEach(cleanup);
 
+  it("exits editing after approval and renders the approved record read only", async () => {
+    const review = vi.fn().mockResolvedValue(undefined);
+    const view = render(<MemoryCard record={record} onReview={review} />);
+    fireEvent.click(screen.getByRole("button", { name: tr("common.edit") }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Approved content" } });
+    fireEvent.click(screen.getByRole("button", { name: tr("memory.saveApprove") }));
+    await waitFor(() => expect(screen.queryByRole("textbox")).not.toBeInTheDocument());
+    view.rerender(
+      <MemoryCard
+        record={{ ...record, status: "approved", content: "Approved content" }}
+        onReview={review}
+      />,
+    );
+    expect(screen.getByText("Approved content")).toBeVisible();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: tr("memory.invalidate") })).toBeVisible();
+  });
+
+  it("hides an open editor when the record is approved by a refresh", () => {
+    const review = vi.fn();
+    const view = render(<MemoryCard record={record} onReview={review} />);
+    fireEvent.click(screen.getByRole("button", { name: tr("common.edit") }));
+    view.rerender(<MemoryCard record={{ ...record, status: "approved" }} onReview={review} />);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByText(record.content)).toBeVisible();
+  });
+
   it("locks competing review actions until the callback settles and keeps edited content on failure", async () => {
     let reject!: (reason: Error) => void;
     const review = vi

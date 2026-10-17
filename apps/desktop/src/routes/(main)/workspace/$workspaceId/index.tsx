@@ -24,6 +24,7 @@ function Overview({
   onOpenDoctor,
   onOpenChanges,
   pendingChanges,
+  pendingHandoffRecovery,
   busy,
   doctorSummary,
 }: {
@@ -33,6 +34,7 @@ function Overview({
   onOpenDoctor: () => void;
   onOpenChanges: () => void;
   pendingChanges?: { origin: ChangeSetOrigin; count: number };
+  pendingHandoffRecovery: boolean;
   busy: boolean;
   doctorSummary?: import("@/core/types").ContextDoctorSummary;
 }) {
@@ -57,6 +59,22 @@ function Overview({
   ] as const;
   return (
     <div className="grid gap-5">
+      {pendingHandoffRecovery && (
+        <Card
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-3 border-amber-500/30 bg-amber-500/5 p-4"
+        >
+          <div>
+            <h2 className="text-sm font-semibold">{tr("overview.pendingHandoffRecoveryTitle")}</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {tr("overview.pendingHandoffRecoveryText")}
+            </p>
+          </div>
+          <Button onClick={onOpenChanges} disabled={busy}>
+            {tr("overview.openHandoffRecovery")}
+          </Button>
+        </Card>
+      )}
       {pendingChanges && !pendingDoctorReview && (
         <Card
           role="status"
@@ -209,6 +227,7 @@ function WorkspaceOverviewRoute() {
     changeSet,
     changeSetManifest,
     changeSetOrigin,
+    handoffLaunchRequest,
     busy,
     applyingChanges,
   } = useWorkspaceStore();
@@ -235,6 +254,12 @@ function WorkspaceOverviewRoute() {
       scan={scan}
       manifest={manifest}
       pendingChanges={pendingChanges}
+      pendingHandoffRecovery={Boolean(
+        !changeSet &&
+        handoffLaunchRequest?.workspace_id === workspaceId &&
+        selectedWorkspace.id === workspaceId &&
+        selectedWorkspace.path === project,
+      )}
       busy={busy || applyingChanges}
       doctorSummary={doctorReport.data?.summary}
       onOpenDoctor={() => open("doctor")}

@@ -6,7 +6,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { type ChangeSetOrigin, useWorkspaceStore } from "./workspace-store";
-import { draftSectionCount } from "./manifest-draft";
+import { draftSectionCount, resolveRefreshedManifest } from "./manifest-draft";
 
 const workspace: WorkspaceSummary = {
   id: "workspace-1",
@@ -291,6 +291,47 @@ describe("workspace change plans and drafts", () => {
     expect(state.handoffLaunchRequest).toBe(launchRequest);
   });
 
+  it.each<ChangeSetOrigin>(["doctor", "handoff", "handoff-setup"])(
+    "keeps an independent %s plan through editing and discarding a draft",
+    (origin) => {
+      const baseline = manifest("saved");
+      const draft = manifest("editor draft");
+      useWorkspaceStore.setState({
+        selectedWorkspace: workspace,
+        manifest: baseline,
+        baselineManifest: JSON.stringify(baseline),
+        changeSetOrigin: origin,
+      });
+      useWorkspaceStore.getState().setChangeSet(plan, baseline);
+      useWorkspaceStore.getState().setHandoffLaunchRequest(launchRequest);
+      useWorkspaceStore.getState().setManifest(draft);
+      expect(useWorkspaceStore.getState().changeSet).toBe(plan);
+      expect(useWorkspaceStore.getState().discardWorkspaceDraft(JSON.stringify(draft))).toBe(true);
+      expect(useWorkspaceStore.getState()).toMatchObject({
+        changeSet: plan,
+        changeSetManifest: JSON.stringify(baseline),
+        changeSetOrigin: origin,
+        handoffLaunchRequest: launchRequest,
+        manifest: baseline,
+      });
+    },
+  );
+
+  it("clears the applied snapshot when a new plan replaces it, but not when clearing a completed plan", () => {
+    const appliedChanges = {
+      workspaceId: workspace.id,
+      project: workspace.path,
+      changeSet: plan,
+      applied: ["AGENTS.md"],
+      backupDir: "/backup",
+    };
+    useWorkspaceStore.setState({ changeSet: plan, appliedChanges });
+    useWorkspaceStore.getState().setChangeSet(undefined);
+    expect(useWorkspaceStore.getState().appliedChanges).toBe(appliedChanges);
+    useWorkspaceStore.getState().setChangeSet({ ...plan, id: "new" });
+    expect(useWorkspaceStore.getState().appliedChanges).toBeUndefined();
+  });
+
   it("snapshots the actual planning input even when it differs from the editor draft", () => {
     const draft = manifest("unsaved editor instructions");
     const actualInput = manifest("saved instructions used by Doctor");
@@ -391,5 +432,69 @@ describe("workspace change plans and drafts", () => {
     };
     expect(draftSectionCount(draft, JSON.stringify(baseline))).toBe(2);
     expect(draftSectionCount(baseline, JSON.stringify(baseline))).toBe(0);
+  });
+});
+
+describe("refreshing external manifest edits", () => {
+  const baseline = manifest("saved");
+  const disk = manifest("external update");
+  const draft = manifest("unsaved draft");
+  it("adopts external edits when the in-memory manifest matches its old baseline", async () => {
+    const result = await resolveRefreshedManifest({
+      initialManifest: baseline,
+      initialBaseline: JSON.stringify(baseline),
+      diskManifest: disk,
+      getCurrentManifest: () => baseline,
+      confirmDiskVersion: () => {
+        throw new Error("clean editor must not prompt");
+      },
+    });
+    expect(result).toBe(disk);
+  });
+  it.each([true, false])(
+    "lets a user resolve a disk/draft conflict (load disk: %s)",
+    async (loadDisk) => {
+      let asked = false;
+      const result = await resolveRefreshedManifest({
+        initialManifest: draft,
+        initialBaseline: JSON.stringify(baseline),
+        diskManifest: disk,
+        getCurrentManifest: () => draft,
+        confirmDiskVersion: async () => {
+          asked = true;
+          return loadDisk;
+        },
+      });
+      expect(asked).toBe(true);
+      expect(result).toBe(loadDisk ? disk : draft);
+    },
+  );
+  it("preserves edits made while the conflict dialog is open", async () => {
+    let current = draft;
+    const newer = manifest("typed while confirming");
+    const result = await resolveRefreshedManifest({
+      initialManifest: draft,
+      initialBaseline: JSON.stringify(baseline),
+      diskManifest: disk,
+      getCurrentManifest: () => current,
+      confirmDiskVersion: async () => {
+        current = newer;
+        return true;
+      },
+    });
+    expect(result).toBe(newer);
+  });
+  it("keeps a cached draft when no previous disk baseline is available", async () => {
+    expect(
+      await resolveRefreshedManifest({
+        initialBaseline: "",
+        cachedDraft: draft,
+        diskManifest: disk,
+        getCurrentManifest: () => undefined,
+        confirmDiskVersion: async () => {
+          throw new Error("unknown baseline");
+        },
+      }),
+    ).toBe(draft);
   });
 });

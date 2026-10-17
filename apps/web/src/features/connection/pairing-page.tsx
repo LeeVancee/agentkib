@@ -69,7 +69,7 @@ export function PairingPage() {
         {pairingError && (
           <div className="grid gap-2">
             <p id="pairing-error" role="alert" className="text-sm text-destructive">
-              {pairingErrorText(locale, pairingError)}
+              {pairingErrorText(locale, pairingError, direct ? "access" : "pairing")}
             </p>
             <Button
               type="button"

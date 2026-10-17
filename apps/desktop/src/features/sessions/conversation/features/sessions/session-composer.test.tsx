@@ -9,10 +9,12 @@ import { SessionComposer } from "./session-composer";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy } from "./codex-copy";
 import type { CodexResource } from "./codex-session-controls";
+import type { SessionPanels } from "./session-panels";
 import type { SessionController } from "./use-session-controller";
 
 const doubles = vi.hoisted(() => ({
   session: {} as Partial<SessionController>,
+  panels: null as SessionPanels | null,
   control: vi.fn(),
   codexAction: vi.fn(),
   upload: vi.fn(),
@@ -23,7 +25,7 @@ vi.mock("./session-context", () => ({
     return { ...doubles.session, message, setMessage } as SessionController;
   },
 }));
-vi.mock("./session-panels", () => ({ useSessionPanels: () => null }));
+vi.mock("./session-panels", () => ({ useSessionPanels: () => doubles.panels }));
 vi.mock("./context-usage", () => ({ ContextUsageGauge: () => null }));
 vi.mock("../history/history-search-controls", () => ({ HistoryReferenceChips: () => null }));
 vi.mock("./codex-session-controls", () => ({
@@ -79,6 +81,7 @@ const attachment: UploadedAttachment = {
 describe("composer sending shortcuts", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    doubles.panels = null;
     doubles.control.mockResolvedValue(true);
     doubles.codexAction.mockResolvedValue({ accepted: true });
     doubles.session = {
@@ -120,10 +123,17 @@ describe("composer sending shortcuts", () => {
       } as unknown as SessionController["client"],
     };
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
 
   it("submits Enter through the same form path as the send button", async () => {
     const { input, form } = renderComposer();
+    expect(screen.getByRole("button", { name: "Send" })).toHaveClass("size-11");
+    expect(screen.getByRole("button", { name: codexCopy["en-US"].attachment })).toHaveClass(
+      "size-11",
+    );
     const requestSubmit = vi.spyOn(form, "requestSubmit");
     expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
     await waitFor(() => expect(input).toHaveValue(""));
@@ -141,6 +151,45 @@ describe("composer sending shortcuts", () => {
     fireEvent.change(input, { target: { value: "Second message" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps coarse-pointer Enter as a newline and sends only with the button", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+    );
+    const { input } = renderComposer();
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(true);
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(screen.queryByText(composerLayoutCopy["en-US"].sendShortcut)).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "Line one\nLine two" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(1));
+  });
+
+  it("opens connection management for a connected Claude terminal", () => {
+    const setActionsOpen = vi.fn();
+    doubles.panels = {
+      actionsOpen: false,
+      setActionsOpen,
+      filesOpen: false,
+      setFilesOpen: vi.fn(),
+    };
+    doubles.session.current = {
+      id: "session",
+      agent: "claude-code",
+    } as SessionController["current"];
+    doubles.session.live = { ...doubles.session.live!, executionMode: "claude-follower" };
+    doubles.session.access = {
+      ...doubles.session.access!,
+      device: { ...doubles.session.access!.device!, manage: true },
+    };
+    renderComposer();
+    fireEvent.click(screen.getByRole("button", { name: "Manage terminal connection" }));
+    expect(setActionsOpen).toHaveBeenCalledExactlyOnceWith(true);
+    expect(
+      screen.queryByRole("button", { name: "Connect original Claude terminal" }),
+    ).not.toBeInTheDocument();
   });
 
   it("leaves Shift+Enter available for the browser's newline input", () => {
@@ -211,6 +260,7 @@ describe("composer sending shortcuts", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(doubles.control).not.toHaveBeenCalled();
     expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(screen.queryByText(composerLayoutCopy["en-US"].sendShortcut)).not.toBeInTheDocument();
   });
 
   it.each(["", " \n "])("does not send an empty text draft (%j)", (message) => {
@@ -307,6 +357,10 @@ describe("composer sending shortcuts", () => {
       fireEvent.keyDown(input, { key: "Enter" });
       expect(doubles.control).not.toHaveBeenCalled();
       expect(doubles.codexAction).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Stop" })).toHaveClass("size-11");
+      expect(screen.getByRole("button", { name: codexCopy["en-US"].advanced })).toHaveClass(
+        "size-11",
+      );
       fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].advanced }));
       fireEvent.click(
         await screen.findByRole("menuitem", {

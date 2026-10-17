@@ -267,11 +267,16 @@ describe("MCP management review regressions", () => {
       </QueryClientProvider>,
     );
     await screen.findByText("one");
-    fireEvent.click(screen.getAllByRole("button", { name: "mcp.manage.edit" })[0]!);
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: "mcp.manage.moreActions" })[0]!);
+    await user.click(await screen.findByRole("menuitem", { name: "mcp.manage.edit" }));
     fireEvent.click(screen.getByRole("button", { name: "common.save" }));
     await waitFor(() => expect(api.saveMcpConfiguration).toHaveBeenCalledTimes(1));
-    for (const button of screen.getAllByRole("button", { name: "mcp.manage.edit" }))
-      expect(button).toBeDisabled();
+    await user.click(screen.getAllByRole("button", { name: "mcp.manage.moreActions" })[1]!);
+    expect(await screen.findByRole("menuitem", { name: "mcp.manage.edit" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(screen.getByRole("button", { name: "mcp.manage.add" })).toBeDisabled();
     await act(async () => saving.resolve(state));
     await waitFor(() =>

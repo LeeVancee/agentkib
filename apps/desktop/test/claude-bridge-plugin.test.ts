@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   decodeTicket,
+  connectionFailureText,
   previewText,
   observeNativeStream,
   register as productionRegister,
@@ -304,6 +305,26 @@ async function fixture(
 }
 
 describe("Claude Code native session plugin", () => {
+  it("explains an expired connection code and the next step in the terminal", async () => {
+    const f = await fixture({ connect: false });
+    f.nextHttpResponse("/v1/pair", { status: 409, body: { error: "expired-bridge-challenge" } });
+    const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    expect(result.text).toBe(connectionFailureText("expired-bridge-challenge"));
+    expect(result.text).toContain("connection code has expired");
+    expect(result.text).toContain("Generate a new connection code");
+  });
+  it("reports local version failures to the broker without binding the terminal", async () => {
+    const f = await fixture({ connect: false });
+    f.setIdentity({ version: "2.1.302" });
+    const result = await f.run("command.run", { command: "agentkib-connect", args: f.ticket });
+    expect(result.text).toContain("requires Claude Code 2.1.301");
+    expect(f.calls.find((call) => call.url.endsWith("/pair"))?.body).toMatchObject({
+      connectionError: "bridge-version-mismatch",
+    });
+    expect((await f.run("command.run", { command: "agentkib-status" })).text).toContain(
+      "not connected",
+    );
+  });
   it("keeps production sending disabled even when an idle session receives a forged send command", async () => {
     const f = await fixture({ experiment: false });
     expect(f.snapshots().at(-1).capabilities).toMatchObject({ read: true, send: false });

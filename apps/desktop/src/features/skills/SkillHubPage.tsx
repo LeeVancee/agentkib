@@ -20,6 +20,7 @@ import {
   History,
   Library,
   LoaderCircle,
+  MoreHorizontal,
   RefreshCw,
   Search,
   Sparkles,
@@ -39,6 +40,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -193,10 +201,6 @@ export function SkillHubPage({
   const pendingHeading = useRef<HTMLHeadingElement>(null);
   const pendingFocusRequested = useRef(false);
   const usageId = useId();
-  const focusPendingSync = () => {
-    pendingHeading.current?.scrollIntoView?.({ block: "start" });
-    pendingHeading.current?.focus({ preventScroll: true });
-  };
   useEffect(() => {
     if (section !== "workspace" || !pendingOnly || !pendingFocusRequested.current) return;
     pendingFocusRequested.current = false;
@@ -205,7 +209,7 @@ export function SkillHubPage({
   }, [section, pendingOnly]);
   const showPendingSync = () => {
     if (section === "workspace" && pendingOnly) {
-      focusPendingSync();
+      setPendingOnly(false);
       return;
     }
     pendingFocusRequested.current = true;
@@ -883,54 +887,58 @@ export function SkillHubPage({
                           ).length,
                         })}
                       </Badge>
-                      {skill.source && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={Boolean(busy)}
-                          onClick={() =>
-                            setVersionRequest({
-                              name: skill.display_name,
-                              source: skill.source!,
-                              libraryId: skill.name,
-                            })
-                          }
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          render={<Button size="icon-sm" variant="outline" />}
+                          aria-label={`${tr("common.moreActions")} · ${skill.display_name}`}
                         >
-                          <History size={14} />
-                          {tr("skills.versions.choose")}
-                        </Button>
-                      )}
-                      {skill.source && (
-                        <Button
-                          size="sm"
-                          variant={skill.status === "update-available" ? "default" : "outline"}
-                          disabled={Boolean(busy)}
-                          onClick={() => void prepareUpdate(skill)}
-                        >
-                          <Download size={14} />
-                          {tr("skills.update")}
-                        </Button>
-                      )}
-                      {skill.can_rollback && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={Boolean(busy)}
-                          onClick={() => void rollback(skill)}
-                        >
-                          <History size={14} />
-                          {tr("skills.rollback")}
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={Boolean(busy)}
-                        onClick={() => void uninstall(skill)}
-                      >
-                        <Trash2 size={14} />
-                        {tr("skills.moveToTrash")}
-                      </Button>
+                          <MoreHorizontal size={14} />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {skill.source && (
+                            <>
+                              <DropdownMenuItem
+                                disabled={Boolean(busy)}
+                                onClick={() =>
+                                  setVersionRequest({
+                                    name: skill.display_name,
+                                    source: skill.source!,
+                                    libraryId: skill.name,
+                                  })
+                                }
+                              >
+                                <History size={14} />
+                                {tr("skills.versions.choose")}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={Boolean(busy)}
+                                onClick={() => void prepareUpdate(skill)}
+                              >
+                                <Download size={14} />
+                                {tr("skills.update")}
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                          {skill.can_rollback && (
+                            <DropdownMenuItem
+                              disabled={Boolean(busy)}
+                              onClick={() => void rollback(skill)}
+                            >
+                              <History size={14} />
+                              {tr("skills.rollback")}
+                            </DropdownMenuItem>
+                          )}
+                          {(skill.source || skill.can_rollback) && <DropdownMenuSeparator />}
+                          <DropdownMenuItem
+                            variant="destructive"
+                            disabled={Boolean(busy)}
+                            onClick={() => void uninstall(skill)}
+                          >
+                            <Trash2 size={14} />
+                            {tr("skills.moveToTrash")}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </CardContent>
                 </Card>

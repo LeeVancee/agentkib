@@ -25,8 +25,18 @@ vi.mock("@/core/api", () => ({
     catalogAssets: doubles.catalog,
     workspaces: doubles.workspaces,
     globalMemories: doubles.memories,
+    mcpInstallations: async () => [],
+    mcpRuntimes: async () => [],
+    runtime: async () => null,
   },
 }));
+vi.mock("@/features/skills/SkillHubPage", () => ({
+  SkillHubPage: () => <h2>Available skill library</h2>,
+}));
+vi.mock("@/features/mcp/McpManagementPanel", () => ({
+  McpManagementPanel: () => <h2>Available MCP services</h2>,
+}));
+vi.mock("@/components/AppDialogProvider", () => ({ useAppDialogs: () => ({}) }));
 vi.mock("@tanstack/react-router", async (original) => ({
   ...(await original<typeof import("@tanstack/react-router")>()),
   createFileRoute: () => (options: unknown) => ({ options }),
@@ -63,14 +73,27 @@ const memory: MemoryRecord = {
   created_at: "2026-10-16T00:00:00Z",
 };
 const sources = [
-  { read: doubles.catalog, key: homeKeys.catalog(), label: "query.catalog", data: [asset] },
+  {
+    read: doubles.catalog,
+    key: homeKeys.catalog(),
+    label: "query.catalog",
+    data: [asset],
+    section: "instructions",
+  },
   {
     read: doubles.workspaces,
     key: homeKeys.workspaces(),
     label: "query.workspaces",
     data: [workspace],
+    section: "instructions",
   },
-  { read: doubles.memories, key: homeKeys.memories(), label: "query.memories", data: [memory] },
+  {
+    read: doubles.memories,
+    key: homeKeys.memories(),
+    label: "query.memories",
+    data: [memory],
+    section: "memory",
+  },
 ];
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -89,14 +112,15 @@ function start(cached = false) {
       source.read.mockResolvedValue(source.data);
     }
   const Component = Route.options.component!;
-  const view = render(
+  const page = () => (
     <QueryClientProvider client={client}>
       <Suspense fallback={null}>
         <Component />
       </Suspense>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
-  return { client, ...view };
+  const view = render(page());
+  return { client, ...view, refreshSearch: () => view.rerender(page()) };
 }
 beforeAll(async () => {
   const component = Route.options.component;
@@ -128,9 +152,54 @@ it("does not show an empty catalog before the initial query settles", async () =
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
+it("keeps skills and MCP usable after the initial memory query fails", async () => {
+  doubles.memories.mockRejectedValue(new Error("Memory unavailable"));
+  const view = start();
+  await screen.findByRole("textbox", { name: tr("catalog.searchPlaceholder") });
+  await waitFor(() => expect(doubles.memories).toHaveBeenCalled());
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  for (const [section, title] of [
+    ["skills", "Available skill library"],
+    ["mcp", "Available MCP services"],
+  ]) {
+    doubles.search.assetSection = section!;
+    view.refreshSearch();
+    expect(await screen.findByRole("heading", { name: title })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  }
+  doubles.search.assetSection = "memory";
+  view.refreshSearch();
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(tr("query.memories"));
+  expect(within(alert).getByRole("button", { name: tr("runtime.retry") })).toBeVisible();
+  expect(screen.getByRole("navigation")).toBeVisible();
+});
+
+it("consumes the MCP network focus target with replace after focusing once", async () => {
+  doubles.search.assetSection = "mcp";
+  doubles.search.catalogTarget = "mcp-network";
+  const view = start();
+  const target = await screen.findByLabelText(tr("mcp.network"));
+  await waitFor(() => expect(target).toHaveFocus());
+  expect(doubles.navigate).toHaveBeenCalledTimes(1);
+  const navigation = doubles.navigate.mock.calls[0]![0];
+  expect(navigation).toMatchObject({ to: "/catalog", replace: true });
+  expect(navigation.search({ assetSection: "mcp", catalogTarget: "mcp-network" })).toEqual({
+    assetSection: "mcp",
+    catalogTarget: undefined,
+  });
+  doubles.search.catalogTarget = undefined;
+  view.refreshSearch();
+  screen.getByRole("button", { name: tr("mcp.manage.advanced") }).focus();
+  view.refreshSearch();
+  expect(target).not.toHaveFocus();
+  expect(doubles.navigate).toHaveBeenCalledTimes(1);
+});
+
 it.each(sources)(
   "does not disguise an initial $label failure as empty and retries only that dependency",
   async (source) => {
+    doubles.search.assetSection = source.section;
     source.read.mockRejectedValueOnce(new Error("unavailable"));
     start();
     const alert = await screen.findByRole("alert");
@@ -140,7 +209,7 @@ it.each(sources)(
     expect(screen.queryByText(tr("memory.empty"))).not.toBeInTheDocument();
     const initialCounts = sources.map(({ read }) => read.mock.calls.length);
     fireEvent.click(within(alert).getByRole("button", { name: tr("runtime.retry") }));
-    await screen.findByRole("textbox", { name: tr("catalog.searchPlaceholder") });
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     sources.forEach(({ read }, index) =>
       expect(read).toHaveBeenCalledTimes(initialCounts[index] + (read === source.read ? 1 : 0)),
@@ -150,24 +219,25 @@ it.each(sources)(
 );
 
 it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-  "names all failed dependencies in %s without rendering invented zero counts",
+  "keeps section navigation and names only active failed dependencies in %s",
   async (locale) => {
     await initializeI18n(locale);
     for (const source of sources) source.read.mockRejectedValue(new Error("unavailable"));
     start();
     await waitFor(() =>
-      expect(within(screen.getByRole("alert")).getAllByRole("listitem")).toHaveLength(3),
+      expect(within(screen.getByRole("alert")).getAllByRole("listitem")).toHaveLength(2),
     );
     const alert = screen.getByRole("alert");
-    for (const source of sources) expect(alert).toHaveTextContent(tr(source.label));
+    for (const source of sources.slice(0, 2)) expect(alert).toHaveTextContent(tr(source.label));
+    expect(alert).not.toHaveTextContent(tr("query.memories"));
     expect(alert).toHaveTextContent(tr("query.initialUnavailable"));
-    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation")).toBeVisible();
     expect(screen.queryByText(tr("catalog.noMatch"))).not.toBeInTheDocument();
     expect(screen.queryByText(tr("memory.empty"))).not.toBeInTheDocument();
   },
 );
 
-it.each(sources)(
+it.each(sources.slice(0, 2))(
   "keeps cached content and filter state across $label pending/failure and a locked retry",
   async (source) => {
     const { client } = start(true);

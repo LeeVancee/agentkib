@@ -5,6 +5,7 @@ import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
 import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import { refreshAgentTools } from "@/features/settings/agent-tools-query";
@@ -148,9 +149,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
       return;
     const requestId = ++workspaceOpenRequest.current;
     const targetWorkspaceId = selectedWorkspace?.id;
-    const initialManifest = useWorkspaceStore.getState().manifest;
-    const manifestAtStart = JSON.stringify(initialManifest);
-    const targetDraft = initialManifest ?? draft;
+    const initialState = useWorkspaceStore.getState();
     const isCurrentRequest = () =>
       requestId === workspaceOpenRequest.current &&
       useWorkspaceStore.getState().project === path &&
@@ -166,15 +165,34 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
             api.runtime(),
           ]);
           if (!isCurrentRequest()) return;
+          const resolvedManifest = await resolveRefreshedManifest({
+            initialManifest: initialState.manifest,
+            initialBaseline: initialState.baselineManifest,
+            cachedDraft: draft,
+            diskManifest: nextManifest,
+            getCurrentManifest: () => useWorkspaceStore.getState().manifest,
+            confirmDiskVersion: () =>
+              dialogs.confirm({
+                description: tr("workspace.refreshConflict"),
+                tone: "warning",
+              }),
+          });
+          if (!isCurrentRequest()) return;
           setProject(path);
           setScan(nextScan);
-          const currentManifest = useWorkspaceStore.getState().manifest;
-          setManifest(
-            JSON.stringify(currentManifest) !== manifestAtStart
-              ? currentManifest
-              : (targetDraft ?? nextManifest),
-          );
+          setManifest(resolvedManifest);
           setBaselineManifest(JSON.stringify(nextManifest));
+          if (targetWorkspaceId)
+            useWorkspaceStore.getState().setWorkspaceDrafts((drafts) => {
+              const next = { ...drafts };
+              if (
+                resolvedManifest &&
+                JSON.stringify(resolvedManifest) !== JSON.stringify(nextManifest)
+              )
+                next[targetWorkspaceId] = resolvedManifest;
+              else delete next[targetWorkspaceId];
+              return next;
+            });
           useAppStore.getState().setRuntime(nextRuntime);
         } catch (error) {
           if (isCurrentRequest()) setMessage(localizeMessage(error));

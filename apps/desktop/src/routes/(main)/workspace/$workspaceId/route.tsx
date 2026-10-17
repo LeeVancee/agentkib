@@ -37,7 +37,7 @@ import {
 import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { AppliedChangesNotice } from "@/features/workspace/AppliedChangesNotice";
-import { draftSectionCount } from "@/features/workspace/manifest-draft";
+import { draftSectionCount, resolveRefreshedManifest } from "@/features/workspace/manifest-draft";
 import { Copy, MoreHorizontal, RefreshCw } from "lucide-react";
 function WorkspaceActions({
   workspace,
@@ -93,7 +93,7 @@ function WorkspaceActions({
       >
         <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
       </Button>
-      <span className="inline-flex" title={reviewDisabledReason}>
+      <span className="grid justify-items-end gap-1">
         <Button
           className="h-9 rounded-lg px-3"
           onClick={() => void onReview()}
@@ -104,7 +104,7 @@ function WorkspaceActions({
           {tr("workspace.reviewChanges")}
         </Button>
         {reviewDisabledReason && (
-          <span id="workspace-review-reason" className="sr-only">
+          <span id="workspace-review-reason" className="max-w-64 text-xs text-muted-foreground">
             {reviewDisabledReason}
           </span>
         )}
@@ -166,6 +166,12 @@ function WorkspaceLayout() {
   const operationRequest = useRef(0);
   const discardPending = useRef(false);
   const [discarding, setDiscarding] = useState(false);
+  const [planning, setPlanning] = useState(false);
+  const [planFeedback, setPlanFeedback] = useState<{
+    workspaceId: string;
+    project: string;
+    message: string;
+  }>();
   const [draftError, setDraftError] = useState<{
     workspaceId: string;
     project: string;
@@ -190,6 +196,8 @@ function WorkspaceLayout() {
   useEffect(() => {
     operationRequest.current += 1;
     loadStartedWorkspace.current = undefined;
+    setPlanning(false);
+    setPlanFeedback(undefined);
     return () => {
       operationRequest.current += 1;
     };
@@ -201,8 +209,6 @@ function WorkspaceLayout() {
     const targetProject = project;
     const initialState = useWorkspaceStore.getState();
     const scanAtStart = initialState.scan;
-    const manifestAtStart = JSON.stringify(initialState.manifest);
-    const targetDraft = initialState.manifest ?? draft;
     const isCurrentRequest = () =>
       requestId === operationRequest.current &&
       useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
@@ -237,18 +243,34 @@ function WorkspaceLayout() {
           const nextScan = scanResult.value;
           const nextManifest =
             manifestResult.status === "fulfilled" ? manifestResult.value : undefined;
-          // The editor stays mounted while refreshing. A later edit, including
-          // a revert to the old baseline, must survive the older disk response.
-          const currentManifest = useWorkspaceStore.getState().manifest;
-          const resolvedManifest =
-            JSON.stringify(currentManifest) !== manifestAtStart
-              ? currentManifest
-              : (targetDraft ?? nextManifest);
+          const resolvedManifest = await resolveRefreshedManifest({
+            initialManifest: initialState.manifest,
+            initialBaseline: initialState.baselineManifest,
+            cachedDraft: draft,
+            diskManifest: nextManifest,
+            getCurrentManifest: () => useWorkspaceStore.getState().manifest,
+            confirmDiskVersion: () =>
+              dialogs.confirm({
+                description: tr("workspace.refreshConflict"),
+                tone: "warning",
+              }),
+          });
+          if (!isCurrentRequest()) return;
           if (manifestResult.status === "rejected")
             setMessage(localizeMessage(manifestResult.reason));
           setScan(nextScan);
           setManifest(resolvedManifest);
           setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
+          useWorkspaceStore.getState().setWorkspaceDrafts((drafts) => {
+            const next = { ...drafts };
+            if (
+              resolvedManifest &&
+              JSON.stringify(resolvedManifest) !== JSON.stringify(nextManifest)
+            )
+              next[workspaceId] = resolvedManifest;
+            else delete next[workspaceId];
+            return next;
+          });
           setRuntime(runtimeResult.value);
           setLoadFailure(undefined);
           if (!resolvedManifest && currentPage !== "doctor") {
@@ -302,6 +324,9 @@ function WorkspaceLayout() {
       useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
       useWorkspaceStore.getState().project === targetProject;
     setBusy(true);
+    setPlanning(true);
+    setPlanFeedback(undefined);
+    setAppliedChanges(undefined);
     setMessage("");
     await withAsyncCleanup(
       async () => {
@@ -310,9 +335,15 @@ function WorkspaceLayout() {
           if (!isCurrentRequest()) return;
           if (
             JSON.stringify(useWorkspaceStore.getState().manifest) !== JSON.stringify(targetManifest)
-          )
+          ) {
+            setPlanFeedback({
+              workspaceId,
+              project: targetProject,
+              message: tr("workspace.planSuperseded"),
+            });
             return;
-          setChangeSet(nextChangeSet, targetManifest);
+          }
+          setChangeSet(nextChangeSet, targetManifest, includeHome);
           setChangeSetOrigin("standard");
           setHandoffLaunchRequest(undefined);
           void navigate({
@@ -320,11 +351,19 @@ function WorkspaceLayout() {
             params: { workspaceId },
           });
         } catch (error) {
-          if (isCurrentRequest()) setMessage(localizeMessage(error));
+          if (isCurrentRequest())
+            setPlanFeedback({
+              workspaceId,
+              project: targetProject,
+              message: localizeMessage(error),
+            });
         }
       },
       () => {
-        if (isCurrentRequest()) setBusy(false);
+        if (isCurrentRequest()) {
+          setBusy(false);
+          setPlanning(false);
+        }
       },
     );
   };
@@ -339,7 +378,7 @@ function WorkspaceLayout() {
     try {
       if (
         !(await dialogs.confirm({
-          description: tr("workspace.leaveDraftConfirm"),
+          description: tr("workspace.discardDraftConfirm"),
           tone: "destructive",
         }))
       )
@@ -442,16 +481,23 @@ function WorkspaceLayout() {
         </div>
       </section>
 
-      {appliedChanges?.workspaceId === workspaceId && appliedChanges.project === project && (
-        <AppliedChangesNotice
-          key={appliedChanges.changeSet.id}
-          result={appliedChanges}
-          onDismiss={() => setAppliedChanges(undefined)}
-        />
-      )}
+      {appliedChanges?.workspaceId === workspaceId &&
+        appliedChanges.project === project &&
+        !(currentPage === "doctor" && appliedChanges.origin === "doctor") && (
+          <AppliedChangesNotice
+            key={appliedChanges.changeSet.id}
+            result={appliedChanges}
+            onDismiss={() => setAppliedChanges(undefined)}
+          />
+        )}
       {draftError?.workspaceId === workspaceId && draftError.project === project && (
         <p role="alert" className="text-sm text-destructive">
           {tr(draftError.key)}
+        </p>
+      )}
+      {planFeedback?.workspaceId === workspaceId && planFeedback.project === project && (
+        <p role="alert" className="text-sm text-destructive">
+          {planFeedback.message}
         </p>
       )}
 
@@ -462,7 +508,7 @@ function WorkspaceLayout() {
         {busy && hasWorkspaceContent && (
           <p role="status" className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
             <RefreshCw size={13} className="animate-spin" />
-            {tr("workspace.updating")}
+            {tr(planning ? "workspace.planning" : "workspace.updating")}
           </p>
         )}
         {currentLoadFailure && (

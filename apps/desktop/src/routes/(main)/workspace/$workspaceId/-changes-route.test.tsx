@@ -187,7 +187,8 @@ describe("workspace changes lifecycle", () => {
     expect(navigate).not.toHaveBeenCalled();
 
     await act(async () => request.resolve({ ...changeSet, id: "home-plan" }));
-    expect(includeHome).toBeEnabled();
+    expect(includeHome).toBeDisabled();
+    expect(includeHome).toHaveTextContent("Home configuration included");
     expect(apply).toBeEnabled();
     expect(reject).toBeEnabled();
     expect(useWorkspaceStore.getState().changeSetManifest).toBe(JSON.stringify(draft));
@@ -273,7 +274,7 @@ describe("workspace changes lifecycle", () => {
     expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(diskAfterApply));
   });
 
-  it("discards a Doctor response when the editor draft has changed", async () => {
+  it("retains a Doctor response generated from disk when the separate editor draft changes", async () => {
     const request = deferred<ChangeSet>();
     vi.mocked(api.manifest).mockResolvedValue(baseline);
     vi.mocked(api.plan).mockReturnValue(request.promise);
@@ -282,8 +283,10 @@ describe("workspace changes lifecycle", () => {
     await waitFor(() => expect(api.plan).toHaveBeenCalled());
     act(() => useWorkspaceStore.getState().setManifest(manifest("newer editor draft")));
     await act(async () => request.resolve({ ...changeSet, id: "obsolete-doctor-plan" }));
-    expect(useWorkspaceStore.getState().changeSet).toBeUndefined();
-    expect(navigate).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().changeSet?.id).toBe("obsolete-doctor-plan");
+    expect(useWorkspaceStore.getState().changeSetOrigin).toBe("doctor");
+    expect(useWorkspaceStore.getState().manifest?.instructions.shared).toBe("newer editor draft");
+    expect(navigate).toHaveBeenCalled();
   });
 
   it.each(["doctor", "handoff", "handoff-setup"] as const)(
@@ -349,6 +352,7 @@ describe("workspace changes lifecycle", () => {
   });
 
   it("keeps the reviewed diff mounted but blocks mutations while the workspace is refreshing", async () => {
+    vi.mocked(api.manifest).mockResolvedValueOnce(baseline);
     const refresh = deferred<WorkspaceScan>();
     vi.mocked(api.scan).mockReturnValueOnce(refresh.promise);
     await renderRoute(true);

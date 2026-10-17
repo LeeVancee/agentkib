@@ -113,7 +113,7 @@ export const webLayoutCopy: Record<Locale, Copy> = {
     permissionRequired: "権限が必要",
     controlDisabled: "制御が無効",
     controlUnavailable: "制御不可",
-    handoffPending: "引き渡し待ち",
+    handoffPending: "引き継ぎ待ち",
     resumePending: "再開待ち",
     resumeInfo:
       "会話の操作からこの会話を続行または再開できます。元のクライアントの状態を確認し、再開を承認してください。",

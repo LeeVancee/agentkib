@@ -23,6 +23,11 @@ function renderWithClient(ui: ReactElement) {
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
+async function libraryAction(user: ReturnType<typeof userEvent.setup>, label: string) {
+  await user.click(await screen.findByRole("button", { name: /^More actions · / }));
+  await user.click(await screen.findByRole("menuitem", { name: label }));
+}
+
 const mocks = vi.hoisted(() => ({
   installedSkills: vi.fn(),
   removedSkills: vi.fn(),
@@ -110,6 +115,37 @@ const libraryDeployment: SkillDeployment = {
 };
 
 describe("SkillHubPage", () => {
+  it("keeps deployment primary and groups library maintenance actions in a menu", async () => {
+    const user = userEvent.setup();
+    mocks.installedSkills.mockResolvedValue([
+      {
+        ...librarySkill,
+        status: "update-available",
+        source: candidate.source,
+      },
+    ]);
+    mocks.removedSkills.mockResolvedValue([]);
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    const name = await screen.findByRole("heading", { name: librarySkill.display_name });
+    const card = within(name.closest<HTMLElement>('[data-slot="card"]')!);
+    expect(card.getAllByRole("button")).toHaveLength(3);
+    expect(card.getByRole("button", { name: tr("skills.manager.deploy") })).toHaveClass(
+      "bg-primary",
+    );
+    expect(card.queryByRole("button", { name: tr("skills.update") })).toBeNull();
+    await user.click(card.getByRole("button", { name: /^More actions/ }));
+    for (const key of [
+      "skills.versions.choose",
+      "skills.update",
+      "skills.rollback",
+      "skills.moveToTrash",
+    ])
+      expect(await screen.findByRole("menuitem", { name: tr(key) })).toBeVisible();
+  });
   it("accepts externally controlled sections without rewriting them or requiring a router", async () => {
     mocks.installedSkills.mockResolvedValue([]);
     mocks.removedSkills.mockResolvedValue([]);
@@ -868,7 +904,7 @@ describe("SkillHubPage", () => {
         <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
-    await user.click(await screen.findByRole("button", { name: "Update" }));
+    await libraryAction(user, "Update");
     const tree = within(await screen.findByRole("navigation", { name: "Package files" }));
     expect(tree.getByTitle("output/nested/")).toBeTruthy();
     expect(tree.getByTitle("old/")).toBeTruthy();
@@ -956,7 +992,7 @@ describe("SkillHubPage", () => {
       </AppDialogProvider>,
     );
 
-    await user.click(await screen.findByRole("button", { name: "Move to trash" }));
+    await libraryAction(user, "Move to trash");
     await user.click(screen.getByRole("button", { name: "Confirm" }));
 
     await waitFor(() => expect(mocks.uninstallSkill).toHaveBeenCalledWith("reviewer"));
@@ -1005,7 +1041,7 @@ describe("SkillHubPage", () => {
     await user.click(screen.getByRole("tab", { name: "Discover Skills" }));
     await waitFor(() => expect(mocks.skillCatalog).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole("tab", { name: /Skill library/ }));
-    await user.click(await screen.findByRole("button", { name: "Roll back" }));
+    await libraryAction(user, "Roll back");
     await user.click(screen.getByRole("button", { name: "Confirm" }));
 
     expect(await screen.findByText("Previous version")).toBeTruthy();
@@ -1109,7 +1145,9 @@ describe("SkillHubPage", () => {
         </AppDialogProvider>,
       );
 
-      await user.click(await screen.findByRole("button", { name: tr(action) }));
+      if (operation === "restore")
+        await user.click(await screen.findByRole("button", { name: tr(action) }));
+      else await libraryAction(user, tr(action));
       if (operation !== "restore") {
         await user.click(screen.getByRole("button", { name: tr("common.confirm") }));
       }
@@ -1186,7 +1224,7 @@ describe("SkillHubPage", () => {
         <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
-    await user.click(await screen.findByRole("button", { name: tr("skills.rollback") }));
+    await libraryAction(user, tr("skills.rollback"));
     await user.click(screen.getByRole("button", { name: tr("common.confirm") }));
     const message = await screen.findByText(
       tr("skills.manager.libraryRolledBack", { name: librarySkill.display_name }),
@@ -1206,7 +1244,7 @@ describe("SkillHubPage", () => {
         <SkillHubPage workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
     );
-    await user.click(await screen.findByRole("button", { name: tr("skills.rollback") }));
+    await libraryAction(user, tr("skills.rollback"));
     await user.click(screen.getByRole("button", { name: tr("common.confirm") }));
     await screen.findByText(tr("skills.libraryEmpty"));
     const message = screen.getByText(

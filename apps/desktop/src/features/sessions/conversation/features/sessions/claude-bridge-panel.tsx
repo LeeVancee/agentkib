@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ClaudeBridgeChallenge, ClaudeBridgeStatus } from "../../../../../../electron/api";
 import { desktopApi } from "@/core/desktop";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
 
@@ -19,7 +20,8 @@ function statusResponse(value: unknown, sessionId: string): ClaudeBridgeStatus {
     typeof row.connected !== "boolean" ||
     typeof row.version !== "string" ||
     typeof row.pluginDirectory !== "string" ||
-    typeof row.installInstructions !== "string"
+    typeof row.installInstructions !== "string" ||
+    (row.connectionError !== undefined && typeof row.connectionError !== "string")
   )
     throw new Error("invalid_bridge_status");
   return value as ClaudeBridgeStatus;
@@ -53,9 +55,13 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
   const [expired, setExpired] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [copied, setCopied] = useState("");
+  const [copyError, setCopyError] = useState(false);
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
   const pending = useRef(false);
+  const lastConnected = useRef(false);
   const canRevoke = !!(
     active &&
     selected &&
@@ -74,31 +80,81 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
     notice !== "uncertain" &&
     live?.status !== "outcome-unknown"
   );
+  // A status refresh or a busy/idle transition must not revoke a displayed code.
   useEffect(() => {
-    const request = ++generation.current;
+    generation.current++;
     pending.current = false;
+    lastConnected.current = false;
     setChallenge(undefined);
     setStatus(undefined);
     setExpired(false);
     setError(false);
     setLoading(false);
-    if (!canManage) return;
-    setLoading(true);
-    void Promise.resolve()
-      .then(() => desktopApi().claude.request({ operation: "bridge-status", sessionId: selected }))
-      .then((value) => {
-        if (generation.current === request) setStatus(statusResponse(value, selected));
-      })
-      .catch(() => {
-        if (generation.current === request) setError(true);
-      })
-      .finally(() => {
-        if (generation.current === request) setLoading(false);
-      });
+    setConfirmDisconnect(false);
+    setCopied("");
+    setCopyError(false);
     return () => {
       generation.current++;
     };
+  }, [canRevoke, selected]);
+  useEffect(() => {
+    if (!canManage) return;
+    const request = generation.current;
+    let disposed = false;
+    let checking = false;
+    async function check(showLoading: boolean) {
+      if (checking || pending.current || disposed) return;
+      checking = true;
+      if (showLoading) setLoading(true);
+      try {
+        const result = statusResponse(
+          await desktopApi().claude.request({ operation: "bridge-status", sessionId: selected }),
+          selected,
+        );
+        if (!disposed && generation.current === request) {
+          setStatus(result);
+          setError(false);
+          if (result.connected) {
+            setChallenge(undefined);
+            setExpired(false);
+            if (!lastConnected.current) void session.refresh(true);
+          }
+          lastConnected.current = result.connected;
+        }
+      } catch {
+        if (!disposed && generation.current === request) {
+          setStatus(undefined);
+          setError(true);
+        }
+      } finally {
+        checking = false;
+        if (!disposed && generation.current === request && showLoading) setLoading(false);
+      }
+    }
+    void check(true);
+    // Keep observing after code expiry so failed connection attempts remain visible.
+    const timer = window.setInterval(() => void check(false), 2500);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      if (!pending.current) setLoading(false);
+    };
   }, [canManage, selected, live?.connectionGeneration, revision]);
+  const connected =
+    (status?.sessionId === selected && status.connected) ||
+    (live?.executionMode === "claude-follower" &&
+      live.status !== "unsupported" &&
+      live.reason !== "claude-bridge-disconnected");
+  async function copyText(value: string, label: string) {
+    setCopyError(false);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+    } catch {
+      setCopied("");
+      setCopyError(true);
+    }
+  }
   useEffect(() => {
     if (!challenge) return;
     const expires = Date.parse(challenge.expiresAt);
@@ -114,8 +170,8 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
   async function run(operation: "bridge-challenge" | "bridge-disconnect") {
     if (
       (operation === "bridge-challenge"
-        ? !canManage || status?.sessionId !== selected || !status.supported
-        : !canRevoke) ||
+        ? !canManage || status?.sessionId !== selected || !status.supported || connected
+        : !canRevoke || !connected) ||
       loading ||
       pending.current
     )
@@ -124,6 +180,8 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
     const request = generation.current;
     setLoading(true);
     setError(false);
+    setStatus((value) => (value ? { ...value, connectionError: undefined } : value));
+    setCopied("");
     setChallenge(undefined);
     setExpired(false);
     try {
@@ -143,6 +201,9 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
           result.disconnected !== true
         )
           throw new Error("invalid_bridge_disconnect");
+        lastConnected.current = false;
+        setConfirmDisconnect(false);
+        setStatus((value) => (value ? { ...value, connected: false } : value));
         setRevision((value) => value + 1);
         void session.refresh(true);
       }
@@ -163,7 +224,8 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
       {status?.sessionId === selected && canManage && (
         <>
           <p role="status">
-            {status.connected ? copy.connected : copy.history} · Claude Code {status.version}
+            {status.connected ? copy.connected : copy.history} · {copy.requiredVersion}{" "}
+            {status.version}
           </p>
           <p className="text-xs text-muted-foreground">
             {claudeConnectionReason(locale, status.reason)}
@@ -171,20 +233,34 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
           <pre className="select-text whitespace-pre-wrap break-all text-xs">
             {status.installInstructions}
           </pre>
+          <Button
+            variant="outline"
+            onClick={() => void copyText(status.installInstructions, copy.copyInstall)}
+          >
+            {copy.copyInstall}
+          </Button>
+          {status.connectionError && (
+            <p role="alert">
+              {copy.connectionFailed}
+              {(status.connectionError === "control-outcome-unconfirmed"
+                ? copy.connectionUnconfirmed
+                : claudeConnectionReason(locale, status.connectionError)) ?? copy.failed}
+            </p>
+          )}
         </>
       )}
       <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"
-          disabled={!canManage || !status?.supported || loading}
+          disabled={!canManage || !status?.supported || connected || loading}
           onClick={() => void run("bridge-challenge")}
         >
           {copy.generate}
         </Button>
         <Button
           variant="outline"
-          disabled={!canRevoke || loading}
-          onClick={() => void run("bridge-disconnect")}
+          disabled={!canRevoke || !connected || loading}
+          onClick={() => setConfirmDisconnect(true)}
         >
           {copy.disconnect}
         </Button>
@@ -196,22 +272,61 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
           {copy.refresh}
         </Button>
       </div>
+      {connected && <p className="text-xs text-muted-foreground">{copy.disconnectBeforeCode}</p>}
+      <p className="text-xs text-muted-foreground">{copy.disconnectInfo}</p>
+      {confirmDisconnect && (
+        <Dialog
+          title={copy.disconnect}
+          description={copy.disconnectInfo}
+          closeLabel={copy.cancel}
+          onClose={() => {
+            if (!pending.current) setConfirmDisconnect(false);
+          }}
+        >
+          <Button variant="outline" disabled={loading} onClick={() => setConfirmDisconnect(false)}>
+            {copy.cancel}
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={loading || !canRevoke || !connected}
+            onClick={() => void run("bridge-disconnect")}
+          >
+            {copy.confirmDisconnect}
+          </Button>
+        </Dialog>
+      )}
+      {copied && (
+        <p role="status">
+          {copied} · {copy.copied}
+        </p>
+      )}
+      {copyError && <p role="alert">{copy.copyFailed}</p>}
       {loading && <p role="status">{copy.loading}</p>}
       {error && <p role="alert">{copy.failed}</p>}
-      {challenge &&
-        canManage &&
-        challenge.sessionId === selected &&
-        challenge.connectionGeneration === live?.connectionGeneration && (
-          <div className="space-y-2 rounded-md border p-3">
-            <pre className="select-text whitespace-pre-wrap break-all text-xs">
-              {challenge.instructions}
-            </pre>
-            <code className="select-text break-all">{challenge.challenge}</code>
-            <p className="text-xs text-muted-foreground">
-              {copy.expires} {new Date(challenge.expiresAt).toLocaleTimeString(locale)}
-            </p>
-          </div>
-        )}
+      {challenge && canRevoke && challenge.sessionId === selected && (
+        <div className="space-y-2 rounded-md border p-3">
+          <pre className="select-text whitespace-pre-wrap break-all text-xs">
+            {challenge.instructions}
+          </pre>
+          <Button
+            variant="outline"
+            onClick={() => void copyText(challenge.instructions, copy.copyCommand)}
+          >
+            {copy.copyCommand}
+          </Button>
+          <code className="select-text break-all">{challenge.challenge}</code>
+          <Button
+            variant="outline"
+            onClick={() => void copyText(challenge.challenge, copy.copyCode)}
+          >
+            {copy.copyCode}
+          </Button>
+          <p className="text-xs text-muted-foreground">{copy.codeSafety}</p>
+          <p className="text-xs text-muted-foreground">
+            {copy.expires} {new Date(challenge.expiresAt).toLocaleTimeString(locale)}
+          </p>
+        </div>
+      )}
       {expired && <p role="status">{copy.expired}</p>}
     </section>
   );

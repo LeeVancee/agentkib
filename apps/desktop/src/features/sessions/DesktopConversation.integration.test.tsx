@@ -676,7 +676,7 @@ describe("desktop embedded conversation", () => {
         executionMode: "claude-follower",
         connectionGeneration: "lease-a",
       });
-      expect(await screen.findByText("已连接原会话")).toBeVisible();
+      expect(await screen.findByText("已连接原会话", { selector: "aside strong" })).toBeVisible();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       const draft = screen.getByRole("textbox", { name: "发送消息" });
       fireEvent.change(draft, { target: { value: "保留原终端草稿" } });
@@ -694,7 +694,7 @@ describe("desktop embedded conversation", () => {
       });
       await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
       expect(draft).toHaveValue("保留原终端草稿");
-      expect(screen.getByText("仅查看历史")).toBeVisible();
+      expect(screen.getByText("原终端连接已断开", { selector: "aside strong" })).toBeVisible();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       expect(
         vi

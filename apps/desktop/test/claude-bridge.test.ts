@@ -366,6 +366,84 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
       ).toBe(409);
     }
   });
+  it("reports expired connection codes to the desktop and clears the failure for a new code", async () => {
+    const f = await fixture();
+    await f.manage("bridge-disconnect");
+    const prepared = (await f.manage("bridge-challenge")) as {
+      challenge: string;
+      expiresAt: string;
+    };
+    const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(prepared.expiresAt) + 1);
+    expect(await f.http("/v1/pair", { ...f.hello, ticket: ticket.ticket })).toMatchObject({
+      status: 409,
+      body: { error: "expired-bridge-challenge" },
+    });
+    expect(await f.manage("bridge-status")).toMatchObject({
+      connectionError: "expired-bridge-challenge",
+      connected: false,
+    });
+    await f.manage("bridge-challenge");
+    expect(await f.manage("bridge-status")).not.toHaveProperty(
+      "connectionError",
+      expect.any(String),
+    );
+  });
+  it.each([
+    [{ cliVersion: "2.1.302" }, "bridge-version-mismatch"],
+    [{ cwd: "/another/workspace" }, "bridge-identity-mismatch"],
+  ])(
+    "explains failed identity validation without granting a connection",
+    async (fields, reason) => {
+      const f = await fixture();
+      await f.manage("bridge-disconnect");
+      const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+      const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+      expect(
+        await f.http("/v1/pair", { ...f.hello, ...fields, ticket: ticket.ticket }),
+      ).toMatchObject({ status: 409, body: { error: reason } });
+      expect(await f.manage("bridge-status")).toMatchObject({
+        connected: false,
+        connectionError: reason,
+      });
+      expect((await f.http("/v1/pair", { ...f.hello, ticket: ticket.ticket })).status).toBe(200);
+      expect(await f.manage("bridge-status")).not.toHaveProperty(
+        "connectionError",
+        expect.any(String),
+      );
+    },
+  );
+  it("accepts only bounded native failure reports possessing a current connection code", async () => {
+    const f = await fixture();
+    await f.manage("bridge-disconnect");
+    const prepared = (await f.manage("bridge-challenge")) as { challenge: string };
+    const ticket = JSON.parse(Buffer.from(prepared.challenge, "base64url").toString());
+    expect(
+      await f.http("/v1/pair", {
+        ticket: "a".repeat(64),
+        connectionError: "bridge-version-mismatch",
+      }),
+    ).toMatchObject({ status: 409 });
+    expect(await f.manage("bridge-status")).not.toHaveProperty(
+      "connectionError",
+      expect.any(String),
+    );
+    expect(
+      await f.http("/v1/pair", {
+        ticket: ticket.ticket,
+        connectionError: "bridge-version-mismatch",
+      }),
+    ).toMatchObject({ status: 409 });
+    expect(await f.manage("bridge-status")).toMatchObject({
+      connected: false,
+      connectionError: "bridge-version-mismatch",
+    });
+    await f.manage("bridge-disconnect");
+    expect(await f.manage("bridge-status")).not.toHaveProperty(
+      "connectionError",
+      expect.any(String),
+    );
+  });
   it("disconnect also revokes unused reconnect challenges and old credentials", async () => {
     const f = await fixture();
     const challenge = (await f.manage("bridge-challenge")) as { challenge: string };

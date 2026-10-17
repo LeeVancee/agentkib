@@ -446,7 +446,7 @@ describe("original Claude terminal over Web", () => {
   it("sends directly to a connected session once without exposing local pairing or handoff", async () => {
     const { state } = createHost({ follower: true });
     await openSession();
-    expect(await screen.findByText("已连接原会话")).toBeVisible();
+    expect(await screen.findByText("已连接原会话", { selector: "aside strong" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "生成一次性连接码" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
@@ -482,7 +482,7 @@ describe("original Claude terminal over Web", () => {
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
     expect(draft).toHaveValue("Unsent terminal draft");
-    expect(screen.getByText("仅查看历史")).toBeVisible();
+    expect(screen.getByText("原终端连接已断开", { selector: "aside strong" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
   });

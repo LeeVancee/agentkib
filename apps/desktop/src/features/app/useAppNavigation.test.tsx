@@ -442,7 +442,9 @@ describe("useAppNavigation guards", () => {
       finish({ ...scan });
       await refreshing;
     });
-    expect(useWorkspaceStore.getState().manifest).toEqual(newer);
+    expect(useWorkspaceStore.getState().manifest).toEqual(
+      timing === "before the disk read starts" && text === "baseline" ? disk : newer,
+    );
     expect(useWorkspaceStore.getState().baselineManifest).toBe(JSON.stringify(disk));
     expect(useWorkspaceStore.getState().busy).toBe(false);
   });

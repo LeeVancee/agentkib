@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import type { ReactNode } from "react";
+import { ApiError } from "@agentkib/web-client";
 import type { ManagedOptions } from "@agentkib/web-client";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -288,10 +289,32 @@ describe("managed handoff feedback", () => {
     session.client.managedInspect.mockRejectedValue(new Error("inspection failed"));
     await show();
     fireEvent.click(screen.getByRole("checkbox"));
-    expect(await screen.findByRole("alert")).toHaveTextContent("connection_failed");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Connection lost. Verify the task list before retrying.",
+    );
     const button = screen.getByRole("button", { name: "Hand over to AgentKib" });
     expect(button).toBeDisabled();
     expect(button).toHaveAccessibleDescription(managedControlCopy["en-US"].fingerprintUnavailable);
+    expect(mutations()).toEqual([]);
+  });
+  it("shows a readable request error with the original code in collapsed details", async () => {
+    session.client.managedInspect.mockRejectedValue(
+      new ApiError(503, "inspection_unavailable", "not-dispatched"),
+    );
+    await show();
+    const alert = await screen.findByRole("alert");
+    expect(alert.querySelector("p")).toHaveTextContent("The execution management operation failed");
+    expect(alert.querySelector("p")).not.toHaveTextContent("inspection_unavailable");
+    expect(alert.querySelector("code")).toHaveTextContent("inspection_unavailable");
+    expect(alert.querySelector("details")).not.toHaveAttribute("open");
+  });
+  it("explains that an original-terminal connection must be disconnected before handoff", async () => {
+    session.live.executionMode = "claude-follower";
+    render(<ManagedTasks initialOpen />);
+    expect(
+      await screen.findByText("Disconnect the original terminal before handing over to AgentKib."),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Hand over to AgentKib" })).not.toBeInTheDocument();
     expect(mutations()).toEqual([]);
   });
   it("retains the execution-tool error and supplies a next step", async () => {
@@ -301,7 +324,10 @@ describe("managed handoff feedback", () => {
       reason: "tool-not-found",
     });
     await show();
-    expect(screen.getByText("tool-not-found")).toBeVisible();
+    const code = screen.getByText("tool-not-found");
+    expect(code.closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Error details"));
+    expect(code.closest("details")).toHaveAttribute("open");
     const button = screen.getByRole("button", { name: "Hand over to AgentKib" });
     expect(button).toBeDisabled();
     expect(button).toHaveAccessibleDescription(managedControlCopy["en-US"].tool);

@@ -176,6 +176,41 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 describe("Claude local owner panel", () => {
+  it("explains an unverified installation with its reason code available in details", async () => {
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "options"
+        ? Promise.resolve({ available: false, reason: "unverified-installation", workspaces: [] })
+        : original(value),
+    );
+    mount();
+    const copy = (
+      await import("@/features/sessions/conversation/features/sessions/codex-copy")
+    ).codexReason("en-US", "unverified-installation");
+    expect(await screen.findByText(copy.text)).toBeVisible();
+    expect(screen.getByText("unverified-installation")).not.toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Technical details" }));
+    expect(screen.getByText("unverified-installation")).toBeVisible();
+    expect(screen.getByRole("button", { name: "New Claude task" })).toBeDisabled();
+  });
+  it("shows an actionable handoff error with the original code in collapsed details", async () => {
+    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "inspect" ? Promise.reject(new Error("inspect_failed")) : original(value),
+    );
+    mount();
+    await screen.findByText("Synthetic history");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not inspect the original client. Check the terminal and retry.",
+    );
+    const detail = screen.getByText("inspect_failed");
+    expect(detail).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical details"));
+    expect(detail).toBeVisible();
+    expect(calls("adopt")).toHaveLength(0);
+  });
   it("shares native usage and compaction state while preserving native stop", async () => {
     live = {
       ...live,
@@ -200,7 +235,7 @@ describe("Claude local owner panel", () => {
       "Compacting context",
     );
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Release to original client" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Return to original client" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
     act(() => emitNative(2, "state", { revision: 3, activity: null }));
     expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent(
@@ -296,7 +331,7 @@ describe("Claude local owner panel", () => {
       const liveReads = calls("live").length;
       const capabilityReads = calls("capabilities").length;
       await act(async () => catalog.error(new Error("catalog_subscription_failed")));
-      expect(await screen.findByText("catalog_subscription_failed")).toBeVisible();
+      expect(await screen.findByText("catalog_subscription_failed")).toBeInTheDocument();
       expect(screen.getByLabelText("Message")).toBeDisabled();
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
       expect(screen.getByLabelText("Add images or files")).toBeDisabled();
@@ -337,7 +372,7 @@ describe("Claude local owner panel", () => {
       // A healthy detail stream cannot prove that the separate catalog recovered.
       emitNative(1, "state", { revision: 2, sendEnabled: true });
     });
-    expect(screen.getByText("catalog_subscription_failed")).toBeVisible();
+    expect(screen.getByText("catalog_subscription_failed")).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(screen.getByLabelText("Add images or files")).toBeDisabled();
@@ -365,7 +400,7 @@ describe("Claude local owner panel", () => {
       current.error(new Error("current_catalog_failure"));
       previous.event("session-ready", JSON.stringify({ cursor: ":0" }));
     });
-    expect(screen.getByText("current_catalog_failure")).toBeVisible();
+    expect(screen.getByText("current_catalog_failure")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     await act(async () => current.event("session-ready", JSON.stringify({ cursor: ":0" })));
     await enabled(screen.getByRole("button", { name: "Send" }));
@@ -395,7 +430,7 @@ describe("Claude local owner panel", () => {
         else emitNative(1, "invalidate", { domains: ["catalog"] }, "");
       });
       if (failure === "metadata")
-        expect(await screen.findByText("metadata_unavailable")).toBeVisible();
+        expect(await screen.findByText("metadata_unavailable")).toBeInTheDocument();
       await act(async () => catalog.error(new Error("catalog_subscription_failed")));
       const capabilityReads = calls("capabilities").length;
       await act(async () => {
@@ -413,7 +448,8 @@ describe("Claude local owner panel", () => {
       expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
       expect(screen.getByLabelText("Add images or files")).toBeDisabled();
       expect(screen.getByLabelText("Message")).toHaveValue("Preserved draft");
-      if (failure === "metadata") expect(screen.getByText("metadata_unavailable")).toBeVisible();
+      if (failure === "metadata")
+        expect(screen.getByText("metadata_unavailable")).toBeInTheDocument();
       expect(calls("send")).toHaveLength(0);
     },
   );
@@ -508,7 +544,7 @@ describe("Claude local owner panel", () => {
       const historyReads = calls("events").length;
       const liveReads = calls("live").length;
       await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
-      expect(await screen.findByText("transient_metadata_failure")).toBeVisible();
+      expect(await screen.findByText("transient_metadata_failure")).toBeInTheDocument();
       expect(screen.getByLabelText("Message")).toBeDisabled();
       expect(screen.getByLabelText("Add images or files")).toBeDisabled();
       failed = false;
@@ -538,13 +574,13 @@ describe("Claude local owner panel", () => {
         : original(value),
     );
     await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
-    expect(await screen.findByText("transient_metadata_failure")).toBeVisible();
+    expect(await screen.findByText("transient_metadata_failure")).toBeInTheDocument();
     await act(async () => {
       emitNative(1, "text-delta", { itemId: "reply", text: "Still observing", offset: 0 });
       emitNative(2, "state", { revision: 2, status: "idle", sendEnabled: true });
     });
     expect(await screen.findByText("Still observing")).toBeVisible();
-    expect(screen.getByText("transient_metadata_failure")).toBeVisible();
+    expect(screen.getByText("transient_metadata_failure")).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(screen.getByLabelText("Add images or files")).toBeDisabled();
@@ -562,12 +598,12 @@ describe("Claude local owner panel", () => {
         : original(value),
     );
     fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
-    expect(await screen.findByText("history_refresh_failed")).toBeVisible();
+    expect(await screen.findByText("history_refresh_failed")).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     const failedReads = calls("events").length;
     await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
     await waitFor(() => expect(calls("events").length).toBeGreaterThan(failedReads));
-    expect(screen.getByText("history_refresh_failed")).toBeVisible();
+    expect(screen.getByText("history_refresh_failed")).toBeInTheDocument();
     expect(screen.getByLabelText("Message")).toBeDisabled();
     expect(screen.getByLabelText("Add images or files")).toBeDisabled();
     historyFailed = false;
@@ -619,7 +655,7 @@ describe("Claude local owner panel", () => {
           screen.queryByRole("button", { name: "Files and artifacts" }),
         ).not.toBeInTheDocument();
         expect(screen.queryByText("result.txt")).not.toBeInTheDocument();
-        if (failure === "control") expect(screen.getByText("host_offline")).toBeVisible();
+        if (failure === "control") expect(screen.getByText("host_offline")).toBeInTheDocument();
       };
       expectDisconnected();
       await act(async () => release());
@@ -852,7 +888,7 @@ describe("Claude local owner panel", () => {
     live = { ...live, executionMode: "managed-resume", sendEnabled: false };
     mount();
     await screen.findByText("Synthetic history");
-    const prepare = screen.getByRole("button", { name: "Prepare handoff" });
+    const prepare = screen.getByRole("button", { name: "Hand over to AgentKib" });
     await waitFor(() => expect(prepare).toBeEnabled());
     fireEvent.click(prepare);
     fireEvent.click(await enabled(await screen.findByRole("checkbox")));
@@ -1104,9 +1140,9 @@ describe("Claude local owner panel translated controls", () => {
       message: "消息",
       files: "文件与产物",
       idle: "空闲",
-      release: "释放给原客户端",
+      release: "交还原客户端",
       send: "发送",
-      prepare: "准备接管",
+      prepare: "交给 AgentKib",
       handoff: "交给 AgentKib",
       confirmation: "我已停止原终端和其他客户端，按原 UUID 继续。",
       approval: "处理审批",
@@ -1125,9 +1161,9 @@ describe("Claude local owner panel translated controls", () => {
       message: "訊息",
       files: "檔案與產物",
       idle: "閒置",
-      release: "釋放給原客戶端",
+      release: "交還原客戶端",
       send: "傳送",
-      prepare: "準備接管",
+      prepare: "交給 AgentKib",
       handoff: "交給 AgentKib",
       confirmation: "我已停止原終端機與其他客戶端，使用原 UUID 繼續。",
       approval: "處理審批",
@@ -1146,9 +1182,9 @@ describe("Claude local owner panel translated controls", () => {
       message: "Message",
       files: "Files and artifacts",
       idle: "Idle",
-      release: "Release to original client",
+      release: "Return to original client",
       send: "Send",
-      prepare: "Prepare handoff",
+      prepare: "Hand over to AgentKib",
       handoff: "Hand over to AgentKib",
       confirmation:
         "I have stopped the original terminal and other clients. Continue the same UUID.",
@@ -1170,7 +1206,7 @@ describe("Claude local owner panel translated controls", () => {
       idle: "待機中",
       release: "元のクライアントに戻す",
       send: "送信",
-      prepare: "引き渡しを準備",
+      prepare: "AgentKib に引き渡す",
       handoff: "AgentKib に引き渡す",
       confirmation: "元のターミナルと他のクライアントを停止しました。同じ UUID で続けます。",
       approval: "承認内容を確認",

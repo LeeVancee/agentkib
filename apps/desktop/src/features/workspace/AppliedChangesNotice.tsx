@@ -9,9 +9,11 @@ import { WorkspaceChangeDiff } from "./WorkspaceChangeDiff";
 export function AppliedChangesNotice({
   result,
   onDismiss,
+  verificationText,
 }: {
   result: AppliedWorkspaceChanges;
   onDismiss: () => void;
+  verificationText?: string;
 }) {
   const { tr } = useI18n();
   const [open, setOpen] = useState(false);
@@ -22,9 +24,10 @@ export function AppliedChangesNotice({
         className="flex flex-wrap items-center gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm"
       >
         <Check size={17} className="text-emerald-600" />
-        <span className="flex-1">
-          {tr("changes.appliedSummary", { count: result.applied.length })}
-        </span>
+        <div className="grid flex-1 gap-1">
+          <span>{tr("changes.appliedSummary", { count: result.applied.length })}</span>
+          {verificationText && <span>{verificationText}</span>}
+        </div>
         <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
           {tr("changes.viewApplied")}
         </Button>

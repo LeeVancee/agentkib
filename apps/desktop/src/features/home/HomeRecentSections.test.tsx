@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { initializeI18n, tr } from "@/core/i18n";
+import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { ActivityRecord } from "@/core/types";
+import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
+import { GlobalSettings, type GlobalSettingsProps } from "@/features/settings/GlobalSettings";
+import { SettingsSidebar } from "@/features/settings/SettingsSidebar";
 import { RecentActivitySection } from "./HomeRecentSections";
 
 const activity: ActivityRecord[] = [
@@ -21,7 +24,10 @@ const activity: ActivityRecord[] = [
 
 describe("RecentActivitySection", () => {
   beforeAll(() => initializeI18n("en-US"));
-  afterEach(cleanup);
+  afterEach(async () => {
+    cleanup();
+    await act(() => changeLocale("en-US"));
+  });
 
   it("opens the activity list through its dedicated callback", () => {
     const onShowActivity = vi.fn();
@@ -47,6 +53,76 @@ describe("RecentActivitySection", () => {
     expect(screen.getByText(tr("home.noImportantActivity"))).toBeVisible();
     expect(screen.getByText(tr("home.noImportantActivityText"))).toBeVisible();
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it.each([
+    {
+      locale: "zh-CN",
+      settings: "设置",
+      diagnostics: "诊断",
+      audit: "本地审计活动",
+      message: "例行发现记录可在“设置 > 诊断 > 本地审计活动”查看。",
+    },
+    {
+      locale: "zh-TW",
+      settings: "設定",
+      diagnostics: "診斷",
+      audit: "本機稽核活動",
+      message: "例行探索記錄可在「設定 > 診斷 > 本機稽核活動」查看。",
+    },
+    {
+      locale: "ja-JP",
+      settings: "設定",
+      diagnostics: "診断",
+      audit: "ローカル監査アクティビティ",
+      message: "定期探索の記録は「設定 > 診断 > ローカル監査アクティビティ」で確認できます。",
+    },
+    {
+      locale: "en-US",
+      settings: "Settings",
+      diagnostics: "Diagnostics",
+      audit: "Local Audit Activity",
+      message: "Routine discovery runs are kept in Settings > Diagnostics > Local Audit Activity.",
+    },
+  ] as const)("points to the actual audit settings destination in $locale", async (copy) => {
+    await act(() => changeLocale(copy.locale));
+    useSidebarViewStore.getState().setSettingsQuery("");
+    const home = render(
+      <RecentActivitySection activity={[]} pending={false} onShowActivity={vi.fn()} />,
+    );
+    const message = within(home.container).getByText(copy.message);
+    expect(message).toBeVisible();
+    expect(message).toHaveTextContent(`${copy.settings} > ${copy.diagnostics} > ${copy.audit}`);
+    expect(tr("nav.settings")).toBe(copy.settings);
+
+    const onSelect = vi.fn();
+    const navigation = render(<SettingsSidebar active="general" onSelect={onSelect} />);
+    fireEvent.click(within(navigation.container).getByRole("button", { name: copy.diagnostics }));
+    expect(onSelect).toHaveBeenCalledWith("diagnostics", undefined);
+
+    const noop = async () => undefined;
+    const props: GlobalSettingsProps = {
+      section: "diagnostics",
+      workspaces: [],
+      remoteGateways: [],
+      scanRoots: [],
+      excluded: [],
+      activity: [],
+      onAddRoot: noop,
+      onRemoveRoot: noop,
+      onRestore: noop,
+      onCloseBehaviorChanged: noop,
+      onLocaleChanged: vi.fn(),
+      onSessionIndexCleared: vi.fn(),
+      onOnboardingRestarted: noop,
+      onRemoteGatewaysChanged: noop,
+      onRefreshDiagnostics: noop,
+    };
+    const settings = render(<GlobalSettings {...props} />);
+    expect(
+      within(settings.container).getByRole("heading", { name: copy.diagnostics }),
+    ).toBeVisible();
+    expect(within(settings.container).getByRole("heading", { name: copy.audit })).toBeVisible();
   });
 
   it("keeps the latest three entries with their localized titles and details", () => {

@@ -14,6 +14,7 @@ export interface AppliedWorkspaceChanges {
   changeSet: ChangeSet;
   applied: string[];
   backupDir: string;
+  origin?: ChangeSetOrigin;
 }
 type Updater<T> = T | ((current: T) => T);
 
@@ -24,6 +25,7 @@ interface WorkspaceState {
   manifest?: Manifest;
   changeSet?: ChangeSet;
   changeSetManifest?: string;
+  changeSetIncludesHome: boolean;
   changeSetOrigin: ChangeSetOrigin;
   handoffLaunchRequest?: SessionHandoffLaunchRequest;
   baselineManifest: string;
@@ -41,7 +43,11 @@ interface WorkspaceActions {
   setSelectedWorkspace: (value: Updater<WorkspaceSummary | undefined>) => void;
   setScan: (value: Updater<WorkspaceScan | undefined>) => void;
   setManifest: (value: Updater<Manifest | undefined>) => void;
-  setChangeSet: (value: Updater<ChangeSet | undefined>, plannedManifest?: Manifest) => void;
+  setChangeSet: (
+    value: Updater<ChangeSet | undefined>,
+    plannedManifest?: Manifest,
+    includesHome?: boolean,
+  ) => void;
   acceptAppliedManifest: (
     manifest: Manifest,
     plannedManifest?: string,
@@ -66,6 +72,7 @@ const resolve = <T>(value: Updater<T>, current: T): T =>
 export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set) => ({
   project: "",
   changeSetOrigin: "standard",
+  changeSetIncludesHome: false,
   baselineManifest: "",
   workspaceDrafts: {},
   busy: false,
@@ -80,21 +87,31 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
   setManifest: (value) =>
     set((state) => {
       const manifest = resolve(value, state.manifest);
-      if (state.changeSet && JSON.stringify(manifest) !== JSON.stringify(state.manifest)) {
+      if (
+        state.changeSet &&
+        state.changeSetOrigin === "standard" &&
+        JSON.stringify(manifest) !== JSON.stringify(state.manifest)
+      ) {
         return {
           manifest,
           changeSet: undefined,
           changeSetManifest: undefined,
+          changeSetIncludesHome: false,
           handoffLaunchRequest: undefined,
         };
       }
       return { manifest };
     }),
-  setChangeSet: (value, plannedManifest) =>
-    set((state) => ({
-      changeSet: resolve(value, state.changeSet),
-      changeSetManifest: plannedManifest ? JSON.stringify(plannedManifest) : undefined,
-    })),
+  setChangeSet: (value, plannedManifest, includesHome = false) =>
+    set((state) => {
+      const changeSet = resolve(value, state.changeSet);
+      return {
+        changeSet,
+        changeSetManifest: plannedManifest ? JSON.stringify(plannedManifest) : undefined,
+        changeSetIncludesHome: includesHome,
+        ...(changeSet && changeSet !== state.changeSet ? { appliedChanges: undefined } : {}),
+      };
+    }),
   acceptAppliedManifest: (diskManifest, plannedManifest, draftAtApply) =>
     set((state) => {
       const baselineManifest = JSON.stringify(diskManifest);
@@ -169,11 +186,15 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       return {
         manifest,
         workspaceDrafts,
-        changeSet: undefined,
-        changeSetManifest: undefined,
-        changeSetOrigin: "standard",
-        // A completed/unknown import without a plan still needs its recovery request.
-        handoffLaunchRequest: state.changeSet ? undefined : state.handoffLaunchRequest,
+        ...(state.changeSetOrigin === "standard"
+          ? {
+              changeSet: undefined,
+              changeSetManifest: undefined,
+              changeSetIncludesHome: false,
+              // A completed/unknown import still needs its recovery request.
+              handoffLaunchRequest: state.changeSet ? undefined : state.handoffLaunchRequest,
+            }
+          : {}),
       };
     });
     return discarded;
@@ -186,6 +207,7 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
       manifest: undefined,
       changeSet: undefined,
       changeSetManifest: undefined,
+      changeSetIncludesHome: false,
       changeSetOrigin: "standard",
       handoffLaunchRequest: undefined,
       baselineManifest: "",

@@ -25,6 +25,31 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "names both controlled Agents in task permissions in %s",
+  async (locale) => {
+    const { webSettingsCopy } = await import("./web-settings-copy");
+    request.mockResolvedValue({
+      ...status,
+      devices: [{ id: "d", name: "Phone", manage: true, createdAt: Date.now() }],
+    });
+    await act(() => changeLocale(locale));
+    try {
+      render(<WebAccessSettings />);
+      const label = webSettingsCopy[locale].manage;
+      expect(label).toContain("Codex");
+      expect(label).toContain("Claude Code");
+      expect(
+        await screen.findByText(
+          (_, element) => element?.tagName === "SMALL" && !!element.textContent?.includes(label),
+        ),
+      ).toBeVisible();
+    } finally {
+      await act(() => changeLocale("en-US"));
+    }
+  },
+);
+
 it("refreshes active Web settings every two seconds and clears a recovered polling error without changed data", async () => {
   vi.useFakeTimers();
   const activeStatus = { ...status, running: true };
@@ -1005,6 +1030,7 @@ it.each([
       fireEvent.click(screen.getByRole("button", { name: remoteEntryCopy[locale].advanced }));
       fireEvent.click(screen.getByRole("switch", { name: c.enabled }));
       expect(screen.getByText(unsaved)).toBeVisible();
+      expect(screen.getAllByText(c.saveHint)).toHaveLength(1);
       expect(screen.getByRole("button", { name: c.save })).toBeEnabled();
       view.unmount();
       request.mockResolvedValue({ ...status, pairingMode: "confirmation" });

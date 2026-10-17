@@ -222,6 +222,110 @@ describe("useAppNavigation guards", () => {
     expect(testDoubles.notify).not.toHaveBeenCalled();
   });
 
+  it.each(["en-US", "zh-CN", "zh-TW", "ja-JP"] as const)(
+    "clears applied feedback after visiting settings and returning without discarding the draft in %s",
+    async (locale) => {
+      await initializeI18n(locale);
+      const workspace: WorkspaceSummary = {
+        id: "workspace-1",
+        path: "/workspace",
+        name: "Workspace",
+        status: "healthy",
+        asset_count: 0,
+        warning_count: 0,
+        sources: [],
+      };
+      const draft = { instructions: { shared: "Unsaved draft" } } as Manifest;
+      const plan: ChangeSet = {
+        id: "reviewed-plan",
+        project_root: workspace.path,
+        created_at: "",
+        changes: [],
+        requires_home_approval: false,
+      };
+      useWorkspaceStore.setState({
+        selectedWorkspace: workspace,
+        project: workspace.path,
+        manifest: draft,
+        baselineManifest: "saved-manifest",
+        workspaceDrafts: { [workspace.id]: draft },
+        changeSet: plan,
+        appliedChanges: {
+          workspaceId: workspace.id,
+          project: workspace.path,
+          changeSet: { ...plan, id: "previously-applied" },
+          applied: ["AGENTS.md"],
+          backupDir: "",
+        },
+      });
+      testDoubles.location.pathname = "/workspace/workspace-1/assets";
+      const { result, rerender } = renderHook(() => useAppNavigation());
+      expect(useWorkspaceStore.getState().appliedChanges).toBeDefined();
+      act(() => result.current.openSettings("diagnostics"));
+      expect(testDoubles.navigate.mock.calls.at(-1)?.[0].to).toBe("/settings");
+      testDoubles.location.pathname = "/settings";
+      rerender();
+      expect(useWorkspaceStore.getState().appliedChanges).toBeUndefined();
+      expect(useWorkspaceStore.getState().manifest).toBe(draft);
+      expect(useWorkspaceStore.getState().workspaceDrafts[workspace.id]).toBe(draft);
+      expect(useWorkspaceStore.getState().changeSet).toBe(plan);
+      await act(async () => {
+        expect(await result.current.openWorkspace(workspace, "assets")).toBe(true);
+      });
+      testDoubles.location.pathname = "/workspace/workspace-1/assets";
+      rerender();
+      expect(useWorkspaceStore.getState().appliedChanges).toBeUndefined();
+      expect(useWorkspaceStore.getState().manifest).toBe(draft);
+      expect(testDoubles.confirm).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["/catalog", "/sessions"])(
+    "clears applied feedback for a direct transition to %s while retaining workspace data",
+    (target) => {
+      const applied = {
+        workspaceId: "workspace-1",
+        project: "/workspace",
+        changeSet: {
+          id: "applied",
+          project_root: "/workspace",
+          created_at: "",
+          changes: [],
+          requires_home_approval: false,
+        },
+        applied: ["AGENTS.md"],
+        backupDir: "",
+      };
+      useWorkspaceStore.setState({ project: "/workspace", appliedChanges: applied });
+      testDoubles.location.pathname = "/workspace/workspace-1/changes";
+      const { rerender } = renderHook(() => useAppNavigation());
+      expect(useWorkspaceStore.getState().appliedChanges).toBe(applied);
+      testDoubles.location.pathname = target;
+      rerender();
+      expect(useWorkspaceStore.getState().appliedChanges).toBeUndefined();
+      expect(useWorkspaceStore.getState().project).toBe("/workspace");
+    },
+  );
+  it("retains applied feedback while moving between pages within the same workspace", () => {
+    const applied = {
+      workspaceId: "workspace-1",
+      project: "/workspace",
+      changeSet: {
+        id: "applied",
+        project_root: "/workspace",
+        created_at: "",
+        changes: [],
+        requires_home_approval: false,
+      },
+      applied: ["AGENTS.md"],
+      backupDir: "",
+    };
+    useWorkspaceStore.setState({ appliedChanges: applied });
+    testDoubles.location.pathname = "/workspace/workspace-1/changes";
+    const { rerender } = renderHook(() => useAppNavigation());
+    testDoubles.location.pathname = "/workspace/workspace-1/sessions";
+    rerender();
+    expect(useWorkspaceStore.getState().appliedChanges).toBe(applied);
+  });
   it("uses the same guarded settings action for native navigation requests", () => {
     useAppStore.setState({
       navigationRequest: { page: "settings", settings_section: "privacy" },

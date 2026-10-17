@@ -82,6 +82,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     message,
     setMessage,
     setBusy,
+    setAppliedChanges,
   } = workspaceStore;
   const workspaceOpenRequest = useRef(0);
   const missingWorkspaceNotice = useRef<
@@ -244,8 +245,9 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
       missingWorkspaceNotice.current = undefined;
       workspaceOpenRequest.current += 1;
       setBusy(false);
+      setAppliedChanges(undefined);
     }
-  }, [route.kind, setBusy]);
+  }, [route.kind, setBusy, setAppliedChanges]);
   useEffect(() => {
     // The URL updates before the committed route matches during navigation.
     // Do not restore the previous workspace while its matches are still rendered.

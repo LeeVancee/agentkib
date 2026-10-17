@@ -483,3 +483,21 @@ UX-03、UX-06、UX-13 的判定已由开发者收窄（见上一轮清单各条�
 - 两轴独立终审覆盖完整 PR 及本轮修复，包含最后补充的本地交还状态边界；最终 Standards：0 finding，Spec：0 finding。Spec 终审独立执行 11 个测试文件、345 个用例全部通过。
 
 本轮继续不处理待设计确认项、待实机/待确认部分及后续增强；不新增依赖，不修改后端执行权校验、公共协议或持久化结构，不合并 PR。
+
+## PR #127 新一轮独立审查记录（2026-10-17）
+
+以 `main@0e02f6a49` 到 `e8b44b4e4` 的完整 98 文件差异重新开展 Standards / Spec 独立审查，另行深查连接与会话异步边界。本轮没有沿用上次的无发现结论；确认并修复 1 项遗漏：
+
+- UX-50：从侧栏进入设置时，按现有约定保留工作区选择、草稿与计划；返回同一工作区又走提前返回分支，因此旧的“已应用”反馈没有失效。现于实际路由离开工作区视图时清除 `appliedChanges`，覆盖设置往返及直接进入资源库/会话页；同一工作区内部导航仍保留反馈。不调用放弃草稿流程，不清除计划和交接恢复请求。
+- 平台与语言：工作区管理及应用反馈没有对应的 Web 页面，没有新增用户文案；新增四语设置往返回归验证语言无关的状态失效逻辑，原有 Web 会话功能继续回归验证。
+- 新增 7 条回归：四语设置往返 4 条、直接离开工作区 2 条、工作区内导航保持 1 条。旧实现先出现 6 例失败、1 例通过；修复后导航及相邻工作区流程 4 个文件、77 个用例通过。
+- 修复后两轴独立终审，Standards：0 finding；Spec：0 finding。Spec 终审另独立执行导航、工作区加载与应用恢复 5 个文件、102 个用例，全部通过；连接边界独立执行桌面 7 文件 / 281 用例和 Web 4 文件 / 108 用例，全部通过。
+
+最终验证：
+
+- 桌面：`cd apps/desktop && node node_modules/vitest/vitest.mjs run --maxWorkers=4`，351 个文件通过、1 个文件跳过；6594 个用例通过、3 个用例跳过，退出码 0。
+- Web：`cd apps/web && node node_modules/vitest/vitest.mjs run --maxWorkers=2`，57 个文件、1124 个用例通过，退出码 0。
+- 桌面 `node node_modules/typescript/bin/tsc -b --pretty false`；Web 与后端 `node node_modules/typescript/bin/tsc --noEmit --pretty false`，均通过。桌面和 Web 的 `node node_modules/vite/bin/vite.js build` 均通过；本轮未改后端生产代码，未重复后端打包与原生 staging。
+- 本轮 2 个源码/测试文件的 `oxfmt --check`、`git diff --check` 通过；定向 `oxlint` 和项目 `node_modules/.bin/oxlint apps/desktop/src apps/desktop/electron apps/web/src packages/backend/src` 退出码 0，有 warning、无 error。
+
+本轮继续不处理待设计确认项、待实机/待确认部分及后续增强；不新增依赖、公共协议或持久化结构，不合并 PR。

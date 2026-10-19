@@ -106,6 +106,8 @@ export type ClaudeRunnerOptions = {
   mcpConfig?: Record<string, unknown>;
   onResult?: (result: ClaudeRunnerTerminalResult) => void;
   controlTimeoutMs?: number;
+  /** Revalidate native ownership immediately before every new worker, including retirement reuse. */
+  beforeStart?: () => Promise<void>;
   /** `claude --version` output; only used to explain a failure when the CLI is newer than verified. */
   cliVersion?: string;
 };
@@ -1264,6 +1266,13 @@ export class ClaudeManagedRunnerProcess {
       await this.#initializing;
       return this.optionsSnapshot;
     }
+    if (this.options.beforeStart) await this.options.beforeStart();
+    if (this.#retiring || this.state.status !== "idle" || this.#configuring)
+      throw new Error("Claude runner cannot prepare while busy");
+    if (this.#child) {
+      await this.#initializing;
+      return this.optionsSnapshot;
+    }
     const checkpoint = this.state.checkpoint();
     const init = this.state.initialize();
     let started: ChildProcess | undefined;
@@ -1434,6 +1443,9 @@ export class ClaudeManagedRunnerProcess {
     revision: number,
     beforeDispatch?: () => void,
   ): Promise<void> {
+    if (this.#retiring || this.#configuring)
+      throw new Error("Claude runner is being retired or configured");
+    if (!this.#child && this.options.beforeStart) await this.options.beforeStart();
     if (this.#retiring || this.#configuring)
       throw new Error("Claude runner is being retired or configured");
     const checkpoint = this.state.checkpoint();

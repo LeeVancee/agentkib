@@ -88,17 +88,48 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     PARITY_MODE: mode,
     PARITY_RESULT_GATE: resultGate,
   };
+  let externalOwner: string | null = null;
   const commands = {
-    run: vi.fn(async (_command: string, args: string[]) => {
+    run: vi.fn(async (command: string, args: string[]) => {
+      if (command === "/bin/ps") {
+        expect(args).toEqual(["-axo", "pid=,lstart=,command="]);
+        // Model only this fixture's owner; process-wide ps parsing has dedicated coverage.
+        if (externalOwner) process.kill(process.pid, 0);
+        return {
+          success: true,
+          bytes: Buffer.from(
+            externalOwner ? `${process.pid} Mon Oct 19 00:00:00 2026 node fixture-owner\n` : "",
+          ),
+        };
+      }
+      if (args[0] === "agents") {
+        expect(args).toEqual(["agents", "--json"]);
+        return {
+          success: true,
+          bytes: Buffer.from(
+            JSON.stringify(
+              externalOwner
+                ? [{ sessionId: externalOwner, pid: process.pid, kind: "interactive" }]
+                : [],
+            ),
+          ),
+        };
+      }
       expect(args).toEqual(["--version"]);
       return { success: true, bytes: Buffer.from(`${version} (Claude Code)\n`) };
     }),
   } as unknown as Commands;
+  const indexed = new Map<string, { agent: string; workspace_id: string; sidechain: boolean }>();
   const store = {
     workspacePath: () => workspace,
-    sessions: { id: (_agent: string, id: string) => id },
+    sessions: { id: (_agent: string, id: string) => id, get: (id: string) => indexed.get(id) },
   } as unknown as BackendStore;
-  const sessions = { verifiedClaudeControlTarget: transcript } as unknown as SessionReaders;
+  const sessions = {
+    verifiedClaudeControlTarget: transcript,
+    claudeControlWorkspace: () => workspace,
+    list: async () => ({ sessions: [...indexed.keys()].map((id) => ({ native_ref: id })) }),
+    document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),
+  } as unknown as SessionReaders;
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const makeOwner = () => {
     const owner = new ClaudeManagedReadOwner(
@@ -128,6 +159,41 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     owner: makeOwner(),
     frames,
     releaseResult: () => writeFileSync(resultGate, "go"),
+    setExternalOwner: (id: string | null) => {
+      externalOwner = id;
+    },
+    indexNative: () => {
+      const id = randomUUID();
+      indexed.set(id, { agent: "claude-code", workspace_id: "workspace", sidechain: false });
+      const user = randomUUID();
+      writeFileSync(
+        transcript(id),
+        [
+          {
+            type: "user",
+            uuid: user,
+            sessionId: id,
+            cwd: workspace,
+            message: { role: "user", content: "Existing native turn" },
+          },
+          {
+            type: "assistant",
+            uuid: randomUUID(),
+            parentUuid: user,
+            sessionId: id,
+            cwd: workspace,
+            message: {
+              role: "assistant",
+              stop_reason: "end_turn",
+              content: [{ type: "text", text: "Existing native reply" }],
+            },
+          },
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n") + "\n",
+      );
+      return id;
+    },
   };
 }
 
@@ -185,6 +251,131 @@ async function dispatch(owner: ClaudeManagedReadOwner, permit: Record<string, an
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude remote owner parity (synthetic offline CLI)",
   () => {
+    it.each([
+      { released: false, partial: false },
+      { released: true, partial: false },
+      { released: false, partial: true },
+    ])(
+      "forks an occupied native source read-only and runs only the fresh child (released=$released, partial=$partial)",
+      async ({ released, partial }) => {
+        const f = fixture();
+        const source = f.indexNative();
+        if (released) {
+          await f.owner.request({
+            operation: "adopt",
+            sessionId: source,
+            requestId: randomUUID(),
+            deviceId: "browser-device-a",
+          });
+          await f.owner.request({
+            operation: "release",
+            sessionId: source,
+            requestId: randomUUID(),
+            deviceId: "browser-device-a",
+            runtimeBootId: f.owner.bootId,
+            expectedRevision: (await f.owner.live(source, true)).revision,
+          });
+        }
+        const complete = readFileSync(f.transcript(source), "utf8");
+        const cutoff = JSON.parse(complete.trim().split("\n").at(-1)!).uuid;
+        if (partial)
+          writeFileSync(
+            f.transcript(source),
+            complete +
+              JSON.stringify({
+                type: "user",
+                uuid: randomUUID(),
+                parentUuid: cutoff,
+                sessionId: source,
+                cwd: f.workspace,
+                message: { role: "user", content: "Native turn still running" },
+              }) +
+              "\n",
+          );
+        const before = readFileSync(f.transcript(source), "utf8");
+        f.setExternalOwner(source);
+        await expect
+          .poll(() => f.owner.live(source, true), { timeout: 5000, interval: 100 })
+          .toMatchObject({
+            sendEnabled: false,
+            ownershipReason: "claude-owner-busy",
+          });
+        const fork = await control(f.owner, source, "fork");
+        expect(fork).toMatchObject({ accepted: true, forkSourceSessionId: source });
+        expect(fork.sourceSessionId).not.toBe(source);
+        expect(f.frames()).toEqual([]);
+        expect(readFileSync(f.transcript(source), "utf8")).toBe(before);
+        expect(
+          JSON.parse(
+            readFileSync(path.join(f.root, "claude-managed", `${fork.sessionId}.json`), "utf8"),
+          ),
+        ).toMatchObject({
+          nativeId: fork.sourceSessionId,
+          fresh: true,
+          released: false,
+          forkSourceNativeId: source,
+          forkCutoff: cutoff,
+        });
+        expect(
+          await control(f.owner, fork.sessionId, "send", { text: "Continue the child" }),
+        ).toMatchObject({ accepted: true });
+        await expect
+          .poll(async () => (await f.owner.live(fork.sessionId, true)).status)
+          .toBe("idle");
+        const launches = f.frames().filter((frame) => frame.args);
+        expect(launches).toHaveLength(1);
+        expect(launches[0]!.args).toEqual(
+          expect.arrayContaining([
+            `--resume=${source}`,
+            "--fork-session",
+            `--session-id=${fork.sourceSessionId}`,
+            `--resume-session-at=${cutoff}`,
+          ]),
+        );
+        expect(readFileSync(f.transcript(source), "utf8")).toBe(before);
+        expect(await f.owner.live(source, true)).toMatchObject({
+          ownershipReason: "claude-owner-busy",
+        });
+      },
+      10_000,
+    );
+    it("automatically adopts a native first send while still rejecting an explicitly stale fingerprint", async () => {
+      const f = fixture();
+      const id = f.indexNative();
+      const inspected = await f.owner.inspect(id);
+      const previous = readFileSync(f.transcript(id), "utf8");
+      writeFileSync(
+        f.transcript(id),
+        previous +
+          JSON.stringify({ type: "custom-title", customTitle: "Native title changed" }) +
+          "\n",
+      );
+      await expect(
+        f.owner.request({
+          operation: "adopt",
+          sessionId: id,
+          requestId: randomUUID(),
+          deviceId: "browser-device-a",
+          handoffFingerprint: inspected.handoffFingerprint,
+        }),
+      ).rejects.toThrow("handoff-fingerprint-changed");
+      expect(existsSync(path.join(f.root, "claude-managed", `${id}.json`))).toBe(false);
+      expect(f.frames()).toEqual([]);
+      expect(await control(f.owner, id, "send", { text: "Continue automatically" })).toMatchObject({
+        accepted: true,
+      });
+      await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("idle");
+      expect(
+        JSON.parse(readFileSync(path.join(f.root, "claude-managed", `${id}.json`), "utf8")),
+      ).toMatchObject({ nativeId: id, adopted: true, released: false });
+      expect(
+        f
+          .frames()
+          .filter((frame) => frame.args)
+          .at(-1)!.args,
+      ).toContain(`--resume=${id}`);
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+    });
     it("creates under the real browser device, persists selections without a user frame, and rejects malformed identities", async () => {
       const f = fixture();
       const requestId = randomUUID();
@@ -396,7 +587,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect((await next(f.owner, created.sessionId)).next).toBeNull();
     });
 
-    it("invalidates prepared permits synchronously and preserves the original author on confirmed resume", async () => {
+    it("invalidates prepared permits synchronously and preserves the original author without resume confirmation", async () => {
       const f = fixture();
       const created = await create(f.owner);
       await control(f.owner, created.sessionId, "queue-add", {
@@ -407,20 +598,16 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       await expect(dispatch(f.owner, permit)).rejects.toThrow();
       expect(f.frames().some((frame) => frame.type === "user")).toBe(false);
       await control(f.owner, created.sessionId, "queue-pause");
-      await expect(
-        control(f.owner, created.sessionId, "queue-resume", { deviceId: "browser-device-b" }),
-      ).rejects.toThrow("handoff-confirmation-required");
-      await control(f.owner, created.sessionId, "queue-resume", {
-        deviceId: "browser-device-b",
-        handoffConfirmed: true,
-      });
+      expect(
+        await control(f.owner, created.sessionId, "queue-resume", { deviceId: "browser-device-b" }),
+      ).toMatchObject({ accepted: true });
       expect((await next(f.owner, created.sessionId)).next).toMatchObject({
         deviceId: "browser-device-a",
         originDeviceId: "browser-device-a",
       });
     });
 
-    it("requires manual confirmation after restart and replays a durable mutation without reopening deleted files", async () => {
+    it("keeps queued work paused after restart and resumes without confirmation or reopening deleted files", async () => {
       const f = fixture();
       const created = await create(f.owner);
       const id = created.sessionId;
@@ -450,7 +637,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       await expect(
         restarted.request({ ...request, runtimeBootId: restarted.bootId, text: "different" }),
       ).rejects.toThrow("request-id-reused-with-different-input");
-      await control(restarted, id, "queue-resume", { handoffConfirmed: true });
+      await control(restarted, id, "queue-resume");
       const permit = await prepare(restarted, id);
       await dispatch(restarted, permit);
       await expect.poll(() => f.frames().filter((frame) => frame.type === "user").length).toBe(1);
@@ -647,7 +834,6 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           sessionId: fork.sessionId,
           requestId: randomUUID(),
           deviceId: "browser-device-a",
-          handoffConfirmed: true,
           handoffFingerprint: inspected.handoffFingerprint,
         });
         expect(f.frames()).toHaveLength(before);
@@ -695,7 +881,6 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
           sessionId: fork.sessionId,
           requestId: randomUUID(),
           deviceId: "browser-device-a",
-          handoffConfirmed: true,
           handoffFingerprint: inspected.handoffFingerprint,
         }),
       ).rejects.toThrow("handoff-fingerprint-changed");
@@ -804,9 +989,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         expect(await f.owner.capabilities(id, true)).toMatchObject({
           features: { "goal-resume": { available: false, reason: "usage-unavailable" } },
         });
-        await expect(
-          control(f.owner, id, "goal-resume", { handoffConfirmed: true }),
-        ).rejects.toThrow("usage-unavailable");
+        await expect(control(f.owner, id, "goal-resume")).rejects.toThrow("usage-unavailable");
         await control(f.owner, id, "goal-set", {
           goal: { intent: "update", objective: "Revised bounded task" },
         });
@@ -822,14 +1005,12 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         await control(f.owner, id, "goal-set", {
           goal: { intent: "update", objective: "Larger budget", tokenBudget: 1000 },
         });
-        await expect(
-          control(f.owner, id, "goal-resume", { handoffConfirmed: true }),
-        ).rejects.toThrow("usage-unavailable");
+        await expect(control(f.owner, id, "goal-resume")).rejects.toThrow("usage-unavailable");
         expect((await next(f.owner, id)).next).toBeNull();
         await control(f.owner, id, "goal-set", {
           goal: { intent: "update", objective: "Explicitly unbounded", tokenBudget: null },
         });
-        await control(f.owner, id, "goal-resume", { handoffConfirmed: true });
+        await control(f.owner, id, "goal-resume");
         expect((await next(f.owner, id)).next).toMatchObject({
           kind: "goal",
           deviceId: "browser-device-a",

@@ -214,6 +214,7 @@ export interface Live {
   reason?: string;
   executionLocation?: "agentkib" | "terminal" | "external" | null;
   ownershipReason?: string | null;
+  continuationNotice?: "background-ended" | "owner-opened-elsewhere" | null;
   executionMode?:
     | "managed-resume"
     | "claude-managed"

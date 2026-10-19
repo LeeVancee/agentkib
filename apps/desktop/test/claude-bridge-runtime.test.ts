@@ -244,7 +244,7 @@ describe.skipIf(process.platform !== "darwin")(
       writeFileSync(source, sourceBytes);
       writeFileSync(
         join(bin, "claude"),
-        `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(join(directory, "unexpected-cli"))}, JSON.stringify(process.argv.slice(2))+'\\n');if(process.argv[2]==='--version'){console.log('2.1.301 (Claude Code)');process.exit(0);}process.exit(99);\n`,
+        `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(join(directory, "unexpected-cli"))}, JSON.stringify(process.argv.slice(2))+'\\n');if(process.argv[2]==='--version'){console.log('2.1.301 (Claude Code)');process.exit(0);}if(process.argv[2]==='agents'&&process.argv[3]==='--json'){console.log('[]');process.exit(0);}process.exit(99);\n`,
         { mode: 0o700 },
       );
       writeFileSync(
@@ -344,7 +344,13 @@ describe.skipIf(process.platform !== "darwin")(
             .split("\n")
             .filter(Boolean)
             .map((line) => JSON.parse(line) as string[]);
-          expect(frames.every((args) => args.length === 1 && args[0] === "--version")).toBe(true);
+          expect(
+            frames.every(
+              (args) =>
+                (args.length === 1 && args[0] === "--version") ||
+                (args.length === 2 && args[0] === "agents" && args[1] === "--json"),
+            ),
+          ).toBe(true);
         }
       } finally {
         vi.restoreAllMocks();
@@ -353,7 +359,12 @@ describe.skipIf(process.platform !== "darwin")(
     });
 
     it("keeps indexed history while connecting the original execution host and denies Web bridge management", async () => {
-      expect((await live()).executionMode).toBe("managed-resume");
+      expect(await live()).toMatchObject({
+        executionMode: "claude-managed",
+        executionLocation: null,
+        status: "idle",
+        sendEnabled: true,
+      });
       await connect();
       expect(await live()).toMatchObject({
         executionMode: "claude-follower",

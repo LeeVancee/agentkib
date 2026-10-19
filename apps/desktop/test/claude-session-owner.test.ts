@@ -1,0 +1,295 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Commands, type CommandOutput } from "../../../packages/backend/src/commands";
+import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
+
+const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const procStart = "Mon Oct 19 04:52:14 2026";
+const cleanups: Array<() => void> = [];
+
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  vi.restoreAllMocks();
+});
+
+function output(value: unknown): CommandOutput {
+  return {
+    bytes: Buffer.from(typeof value === "string" ? value : JSON.stringify(value)),
+    success: true,
+    truncated: false,
+    exitCode: 0,
+    error: "",
+  };
+}
+
+function fixture() {
+  const root = mkdtempSync(path.join(tmpdir(), "agentkib-claude-owner-"));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  const config = path.join(root, "claude-config");
+  const registry = path.join(config, "sessions");
+  mkdirSync(bin);
+  mkdirSync(registry, { recursive: true });
+  const executable = path.join(bin, "claude");
+  writeFileSync(executable, "offline fixture must not execute\n");
+  chmodSync(executable, 0o700);
+  const environment = { HOME: root, PATH: bin, CLAUDE_CONFIG_DIR: config };
+  const commands = new Commands();
+  cleanups.push(() => commands.close());
+  let agents: unknown = [];
+  let agentsError = false;
+  let psError = false;
+  const processes = new Map<number, { start: string; command: string }>();
+  const run = vi.spyOn(commands, "run").mockImplementation(async (program, args, options) => {
+    if (program === executable) {
+      expect(args).toEqual(["agents", "--json"]);
+      expect(options?.env).toMatchObject(environment);
+      if (agentsError) throw new Error("agents unavailable");
+      return output(agents);
+    }
+    expect(program).toBe("/bin/ps");
+    expect(args).toEqual(["-axo", "pid=,lstart=,command="]);
+    expect(options?.env).toMatchObject({ TZ: "UTC", LC_ALL: "C" });
+    if (psError) throw new Error("ps unavailable");
+    return output([...processes].map(([pid, p]) => ` ${pid} ${p.start} ${p.command}`).join("\n"));
+  });
+  const probe = new ClaudeSessionOwnerProbe(commands, environment);
+  function process(pid: number, command = "claude claude", start = procStart) {
+    processes.set(pid, { start, command });
+  }
+  function record(pid: number, extras: Record<string, unknown> = {}) {
+    writeFileSync(
+      path.join(registry, `${pid}.json`),
+      JSON.stringify({
+        pid,
+        sessionId: nativeId,
+        procStart,
+        kind: "interactive",
+        pidDomain: globalThis.process.platform,
+        ...extras,
+      }),
+    );
+  }
+  return {
+    probe,
+    run,
+    processes,
+    process,
+    record,
+    registry,
+    agents(value: unknown) {
+      agents = value;
+    },
+    failAgents() {
+      agentsError = true;
+    },
+    failPs() {
+      psError = true;
+    },
+  };
+}
+
+describe.skipIf(process.platform === "win32")("Claude session ownership probe", () => {
+  it("reports an idle session without spawning a Claude session", async () => {
+    const f = fixture();
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+    expect(f.run.mock.calls.every(([, args]) => !args.some((arg) => /--resume/.test(arg)))).toBe(
+      true,
+    );
+  });
+
+  it.each(["interactive", "background"] as const)(
+    "detects %s agents even when the command line has no session ID",
+    async (kind) => {
+      const f = fixture();
+      f.process(101);
+      f.agents([{ pid: 101, sessionId: nativeId, kind, status: "idle" }]);
+      await expect(f.probe.check(nativeId)).resolves.toEqual({ kind, pid: 101, source: "agents" });
+    },
+  );
+
+  it("treats an unrecognized live agent kind as occupied", async () => {
+    const f = fixture();
+    f.process(102);
+    f.agents([{ pid: 102, sessionId: nativeId, kind: "ide" }]);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ kind: "interactive", pid: 102 });
+  });
+
+  it("ignores a dead agent entry and an unrelated session", async () => {
+    const f = fixture();
+    f.process(103);
+    f.agents([
+      { pid: 102, sessionId: nativeId, kind: "interactive" },
+      { pid: 103, sessionId: "other-session", kind: "interactive" },
+    ]);
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+  });
+
+  it.each(["interactive", "background"] as const)(
+    "falls back to a verified %s registry record when agents fails",
+    async (kind) => {
+      const f = fixture();
+      f.failAgents();
+      f.process(104);
+      f.record(104, { kind });
+      await expect(f.probe.check(nativeId)).resolves.toEqual({
+        kind,
+        pid: 104,
+        source: "registry",
+      });
+    },
+  );
+
+  it("still checks the registry when agents returns no entries", async () => {
+    const f = fixture();
+    f.process(105);
+    f.record(105);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ source: "registry", pid: 105 });
+  });
+
+  it("ignores dead, reused and foreign PID registry records", async () => {
+    const f = fixture();
+    f.failAgents();
+    f.record(106);
+    f.process(107, "unrelated process", "Mon Oct 19 05:52:14 2026");
+    f.record(107);
+    f.process(108);
+    f.record(108, { pidDomain: "foreign" });
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+  });
+
+  it("requires matching filename PID and a verified process start", async () => {
+    const f = fixture();
+    f.failAgents();
+    f.process(109);
+    f.record(109, { procStart: undefined });
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+    f.record(109, { pid: 110 });
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+  });
+
+  it("does not follow registry record symlinks", async () => {
+    const f = fixture();
+    f.failAgents();
+    f.process(111);
+    const outside = path.join(f.registry, "..", "outside.json");
+    writeFileSync(outside, JSON.stringify({ pid: 111, sessionId: nativeId, procStart }));
+    symlinkSync(outside, path.join(f.registry, "111.json"));
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+  });
+
+  it.each(["--resume", "-r", "--session-id"])(
+    "retains the command-line fallback for %s",
+    async (flag) => {
+      const f = fixture();
+      f.failAgents();
+      f.process(113, `/usr/local/bin/claude ${flag} ${nativeId}`);
+      await expect(f.probe.check(nativeId)).resolves.toEqual({
+        kind: "interactive",
+        pid: 113,
+        source: "ps",
+      });
+    },
+  );
+
+  it("classifies --print command-line owners as background", async () => {
+    const f = fixture();
+    f.process(114, `claude --resume=${nativeId} --print`);
+    await expect(f.probe.check(nativeId)).resolves.toEqual({
+      kind: "background",
+      pid: 114,
+      source: "ps",
+    });
+  });
+
+  it("excludes only the current owned PID and still detects another owner", async () => {
+    const f = fixture();
+    f.process(115, `claude --resume=${nativeId} --print`);
+    f.record(115, { kind: "background" });
+    f.agents([{ pid: 115, sessionId: nativeId, kind: "background" }]);
+    await expect(f.probe.check(nativeId, 115)).resolves.toEqual({ kind: "idle" });
+    f.process(116);
+    f.record(116);
+    await expect(f.probe.check(nativeId, 115)).resolves.toMatchObject({ pid: 116 });
+    // A retired runner must pass null, so its former PID can never hide a new owner.
+    await expect(f.probe.check(nativeId, null)).resolves.toMatchObject({ pid: 115 });
+  });
+
+  it("does not let malformed agents output erase a known ps owner", async () => {
+    const f = fixture();
+    f.agents("invalid JSON");
+    f.process(117, `claude --session-id=${nativeId}`);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ source: "ps", pid: 117 });
+  });
+
+  it("keeps a positive agents result when the process scan fails", async () => {
+    const f = fixture();
+    f.failPs();
+    f.agents([{ pid: 118, sessionId: nativeId, kind: "interactive" }]);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ source: "agents", pid: 118 });
+  });
+
+  it("fails closed when the process scan is unavailable", async () => {
+    const f = fixture();
+    f.failPs();
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+  });
+
+  it("does not cache an idle result across later startup checks", async () => {
+    const f = fixture();
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+    f.process(119);
+    f.agents([{ pid: 119, sessionId: nativeId, kind: "interactive" }]);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ source: "agents", pid: 119 });
+    f.processes.delete(119);
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+  });
+
+  it("keeps a known ps owner when a registry record is incomplete", async () => {
+    const f = fixture();
+    f.process(120, `claude --resume=${nativeId}`);
+    f.record(120, { procStart: undefined });
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ source: "ps", pid: 120 });
+  });
+
+  it("does not accept a partial process table as evidence that a session is idle", async () => {
+    const f = fixture();
+    f.run.mockImplementation(async (program) =>
+      program === "/bin/ps" ? { ...output(""), truncated: true } : output([]),
+    );
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+  });
+
+  it("fails closed for a malformed registry record belonging to a live PID", async () => {
+    const f = fixture();
+    f.process(121);
+    writeFileSync(path.join(f.registry, "121.json"), "{incomplete");
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+  });
+
+  it("normalizes padding in UTC process starts", async () => {
+    const f = fixture();
+    f.process(122, "claude claude", "Mon Oct  9 04:52:14 2026");
+    f.record(122, { procStart: "Mon Oct 9 04:52:14 2026" });
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ source: "registry", pid: 122 });
+  });
+
+  it("checks liveness after agents observes a newly opened session", async () => {
+    const f = fixture();
+    let registered = false;
+    f.run.mockImplementation(async (program) => {
+      if (program === "/bin/ps") return output(registered ? `123 ${procStart} claude claude` : "");
+      // The official read can observe a process started after an earlier ps snapshot.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      registered = true;
+      return output([{ pid: 123, sessionId: nativeId, kind: "interactive" }]);
+    });
+    await expect(f.probe.check(nativeId)).resolves.toEqual({
+      kind: "interactive",
+      pid: 123,
+      source: "agents",
+    });
+  });
+});

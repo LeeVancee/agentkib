@@ -430,7 +430,8 @@ function claudeOwnerFixture(status = "idle") {
     bin = path.join(directory, "bin");
   for (const target of [home, workspace, bin, path.join(directory, "claude-managed")])
     mkdirSync(target, { mode: 0o700 });
-  writeFileSync(path.join(bin, "claude"), "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+  const executable = path.join(bin, "claude");
+  writeFileSync(executable, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
   const id = randomUUID(),
     boot = randomUUID();
   writeFileSync(
@@ -471,9 +472,22 @@ function claudeOwnerFixture(status = "idle") {
     }),
     { mode: 0o600 },
   );
-  const run = vi
-    .fn()
-    .mockResolvedValue({ success: true, bytes: Buffer.from("2.1.286 (Claude Code)\n") });
+  const readOnlyProbes: Array<[string, string[]]> = [
+    [executable, ["--version"]],
+    [executable, ["agents", "--json"]],
+    ["/bin/ps", ["-axo", "pid=,lstart=,command="]],
+  ];
+  const run = vi.fn(async (command: string, args: string[]) => {
+    const probe = readOnlyProbes.findIndex(
+      ([allowedCommand, allowedArgs]) =>
+        command === allowedCommand && JSON.stringify(args) === JSON.stringify(allowedArgs),
+    );
+    if (probe < 0) throw new Error("unexpected mutating Claude command");
+    return {
+      success: true,
+      bytes: Buffer.from(probe === 0 ? "2.1.286 (Claude Code)\n" : probe === 1 ? "[]\n" : ""),
+    };
+  });
   const owner = new ClaudeManagedReadOwner(
     { workspacePath: () => workspace } as unknown as BackendStore,
     {} as SessionReaders,
@@ -496,7 +510,7 @@ function claudeOwnerFixture(status = "idle") {
     experimentalEnabled: true,
     ...(operation === "send" ? { text: "never dispatched" } : {}),
   });
-  return { owner, id, boot, directory, run, request };
+  return { owner, id, boot, directory, run, request, readOnlyProbes };
 }
 
 describe.skipIf(process.platform !== "darwin")("Claude offline owner fences", () => {
@@ -517,7 +531,8 @@ describe.skipIf(process.platform !== "darwin")("Claude offline owner fences", ()
         runtimeBootId: f.boot,
         reason: "session-compacting",
       });
-      expect(f.run.mock.calls.every(([, args]) => args[0] === "--version")).toBe(true);
+      for (const [command, args] of f.run.mock.calls)
+        expect(f.readOnlyProbes).toContainEqual([command, args]);
     },
   );
   it.each(["send", "release"])(

@@ -478,6 +478,14 @@ export class TypeScriptBackend {
             alias: (sessionId, previousId, itemId, live) =>
               this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
           },
+          {
+            isSessionObserved: (sessionId) =>
+              this.#sessionStream?.hasSubscribers(sessionId) ?? false,
+            isSessionBridged: (sessionId) => {
+              this.#claudeBridge?.assertCanAdopt();
+              return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
+            },
+          },
         );
         const claudeOwner = this.#claudeManaged;
         this.#claudeBridge = new ClaudeBridge({
@@ -485,10 +493,10 @@ export class TypeScriptBackend {
           bootId: claudeOwner.bootId,
           pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
           target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
-          validate: (target, forControl) => {
+          validate: (target, forControl, bindingId) => {
             if (readPreferences(dataDir).session_index_enabled === false)
               throw new Error("session-index-disabled");
-            claudeOwner.validateNativeBridgeTarget(target, forControl);
+            claudeOwner.validateNativeBridgeTarget(target, forControl, bindingId);
           },
           publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
         });
@@ -559,7 +567,10 @@ export class TypeScriptBackend {
             this.notify(SESSION_EVENT_NOTIFICATION, event);
             if (event.type === "invalidate") this.#historySearch?.refresh(event.sessionId);
           },
-          (sessionId) => this.#webRead?.observeSession(sessionId),
+          (sessionId) => {
+            this.#webRead?.observeSession(sessionId);
+            this.#claudeManaged?.observeSession(sessionId);
+          },
         );
         this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
         this.#historySearch.refresh();
@@ -1583,9 +1594,14 @@ export class TypeScriptBackend {
       if (
         typeof params.sessionId === "string" &&
         this.#claudeBridge?.handles(params.sessionId) &&
+        this.#claudeBridge?.blocksManagedResume(params.sessionId) &&
         params.operation !== "events"
-      )
-        return this.#claudeBridge.request(params);
+      ) {
+        const result = await this.#claudeBridge.request(params);
+        return params.operation === "live" && result && typeof result === "object"
+          ? { ...result, executionLocation: "terminal", ownershipReason: null }
+          : result;
+      }
       return await this.#claudeManaged!.request(params);
     } catch (error) {
       if (error instanceof ClaudeHostControlPreflightError) return error.result;

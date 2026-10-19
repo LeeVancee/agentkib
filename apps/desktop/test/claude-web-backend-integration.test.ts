@@ -20,6 +20,8 @@ import { once } from "node:events";
 import { AttachmentStore } from "../electron/main/web/attachments";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
+import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
+import { Commands } from "../../../packages/backend/src/commands";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
@@ -33,6 +35,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const args = process.argv.slice(2);
 if (args.includes('--version')) { console.log('2.1.286 (Claude Code)'); process.exit(0); }
+if (args[0] === 'agents' && args[1] === '--json') { console.log('[]'); process.exit(0); }
 const log = value => fs.appendFileSync(process.env.PARITY_LOG, JSON.stringify(value) + '\n');
 log({ args });
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
@@ -302,6 +305,34 @@ describe.skipIf(process.platform !== "darwin")(
     }
     beforeEach(async () => {
       expectUnknownCleanup = false;
+      const commandRun = Commands.prototype.run;
+      vi.spyOn(Commands.prototype, "run").mockImplementation(
+        async function (this: Commands, program, args, options) {
+          if (program === "/bin/ps" && args.join(" ") === "-axo pid=,lstart=,command=")
+            return {
+              success: true,
+              bytes: Buffer.from(""),
+              error: "",
+              truncated: false,
+              exitCode: 0,
+            };
+          // Ownership-source coverage is separate; keep repeated idle probes from spawning Node.
+          if (
+            program === join(directory, "bin", "claude") &&
+            args.length === 2 &&
+            args[0] === "agents" &&
+            args[1] === "--json"
+          )
+            return {
+              success: true,
+              bytes: Buffer.from("[]\n"),
+              error: "",
+              truncated: false,
+              exitCode: 0,
+            };
+          return commandRun.call(this, program, args, options);
+        },
+      );
       directory = realpathSync(mkdtempSync(join(tmpdir(), "agentkib-real-claude-")));
       data = join(directory, "backend");
       workspace = join(directory, "workspace");
@@ -380,6 +411,59 @@ describe.skipIf(process.platform !== "darwin")(
         if (directory) rmSync(directory, { recursive: true, force: true });
       }
     });
+
+    it("persists the original send rejection and releases the host fence when ownership races its live preflight", async () => {
+      const sessionId = await create();
+      const state = await live(sessionId);
+      let appeared = false;
+      let raced = false;
+      const originalCheck = ClaudeSessionOwnerProbe.prototype.check;
+      vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check").mockImplementation(
+        async function (this: ClaudeSessionOwnerProbe, nativeId, ownedPid) {
+          const observation = await originalCheck.call(this, nativeId, ownedPid);
+          return appeared && nativeId === state.sourceSessionId
+            ? { kind: "interactive" as const, pid: process.pid, source: "agents" as const }
+            : observation;
+        },
+      );
+      const originalHandle = backend.handleAsync.bind(backend);
+      vi.spyOn(backend, "handleAsync").mockImplementation(async (request) => {
+        if (
+          !raced &&
+          request.method === "web.request" &&
+          (request.params as { operation?: string })?.operation === "send"
+        ) {
+          raced = true;
+          appeared = true;
+        }
+        return originalHandle(request);
+      });
+      const requestId = randomUUID();
+      const rejected = await send(sessionId, "Original draft", { requestId });
+      expect(rejected).toMatchObject({
+        status: 409,
+        body: { error: "claude-owner-busy", controlOutcome: "not-dispatched" },
+      });
+      expect(frames().filter((row) => row.type === "user")).toEqual([]);
+      expect(await rpc("control.receipt", { requestId, deviceId })).toMatchObject({
+        found: true,
+        requestId,
+        status: "not-dispatched",
+        sessionId,
+        ack: { accepted: false, completed: false, requestId, controlOutcome: "not-dispatched" },
+      });
+      appeared = false;
+      await expect
+        .poll(() => live(sessionId), { timeout: 5000, interval: 100 })
+        .toMatchObject({
+          sendEnabled: true,
+          ownershipReason: null,
+        });
+      const retry = await send(sessionId, "Retry after the native owner exits");
+      expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+      await idle(sessionId);
+      expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
+    }, 10_000);
 
     it("creates with the true device and routes fresh Claude reads, send and receipts through the actual owner", async () => {
       const sessionId = await create();
@@ -753,7 +837,7 @@ describe.skipIf(process.platform !== "darwin")(
       }
     });
 
-    it("persists queue order, requires explicit restart resume, and consumes one item at a time", async () => {
+    it("persists queue order, resumes after restart without confirmation, and consumes one item at a time", async () => {
       const sessionId = await create();
       expect((await action(sessionId, "queue-add", { text: "first" })).status).toBe(200);
       expect((await action(sessionId, "queue-add", { text: "second" })).status).toBe(200);
@@ -1213,7 +1297,7 @@ describe.skipIf(process.platform !== "darwin")(
       expect(existsSync(transcript)).toBe(true);
     });
 
-    it("preserves the native fork boundary through release and adoption before the first child turn", async () => {
+    it("preserves the native fork boundary when the first child send automatically resumes after release", async () => {
       const sessionId = await create();
       expect((await send(sessionId, "parent turn")).status).toBe(200);
       await idle(sessionId);
@@ -1241,20 +1325,9 @@ describe.skipIf(process.platform !== "darwin")(
         requestId: randomUUID(),
       });
       expect(release.status, JSON.stringify(release.body)).toBe(200);
-      const inspected = await http(`/managed/inspect?agent=claude-code&sessionId=${child}`);
-      expect(inspected.status, JSON.stringify(inspected.body)).toBe(200);
-      const adopted = await http("/managed/adopt", {
-        agent: "claude-code",
-        sessionId: child,
-        bootId,
-        requestId: randomUUID(),
-        handoffConfirmed: true,
-        handoffFingerprint: inspected.body.handoffFingerprint,
-      });
-      expect(adopted.status, JSON.stringify(adopted.body)).toBe(200);
       expect((await live(child)).sourceSessionId).toBe(childState.sourceSessionId);
       expect(frames().filter((row) => row.type === "user")).toHaveLength(1);
-      expect((await send(child, "fork continuation after adoption")).status).toBe(200);
+      expect((await send(child, "fork continuation after automatic resume")).status).toBe(200);
       await idle(child);
       expect(
         frames()

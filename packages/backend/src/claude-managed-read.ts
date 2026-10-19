@@ -19,7 +19,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
-import { execFileSync } from "node:child_process";
+import { ClaudeSessionOwnerProbe } from "./claude-session-owner";
 import { resolveCommand } from "./command-resolution";
 import { validHistoryControl } from "./history-control-schema";
 import type { Commands } from "./commands";
@@ -117,6 +117,13 @@ type ClaudePermissionView = {
   possiblyAuto?: true;
 };
 
+export type ClaudeContinuationOptions = {
+  idleTimeoutMs?: number;
+  maintenanceIntervalMs?: number;
+  isSessionObserved?: (sessionId: string) => boolean;
+  isSessionBridged?: (sessionId: string) => boolean;
+};
+
 /** Manages Claude session ownership, CLI runners, and read-side state. */
 export class ClaudeManagedReadOwner {
   #version?: { at: number; value: string | null };
@@ -141,6 +148,17 @@ export class ClaudeManagedReadOwner {
   #lastPermission = new Map<string, ClaudeObservedPermissionMode>();
   #publishConversationEvent?: ClaudeConversationPublisher;
   #aliasConversationItem?: ClaudeConversationAliaser;
+  #ownership: ClaudeSessionOwnerProbe;
+  #ownershipReasons = new Map<string, { at: number; reason: string | null }>();
+  #idleSince = new Map<string, number>();
+  #observed = new Set<string>();
+  #starting = new Set<string>();
+  #activeHostClaims = new Map<string, string>();
+  #continuationNotices = new Map<string, string>();
+  #maintenanceTimer: ReturnType<typeof setInterval>;
+  #maintenance?: Promise<void>;
+  #shuttingDown = false;
+  #idleTimeoutMs: number;
 
   constructor(
     readonly store: BackendStore,
@@ -153,10 +171,33 @@ export class ClaudeManagedReadOwner {
       publish: ClaudeConversationPublisher;
       alias: ClaudeConversationAliaser;
     },
+    readonly continuation: ClaudeContinuationOptions = {},
   ) {
     this.#hostState = new ClaudeHostStateStore(dataDir, bootId);
     this.#publishConversationEvent = publishers?.publish;
     this.#aliasConversationItem = publishers?.alias;
+    this.#ownership = new ClaudeSessionOwnerProbe(commands, environment);
+    const configuredIdle =
+      continuation.idleTimeoutMs ??
+      (environment.AGENTKIB_CLAUDE_IDLE_TIMEOUT_MS === undefined
+        ? 600_000
+        : Number(environment.AGENTKIB_CLAUDE_IDLE_TIMEOUT_MS));
+    const interval = continuation.maintenanceIntervalMs ?? 3000;
+    if (
+      !Number.isSafeInteger(configuredIdle) ||
+      configuredIdle < 1 ||
+      !Number.isSafeInteger(interval) ||
+      interval < 1
+    )
+      throw new Error("invalid-Claude-continuation-timeout");
+    this.#idleTimeoutMs = configuredIdle;
+    this.#maintenanceTimer = setInterval(() => {
+      if (this.#maintenance || this.#shuttingDown) return;
+      this.#maintenance = this.#maintain().finally(() => {
+        this.#maintenance = undefined;
+      });
+    }, interval);
+    this.#maintenanceTimer.unref();
   }
 
   close(): void {
@@ -187,6 +228,11 @@ export class ClaudeManagedReadOwner {
   }
 
   async shutdown(): Promise<void> {
+    this.#shuttingDown = true;
+    clearInterval(this.#maintenanceTimer);
+    await this.#maintenance;
+    // Pending guards must finish before their metadata lease is released.
+    await Promise.allSettled([...this.#sessionQueues.values()]);
     this.invalidateSchedulePermits();
     await Promise.allSettled([...this.#goalEndpoints.values()].map((endpoint) => endpoint.close()));
     this.#goalEndpoints.clear();
@@ -223,6 +269,8 @@ export class ClaudeManagedReadOwner {
         id,
         typeof value.deviceId === "string" ? value.deviceId : undefined,
       );
+    if (this.#shuttingDown) throw new Error("session-unavailable");
+    if (id && this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
     const run = () => this.#requestLocked(value, id);
     return id ? this.#serializeSession(id, run) : run();
   }
@@ -377,6 +425,60 @@ export class ClaudeManagedReadOwner {
   }
 
   async #control(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
+    try {
+      return await this.#controlImpl(value, id);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "";
+      if (
+        !["send", "steer", "approve", "answer"].includes(value.operation) ||
+        ![
+          "claude-owner-busy",
+          "claude-background-session-running",
+          "claude-owner-check-unavailable",
+          "session-already-bridged",
+          "claude-bridge-registry-invalid",
+        ].includes(reason) ||
+        managedSessionHasUnknownCommands(this.dataDir, id)
+      )
+        throw error;
+      // These guards run before the original control is claimed or written to stdin. Record
+      // that proof under the public request ID, so a host can safely retain the draft/retry.
+      const logical = { ...value };
+      delete logical.runtimeBootId;
+      delete logical.schedulePermitId;
+      const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
+      const prior = replayManagedCommand(this.dataDir, value.requestId, fingerprint);
+      if (prior) return prior;
+      const claimed = claimManagedCommand(
+        this.dataDir,
+        value.requestId,
+        id,
+        fingerprint,
+        value.deviceId,
+        {
+          operation: value.operation,
+          executionMode: "claude-managed",
+          runtimeBootId: this.bootId,
+          ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
+        },
+      );
+      if (claimed) return claimed;
+      const result = {
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        requestId: value.requestId,
+        sessionId: id,
+        runtimeBootId: this.bootId,
+        error: reason,
+        ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
+      };
+      finishManagedCommand(this.dataDir, value.requestId, result);
+      return result;
+    }
+  }
+
+  async #controlImpl(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
     const operation = value.operation as string;
     const allowed = new Set([
       "operation",
@@ -418,13 +520,38 @@ export class ClaudeManagedReadOwner {
     )
       throw new Error("invalid-public-input-hash");
     if (!validHistoryControl({ ...value, operation })) throw new Error("invalid-history-reference");
+    const logical = { ...value };
+    delete logical.runtimeBootId;
+    delete logical.schedulePermitId;
+    const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
+    const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
+    if (prior) return prior;
     if (
       operation === "steer" &&
       !supportsClaudeVersion((await this.#installationVersion()) ?? "", "2.1.286")
     )
       throw new Error("unsupported-Claude-version");
 
-    const record = this.#load(id);
+    let record = this.#load(id);
+    let adopted = false;
+    if (operation === "send" && (!record || record.released)) {
+      const previous = await this.#live(id, true);
+      if (previous.activity === "compacting") return this.#compactingResult(id, requestId);
+      if (
+        previous.status === "outcome-unknown" ||
+        managedSessionHasUnknownCommands(this.dataDir, id)
+      )
+        throw new Error("control-outcome-unconfirmed");
+      if (previous.revision !== value.expectedRevision) throw new Error("stale-Claude-revision");
+      const digest = createHash("sha256").update(`claude-auto-adopt:${requestId}`).digest("hex");
+      const adoptId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+      await this.#adopt(
+        { operation: "adopt", sessionId: id, requestId: adoptId, deviceId: value.deviceId },
+        id,
+      );
+      record = this.#load(id);
+      adopted = true;
+    }
     if (!record) throw new Error("session-unavailable");
     if (record.released) throw new Error("session-released");
     this.#validate(record);
@@ -432,19 +559,24 @@ export class ClaudeManagedReadOwner {
     if (operation !== "send" && !existingRunner) throw new Error("session-runner-unavailable");
     if (managedSessionHasUnknownCommands(this.dataDir, id))
       throw new Error("control-outcome-unconfirmed");
+    this.#ownershipReasons.delete(id);
     let live = await this.#live(id, true);
     if (live.status === "archived") throw new Error("session-archived");
     if (live.status === "outcome-unknown") throw new Error("control-outcome-unconfirmed");
+    if (
+      operation !== "stop" &&
+      ["claude-owner-busy", "claude-background-session-running"].includes(
+        String(live.ownershipReason),
+      )
+    ) {
+      if (existingRunner?.hasWorker) await this.#stopForExternalOwner(id, existingRunner);
+      throw new Error(String(live.ownershipReason));
+    }
 
-    const logical = { ...value };
-    delete logical.runtimeBootId;
-    delete logical.schedulePermitId;
-    const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
-    const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
-    if (prior) return prior;
     if (operation === "send" && live.activity === "compacting")
       return this.#compactingResult(id, requestId);
-    if (value.expectedRevision !== live.revision) throw new Error("stale-Claude-revision");
+    if (!adopted && value.expectedRevision !== live.revision)
+      throw new Error("stale-Claude-revision");
     if (
       operation === "send" &&
       live.status === "idle" &&
@@ -470,7 +602,10 @@ export class ClaudeManagedReadOwner {
     let executable: string | null | undefined;
     let newlyAcquiredOwnerLock = false;
     if (operation === "send" || operation === "steer") {
-      if (operation === "send" && live.sendEnabled !== true) throw new Error("session-busy");
+      if (operation === "send" && live.sendEnabled !== true)
+        throw new Error(
+          typeof live.ownershipReason === "string" ? live.ownershipReason : "session-busy",
+        );
 
       if (value.resourceRefs !== undefined && !Array.isArray(value.resourceRefs))
         throw new Error("invalid-resource-references");
@@ -484,7 +619,7 @@ export class ClaudeManagedReadOwner {
       if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
       executable = resolveCommand("claude", this.environment);
       if (!executable) throw new Error("claude-cli-unavailable");
-      if (!existingRunner) {
+      if (!existingRunner?.hasWorker) {
         // Creating/adopting an idle session already retains this runtime's lease.
         // A second file-lock acquisition would reject our own first send.
         if (!this.#ownerLocks.has(id)) {
@@ -494,11 +629,12 @@ export class ClaudeManagedReadOwner {
           newlyAcquiredOwnerLock = true;
         }
         try {
-          this.#ensureNoExternalOwner(record.nativeId);
+          await this.#ensureNoExternalOwner(record.nativeId);
           if (!record.fresh) {
             const target = await this.#resolveNative(record.id);
-            if (target.nativeId !== record.nativeId || record.fingerprint !== target.fingerprint)
-              throw new Error("Claude-history-changed-requires-handoff");
+            if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
+              throw new Error("unverified-session-identity");
+            await this.#refreshIdleHistory(record);
           }
         } catch (error) {
           if (newlyAcquiredOwnerLock) {
@@ -584,11 +720,15 @@ export class ClaudeManagedReadOwner {
                 dispatched = true;
               },
             );
+            try {
+              await dispatch;
+            } finally {
+              this.#starting.delete(id);
+            }
             if (reservedRunnerSlot) {
               this.#runnerReservations.delete(id);
               reservedRunnerSlot = false;
             }
-            await dispatch;
             record.fresh = false;
             break;
           }
@@ -692,6 +832,9 @@ export class ClaudeManagedReadOwner {
       (snapshot: ClaudeRunnerSnapshot) => {
         const current = this.#load(id);
         if (!current || current.released) throw new Error("Claude session unavailable");
+        if (snapshot.status === "idle" && !snapshot.activity)
+          this.#idleSince.set(id, this.#idleSince.get(id) ?? Date.now());
+        else this.#idleSince.delete(id);
         const turnId = snapshot.turnId;
         let completed = false;
         if (
@@ -703,7 +846,18 @@ export class ClaudeManagedReadOwner {
           try {
             current.fingerprint = this.#targetFingerprint(current.nativeId, current.workspace);
             const title = this.#hostState.read(id).title;
-            if (title && title !== current.nativeTitle) this.#persistNativeTitle(current, title);
+            if (title && title !== current.nativeTitle) {
+              // Keep completion publication synchronous; native title updates await the same
+              // ownership proof as explicit renames, after the current control releases its queue.
+              void this.#serializeSession(id, async () => {
+                const pending = this.#load(id);
+                if (!pending || pending.released) return;
+                await this.#persistNativeTitle(pending, title);
+                this.#save(pending);
+              }).catch(() => {
+                /* The host title remains available for a later retry. */
+              });
+            }
           } catch {
             // Completion is still recorded; a missing transcript cannot prove a new handoff.
           }
@@ -742,6 +896,7 @@ export class ClaudeManagedReadOwner {
           ? { forkSourceNativeId: record.forkSourceNativeId, forkCutoff: record.forkCutoff }
           : {}),
         ...options,
+        beforeStart: () => this.#beforeRunnerStart(id),
         ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
         onResult: (result) => {
           this.#hostState.complete(id, result.turnId, {
@@ -757,6 +912,7 @@ export class ClaudeManagedReadOwner {
       },
     );
     this.#runners.set(id, runner);
+    if (this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
     if (options.mcpConfig) this.#goalRunners.add(id);
     return runner;
   }
@@ -838,11 +994,12 @@ export class ClaudeManagedReadOwner {
     }
     let runner = this.#runners.get(record.id);
     if (!runner?.hasWorker) {
-      this.#ensureNoExternalOwner(record.nativeId);
+      await this.#ensureNoExternalOwner(record.nativeId);
       if (!record.fresh) {
         const target = await this.#resolveNative(record.id);
-        if (target.nativeId !== record.nativeId || target.fingerprint !== record.fingerprint)
-          throw new Error("Claude-history-changed-requires-handoff");
+        if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
+          throw new Error("unverified-session-identity");
+        await this.#refreshIdleHistory(record);
       }
       if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
       await this.#reserveRunner(record.id);
@@ -853,13 +1010,19 @@ export class ClaudeManagedReadOwner {
     try {
       await runner.prepare(executable);
     } finally {
+      this.#starting.delete(record.id);
       this.#runnerReservations.delete(record.id);
     }
     return runner;
   }
 
-  #persistNativeTitle(record: ClaudeRecord, title: string): void {
-    this.#ensureNoExternalOwner(record.nativeId, this.#runners.get(record.id)?.processId ?? null);
+  async #persistNativeTitle(record: ClaudeRecord, title: string): Promise<void> {
+    if (this.#shuttingDown) throw new Error("session-unavailable");
+    await this.#ensureNoExternalOwner(
+      record.nativeId,
+      this.#runners.get(record.id)?.processId ?? null,
+    );
+    if (this.#shuttingDown) throw new Error("session-unavailable");
     if (record.fingerprint !== this.#targetFingerprint(record.nativeId, record.workspace))
       throw new Error("Claude-history-changed-requires-handoff");
     if (record.nativeTitle === title) return;
@@ -976,6 +1139,13 @@ export class ClaudeManagedReadOwner {
         if (recordingError instanceof ClaudeHostControlPreflightError) throw recordingError;
         throw error;
       }
+    } finally {
+      if (this.#activeHostClaims.get(id) === value.requestId) this.#activeHostClaims.delete(id);
+      // A read-only fork of an indexed source never adopts that source.
+      if (!this.#load(id) && !this.#runners.has(id)) {
+        this.#ownerLocks.get(id)?.();
+        this.#ownerLocks.delete(id);
+      }
     }
   }
 
@@ -1034,10 +1204,29 @@ export class ClaudeManagedReadOwner {
     if (prior) return prior;
     if (!supportsClaudeVersion((await this.#installationVersion()) ?? "", "2.1.286"))
       throw new Error("unsupported-Claude-version");
-    const record = this.#load(id);
-    if (!record || record.released) throw new Error("session-unavailable");
+    let record = this.#load(id);
+    if (operation === "fork" && !record) {
+      const target = await this.#resolveNative(id);
+      record = {
+        version: 1,
+        id,
+        ...target,
+        registeredWorkspace: canonicalize(this.store.workspacePath(target.workspaceId)),
+        home: this.#home(),
+        title: "Claude Code",
+        createdAt: new Date().toISOString(),
+        adopted: false,
+        released: false,
+        fresh: false,
+        snapshot: { status: "idle", revision: 0 },
+        completedRequests: [],
+      };
+    }
+    if (!record || (record.released && operation !== "fork"))
+      throw new Error("session-unavailable");
     this.#validate(record);
     if (!this.#ownerLocks.has(id)) {
+      if (operation === "fork") this.#privateDirectory(true);
       const release = this.#tryLock(id);
       if (!release) throw new Error("session-managed-by-another-runtime");
       this.#ownerLocks.set(id, release);
@@ -1083,6 +1272,7 @@ export class ClaudeManagedReadOwner {
       );
       if (prior) throw new Error("control-outcome-unconfirmed");
       dispatchManagedCommand(this.dataDir, value.requestId);
+      this.#activeHostClaims.set(id, value.requestId);
       externallyDispatched = true;
     };
     if (operation === "settings") {
@@ -1130,16 +1320,23 @@ export class ClaudeManagedReadOwner {
         );
         if (lstatSync(transcript).nlink !== 1) throw new Error("invalid-Claude-transcript");
         claimExternalEffect();
-        this.#persistNativeTitle(record, renamedTitle!);
+        await this.#persistNativeTitle(record, renamedTitle!);
       }
     }
     let fork: ClaudeRecord | undefined;
     if (operation === "fork") {
       if (record.fresh) throw new Error("fork-history-unavailable");
-      this.#ensureNoExternalOwner(record.nativeId, this.#runners.get(record.id)?.processId ?? null);
+      // A fork only reads its source. External ownership forbids resuming the source,
+      // but not continuing a verified completed turn under a new native session ID.
+      const owner = await this.#ownership.check(
+        record.nativeId,
+        this.#runners.get(record.id)?.processId ?? null,
+      );
+      const target = await this.#resolveNative(id);
+      if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
+        throw new Error("unverified-session-identity");
       const fingerprint = this.#targetFingerprint(record.nativeId, record.workspace);
-      if (record.fingerprint !== fingerprint)
-        throw new Error("Claude-history-changed-requires-handoff");
+      if (target.fingerprint !== fingerprint) throw new Error("handoff-fingerprint-changed");
       const transcript = this.sessions.verifiedClaudeControlTarget(
         record.nativeId,
         record.workspace,
@@ -1160,7 +1357,10 @@ export class ClaudeManagedReadOwner {
           row.sessionId === record.nativeId &&
           ["assistant", "user"].includes(row.type) &&
           typeof row.uuid === "string" &&
-          uuidPattern.test(row.uuid),
+          uuidPattern.test(row.uuid) &&
+          (owner.kind === "idle" ||
+            (row.type === "assistant" &&
+              ["end_turn", "stop_sequence"].includes(row.message?.stop_reason))),
       );
       const lastUser = rows.find(
         (row) => row?.type === "user" && row.sessionId === record.nativeId,
@@ -1193,6 +1393,7 @@ export class ClaudeManagedReadOwner {
         nativeId: value.requestId,
         createdAt: new Date().toISOString(),
         adopted: false,
+        released: false,
         title: `${state.title ?? record.title} (fork)`,
         fresh: true,
         fingerprint: null,
@@ -1356,7 +1557,6 @@ export class ClaudeManagedReadOwner {
             return {};
           case "queue-resume":
           case "goal-resume": {
-            if (value.handoffConfirmed !== true) throw new Error("handoff-confirmation-required");
             if (host.work.some((work) => work.status === "unknown" || work.status === "dispatched"))
               throw new Error("control-outcome-unconfirmed");
             host.paused = false;
@@ -1960,10 +2160,11 @@ export class ClaudeManagedReadOwner {
     if (!supportsClaudeManagedRunner()) throw new Error("platform-unsupported");
     if (
       !validClaudeDeviceId(value.deviceId) ||
-      value.handoffConfirmed !== true ||
       typeof requestId !== "string" ||
       !uuidPattern.test(requestId) ||
-      typeof value.handoffFingerprint !== "string" ||
+      (value.handoffFingerprint !== undefined &&
+        (typeof value.handoffFingerprint !== "string" ||
+          !/^[a-f0-9]{64}$/.test(value.handoffFingerprint))) ||
       Object.keys(value).some((key) => !allowed.has(key))
     )
       throw new Error("invalid-managed-adopt");
@@ -1992,7 +2193,10 @@ export class ClaudeManagedReadOwner {
       let fresh: boolean;
       if (existing && existing.fresh && existing.released) {
         this.#validate(existing);
-        if (value.handoffFingerprint !== this.#emptyFingerprint(existing))
+        if (
+          value.handoffFingerprint !== undefined &&
+          value.handoffFingerprint !== this.#emptyFingerprint(existing)
+        )
           throw new Error("handoff-fingerprint-changed");
         ({ workspaceId, workspace, nativeId } = existing);
         handoff = null;
@@ -2000,9 +2204,12 @@ export class ClaudeManagedReadOwner {
       } else {
         if (existing && !existing.released) throw new Error("session-already-managed");
         const target = await this.#resolveNative(id);
-        this.#ensureNoExternalOwner(target.nativeId);
+        await this.#ensureNoExternalOwner(target.nativeId);
         const current = this.#targetFingerprint(target.nativeId, target.workspace);
-        if (value.handoffFingerprint !== current) throw new Error("handoff-fingerprint-changed");
+        if (value.handoffFingerprint !== undefined && value.handoffFingerprint !== current)
+          throw new Error("handoff-fingerprint-changed");
+        // The same proof is required without a user-supplied fingerprint.
+        if (target.fingerprint !== current) throw new Error("handoff-fingerprint-changed");
         workspaceId = target.workspaceId;
         workspace = target.workspace;
         nativeId = target.nativeId;
@@ -2254,28 +2461,204 @@ export class ClaudeManagedReadOwner {
     return createHash("sha256").update(serialized).update(first).digest("hex");
   }
 
-  #ensureNoExternalOwner(nativeId: string, ownedPid: number | null = null): void {
-    if (!supportsClaudeManagedRunner()) throw new Error("platform-unsupported");
-    const output = execFileSync("/bin/ps", ["-axo", "pid=,command="], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3000,
-    });
-    const mentioned = output.split("\n").some((line) => {
-      const words = line.trim().split(/\s+/);
-      if (ownedPid !== null && words[0] === String(ownedPid)) return false;
-      return (
-        words.some((word) => path.posix.basename(word) === "claude") &&
-        (words.some(
-          (word) => word === `--resume=${nativeId}` || word === `--session-id=${nativeId}`,
-        ) ||
-          words.some(
-            (word, index) =>
-              ["--resume", "-r", "--session-id"].includes(word) && words[index + 1] === nativeId,
-          ))
+  async #ensureNoExternalOwner(nativeId: string, ownedPid: number | null = null): Promise<void> {
+    const owner = await this.#ownership.check(nativeId, ownedPid);
+    if (owner.kind !== "idle")
+      throw new Error(
+        owner.kind === "background" ? "claude-background-session-running" : "claude-owner-busy",
       );
-    });
-    if (mentioned) throw new Error("Claude session is active in an external process");
+  }
+
+  async #refreshIdleHistory(record: ClaudeRecord): Promise<void> {
+    this.#validate(record);
+    if (record.fresh) return;
+    const target = await this.#resolveNative(record.id);
+    if (target.nativeId !== record.nativeId || target.workspace !== record.workspace)
+      throw new Error("unverified-session-identity");
+    const fingerprint = this.#targetFingerprint(record.nativeId, record.workspace);
+    if (fingerprint !== target.fingerprint) throw new Error("handoff-fingerprint-changed");
+    record.fingerprint = fingerprint;
+    this.#save(record);
+  }
+
+  async #ownershipReason(
+    id: string,
+    nativeId: string,
+    ownedPid: number | null,
+  ): Promise<string | null> {
+    const cached = this.#ownershipReasons.get(id);
+    if (cached && Date.now() - cached.at < (this.continuation.maintenanceIntervalMs ?? 3000))
+      return cached.reason;
+    let reason: string | null;
+    try {
+      const owner = await this.#ownership.check(nativeId, ownedPid);
+      reason =
+        owner.kind === "idle"
+          ? null
+          : owner.kind === "background"
+            ? "claude-background-session-running"
+            : "claude-owner-busy";
+    } catch {
+      reason = "claude-owner-check-unavailable";
+    }
+    this.#ownershipReasons.set(id, { at: Date.now(), reason });
+    return reason;
+  }
+
+  async #beforeRunnerStart(id: string): Promise<void> {
+    if (this.#shuttingDown) throw new Error("session-unavailable");
+    const record = this.#load(id);
+    if (!record || record.released) throw new Error("session-unavailable");
+    this.#validate(record);
+    if (
+      readUnknownManagedCommands(this.dataDir, id).some(
+        (command) => command.requestId !== this.#activeHostClaims.get(id),
+      )
+    )
+      throw new Error("control-outcome-unconfirmed");
+    if (this.#isSessionBridged(record)) throw new Error("session-already-bridged");
+    const runner = this.#runners.get(id);
+    this.#starting.add(id);
+    const starting = runner ? this.#streamLive(id, runner.snapshot(), record) : null;
+    if (starting) this.#publishConversationEvent?.(id, "state", starting, starting);
+    if ((await this.#installationVersion()) === null) throw new Error("claude-cli-unavailable");
+    await this.#ensureNoExternalOwner(record.nativeId);
+    if (this.#shuttingDown || this.#runners.get(id) !== runner)
+      throw new Error("session-unavailable");
+    const current = this.#load(id);
+    if (!current || current.released || current.nativeId !== record.nativeId)
+      throw new Error("session-unavailable");
+    if (this.#isSessionBridged(record)) throw new Error("session-already-bridged");
+    await this.#refreshIdleHistory(record);
+    // Resolving the transcript can await indexed identity. Recheck before spawning.
+    await this.#ensureNoExternalOwner(record.nativeId);
+    if (this.#shuttingDown || this.#runners.get(id) !== runner)
+      throw new Error("session-unavailable");
+    if (this.#isSessionBridged(record)) throw new Error("session-already-bridged");
+    this.#ownershipReasons.set(id, { at: Date.now(), reason: null });
+    this.#continuationNotices.delete(id);
+    this.#idleSince.delete(id);
+    if (this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
+  }
+
+  #isSessionBridged(record: ClaudeRecord): boolean {
+    if (!this.continuation.isSessionBridged) return false;
+    const aliases = new Set([
+      record.id,
+      this.store.sessions.id("claude-code", record.nativeId),
+      ...this.#listRecords()
+        .filter(
+          (other) =>
+            other.nativeId === record.nativeId &&
+            other.home === record.home &&
+            other.workspace === record.workspace,
+        )
+        .map((other) => other.id),
+    ]);
+    return [...aliases].some((id) => this.continuation.isSessionBridged!(id));
+  }
+
+  /** Called synchronously when a session subscription is installed. */
+  observeSession(id: string): void {
+    if (this.#runners.has(id) || this.#sessionQueues.has(id) || this.#starting.has(id))
+      this.#observed.add(id);
+  }
+
+  async #stopForExternalOwner(id: string, runner: ClaudeManagedRunnerProcess): Promise<void> {
+    const snapshot = runner.snapshot();
+    try {
+      await runner.shutdown();
+    } catch {
+      this.#ownershipReasons.set(id, {
+        at: Date.now(),
+        reason: "control-outcome-unconfirmed",
+      });
+      throw new Error("control-outcome-unconfirmed");
+    }
+    if (runner.hasWorker) throw new Error("control-outcome-unconfirmed");
+    this.#goalRunners.delete(id);
+    await this.#goalEndpoints.get(id)?.close();
+    this.#goalEndpoints.delete(id);
+    if (snapshot.turnId)
+      this.#hostState.complete(id, snapshot.turnId, {
+        success: false,
+        usage: null,
+        cancelled: true,
+      });
+    this.#hostState.pause(id, "owner-opened-elsewhere");
+    this.invalidateSchedulePermits(id);
+    const current = this.#load(id);
+    if (!current) return;
+    current.snapshot = {
+      ...snapshot,
+      status: "idle",
+      turnId: null,
+      sendEnabled: true,
+      stopEnabled: false,
+      approvals: [],
+      questions: [],
+      activity: null,
+      reason: null,
+    };
+    this.#save(current);
+    this.#ownershipReasons.set(id, { at: Date.now(), reason: "owner-opened-elsewhere" });
+    this.#continuationNotices.set(id, "owner-opened-elsewhere");
+    this.#runners.delete(id);
+    const live = await this.#live(id, false);
+    this.#publishConversationEvent?.(id, "state", live, live);
+  }
+
+  async #maintain(): Promise<void> {
+    await Promise.allSettled(
+      [...this.#runners].map(async ([id, runner]) => {
+        if (this.#shuttingDown || runner.isRetiring) return;
+        await this.#serializeSession(id, async () => {
+          if (this.#shuttingDown || this.#runners.get(id) !== runner || !runner.hasWorker) return;
+          const record = this.#load(id);
+          if (!record || record.released) return;
+          const observed = this.continuation.isSessionObserved?.(id) === true;
+          if (observed) this.#observed.add(id);
+          let owner;
+          try {
+            owner = await this.#ownership.check(record.nativeId, runner.processId);
+          } catch {
+            // An unreadable ownership source is never treated as evidence of freedom.
+            this.#ownershipReasons.set(id, {
+              at: Date.now(),
+              reason: "claude-owner-check-unavailable",
+            });
+            return;
+          }
+          if (this.#shuttingDown || this.#runners.get(id) !== runner) return;
+          const snapshot = runner.snapshot();
+          if (owner.kind !== "idle") {
+            await this.#stopForExternalOwner(id, runner);
+            return;
+          }
+          this.#ownershipReasons.set(id, { at: Date.now(), reason: null });
+          if (
+            snapshot.status !== "idle" ||
+            snapshot.activity ||
+            snapshot.approvals.length ||
+            snapshot.questions.length
+          ) {
+            this.#idleSince.delete(id);
+            return;
+          }
+          const since = this.#idleSince.get(id) ?? Date.now();
+          this.#idleSince.set(id, since);
+          const left = this.#observed.has(id) && !observed;
+          if (!left && Date.now() - since < this.#idleTimeoutMs) return;
+          const retirement = runner.retireIfInactive();
+          if (retirement && (await retirement)) {
+            this.#idleSince.delete(id);
+            this.#continuationNotices.set(id, "background-ended");
+            const live = await this.#live(id, false);
+            this.#publishConversationEvent?.(id, "state", live, live);
+          }
+        });
+      }),
+    );
   }
 
   async #reconcile(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
@@ -2369,11 +2752,10 @@ export class ClaudeManagedReadOwner {
       );
       if (retirementFailure?.status === "rejected") throw retirementFailure.reason;
       if (retirementFailure) throw new Error("Claude-runner-limit");
-      const active =
-        this.#runnerReservations.size +
-        [...this.#runners.values()].filter((runner) => runner.hasWorker && !runner.isRetiring)
-          .length;
-      if (active > 8) throw new Error("Claude-runner-limit");
+      const active = new Set(this.#runnerReservations);
+      for (const [sessionId, runner] of this.#runners)
+        if (runner.hasWorker && !runner.isRetiring) active.add(sessionId);
+      if (active.size > 8) throw new Error("Claude-runner-limit");
       return needsSlot;
     } catch (error) {
       this.#runnerReservations.delete(id);
@@ -2613,20 +2995,32 @@ export class ClaudeManagedReadOwner {
     const record = this.#load(id);
     const version = supportsClaudeManagedRunner() ? await this.#installationVersion() : null;
     if (!record) {
-      await this.#resolveNative(id);
+      const target = await this.#resolveNative(id);
+      const reason = !supportsClaudeManagedRunner()
+        ? "platform-unsupported"
+        : !version
+          ? "claude-cli-unavailable"
+          : await this.#ownershipReason(id, target.nativeId, null);
       return {
         sessionId: id,
+        workspaceId: target.workspaceId,
+        sourceSessionId: target.nativeId,
         runtimeBootId: this.bootId,
-        executionMode: "managed-resume",
-        status: "idle",
-        revision: 0,
+        executionMode: "claude-managed",
+        executionLocation:
+          reason === "claude-owner-busy" || reason === "claude-background-session-running"
+            ? "external"
+            : null,
+        ownershipReason: reason,
+        status: version ? "idle" : "unsupported",
+        revision: this.#hostState.read(id).revision,
         turnId: null,
-        sendEnabled: false,
+        sendEnabled: controls && !reason && !this.#hostState.read(id).archived,
         stopEnabled: false,
         approvals: [],
         questions: [],
         streamText: "",
-        reason: "handoff-required",
+        reason,
         cliVersion: version,
         permissionMode: "cli-configured",
       };
@@ -2679,9 +3073,10 @@ export class ClaudeManagedReadOwner {
     } else {
       live = { ...record.snapshot };
     }
-    if (record.released) {
-      live.status = "released";
-      live.reason = "handoff-required";
+    if (record.released && live.status !== "outcome-unknown") {
+      live.status = "idle";
+      live.reason = null;
+      live.sendEnabled = true;
     }
     live.sessionId = record.id;
     live.sourceSessionId = record.nativeId;
@@ -2702,11 +3097,45 @@ export class ClaudeManagedReadOwner {
         },
         Number(live.revision),
       );
-    if (!version) {
+    live.executionLocation = runner?.hasWorker ? "agentkib" : null;
+    const ownershipReason = !supportsClaudeManagedRunner()
+      ? "platform-unsupported"
+      : !version
+        ? "claude-cli-unavailable"
+        : await this.#ownershipReason(
+            id,
+            record.nativeId,
+            runner?.hasWorker ? runner.processId : null,
+          );
+    live.ownershipReason = ownershipReason;
+    live.continuationNotice = this.#continuationNotices.get(id) ?? null;
+    if (this.#starting.has(id) && live.status !== "outcome-unknown") {
+      live.status = "starting";
+      live.executionLocation = "agentkib";
       live.sendEnabled = false;
-      if (live.status === "idle") live.reason = "unverified-installation";
     }
-    if (!controls || record.released) {
+    if (ownershipReason) {
+      live.sendEnabled = false;
+      if (live.status !== "outcome-unknown") live.reason = ownershipReason;
+      if (
+        [
+          "claude-owner-busy",
+          "claude-background-session-running",
+          "owner-opened-elsewhere",
+        ].includes(ownershipReason)
+      )
+        live.executionLocation = "external";
+    } else if (
+      typeof live.reason === "string" &&
+      [
+        "claude-owner-busy",
+        "claude-background-session-running",
+        "owner-opened-elsewhere",
+        "claude-owner-check-unavailable",
+      ].includes(live.reason)
+    )
+      live.reason = null;
+    if (!controls) {
       live.sendEnabled = false;
       live.stopEnabled = false;
       for (const key of ["approvals", "questions"])
@@ -2752,12 +3181,19 @@ export class ClaudeManagedReadOwner {
     const permission = this.#permissionView(id, version, () => host.settings.permissionMode);
     return {
       ...snapshot,
+      ...(this.#starting.has(id) && snapshot.status !== "outcome-unknown"
+        ? { status: "starting", sendEnabled: false, stopEnabled: false }
+        : {}),
       revision: snapshot.revision + host.revision,
       sessionId: id,
       sourceSessionId: record?.nativeId ?? null,
       workspaceId: record?.workspaceId ?? null,
       runtimeBootId: this.bootId,
       executionMode: "claude-managed",
+      executionLocation:
+        this.#runners.get(id)?.hasWorker || this.#starting.has(id) ? "agentkib" : null,
+      ownershipReason: this.#ownershipReasons.get(id)?.reason ?? null,
+      continuationNotice: this.#continuationNotices.get(id) ?? null,
       permissionMode: "cli-configured",
       cliVersion: version,
       ...(permission ? { permission } : {}),
@@ -2832,8 +3268,19 @@ export class ClaudeManagedReadOwner {
   /** Bounded identity discovery for a borrowed native host; this never transfers execution. */
   async nativeBridgeTarget(id: string, nativeId?: string) {
     const record = this.#load(id);
-    if (record && (!record.released || this.#runners.has(id)))
-      throw new Error("session-already-managed");
+    this.#assertBridgeAvailable(id, record);
+    if (record) {
+      this.#validate(record);
+      if (nativeId && nativeId !== record.nativeId) throw new Error("unverified-session-identity");
+      this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+      return {
+        sessionId: id,
+        nativeId: record.nativeId,
+        workspaceId: record.workspaceId,
+        workspace: record.workspace,
+        registeredWorkspace: canonicalize(this.store.workspacePath(record.workspaceId)),
+      };
+    }
     const indexed = this.store.sessions.get(id);
     if (!indexed || indexed.agent !== "claude-code" || indexed.sidechain)
       throw new Error("session-not-controllable");
@@ -2851,6 +3298,7 @@ export class ClaudeManagedReadOwner {
     if (!nativeId) throw new Error("session-unavailable");
     const workspace = this.sessions.claudeControlWorkspace(nativeId, registeredWorkspace);
     this.sessions.verifiedClaudeControlTarget(nativeId, workspace);
+    this.#assertBridgeAvailable(id, record, nativeId, workspace);
     return {
       sessionId: id,
       nativeId,
@@ -2869,10 +3317,28 @@ export class ClaudeManagedReadOwner {
       registeredWorkspace: string;
     },
     forControl: boolean,
+    bindingId?: string,
   ): void {
     const record = this.#load(target.sessionId);
-    if (record && (!record.released || this.#runners.has(target.sessionId)))
-      throw new Error("session-already-managed");
+    this.#assertBridgeAvailable(
+      target.sessionId,
+      record,
+      target.nativeId,
+      target.workspace,
+      bindingId ? { bindingId, workspaceId: target.workspaceId } : undefined,
+    );
+    if (record) {
+      this.#validate(record);
+      if (
+        record.nativeId !== target.nativeId ||
+        record.workspaceId !== target.workspaceId ||
+        record.workspace !== target.workspace ||
+        canonicalize(this.store.workspacePath(record.workspaceId)) !== target.registeredWorkspace
+      )
+        throw new Error("unverified-session-identity");
+      if (forControl) this.sessions.verifiedClaudeControlTarget(target.nativeId, target.workspace);
+      return;
+    }
     const indexed = this.store.sessions.get(target.sessionId);
     if (
       !indexed ||
@@ -2885,6 +3351,47 @@ export class ClaudeManagedReadOwner {
     )
       throw new Error("unverified-session-identity");
     if (forControl) this.sessions.verifiedClaudeControlTarget(target.nativeId, target.workspace);
+  }
+
+  #assertBridgeAvailable(
+    id: string,
+    record: ClaudeRecord | null,
+    nativeId = record?.nativeId,
+    workspace = record?.workspace,
+    binding?: { bindingId: string; workspaceId: string },
+  ): void {
+    if (this.#shuttingDown) throw new Error("session-unavailable");
+    const aliases = new Map([[id, record]]);
+    if (nativeId)
+      for (const other of this.#listRecords())
+        if (
+          other.nativeId === nativeId &&
+          other.workspace === workspace &&
+          other.home === this.#home()
+        )
+          aliases.set(other.id, other);
+    for (const [alias, candidate] of aliases) {
+      const runner = this.#runners.get(alias);
+      if (runner?.hasWorker || runner?.isRetiring || this.#starting.has(alias))
+        throw new Error("session-already-managed");
+      if (
+        readUnknownManagedCommands(this.dataDir, alias).some((command) => {
+          const evidence = command.evidence;
+          // An authenticated terminal may report completion of its own dispatched command.
+          // Admission and managed startup still reject every unresolved command.
+          return !(
+            binding &&
+            alias === id &&
+            evidence?.executionMode === "claude-follower" &&
+            evidence.bindingId === binding.bindingId &&
+            evidence.nativeId === nativeId &&
+            evidence.workspaceId === binding.workspaceId
+          );
+        }) ||
+        (candidate && candidate.snapshot.status !== "idle")
+      )
+        throw new Error("control-outcome-unconfirmed");
+    }
   }
 
   async receipt(value: unknown): Promise<unknown> {
@@ -2956,6 +3463,10 @@ export class ClaudeManagedReadOwner {
     const record = this.#load(id);
     const version = supportsClaudeManagedRunner() && (await this.#installationVersion()) !== null;
     const owned = Boolean(record && !record.released);
+    const continuable =
+      !this.#hostState.read(id).archived &&
+      !live.ownershipReason &&
+      live.status !== "outcome-unknown";
     const host = owned ? this.#hostState.read(id) : null;
     const writable =
       version && controls && owned && !host?.archived && live.status !== "outcome-unknown";
@@ -2969,11 +3480,23 @@ export class ClaudeManagedReadOwner {
             : null
         : null;
     const map: Record<string, boolean> = {
-      send: writable && live.sendEnabled === true,
+      send: version && controls && continuable && live.sendEnabled === true,
       stop: writable && live.stopEnabled === true,
-      steer: writable && live.status === "running" && live.activity !== "compacting",
-      approve: writable && Array.isArray(live.approvals) && live.approvals.length > 0,
-      answer: writable && Array.isArray(live.questions) && live.questions.length > 0,
+      steer:
+        writable &&
+        !live.ownershipReason &&
+        live.status === "running" &&
+        live.activity !== "compacting",
+      approve:
+        writable &&
+        !live.ownershipReason &&
+        Array.isArray(live.approvals) &&
+        live.approvals.length > 0,
+      answer:
+        writable &&
+        !live.ownershipReason &&
+        Array.isArray(live.questions) &&
+        live.questions.length > 0,
       attachments: writable && live.activity !== "compacting",
       files: true,
       adopt: !owned && version && controls,
@@ -2993,7 +3516,13 @@ export class ClaudeManagedReadOwner {
       "queue-reorder": writable,
       "queue-resume": idle && host?.paused === true,
       "queue-pause": writable && host?.paused !== true,
-      fork: idle && record?.fresh === false,
+      fork:
+        version &&
+        controls &&
+        !this.#hostState.read(id).archived &&
+        live.status === "idle" &&
+        live.activity !== "compacting" &&
+        record?.fresh !== true,
       archive: idle,
       unarchive: version && controls && host?.archived === true,
       rename: idle,
@@ -3052,8 +3581,8 @@ export class ClaudeManagedReadOwner {
                     : !version
                       ? "unverified-installation"
                       : !owned
-                        ? "handoff-required"
-                        : "operation-unavailable",
+                        ? (live.reason ?? "operation-unavailable")
+                        : (live.ownershipReason ?? "operation-unavailable"),
               },
         ]),
       ),

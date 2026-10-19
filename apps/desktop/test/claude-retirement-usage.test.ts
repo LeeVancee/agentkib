@@ -45,6 +45,9 @@ input.on("line", (line) => {
       subtype: "success", request_id: value.request_id,
     } });
   } else if (value.type === "user") {
+    const append = row => require('node:fs').appendFileSync(process.env.CLAUDE_CONFIG_DIR+'/'+value.session_id+'.jsonl', JSON.stringify({sessionId:value.session_id,cwd:process.cwd(),...row})+'\n');
+    append({type:'user',uuid:value.uuid,message:value.message});
+    append({type:'assistant',uuid:require('node:crypto').randomUUID(),parentUuid:value.uuid,message:{role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'Synthetic complete'}]}});
     send({ type: "assistant", parent_tool_use_id: null, message: {
       id: value.uuid, model: "synthetic-model", usage: { input_tokens: 10 }, content: [],
     } });
@@ -81,6 +84,45 @@ function expectStaleUsage(value: unknown, reportId: number | undefined) {
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude worker retirement context usage",
   () => {
+    it.each(["send", "prepare"] as const)(
+      "checks ownership before every %s restart of the same retired runner",
+      async (operation) => {
+        const f = fixture();
+        let blocked = false;
+        const beforeStart = vi.fn(async () => {
+          if (blocked) throw new Error("claude-owner-busy");
+        });
+        const runner = new ClaudeManagedRunnerProcess(
+          f.workspace,
+          randomUUID(),
+          true,
+          0,
+          f.environment,
+          () => {},
+          false,
+          undefined,
+          { beforeStart },
+        );
+        cleanups.push(() => runner.shutdown());
+        await runner.send(f.executable, "first", randomUUID(), 0);
+        await expect.poll(() => runner.snapshot().status).toBe("idle");
+        await expect(runner.retireIfInactive()).resolves.toBe(true);
+        blocked = true;
+        const restart = () =>
+          operation === "send"
+            ? runner.send(f.executable, "blocked", randomUUID(), runner.snapshot().revision)
+            : runner.prepare(f.executable);
+        await expect(restart()).rejects.toThrow("claude-owner-busy");
+        expect(beforeStart).toHaveBeenCalledTimes(2);
+        expect(runner.hasWorker).toBe(false);
+        expect(runner.snapshot().status).toBe("idle");
+        blocked = false;
+        await restart();
+        expect(beforeStart).toHaveBeenCalledTimes(3);
+        expect(runner.hasWorker).toBe(true);
+      },
+    );
+
     it("publishes stale usage on retirement and restores readiness only after explicit restart", async () => {
       const f = fixture();
       const snapshots: ClaudeRunnerSnapshot[] = [];
@@ -161,16 +203,17 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     it("keeps HTTP live, usage reads, and events consistent when another session retires a retained runner", async () => {
       const f = fixture();
       const events: Array<{ id: string; type: string; live: Record<string, unknown> }> = [];
-      const run = vi.fn(async (_command: string, args: string[]) => {
+      const run = vi.fn(async (command: string, args: string[]) => {
+        if (command === "/bin/ps") return { success: true, bytes: Buffer.from("") };
+        if (args[0] === "agents") return { success: true, bytes: Buffer.from("[]\n") };
         expect(args).toEqual(["--version"]);
         return { success: true, bytes: Buffer.from("2.1.286 (Claude Code)\n") };
       });
       const owner = new ClaudeManagedReadOwner(
         { workspacePath: () => f.workspace } as unknown as BackendStore,
         {
-          verifiedClaudeControlTarget: () => {
-            throw new Error("no synthetic transcript");
-          },
+          verifiedClaudeControlTarget: (id: string) =>
+            path.join(f.environment.CLAUDE_CONFIG_DIR, `${id}.jsonl`),
         } as unknown as SessionReaders,
         { run } as unknown as Commands,
         f.directory,

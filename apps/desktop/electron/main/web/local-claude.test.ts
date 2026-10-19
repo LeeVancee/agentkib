@@ -125,6 +125,62 @@ describe("trusted Claude owner boundary", () => {
       deviceId: "agentkib-local-owner",
     });
   });
+  it("adopts without a manual confirmation while keeping the host owner boundary", async () => {
+    expect(
+      await localClaudeRequest(deps, {
+        operation: "adopt",
+        sessionId: "session",
+        requestId: "adopt",
+        deviceId: "spoofed",
+        handoffConfirmed: false,
+        path: "/untrusted",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(deps.managed).toHaveBeenLastCalledWith({
+      operation: "adopt",
+      sessionId: "session",
+      requestId: "adopt",
+      deviceId: "agentkib-local-owner",
+    });
+  });
+  it("preserves an explicitly supplied adoption fingerprint for the backend safety check", async () => {
+    await localClaudeRequest(deps, {
+      operation: "adopt",
+      sessionId: "session",
+      requestId: "adopt",
+      handoffFingerprint: "fingerprint",
+    });
+    expect(deps.managed).toHaveBeenLastCalledWith({
+      operation: "adopt",
+      sessionId: "session",
+      requestId: "adopt",
+      deviceId: "agentkib-local-owner",
+      handoffFingerprint: "fingerprint",
+    });
+  });
+  it.each([
+    "claude-owner-busy",
+    "claude-background-session-running",
+    "claude-owner-check-unavailable",
+    "owner-opened-elsewhere",
+    "claude-cli-unavailable",
+    "platform-unsupported",
+  ])("keeps the definitive %s reason when local send is unavailable", async (reason) => {
+    live = { ...live, sendEnabled: false, ownershipReason: reason };
+    expect(await localClaudeRequest(deps, send)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      error: reason,
+    });
+    expect(deps.managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "send" }));
+  });
+  it("does not forward arbitrary internal disabled-send diagnostics", async () => {
+    live = { ...live, sendEnabled: false, ownershipReason: "/private/internal-diagnostic" };
+    expect(await localClaudeRequest(deps, send)).toMatchObject({
+      controlOutcome: "not-dispatched",
+      error: "control_unavailable",
+    });
+  });
   it.each(["send", "release", "adopt"])(
     "keeps %s replay preflight failures unknown and uses only the host owner",
     async (operation) => {
@@ -138,6 +194,7 @@ describe("trusted Claude owner boundary", () => {
           ...send,
           operation,
           expectedRevision: -1,
+          ...(operation === "adopt" ? { handoffFingerprint: 42 } : {}),
           deviceId: "spoofed",
         }),
       ).toMatchObject({ accepted: false, controlOutcome: "unknown" });

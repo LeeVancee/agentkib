@@ -22,6 +22,7 @@ import { dispatchClaude } from "./claude-dispatch";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
+import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { markdownLinkTargets } from "./markdown-links";
 import {
@@ -2533,21 +2534,6 @@ export class WebAccessService {
     if (operation === "settings") return "settings";
     return operation === "send" || operation === "inspect" ? "send" : "advancedControl";
   }
-  private codexPreflightReason(reason: unknown, fallback = "control_preflight_rejected") {
-    return typeof reason === "string" &&
-      new Set([
-        "session-compacting",
-        "codex-owner-busy",
-        "codex-cli-version-too-old",
-        "codex-cli-unavailable",
-        "codex-cli-version-unavailable",
-        "codex-owner-check-unavailable",
-        "unsupported-codex-cli-version",
-        "platform-unsupported",
-      ]).has(reason)
-      ? reason
-      : fallback;
-  }
   private projectClaudeCapabilities(result: unknown, device: WebDevice, sessionId: string) {
     const data = result as { features?: Record<string, { available: boolean; reason?: string }> };
     const roles: Record<string, keyof WebDevice> = {
@@ -2806,7 +2792,7 @@ export class WebAccessService {
           409,
           capabilities.features?.[operation]?.reason === "session-compacting"
             ? "session-compacting"
-            : this.codexPreflightReason(
+            : continuationPreflightReason(
                 capabilities.features?.[operation]?.reason,
                 "capability_unavailable",
               ),
@@ -3062,15 +3048,6 @@ export class WebAccessService {
         }
         params.goal = goal;
       }
-      if (
-        generic &&
-        capabilities.executionMode === "claude-managed" &&
-        ["resume", "queue-resume", "goal-resume"].includes(operation)
-      ) {
-        if (operation === "resume" && body.handoffConfirmed !== true)
-          throw new HttpError(400, "handoff_confirmation_required");
-        if (operation === "resume" || generic) params.handoffConfirmed = true;
-      }
       if (body.resourceIds !== undefined) {
         if (!["steer", "queue-add", "queue-update"].includes(operation))
           throw new HttpError(400, "resources_not_supported");
@@ -3125,7 +3102,7 @@ export class WebAccessService {
           control.dispatched = false;
           if (newlyPinnedDevice)
             await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
-          throw new HttpError(409, this.codexPreflightReason(result.reason ?? result.error));
+          throw new HttpError(409, continuationPreflightReason(result.reason ?? result.error));
         }
         throw new HttpError(502, "outcome_unknown");
       }
@@ -3470,10 +3447,11 @@ export class WebAccessService {
       }
     } else {
       params.sessionId = this.field(body.sessionId);
-      if (operation === "adopt" && agent === "claude-code") {
-        if (body.handoffConfirmed !== true)
-          throw new HttpError(400, "handoff_confirmation_required");
-        params.handoffConfirmed = true;
+      if (
+        operation === "adopt" &&
+        agent === "claude-code" &&
+        body.handoffFingerprint !== undefined
+      ) {
         params.handoffFingerprint = this.field(body.handoffFingerprint, 256);
       }
     }
@@ -3580,7 +3558,9 @@ export class WebAccessService {
         ]);
         throw new HttpError(
           409,
-          safeReasons.has(result.reason ?? "") ? result.reason! : "control_preflight_rejected",
+          safeReasons.has(result.reason ?? "")
+            ? result.reason!
+            : continuationPreflightReason(result.reason),
         );
       }
       throw new HttpError(502, "outcome_unknown");
@@ -4298,7 +4278,7 @@ export class WebAccessService {
         if (!claudeReplay && operation === "send" && snapshot.sendEnabled !== true)
           throw new HttpError(
             409,
-            this.codexPreflightReason(
+            continuationPreflightReason(
               snapshotField(snapshot, "ownershipReason") ?? snapshotField(snapshot, "reason"),
               "control_unavailable",
             ),
@@ -4513,7 +4493,7 @@ export class WebAccessService {
           if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
           throw new HttpError(
             409,
-            this.codexPreflightReason(
+            continuationPreflightReason(
               (result as { reason?: string; error?: string }).reason ??
                 (result as { error?: string }).error,
             ),

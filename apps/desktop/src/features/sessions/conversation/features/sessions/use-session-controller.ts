@@ -1,3 +1,4 @@
+import type { ContinuationComposerDraft, ContinuationDraft } from "./continuation-draft";
 import { claudeConnectionReason } from "./claude-connection-copy";
 import {
   historyMessageText,
@@ -183,6 +184,26 @@ export function useSessionController({
     text: string;
     afterEventId?: string;
   }>();
+  const continuationDraft = useRef<
+    | {
+        sessionId: string;
+        generation: number;
+        draft: ContinuationDraft;
+      }
+    | undefined
+  >(undefined);
+  const takeContinuationDraft = useCallback((sessionId: string) => {
+    const pending = continuationDraft.current;
+    if (
+      !pending ||
+      pending.sessionId !== sessionId ||
+      selection.current !== sessionId ||
+      pending.generation !== generation.current
+    )
+      return;
+    continuationDraft.current = undefined;
+    return pending.draft;
+  }, []);
   const continuationCheck = useRef({ sessionId: "", generation: -1, at: 0, pending: false });
   const generation = useRef(0),
     selection = useRef(""),
@@ -247,6 +268,7 @@ export function useSessionController({
     setCapabilities(undefined);
     setModal(undefined);
     setMessage("");
+    continuationDraft.current = undefined;
     setPendingSend(undefined);
     setHistoryReferences([]);
     setHistorySearchOpen(false);
@@ -270,6 +292,7 @@ export function useSessionController({
   }, [setPage, setHistoryReferences]);
   const leaveSession = useCallback(() => {
     generation.current++;
+    continuationDraft.current = undefined;
     readinessEpoch.current++;
     selection.current = "";
     deferredRefresh.current = undefined;
@@ -1055,6 +1078,7 @@ export function useSessionController({
       if (catalogSessions.current.find((session) => session.id === id)?.availability !== "readable")
         return;
       generation.current++;
+      continuationDraft.current = undefined;
       readinessEpoch.current++;
       // The new selection owns its baseline read. An obsolete refresh cannot
       // keep it fenced, while unknown outcomes remain attached to their session.
@@ -1627,7 +1651,9 @@ export function useSessionController({
     const requestId = crypto.randomUUID();
     if (
       kind === "send" &&
-      catalogSessions.current.find((item) => item.id === id)?.agent === "codex"
+      ["codex", "claude-code"].includes(
+        catalogSessions.current.find((item) => item.id === id)?.agent ?? "",
+      )
     )
       setPendingSend({ sessionId: id, text, afterEventId: page?.events.at(-1)?.id });
     const needsDurableReceipt =
@@ -1755,7 +1781,9 @@ export function useSessionController({
       hasDurablePending(id) ||
       accessRef.current?.status !== "approved" ||
       accessRef.current.protocolVersion !== 2 ||
-      catalogSessions.current.find((item) => item.id === id)?.agent !== "codex" ||
+      !["codex", "claude-code"].includes(
+        catalogSessions.current.find((item) => item.id === id)?.agent ?? "",
+      ) ||
       (prior.sessionId === id &&
         prior.generation === generation.current &&
         Date.now() - prior.at < 4000)
@@ -1773,17 +1801,30 @@ export function useSessionController({
     if (
       !online ||
       live?.sessionId !== selected ||
-      (live.ownershipReason !== "codex-owner-busy" && live.reason !== "codex-owner-busy")
+      ![
+        "codex-owner-busy",
+        "claude-owner-busy",
+        "claude-background-session-running",
+        "owner-opened-elsewhere",
+      ].includes(live.ownershipReason || live.reason || "")
     )
       return;
     const timer = setInterval(() => void checkContinuation(), 4000);
     return () => clearInterval(timer);
   }, [online, selected, live?.sessionId, live?.ownershipReason, live?.reason, checkContinuation]);
-  async function forkContinuation() {
+  async function forkContinuation(composerDraft?: ContinuationComposerDraft) {
     const id = selected,
       g = generation.current,
       draft = message;
-    if (catalogSessions.current.find((item) => item.id === id)?.agent !== "codex") return;
+    const historyDraft = [...historyReferencesValue.current];
+    const files = [...(composerDraft?.files ?? [])];
+    const resources = (composerDraft?.resources ?? []).map((item) => ({ ...item }));
+    if (
+      !["codex", "claude-code"].includes(
+        catalogSessions.current.find((item) => item.id === id)?.agent ?? "",
+      )
+    )
+      return;
     const result = await codexAction("fork");
     if (
       g !== generation.current ||
@@ -1796,6 +1837,14 @@ export function useSessionController({
     // expose the new composer. A later read must not replace edits made there.
     const choosing = choose(result.sessionId, draft);
     const targetGeneration = generation.current;
+    if (selection.current === result.sessionId && targetGeneration !== g) {
+      continuationDraft.current = {
+        sessionId: result.sessionId,
+        generation: targetGeneration,
+        draft: { files, resources, historyReferences: historyDraft },
+      };
+      setHistoryReferences(historyDraft);
+    }
     await choosing;
     if (generation.current !== targetGeneration || selection.current !== result.sessionId) return;
     return result.sessionId;
@@ -1819,7 +1868,7 @@ export function useSessionController({
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     !!live?.sendEnabled &&
-    live.status === "idle" &&
+    (live.status === "idle" || (current?.agent === "claude-code" && live.status === "released")) &&
     live.activity !== "compacting";
   const canStop =
     controlReady &&
@@ -1885,6 +1934,7 @@ export function useSessionController({
     codexAction,
     checkContinuation,
     forkContinuation,
+    takeContinuationDraft,
     pendingSend,
     origin,
     connection: client.connection,

@@ -12,6 +12,8 @@ import { CodexFollowerBridge } from "../../../packages/backend/src/codex-followe
 import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import {
+  claimManagedCommand,
+  dispatchManagedCommand,
   readManagedRecord,
   readUnknownManagedCommands,
 } from "../../../packages/backend/src/managed-ledger";
@@ -197,6 +199,7 @@ function fixture() {
     home,
     workspace,
     summary,
+    store,
     web,
     live,
     send,
@@ -260,6 +263,37 @@ describe("Codex automatic CLI continuation", () => {
     expect(f.methods).not.toContain("turn/start");
   });
 
+  it("keeps an observed unknown outcome above a cached writer conflict in catalog without another ownership probe", async () => {
+    const f = fixture();
+    vi.spyOn(f.store.sessions, "list").mockReturnValue([
+      f.summary as ReturnType<typeof f.store.sessions.list>[number],
+    ]);
+    const lockDirectory = path.join(f.home, "thread-writer-locks");
+    mkdirSync(lockDirectory, { recursive: true });
+    const release = acquirePortableFileLease(path.join(lockDirectory, `${nativeId}.lock`));
+    cleanups.push(release);
+    expect(await f.live()).toMatchObject({ reason: "codex-owner-busy" });
+    const requestId = randomUUID();
+    claimManagedCommand(f.root, requestId, f.summary.id, "synthetic-unknown", "fixture", {
+      operation: "send",
+    });
+    dispatchManagedCommand(f.root, requestId);
+    expect(await f.live()).toMatchObject({
+      reason: "control-outcome-unconfirmed",
+      sendEnabled: false,
+    });
+    f.version.mockClear();
+    const methods = [...f.methods];
+    const catalog = (await f.web.request({ operation: "catalog" })) as {
+      sessions: Array<Record<string, unknown>>;
+    };
+    expect(catalog.sessions.find((row) => row.id === f.summary.id)?.continuation).toMatchObject({
+      reason: "control-outcome-unconfirmed",
+      ownershipReason: null,
+    });
+    expect(f.version).not.toHaveBeenCalled();
+    expect(f.methods).toEqual(methods);
+  });
   it("keeps a lost resume uncertain without stranding the original unsent message's receipt", async () => {
     const f = fixture();
     f.setFailure(new Error("Codex app-server request timed out"));

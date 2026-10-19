@@ -1,3 +1,4 @@
+import { sessionContinuationListState, SessionContinuationDot } from "@agentkib/session-ui";
 import { useI18n } from "@/core/useI18n";
 import { sessionCollection } from "@agentkib/runtime-protocol";
 import { cn } from "cn";
@@ -22,7 +23,7 @@ import { sessionOrder, useSessionDirectoryOrder } from "./useSessionDirectoryOrd
 export function SessionDirectory({
   onMenuOpenChange,
 }: { onMenuOpenChange?: (open: boolean) => void } = {}) {
-  const { formatDateTime, tr } = useI18n();
+  const { locale, formatDateTime, tr } = useI18n();
   const hub = useSessionHub();
   const view = useSessionViewStore(
     useShallow((state) => ({
@@ -151,83 +152,89 @@ export function SessionDirectory({
                   inert={Boolean(view.collapsed[workspace.id])}
                   aria-hidden={view.collapsed[workspace.id] || undefined}
                 >
-                  {sessions.map((session) => (
-                    <Button
-                      variant="bare"
-                      size="content"
-                      key={session.id}
-                      data-session-entry
-                      draggable
-                      className={cn(
-                        "session-directory-item session-directory-draggable flex min-h-10 w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/70 cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&>span]:grid [&>span]:min-w-0 [&>span]:flex-1 [&_strong]:truncate aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium",
-                        draggingId === `session:${session.id}` &&
-                          "session-directory-dragging opacity-[0.45]",
-                        dropTargetId === session.id &&
-                          (dropAfter
-                            ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
-                            : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
-                      )}
-                      onDragStart={(event) =>
-                        startDrag(
-                          event,
-                          { kind: "session", workspaceId: workspace.id, sessionId: session.id },
-                          `session:${session.id}`,
-                        )
-                      }
-                      onDragEnd={finishDrag}
-                      onDragOver={(event) =>
-                        allowDrop(event, {
-                          kind: "session",
-                          workspaceId: workspace.id,
-                          sessionId: session.id,
-                        })
-                      }
-                      onDrop={(event) =>
-                        dropBefore(event, {
-                          kind: "session",
-                          workspaceId: workspace.id,
-                          sessionId: session.id,
-                        })
-                      }
-                      onKeyDown={(event) =>
-                        moveByKeyboard(event, {
-                          kind: "session",
-                          workspaceId: workspace.id,
-                          sessionId: session.id,
-                        })
-                      }
-                      aria-describedby="session-directory-reorder-hint"
-                      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                      aria-current={hub.selected?.id === session.id ? "page" : undefined}
-                      onClick={() => hub.select(session.id)}
-                      title={[
-                        displaySessionTitle(session.title, tr),
-                        `${sessionAgentNames[session.agent]} · ${sessionRecordLabel(session, tr)}`,
-                        workspace.path,
-                        sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
-                      ]
-                        .filter(Boolean)
-                        .join("\n")}
-                    >
-                      <AgentIcon agent={session.agent} compact />
-                      <span>
-                        <strong
-                          className={cn(
-                            "truncate font-[550]",
-                            hub.selected?.id === session.id && "font-[650]",
-                          )}
-                        >
-                          {displaySessionTitle(session.title, tr)}
-                        </strong>
-                      </span>
-                      {isInteractiveFork(session) && (
-                        <GitBranch
-                          size={12}
-                          aria-label={`${tr("conversations.forked")}: ${sessionSourceLabel(session, hub.sessions, tr, formatDateTime)}`}
-                        />
-                      )}
-                    </Button>
-                  ))}
+                  {sessions.map((session) => {
+                    const status = sessionContinuationListState(session, locale);
+                    return (
+                      <Button
+                        variant="bare"
+                        size="content"
+                        key={session.id}
+                        data-session-entry
+                        draggable
+                        className={cn(
+                          "session-directory-item session-directory-draggable flex min-h-10 w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-sidebar-accent/70 cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&>span]:grid [&>span]:min-w-0 [&>span]:flex-1 [&_strong]:truncate aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium",
+                          draggingId === `session:${session.id}` &&
+                            "session-directory-dragging opacity-[0.45]",
+                          dropTargetId === session.id &&
+                            (dropAfter
+                              ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
+                              : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
+                        )}
+                        onDragStart={(event) =>
+                          startDrag(
+                            event,
+                            { kind: "session", workspaceId: workspace.id, sessionId: session.id },
+                            `session:${session.id}`,
+                          )
+                        }
+                        onDragEnd={finishDrag}
+                        onDragOver={(event) =>
+                          allowDrop(event, {
+                            kind: "session",
+                            workspaceId: workspace.id,
+                            sessionId: session.id,
+                          })
+                        }
+                        onDrop={(event) =>
+                          dropBefore(event, {
+                            kind: "session",
+                            workspaceId: workspace.id,
+                            sessionId: session.id,
+                          })
+                        }
+                        onKeyDown={(event) =>
+                          moveByKeyboard(event, {
+                            kind: "session",
+                            workspaceId: workspace.id,
+                            sessionId: session.id,
+                          })
+                        }
+                        aria-describedby="session-directory-reorder-hint"
+                        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                        aria-current={hub.selected?.id === session.id ? "page" : undefined}
+                        onClick={() => hub.select(session.id)}
+                        title={[
+                          displaySessionTitle(session.title, tr),
+                          `${sessionAgentNames[session.agent]} · ${sessionRecordLabel(session, tr)}`,
+                          workspace.path,
+                          sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
+                        ]
+                          .filter(Boolean)
+                          .join("\n")}
+                      >
+                        <AgentIcon agent={session.agent} compact />
+                        <span>
+                          <strong
+                            className={cn(
+                              "truncate font-[550]",
+                              hub.selected?.id === session.id && "font-[650]",
+                            )}
+                          >
+                            {displaySessionTitle(session.title, tr)}
+                          </strong>
+                        </span>
+                        {status?.dot && (
+                          <SessionContinuationDot label={status.label} active={status.active} />
+                        )}
+                        {isInteractiveFork(session) && (
+                          <GitBranch
+                            size={12}
+                            aria-label={`${tr("conversations.forked")}: ${sessionSourceLabel(session, hub.sessions, tr, formatDateTime)}`}
+                          />
+                        )}
+                      </Button>
+                    );
+                  })}
                 </CollapsibleContent>
               </Collapsible>
             </Fragment>

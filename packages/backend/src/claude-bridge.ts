@@ -407,6 +407,8 @@ export class ClaudeBridge {
       workspaceId: row.target.workspaceId,
       runtimeBootId: this.options.bootId,
       executionMode: "claude-follower",
+      executionLocation: online ? "terminal" : null,
+      ownershipReason: null,
       connectionGeneration: connection?.leaseId ?? this.options.bootId,
       cliVersion: `${CLAUDE_BRIDGE_CLI_VERSION} (Claude Code)`,
       revision: connection?.revision ?? this.#revision,

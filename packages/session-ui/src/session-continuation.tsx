@@ -448,3 +448,64 @@ export function SessionContinuationReadOnly({
     </div>
   );
 }
+
+/** List presentation uses observed runtime ownership and never grants controls. */
+export function sessionContinuationListState(
+  session: {
+    agent: string;
+    availability?: string;
+    remote?: unknown;
+    continuation?: {
+      status: string;
+      executionLocation?: string | null;
+      ownershipReason?: string | null;
+      reason?: string | null;
+    };
+  },
+  locale: string,
+): { label: string; active?: boolean; dot?: boolean } | undefined {
+  const copy = sessionContinuationCopy(locale);
+  if (session.remote) return undefined;
+  if (session.availability === "metadata-only") return { label: copy.viewOnly };
+  const state = session.continuation;
+  if (!state || !["codex", "claude-code"].includes(session.agent)) return undefined;
+  if (state.status === "outcome-unknown" || state.reason === "control-outcome-unconfirmed")
+    return undefined;
+  if (
+    state.executionLocation === "external" ||
+    [
+      "codex-owner-busy",
+      "claude-owner-busy",
+      "claude-background-session-running",
+      "owner-opened-elsewhere",
+    ].includes(state.ownershipReason ?? "")
+  )
+    return { label: copy.busy(session.agent === "codex" ? "Codex" : "Claude Code"), dot: true };
+  if (state.executionLocation === "terminal" && session.agent === "claude-code")
+    return { label: copy.terminalBadge, dot: true };
+  if (state.executionLocation === "agentkib" || state.status === "starting")
+    return { label: copy.running, active: true, dot: true };
+  if (
+    [
+      "platform-unsupported",
+      "claude-cli-unavailable",
+      "unsupported-codex-cli-version",
+      "codex-cli-version-too-old",
+    ].includes(state.reason ?? "") ||
+    state.status === "unsupported" ||
+    !!state.reason
+  )
+    return { label: copy.viewOnly };
+  return undefined;
+}
+
+export function SessionContinuationDot({ label, active }: { label: string; active?: boolean }) {
+  return (
+    <i
+      role="status"
+      aria-label={label}
+      title={label}
+      className={`inline-block size-1.5 shrink-0 rounded-full ${active ? "bg-primary" : "bg-muted-foreground"}`}
+    />
+  );
+}

@@ -941,57 +941,45 @@ describe("Claude managed workflow", () => {
     );
   });
 
-  it("requires the inspected history fingerprint before adopting and retains the original identity", async () => {
+  it("continues Claude with a regular send and keeps identity checks inside the host", async () => {
     const server = createServer({
       ...idleLive,
-      sendEnabled: false,
-      executionMode: "managed-resume",
-      reason: "handoff-required",
+      sendEnabled: true,
+      executionMode: "claude-managed",
     });
     server.state.capabilities = {
       sessionId: "session",
-      executionMode: "managed-resume",
+      executionMode: "claude-managed",
       status: "idle",
-      features: { adopt: { available: true } },
+      features: { send: { available: true }, adopt: { available: true } },
     };
     server.state.access = {
       ...approvedAccess,
       device: { ...approvedAccess.device!, manage: true },
     };
-    const original = server.fetcher.getMockImplementation()!;
-    let resolveInspect!: (response: Response) => void;
-    server.fetcher.mockImplementation(async (input, init) => {
-      if (String(input).includes("/managed/options"))
-        return json({ available: true, workspaces: catalog.workspaces });
-      if (String(input).includes("/managed/inspect?"))
-        return new Promise<Response>((resolve) => {
-          resolveInspect = resolve;
-        });
-      return original(input, init);
-    });
     server.state.mutation = async () => json({ accepted: true, sessionId: "session" });
     await openSession();
-    fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
-    const adopt = await screen.findByRole("button", { name: "交给 AgentKib" });
-    fireEvent.click(screen.getByRole("checkbox"));
-    expect(adopt).toBeDisabled();
-    await waitFor(() => expect(resolveInspect).toBeTypeOf("function"));
-    await act(async () =>
-      resolveInspect(json({ sessionId: "session", handoffFingerprint: "snapshot-1" })),
-    );
-    expect(adopt).toBeEnabled();
-    fireEvent.click(adopt);
+    const message = screen.getByRole("textbox", { name: "发送消息" });
+    expect(message).toHaveAttribute("placeholder", "继续这条会话…");
+    fireEvent.change(message, { target: { value: "Continue without a manual handoff" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() =>
       expect(
-        server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/adopt")),
+        server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send")),
       ).toHaveLength(1),
     );
-    const call = server.fetcher.mock.calls.find(([url]) => String(url).endsWith("/managed/adopt"))!;
+    const call = server.fetcher.mock.calls.find(([url]) => String(url).endsWith("/send"))!;
     expect(JSON.parse(String(call[1]?.body))).toMatchObject({
-      agent: "claude-code",
       sessionId: "session",
-      handoffConfirmed: true,
-      handoffFingerprint: "snapshot-1",
+      expectedRevision: 1,
+      text: "Continue without a manual handoff",
     });
+    expect(JSON.parse(String(call[1]?.body))).not.toHaveProperty("handoffConfirmed");
+    expect(server.fetcher.mock.calls.some(([url]) => String(url).endsWith("/managed/adopt"))).toBe(
+      false,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 });

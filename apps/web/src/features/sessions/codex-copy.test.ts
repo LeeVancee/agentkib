@@ -102,7 +102,7 @@ describe("Codex capability reasons", () => {
 
   it.each(locales)("reuses specific installation and original-client advice in %s", (locale) => {
     expect(codexReason(locale, "handoff-required")).toEqual({
-      text: dictionaries[locale].handoffRequired,
+      text: dictionaries[locale].unavailable,
     });
     expect(codexReason(locale, "unverified-installation")).toEqual({
       text: dictionaries[locale].unverifiedInstallation,

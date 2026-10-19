@@ -15,9 +15,8 @@ const command = {
   runOn: "host",
 };
 
-describe.each(["local", "lan"] as const)(
-  "%s read-only Codex resume-command authorization",
-  (mode) => {
+describe.each(["codex", "claude-code"] as const)("%s resume command", (agent) => {
+  describe.each(["local", "lan"] as const)("%s read-only resume-command authorization", (mode) => {
     let dir: string,
       root: string,
       port: number,
@@ -111,9 +110,7 @@ describe.each(["local", "lan"] as const)(
       root = join(dir, "project");
       await mkdir(root);
       registered = [{ id: "workspace", name: "Project", path: root }];
-      sessions = [
-        { id: "session", workspace_id: "workspace", agent: "codex", availability: "readable" },
-      ];
+      sessions = [{ id: "session", workspace_id: "workspace", agent, availability: "readable" }];
       const reservation = createServer();
       await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
       port = (reservation.address() as { port: number }).port;
@@ -169,12 +166,12 @@ describe.each(["local", "lan"] as const)(
       expect(managed).not.toHaveBeenCalled();
     });
 
-    it.each(["unknown", "claude-code", "unreadable", "unregistered"])(
+    it.each(["unknown", "unsupported-agent", "unreadable", "unregistered"])(
       "rejects %s sessions before reading the command",
       async (reason) => {
         await pair();
         if (reason === "unknown") sessions = [];
-        if (reason === "claude-code") sessions[0]!.agent = "claude-code";
+        if (reason === "unsupported-agent") sessions[0]!.agent = "cursor";
         if (reason === "unreadable") sessions[0]!.availability = "unavailable";
         if (reason === "unregistered") registered = [];
         expect((await http(endpoint)).status).toBe(403);
@@ -238,5 +235,5 @@ describe.each(["local", "lan"] as const)(
         expect(await service.localRequest(endpoint)).toEqual({ status: 200, body: command });
       else expect((await http(endpoint, "OPTIONS")).status).toBe(204);
     });
-  },
-);
+  });
+});

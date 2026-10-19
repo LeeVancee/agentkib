@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmbeddedConversation } from "./conversation/conversation";
 import { WebClient, type Access, type Live } from "@agentkib/web-client";
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { permissionModeCopy } from "./conversation/features/sessions/permission-mode-copy";
 import { claudeConnectionCopy } from "./conversation/features/sessions/claude-connection-copy";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
@@ -18,7 +19,7 @@ afterEach(() => {
 });
 
 describe("desktop embedded conversation", () => {
-  it("rechecks Claude handoff eligibility through the trusted bridge without discarding the draft", async () => {
+  it("rechecks Claude safety through the trusted bridge and continues without a handoff while retaining the draft", async () => {
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     sessionStorage.clear();
     const state: { live: Live; owned: boolean } = {
@@ -27,11 +28,11 @@ describe("desktop embedded conversation", () => {
         sessionId: "claude-session",
         status: "idle",
         revision: 1,
-        sendEnabled: false,
+        sendEnabled: true,
         approvals: [],
         questions: [],
-        executionMode: "managed-resume",
-        reason: "handoff-required",
+        executionMode: "claude-managed",
+        executionLocation: null,
         cliVersion: "2.1.296 (Claude Code)",
       },
     };
@@ -53,7 +54,7 @@ describe("desktop embedded conversation", () => {
     };
     const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
     const bridge: DesktopConversationBridge = {
-      request: vi.fn(async (path) => {
+      request: vi.fn(async (path, body) => {
         const operation = path.split("?")[0];
         if (operation === "access") return { status: 200, body: access };
         if (operation === "catalog")
@@ -100,7 +101,7 @@ describe("desktop embedded conversation", () => {
               executionMode: state.live.executionMode,
               status: "idle",
               features: {
-                send: { available: state.owned },
+                send: { available: state.live.sendEnabled },
                 adopt: { available: !state.owned },
                 inspect: { available: true },
               },
@@ -120,16 +121,25 @@ describe("desktop embedded conversation", () => {
             status: 200,
             body: { sessionId: "claude-session", handoffFingerprint: "verified-history" },
           };
-        if (operation === "managed/adopt") {
+        if (operation === "send") {
           state.owned = true;
           state.live = {
             ...state.live,
             revision: state.live.revision + 1,
             executionMode: "claude-managed",
+            executionLocation: "agentkib",
             reason: undefined,
             sendEnabled: true,
           };
-          return { status: 200, body: { accepted: true, sessionId: "claude-session" } };
+          return {
+            status: 200,
+            body: {
+              accepted: true,
+              sessionId: "claude-session",
+              requestId:
+                body && typeof body === "object" && "requestId" in body ? body.requestId : "",
+            },
+          };
         }
         return { status: 200, body: {} };
       }),
@@ -178,28 +188,10 @@ describe("desktop embedded conversation", () => {
     expect(await screen.findByText("Existing Claude history")).toBeVisible();
     const draft = screen.getByRole("textbox", { name: "发送消息" });
     fireEvent.change(draft, { target: { value: "保留桌面草稿" } });
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-    expect(
-      (
-        await screen.findAllByText(
-          "此会话尚未交给 AgentKib。请先停止原客户端中的同一会话，再确认交接。",
-        )
-      ).length,
-    ).toBeGreaterThan(0);
-    fireEvent.click(await screen.findByRole("button", { name: "交给 AgentKib" }));
-    const confirm = await screen.findByRole("button", { name: "交给 AgentKib" });
-    expect(confirm).toBeDisabled();
-    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /我已结束当前轮次/ })).not.toBeInTheDocument();
     expect(mutations()).toEqual([]);
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    expect(draft).toHaveValue("保留桌面草稿");
-    expect(mutations()).toEqual([]);
-
-    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
-    fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
-    );
     function emitLive(seq: number) {
       for (const listener of listeners)
         listener({
@@ -217,38 +209,43 @@ describe("desktop embedded conversation", () => {
     state.live = {
       ...state.live,
       revision: 2,
+      status: "outcome-unknown",
+      sendEnabled: false,
       reason: "control-outcome-unconfirmed",
     };
     act(() => emitLive(1));
-    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(mutations()).toEqual([]);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeDisabled(),
-    );
-    expect(draft).toHaveValue("保留桌面草稿");
-    state.live = { ...state.live, revision: 3, reason: "handoff-required" };
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue("保留桌面草稿");
+    expect(screen.getByText(claudeConnectionCopy["zh-CN"].connectionUnconfirmed)).toBeVisible();
+    state.live = {
+      ...state.live,
+      revision: 3,
+      status: "idle",
+      sendEnabled: true,
+      reason: undefined,
+    };
     act(() => emitLive(2));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument(),
-    );
-    expect(draft).toHaveValue("保留桌面草稿");
-    expect(mutations()).toEqual([
-      [
-        "managed/adopt",
-        expect.objectContaining({
-          agent: "claude-code",
-          sessionId: "claude-session",
-          handoffConfirmed: true,
-          handoffFingerprint: "verified-history",
-          requestId: expect.any(String),
-        }),
-      ],
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue("保留桌面草稿");
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    expect(mutations()[0]).toEqual([
+      "send",
+      expect.objectContaining({
+        sessionId: "claude-session",
+        text: "保留桌面草稿",
+        requestId: expect.any(String),
+      }),
     ]);
-    expect(vi.mocked(bridge.request).mock.calls.some(([path]) => path === "send")).toBe(false);
+    expect(mutations()[0][1]).not.toHaveProperty("handoffConfirmed");
+    expect(mutations()[0][1]).not.toHaveProperty("handoffFingerprint");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue(""));
+    expect(await screen.findByText(sessionContinuationCopy("zh-CN").running)).toBeVisible();
+    expect(vi.mocked(bridge.request).mock.calls.some(([path]) => path === "managed/adopt")).toBe(
+      false,
+    );
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
   });
 
@@ -490,6 +487,8 @@ describe("desktop embedded conversation", () => {
   describe("Claude permission mode notice", () => {
     // Hand-built bridge for a managed Claude session; no real session data is involved.
     function claudeBridge(initial: Live, adoptAvailable = false) {
+      if (initial.executionMode === "claude-follower" && initial.executionLocation === undefined)
+        initial = { ...initial, executionLocation: "terminal" };
       const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
       const access: Access = {
         protocolVersion: 2,
@@ -649,6 +648,164 @@ describe("desktop embedded conversation", () => {
       return fixture;
     }
 
+    it.each([false, true])(
+      "opens a requested terminal wizard only after matching ready state (leave before ready: %s)",
+      async (leaveBeforeReady) => {
+        const previousPlatform = document.documentElement.dataset.platform;
+        document.documentElement.dataset.platform = "macos";
+        try {
+          vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+          sessionStorage.clear();
+          const initial = live();
+          const { bridge, patch } = claudeBridge(initial);
+          const original = vi.mocked(bridge.request).getMockImplementation()!;
+          let releaseLive!: () => void;
+          const pendingLive = new Promise<void>((resolve) => {
+            releaseLive = resolve;
+          });
+          const originalSubscribe = vi.mocked(bridge.subscribe).getMockImplementation()!;
+          vi.mocked(bridge.subscribe).mockImplementation(async (id, after) => {
+            if (id === "claude-session") await pendingLive;
+            return originalSubscribe(id, after);
+          });
+          vi.mocked(bridge.request).mockImplementation(async (path, body) => {
+            const url = new URL(path, "http://local/");
+            const operation = url.pathname.slice(1);
+            const id = url.searchParams.get("sessionId");
+            if (operation === "live" && id === "claude-session") await pendingLive;
+            if (operation === "live" && id === "second-session")
+              return { status: 200, body: { ...initial, sessionId: id } };
+            if (operation === "managed/capabilities" && id === "second-session")
+              return {
+                status: 200,
+                body: {
+                  sessionId: id,
+                  status: "idle",
+                  executionMode: "claude-managed",
+                  features: { send: { available: true } },
+                },
+              };
+            const result = await original(path, body);
+            if (operation === "catalog") {
+              const catalog = result.body as { sessions: object[] };
+              return {
+                ...result,
+                body: {
+                  ...catalog,
+                  sessions: [
+                    ...catalog.sessions,
+                    { ...catalog.sessions[0], id: "second-session", title: "Second session" },
+                  ],
+                },
+              };
+            }
+            return result;
+          });
+          const consumed = vi.fn();
+          const client = new WebClient(
+            undefined,
+            { type: "same-origin" },
+            createDesktopConversationAdapter(() => bridge),
+          );
+          const props = {
+            client,
+            locale: "zh-CN" as const,
+            onSessionChange: vi.fn(),
+            onInitialPanelConsumed: consumed,
+          };
+          const view = render(
+            <EmbeddedConversation {...props} sessionId="claude-session" initialPanel="terminal" />,
+          );
+          await waitFor(() =>
+            expect(
+              vi.mocked(bridge.request).mock.calls.some(([path]) => path.startsWith("live?")),
+            ).toBe(true),
+          );
+          expect(screen.queryByRole("dialog", { name: "连接终端" })).toBeNull();
+          expect(consumed).not.toHaveBeenCalled();
+          if (leaveBeforeReady) {
+            view.rerender(<EmbeddedConversation {...props} sessionId="second-session" />);
+            await screen.findByText("Existing Claude history");
+          }
+          await act(async () => {
+            releaseLive();
+            await pendingLive;
+          });
+          if (leaveBeforeReady) {
+            await waitFor(() =>
+              expect(
+                vi
+                  .mocked(bridge.request)
+                  .mock.calls.some(([path]) => path.includes("second-session")),
+              ).toBe(true),
+            );
+            expect(screen.queryByRole("dialog", { name: "连接终端" })).toBeNull();
+            expect(consumed).not.toHaveBeenCalled();
+          } else {
+            expect(await screen.findByRole("dialog", { name: "连接终端" })).toBeVisible();
+            expect(consumed).toHaveBeenCalledTimes(1);
+            fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+            patch({
+              revision: 2,
+              status: "running",
+              executionLocation: "agentkib",
+              sendEnabled: false,
+            });
+            await waitFor(() =>
+              expect(screen.queryByRole("dialog", { name: "连接终端" })).toBeNull(),
+            );
+            expect(consumed).toHaveBeenCalledTimes(1);
+          }
+        } finally {
+          if (previousPlatform === undefined) delete document.documentElement.dataset.platform;
+          else document.documentElement.dataset.platform = previousPlatform;
+        }
+      },
+    );
+
+    it("does not consume a requested terminal wizard while the native outcome remains unknown", async () => {
+      const previousPlatform = document.documentElement.dataset.platform;
+      document.documentElement.dataset.platform = "macos";
+      try {
+        vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+        sessionStorage.clear();
+        const { bridge, patch } = claudeBridge({
+          ...live(),
+          status: "outcome-unknown",
+          sendEnabled: false,
+          reason: "control-outcome-unconfirmed",
+        });
+        const consumed = vi.fn();
+        render(
+          <EmbeddedConversation
+            client={
+              new WebClient(
+                undefined,
+                { type: "same-origin" },
+                createDesktopConversationAdapter(() => bridge),
+              )
+            }
+            sessionId="claude-session"
+            initialPanel="terminal"
+            onInitialPanelConsumed={consumed}
+            locale="zh-CN"
+            onSessionChange={vi.fn()}
+          />,
+        );
+        expect(
+          await screen.findByText(claudeConnectionCopy["zh-CN"].connectionUnconfirmed),
+        ).toBeVisible();
+        expect(screen.queryByRole("dialog", { name: "连接终端" })).toBeNull();
+        expect(consumed).not.toHaveBeenCalled();
+        patch({ revision: 2, status: "idle", sendEnabled: true, reason: "" });
+        expect(await screen.findByRole("dialog", { name: "连接终端" })).toBeVisible();
+        expect(consumed).toHaveBeenCalledTimes(1);
+      } finally {
+        if (previousPlatform === undefined) delete document.documentElement.dataset.platform;
+        else document.documentElement.dataset.platform = previousPlatform;
+      }
+    });
+
     it("keeps an original-terminal connection outside managed handoff with stale adoption capabilities", async () => {
       const { bridge } = await open(
         {
@@ -676,7 +833,9 @@ describe("desktop embedded conversation", () => {
         executionMode: "claude-follower",
         connectionGeneration: "lease-a",
       });
-      expect(await screen.findByText("已连接原会话", { selector: "aside strong" })).toBeVisible();
+      expect(
+        await screen.findByText(sessionContinuationCopy("zh-CN").terminalConnected),
+      ).toBeVisible();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       const draft = screen.getByRole("textbox", { name: "发送消息" });
       fireEvent.change(draft, { target: { value: "保留原终端草稿" } });
@@ -687,14 +846,30 @@ describe("desktop embedded conversation", () => {
         sendEnabled: false,
         stopEnabled: false,
         reason: "claude-bridge-disconnected",
+        executionLocation: null,
         connectionGeneration: "revoked-a",
         approvals: [],
         questions: [],
         streamText: "",
       });
-      await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
-      expect(draft).toHaveValue("保留原终端草稿");
-      expect(screen.getByText("原终端连接已断开", { selector: "aside strong" })).toBeVisible();
+      await waitFor(() =>
+        expect(screen.queryByRole("button", { name: "发送" })).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.getByText(claudeConnectionCopy["zh-CN"].lostTitle, { selector: "aside strong" }),
+      ).toBeVisible();
+      patch({
+        revision: 3,
+        status: "idle",
+        executionMode: "claude-managed",
+        executionLocation: null,
+        reason: "",
+        sendEnabled: true,
+      });
+      await waitFor(() =>
+        expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue("保留原终端草稿"),
+      );
+      expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       expect(
         vi
@@ -714,11 +889,7 @@ describe("desktop embedded conversation", () => {
         sendEnabled: false,
         reason: "claude-follower-send-unverified",
       });
-      expect(
-        await screen.findByText(
-          "原会话发送尚未开放，请在原终端发送；AgentKib 可同步观察并取消当前轮次。",
-        ),
-      ).toBeVisible();
+      expect(await screen.findByText(claudeConnectionCopy["zh-CN"].sendUnverified)).toBeVisible();
       fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
         target: { value: "Keep unsent draft" },
       });
@@ -761,10 +932,65 @@ describe("desktop embedded conversation", () => {
         sendEnabled: false,
         reason: "claude-terminal-approval",
       });
-      expect(await screen.findByText("正在等待工具审批，请在原终端处理。")).toBeVisible();
+      expect(await screen.findByText(sessionContinuationCopy("zh-CN").terminalHint)).toBeVisible();
       expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     });
+
+    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+      "places the automatic background end notice below the transcript in %s",
+      async (locale) => {
+        const copy = sessionContinuationCopy(locale);
+        const { bridge, patch } = await open({ ...live(), executionLocation: "agentkib" }, locale);
+        expect(await screen.findByText(copy.running)).toBeVisible();
+        patch({ revision: 2, executionLocation: null, continuationNotice: "background-ended" });
+        const ended = await screen.findByText(copy.backgroundEnded);
+        expect(ended).toHaveAttribute("role", "status");
+        expect(ended.closest("aside")).toBeNull();
+        expect(screen.queryByText(copy.running)).toBeNull();
+        expect(screen.getByPlaceholderText(copy.placeholder)).toBeEnabled();
+        expect(
+          vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined),
+        ).toEqual([]);
+      },
+    );
+    it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+      "shows one conflict notice and restores the preserved draft when its owner leaves in %s",
+      async (locale) => {
+        const copy = sessionContinuationCopy(locale);
+        const { bridge, patch } = await open({ ...live(), executionLocation: "agentkib" }, locale);
+        fireEvent.change(screen.getByPlaceholderText(copy.placeholder), {
+          target: { value: "Keep conflict draft" },
+        });
+        patch({
+          revision: 2,
+          sendEnabled: false,
+          executionLocation: "external",
+          ownershipReason: "owner-opened-elsewhere",
+          reason: "owner-opened-elsewhere",
+          continuationNotice: "owner-opened-elsewhere",
+        });
+        expect(
+          await screen.findByRole("group", { name: copy.choice("Claude Code") }),
+        ).toBeVisible();
+        expect(screen.getAllByText(copy.ownerOpenedElsewhere)).toHaveLength(1);
+        expect(screen.queryByPlaceholderText(copy.placeholder)).toBeNull();
+        patch({
+          revision: 3,
+          sendEnabled: true,
+          executionLocation: null,
+          ownershipReason: null,
+          reason: "",
+        });
+        expect(await screen.findByPlaceholderText(copy.placeholder)).toHaveValue(
+          "Keep conflict draft",
+        );
+        expect(screen.queryByRole("group", { name: copy.choice("Claude Code") })).toBeNull();
+        expect(
+          vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined),
+        ).toEqual([]);
+      },
+    );
 
     it.each([
       ["zh-CN", "auto", { mode: "auto" }],

@@ -141,6 +141,12 @@ export function CodexComposerControls({
     | undefined
   >(undefined);
   const contextGeneration = useRef(0);
+  const resourceScope = useRef({
+    selected,
+    client,
+    bootId: access?.bootId,
+    deviceId: access?.device?.id,
+  });
   const contextAbort = useRef<AbortController | undefined>(undefined);
   const resourcesRef = useRef(resources);
   resourcesRef.current = resources;
@@ -333,7 +339,22 @@ export function CodexComposerControls({
     setContextNames([]);
     setContextLoading(false);
     setQuery("");
-    setResources([]);
+    // The composer owns selection resets and may have just restored a fork draft.
+    // A host/device replacement still invalidates previously resolved context IDs.
+    const previousScope = resourceScope.current;
+    if (
+      previousScope.selected !== selected ||
+      previousScope.client !== client ||
+      previousScope.bootId !== access?.bootId ||
+      previousScope.deviceId !== access?.device?.id
+    )
+      setResources([]);
+    resourceScope.current = {
+      selected,
+      client,
+      bootId: access?.bootId,
+      deviceId: access?.device?.id,
+    };
     setDialog(undefined);
     setSaved(false);
     setPendingSettings(undefined);
@@ -1399,6 +1420,8 @@ export function CodexComposerControls({
         <span
           key={item.id}
           className="inline-flex max-w-full items-center gap-1 rounded-full border pl-3 text-xs"
+          aria-disabled={!item.available || undefined}
+          title={!item.available ? copy.resourceRemoved : undefined}
         >
           <span className="truncate">{item.name}</span>
           <Button

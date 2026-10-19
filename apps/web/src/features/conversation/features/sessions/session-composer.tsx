@@ -1,3 +1,4 @@
+import { continuationResources } from "./continuation-draft";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
@@ -40,12 +41,11 @@ import { codexCopy, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
 import { PermissionModeNotice } from "./permission-mode-notice";
-import { useSessionPanels } from "./session-panels";
-import { canConfirmClaudeHandoff } from "./claude-handoff";
 
 type Upload = {
   key: string;
   name: string;
+  file?: File;
   percent: number;
   result?: UploadedAttachment;
   failed?: boolean;
@@ -57,7 +57,6 @@ export function SessionComposer({
   connectionStatusInBanner?: boolean;
 }) {
   const session = useSession();
-  const panels = useSessionPanels();
   const {
     historyReferences = [],
     setHistoryReferences,
@@ -185,7 +184,7 @@ export function SessionComposer({
           : undefined;
       if (previewUrl) previewUrls.current.set(key, previewUrl);
       active.current.set(key, abort);
-      setUploads((items) => [...items, { key, name: file.name, percent: 0, previewUrl }]);
+      setUploads((items) => [...items, { key, name: file.name, file, percent: 0, previewUrl }]);
       void client
         .uploadAttachment(
           selected,
@@ -216,6 +215,37 @@ export function SessionComposer({
         .finally(() => active.current.delete(key));
     }
   }
+  useEffect(() => {
+    if (!online || !controlReady || busy || submitted || capabilities?.sessionId !== selected)
+      return;
+    const draft = session.takeContinuationDraft?.(selected);
+    if (!draft) return;
+    setResources(continuationResources(draft.resources));
+    if (!draft.files.length) return;
+    if (uploadPermission) void add(draft.files);
+    else {
+      count.current = draft.files.length;
+      setUploads(
+        draft.files.map((file) => ({
+          key: crypto.randomUUID(),
+          name: file.name,
+          file,
+          percent: 0,
+          failed: true,
+        })),
+      );
+      setError(codexReason(locale, capabilities.features.attachments?.reason).text);
+    }
+  }, [
+    selected,
+    online,
+    controlReady,
+    capabilities?.sessionId,
+    uploadPermission,
+    busy,
+    submitted,
+    session.takeContinuationDraft,
+  ]);
   async function remove(item: Upload) {
     const requestGeneration = generation.current;
     active.current.get(item.key)?.abort();
@@ -235,9 +265,9 @@ export function SessionComposer({
       }
     }
   }
-  const ready = uploads.every((item) => !!item.result);
+  const ready = uploads.every((item) => !!item.result) && resources.every((item) => item.available);
   const attachmentIds = uploads.flatMap((item) => (item.result ? [item.result.id] : []));
-  const resourceIds = resources.map((item) => item.id);
+  const resourceIds = resources.filter((item) => item.available).map((item) => item.id);
   const draft = composerValue;
   const valid = ready && validHistoryMessage(draft, historyReferences, attachmentIds.length > 0);
   const resourceNeedsMessage =
@@ -375,16 +405,25 @@ export function SessionComposer({
         </DropdownMenuContent>
       </DropdownMenu>
     ) : null;
-  if (isCodex && display.continuation === "busy")
+  if ((isCodex || isClaude) && display.continuation === "busy")
     return returnedFor === returnKey ? (
       <SessionReadOnly reason={continuation.viewOnly} />
     ) : (
-      <SessionBusyChoice onReturn={() => setReturnedFor(returnKey)} />
+      <SessionBusyChoice
+        onReturn={() => setReturnedFor(returnKey)}
+        composerDraft={() => ({
+          files: uploads.flatMap((item) => (item.file ? [item.file] : [])),
+          resources,
+        })}
+      />
     );
-  if (isCodex && display.continuation === "view-only")
+  if ((isCodex || isClaude) && display.continuation === "view-only")
     return <SessionReadOnly reason={display.reason} />;
   return (
     <div className="w-full max-w-3xl shrink-0 self-center space-y-2">
+      {isClaude && display.continuation === "terminal" && (
+        <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
+      )}
       <form
         className="w-full space-y-2 rounded-3xl border bg-background p-2 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/20 md:p-3"
         onSubmit={(event) => {
@@ -392,13 +431,6 @@ export function SessionComposer({
           if (canSubmit && !compacting) void send("send");
         }}
       >
-        {isClaude && (live?.model || live?.cliVersion) && (
-          <p className="px-1 text-xs text-muted-foreground">
-            {[live.model, live.cliVersion && `Claude Code ${live.cliVersion}`]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-        )}
         {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} />}
         <label className="sr-only" htmlFor="message">
           {t.message}
@@ -410,9 +442,9 @@ export function SessionComposer({
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder={isCodex ? continuation.placeholder : t.message}
+          placeholder={isCodex || isClaude ? continuation.placeholder : t.message}
           onFocus={() => {
-            if (isCodex) void session.checkContinuation?.();
+            if (isCodex || isClaude) void session.checkContinuation?.();
           }}
           disabled={busy || submitted}
           aria-describedby={
@@ -513,6 +545,11 @@ export function SessionComposer({
             />
           </Dialog>
         )}
+        {resources.some((item) => !item.available) && (
+          <p role="status" className="text-xs text-muted-foreground">
+            {copy.resourceRemoved}
+          </p>
+        )}
         {resourceNeedsMessage && (
           <p role="status" className="text-sm text-muted-foreground">
             {layout.resourceNeedsMessage}
@@ -580,7 +617,7 @@ export function SessionComposer({
           </p>
         )}
         {!canSend &&
-          !(connectionStatusInBanner && live?.executionMode === "claude-follower") &&
+          !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&
           !connectionFailure &&
@@ -589,11 +626,6 @@ export function SessionComposer({
               {display.reason}
             </p>
           )}
-        {panels && canConfirmClaudeHandoff(session) && (
-          <Button type="button" variant="outline" onClick={() => panels.setActionsOpen(true)}>
-            {t.confirmHandoff}
-          </Button>
-        )}
         {!isClaude && access?.device?.accessMode !== "full" && (
           <Disclosure className="px-1 text-xs text-muted-foreground">
             <DisclosureSummary className="min-h-11 cursor-pointer content-center">

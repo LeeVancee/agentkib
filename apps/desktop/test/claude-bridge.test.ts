@@ -317,6 +317,8 @@ describe.skipIf(process.platform === "win32")("native Claude borrowed-host broke
     const f = await fixture();
     expect(f.live()).toMatchObject({
       executionMode: "claude-follower",
+      executionLocation: "terminal",
+      ownershipReason: null,
       status: "idle",
       sendEnabled: true,
     });

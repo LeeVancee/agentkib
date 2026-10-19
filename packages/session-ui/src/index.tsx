@@ -4,6 +4,8 @@ import rehypeSanitize from "rehype-sanitize";
 
 export {
   sessionContinuationCopy,
+  sessionContinuationListState,
+  SessionContinuationDot,
   SessionContinuationChoice,
   SessionContinuationReadOnly,
   SessionContinuationStatus,

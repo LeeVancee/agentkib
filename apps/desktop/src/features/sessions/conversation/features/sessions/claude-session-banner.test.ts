@@ -1,3 +1,4 @@
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
 import { claudeSessionBanner } from "./claude-session-banner";
 import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
@@ -16,7 +17,7 @@ function fixture(
     controlReady: true,
     canSend: false,
     busy: false,
-    t: { managedResumeInfo: "managed explanation", controlUnconfirmed: "unconfirmed" },
+    t: { controlUnconfirmed: "unconfirmed" },
     current: { id: "s", agent: "claude-code", availability: "readable", origin: "interactive" },
     selected: "s",
     access: {
@@ -34,28 +35,65 @@ describe("Claude execution and terminal connection presentation", () => {
     "keeps ownership, connection and failure states distinct in %s",
     (locale) => {
       const copy = claudeConnectionCopy[locale];
-      const pending = fixture(locale, "managed-resume", "idle", "handoff-required");
-      expect(claudeSessionBanner(pending)).toEqual({ title: copy.handoff, body: copy.handoffInfo });
-      expect(sessionDisplayState(pending).label).toBe(copy.handoff);
-      const released = fixture(locale, "claude-managed", "released", "session-released");
-      expect(claudeSessionBanner(released)).toEqual({
-        title: copy.released,
-        body: copy.releasedInfo,
-      });
-      expect(sessionDisplayState(released).label).toBe(copy.released);
+      const continuation = sessionContinuationCopy(locale);
+      const idle = fixture(locale, "claude-managed", "idle");
+      idle.canSend = true;
+      expect(claudeSessionBanner(idle)).toBeNull();
+      expect(sessionDisplayState(idle)).toMatchObject({ label: "", continuation: "idle" });
       const managed = fixture(locale, "claude-managed", "idle");
-      expect(claudeSessionBanner(managed)).toEqual({
-        title: copy.managed,
-        body: "managed explanation",
+      managed.live!.executionLocation = "agentkib";
+      expect(claudeSessionBanner(managed)).toBeNull();
+      expect(sessionDisplayState(managed)).toMatchObject({
+        label: continuation.running,
+        continuation: "running",
       });
-      const connected = fixture(
-        locale,
-        "claude-follower",
-        "idle",
-        "claude-follower-send-unverified",
-      );
-      expect(claudeSessionBanner(connected).title).toBe(copy.connected);
-      expect(sessionDisplayState(connected).label).toBe(copy.connected);
+      const ended = {
+        ...idle,
+        live: { ...idle.live!, continuationNotice: "background-ended" as const },
+      };
+      expect(claudeSessionBanner(ended)).toEqual({
+        title: "",
+        body: continuation.backgroundEnded,
+        notice: "background-ended",
+      });
+      const conflict = {
+        ...idle,
+        live: {
+          ...idle.live!,
+          continuationNotice: "owner-opened-elsewhere" as const,
+          ownershipReason: "owner-opened-elsewhere",
+        },
+      };
+      expect(claudeSessionBanner(conflict)).toEqual({
+        title: "",
+        body: continuation.ownerOpenedElsewhere,
+        notice: "owner-opened-elsewhere",
+      });
+      expect(sessionDisplayState(conflict)).toMatchObject({
+        label: continuation.busy("Claude Code"),
+        continuation: "busy",
+        tone: "muted",
+      });
+      const connected = fixture(locale, "claude-follower", "idle");
+      connected.live!.executionLocation = "terminal";
+      expect(claudeSessionBanner(connected)).toBeNull();
+      expect(sessionDisplayState(connected)).toMatchObject({
+        label: continuation.terminalConnected,
+        continuation: "terminal",
+        tone: "muted",
+      });
+      const unverified = {
+        ...connected,
+        live: { ...connected.live!, reason: "claude-follower-send-unverified" },
+      };
+      expect(claudeSessionBanner(unverified)).toEqual({
+        title: copy.connected,
+        body: copy.sendUnverified,
+      });
+      for (const reason of ["claude-terminal-approval", "claude-terminal-question"])
+        expect(
+          claudeSessionBanner({ ...connected, live: { ...connected.live!, reason } }),
+        ).toBeNull();
       const hostOffline = { ...connected, online: false };
       expect(claudeSessionBanner(hostOffline)).toEqual({
         title: copy.hostDisconnected,
@@ -79,7 +117,7 @@ describe("Claude execution and terminal connection presentation", () => {
       for (const status of ["idle", "unsupported"]) {
         const lost = fixture(locale, "claude-follower", status, "claude-bridge-disconnected");
         expect(claudeSessionBanner(lost)).toEqual({ title: copy.lostTitle, body: copy.lost });
-        expect(sessionDisplayState(lost).label).toBe(copy.lostTitle);
+        expect(sessionDisplayState(lost).label).toBe(continuation.viewOnly);
       }
       expect(claudeConnectionReason(locale, "platform-unsupported")).toBe(copy.platformUnsupported);
       expect(claudeConnectionReason(locale, "claude-bridge-unavailable")).toBe(

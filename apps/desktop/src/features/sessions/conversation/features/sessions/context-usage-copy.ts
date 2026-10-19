@@ -5,6 +5,9 @@ export const contextUsageCopy = {
     pending: "等待用量",
     stale: "待更新",
     unavailable: "暂不可用",
+    awaitingCliReport: "暂无数据",
+    awaitingCliReportDetail:
+      "尚未取得 Claude Code 的上下文用量报告。继续会话后，以 CLI 实际报告为准；此状态不表示额度耗尽。",
     compacting: "正在压缩上下文",
     compactingDetail: "上下文正在压缩，用量待更新，暂时无法发送或修改执行设置。",
     pendingDetail: "主机尚未上报本轮上下文用量。",
@@ -22,6 +25,9 @@ export const contextUsageCopy = {
     pending: "等待用量",
     stale: "待更新",
     unavailable: "暫不可用",
+    awaitingCliReport: "暫無資料",
+    awaitingCliReportDetail:
+      "尚未取得 Claude Code 的上下文用量報告。繼續對話後，以 CLI 實際報告為準；此狀態不表示額度耗盡。",
     compacting: "正在壓縮上下文",
     compactingDetail: "上下文正在壓縮，用量待更新，暫時無法傳送或修改執行設定。",
     pendingDetail: "主機尚未上報本回合上下文用量。",
@@ -39,6 +45,9 @@ export const contextUsageCopy = {
     pending: "Awaiting usage",
     stale: "Awaiting update",
     unavailable: "Unavailable",
+    awaitingCliReport: "No data yet",
+    awaitingCliReportDetail:
+      "Claude Code has not provided a context usage report. After continuing the session, usage will reflect the CLI's actual report. This does not mean your quota is exhausted.",
     compacting: "Compacting context",
     compactingDetail:
       "Context is compacting. Usage awaits an update; sending and changing execution settings are unavailable.",
@@ -58,6 +67,9 @@ export const contextUsageCopy = {
     pending: "使用量を待機中",
     stale: "更新待ち",
     unavailable: "利用不可",
+    awaitingCliReport: "データなし",
+    awaitingCliReportDetail:
+      "Claude Code のコンテキスト使用量はまだ報告されていません。会話を続けた後、CLI の実際の報告を表示します。利用枠の上限に達したという意味ではありません。",
     compacting: "コンテキストを圧縮中",
     compactingDetail:
       "コンテキストを圧縮しています。使用量の更新を待っています。送信と実行設定の変更は現在利用できません。",

@@ -1,3 +1,4 @@
+import { sessionContinuationListState, SessionContinuationStatus } from "@agentkib/session-ui";
 import { Clock, Database, GitBranch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -14,7 +15,7 @@ import {
 import { SessionNotice as Notice } from "./SessionNotice";
 
 export function SessionOverview() {
-  const { tr, formatDateTime, localizeMessage } = useI18n();
+  const { locale, tr, formatDateTime, localizeMessage } = useI18n();
   const hub = useSessionHub();
   const resetFilters = useSessionViewStore((state) => state.resetFilters);
   const stats = [
@@ -53,6 +54,7 @@ export function SessionOverview() {
           </header>
           <div className="session-overview-panel-content [scrollbar-width:thin]">
             {hub.filtered.slice(0, 12).map((session) => {
+              const status = sessionContinuationListState(session, locale);
               const source = hub.workspaces.find((item) => item.id === session.workspace_id);
               return (
                 <Button
@@ -85,6 +87,9 @@ export function SessionOverview() {
                       {sessionRecordLabel(session, tr)}
                     </small>
                   </span>
+                  {status && (
+                    <SessionContinuationStatus label={status.label} active={status.active} />
+                  )}
                   <time className="w-full pl-7 text-sm text-muted-foreground [overflow-wrap:anywhere]">
                     {session.updated_at
                       ? formatDateTime(session.updated_at)

@@ -18,7 +18,12 @@ import {
   ClaudeHostControlPreflightError,
 } from "../../../packages/backend/src/claude-managed-read";
 import { ClaudeHostStateStore } from "../../../packages/backend/src/claude-host-state";
-import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
+import {
+  claimManagedCommand,
+  dispatchManagedCommand,
+  finishManagedCommand,
+  openManagedLedger,
+} from "../../../packages/backend/src/managed-ledger";
 import { readControlReceipt } from "../../../packages/backend/src/control-receipt";
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
@@ -300,6 +305,11 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
             sendEnabled: false,
             ownershipReason: "claude-owner-busy",
           });
+        expect(f.owner.catalogContinuation(source)).toMatchObject({
+          status: "idle",
+          executionLocation: "external",
+          ownershipReason: "claude-owner-busy",
+        });
         const fork = await control(f.owner, source, "fork");
         expect(fork).toMatchObject({ accepted: true, forkSourceSessionId: source });
         expect(fork.sourceSessionId).not.toBe(source);
@@ -1193,6 +1203,107 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
     });
 
+    it("keeps a persisted unknown outcome above cached external ownership in the read-only catalog", async () => {
+      const f = fixture();
+      const created = await create(f.owner);
+      const file = path.join(f.root, "claude-managed", `${created.sessionId}.json`);
+      const record = JSON.parse(readFileSync(file, "utf8"));
+      record.snapshot.status = "outcome-unknown";
+      record.snapshot.reason = "synthetic unconfirmed request";
+      writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+      f.setExternalOwner(created.sourceSessionId);
+      expect(await f.owner.live(created.sessionId, true)).toMatchObject({
+        status: "outcome-unknown",
+        ownershipReason: "claude-owner-busy",
+      });
+      expect(
+        f.owner.catalog().find((row) => row.id === created.sessionId)?.continuation,
+      ).toMatchObject({
+        status: "outcome-unknown",
+        reason: "control-outcome-unconfirmed",
+        ownershipReason: null,
+      });
+      expect(f.frames()).toEqual([]);
+    });
+
+    it.each(["independent-host-operation", "completing-send"] as const)(
+      "projects an authoritative unknown outcome above the resident runner and refreshes it after %s settles",
+      async (kind) => {
+        const f = fixture("2.1.286", 0, "steer");
+        const created = await create(f.owner);
+        const id = created.sessionId;
+        const turnId = randomUUID();
+        await control(f.owner, id, "send", {
+          requestId: turnId,
+          text: "Ongoing synthetic request",
+        });
+        await expect.poll(async () => (await f.owner.live(id, true)).status).toBe("running");
+        // This fixture starts its result gate on a priority clarification frame.
+        await control(f.owner, id, "steer", {
+          turnId,
+          text: "Release through the synthetic result gate",
+        });
+        const unknownId = kind === "completing-send" ? turnId : randomUUID();
+        if (kind === "independent-host-operation") {
+          claimManagedCommand(
+            f.root,
+            unknownId,
+            id,
+            "synthetic host mutation",
+            "browser-device-b",
+            { operation: "queue-add" },
+          );
+          dispatchManagedCommand(f.root, unknownId);
+        } else {
+          const ledger = openManagedLedger(f.root)!;
+          try {
+            ledger
+              .prepare(
+                "UPDATE managed_commands SET phase='dispatched',result=NULL WHERE request_id=?",
+              )
+              .run(turnId);
+          } finally {
+            ledger.close();
+          }
+        }
+        expect(await f.owner.live(id, true)).toMatchObject({
+          status: "outcome-unknown",
+          reason: "control-outcome-unconfirmed",
+        });
+        expect(f.owner.catalogContinuation(id)).toMatchObject({
+          status: "outcome-unknown",
+          reason: "control-outcome-unconfirmed",
+          ownershipReason: null,
+        });
+        f.releaseResult();
+        const metadata = () =>
+          JSON.parse(readFileSync(path.join(f.root, "claude-managed", `${id}.json`), "utf8"));
+        await expect.poll(() => metadata().snapshot.status).toBe("idle");
+        if (kind === "independent-host-operation") {
+          // A normal runner completion cannot settle another host mutation.
+          expect(f.owner.catalogContinuation(id)).toMatchObject({
+            status: "outcome-unknown",
+            reason: "control-outcome-unconfirmed",
+          });
+          finishManagedCommand(f.root, unknownId, {
+            accepted: false,
+            completed: false,
+            controlOutcome: "not-dispatched",
+            requestId: unknownId,
+            sessionId: id,
+          });
+          expect(await f.owner.live(id, true)).toMatchObject({ status: "idle", reason: null });
+        }
+        expect(f.owner.catalogContinuation(id)).toMatchObject({
+          status: "idle",
+          executionLocation: "agentkib",
+        });
+        expect(f.owner.catalogContinuation(id)).not.toHaveProperty(
+          "reason",
+          "control-outcome-unconfirmed",
+        );
+      },
+    );
     it("keeps legacy send but gates advanced settings and queues below the verified version", async () => {
       const f = fixture("2.1.263");
       const created = await create(f.owner);

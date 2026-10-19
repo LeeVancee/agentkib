@@ -3,7 +3,6 @@ import type { SessionController } from "./use-session-controller";
 import { codexReason } from "./codex-copy";
 import { contextUsageCopy } from "./context-usage-copy";
 import { webLayoutCopy } from "./web-layout-copy";
-import { canConfirmClaudeHandoff } from "./claude-handoff";
 import { managedControlCopy } from "./managed-control-copy";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 
@@ -29,40 +28,12 @@ type DisplayState = {
   tone: "warning" | "active" | "muted";
   loading?: boolean;
   nextAction?: SessionNextAction;
-  continuation?: "idle" | "starting" | "running" | "busy" | "view-only";
+  continuation?: "idle" | "starting" | "running" | "terminal" | "busy" | "view-only";
 };
 
-/** An entry into an existing review flow, never permission to send or dispatch it. */
-export function sessionNextAction(state: State): SessionNextAction | undefined {
-  const { selected, current, live, capabilities, access } = state;
-  if (
-    state.canSend ||
-    !selected ||
-    current?.id !== selected ||
-    current.availability !== "readable" ||
-    current.origin === "auxiliary" ||
-    current.origin === "execution" ||
-    ("remote" in current && current.remote) ||
-    live?.sessionId !== selected ||
-    capabilities?.sessionId !== selected ||
-    access?.status !== "approved" ||
-    access.protocolVersion !== 2 ||
-    !access.experimentalEnabled ||
-    !access.device?.send ||
-    !state.online ||
-    !state.controlReady ||
-    state.busy ||
-    state.notice === "uncertain" ||
-    live.activity === "compacting" ||
-    live.approvals?.length ||
-    live.questions?.length ||
-    (live.status !== "idle" && live.status !== "released") ||
-    (capabilities.reason && !["handoff-required", "session-released"].includes(capabilities.reason))
-  )
-    return undefined;
-  return current.agent === "claude-code" && canConfirmClaudeHandoff(state)
-    ? "managed-handoff"
-    : undefined;
+/** Execution ownership is automatic; no user-visible handoff action remains. */
+export function sessionNextAction(_state: State): SessionNextAction | undefined {
+  return undefined;
 }
 /** Presentation only: never grants capabilities or changes dispatch eligibility. */
 export function sessionDisplayState(state: State): DisplayState {
@@ -76,6 +47,7 @@ export function sessionDisplayState(state: State): DisplayState {
       : live?.reason || capabilities?.features.send?.reason || capabilities?.reason;
   if (
     state.notice === "uncertain" ||
+    live?.status === "outcome-unknown" ||
     reason === "control-outcome-unconfirmed" ||
     live?.reason === "control-outcome-unconfirmed" ||
     capabilities?.reason === "control-outcome-unconfirmed"
@@ -132,7 +104,11 @@ export function sessionDisplayState(state: State): DisplayState {
       return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
     if (live.ownershipReason === "codex-owner-busy" || reason === "codex-owner-busy")
       return { label: copy.busy("Codex"), reason: "", tone: "muted", continuation: "busy" };
-    if (state.pendingSend?.sessionId === state.selected || live.status === "starting")
+    if (
+      (state.pendingSend?.sessionId === state.selected &&
+        !["agentkib", "terminal"].includes(live.executionLocation ?? "")) ||
+      live.status === "starting"
+    )
       return {
         label: copy.starting,
         reason: "",
@@ -149,6 +125,72 @@ export function sessionDisplayState(state: State): DisplayState {
     return {
       label: copy.viewOnly,
       reason: codexReason(locale, reason).text,
+      tone: "muted",
+      continuation: "view-only",
+    };
+  }
+  if (state.current?.agent === "claude-code") {
+    const copy = sessionContinuationCopy(locale);
+    if (access?.status !== "approved")
+      return { label: c.accessRequired, reason: managedControlCopy[locale].access, tone: "muted" };
+    if (access.protocolVersion !== 2)
+      return {
+        label: c.controlUnavailable,
+        reason: managedControlCopy[locale].protocol,
+        tone: "muted",
+      };
+    if (!access.experimentalEnabled)
+      return {
+        label: c.controlDisabled,
+        reason: codexReason(locale, "control-disabled").text,
+        tone: "muted",
+      };
+    if (!access.device?.send)
+      return {
+        label: c.permissionRequired,
+        reason: managedControlCopy[locale].send,
+        tone: "muted",
+      };
+    // A late projection from the previous selection must never describe this owner.
+    if (
+      state.current.id !== state.selected ||
+      live?.sessionId !== state.selected ||
+      capabilities?.sessionId !== state.selected
+    )
+      return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
+    const ownershipReason = live.ownershipReason || reason;
+    if (
+      ["claude-owner-busy", "claude-background-session-running", "owner-opened-elsewhere"].includes(
+        ownershipReason ?? "",
+      )
+    )
+      return { label: copy.busy("Claude Code"), reason: "", tone: "muted", continuation: "busy" };
+    if (
+      (state.pendingSend?.sessionId === state.selected &&
+        !["agentkib", "terminal"].includes(live.executionLocation ?? "")) ||
+      live.status === "starting"
+    )
+      return {
+        label: copy.starting,
+        reason: "",
+        tone: "muted",
+        loading: true,
+        continuation: "starting",
+      };
+    if (live.executionLocation === "terminal")
+      return { label: copy.terminalConnected, reason: "", tone: "muted", continuation: "terminal" };
+    if (live.executionLocation === "agentkib")
+      return { label: copy.running, reason: "", tone: "active", continuation: "running" };
+    if (!controlReady)
+      return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
+    if (canSend || (live.sendEnabled && !reason))
+      return { label: "", reason: "", tone: "muted", continuation: "idle" };
+    return {
+      label: copy.viewOnly,
+      reason:
+        reason === "platform-unsupported"
+          ? copy.claudeWindowsUnsupported
+          : (claudeConnectionReason(locale, reason) ?? codexReason(locale, reason).text),
       tone: "muted",
       continuation: "view-only",
     };
@@ -217,13 +259,6 @@ export function sessionDisplayState(state: State): DisplayState {
       reason: claudeConnectionReason(locale, reason) ?? claudeConnectionCopy[locale].info,
       tone: "active",
     };
-  if (live?.executionMode === "claude-managed" && live.status === "released")
-    return {
-      label: claudeConnectionCopy[locale].released,
-      reason: claudeConnectionCopy[locale].releasedInfo,
-      tone: "muted",
-      nextAction: sessionNextAction(state),
-    };
   if (
     !canSend &&
     (((!controlReady || !live) && (!reason || reason === "handoff-required")) ||
@@ -233,14 +268,6 @@ export function sessionDisplayState(state: State): DisplayState {
           (capabilities && capabilities.sessionId !== state.selected))))
   )
     return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
-  const nextAction = !canSend ? sessionNextAction(state) : undefined;
-  if (nextAction)
-    return {
-      label: c.handoffPending,
-      reason: codexReason(locale, "handoff-required").text,
-      tone: "warning",
-      nextAction,
-    };
   if (controlReady && live?.status === "idle" && live.lastOutcome === "cancelled")
     return { label: c.cancelled, reason: "", tone: "muted" };
   if (canSend) return { label: c.ready, reason: "", tone: "active" };

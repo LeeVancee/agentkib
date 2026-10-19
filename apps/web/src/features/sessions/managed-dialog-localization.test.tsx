@@ -65,7 +65,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("actual managed task dialogs", () => {
-  describe.each([false, true])("create=%s", (create) => {
+  describe.each([true])("create=%s", (create) => {
     it.each(locales)("localizes the close control in $locale", async (copy) => {
       session = makeSession(copy.locale);
       if (!create) session.current.agent = "claude-code";
@@ -113,11 +113,11 @@ describe("actual managed task dialogs", () => {
   it("retains Escape dismissal and returns focus to the originating trigger", async () => {
     session.current.agent = "claude-code";
     const onDismiss = vi.fn();
-    render(<ManagedTasks onDismiss={onDismiss} />);
-    const trigger = screen.getByRole("button", { name: "Execution management" });
+    render(<ManagedTasks create onDismiss={onDismiss} />);
+    const trigger = screen.getByRole("button", { name: "New task" });
     trigger.focus();
     fireEvent.click(trigger);
-    await screen.findByRole("dialog", { name: "Execution management" });
+    await screen.findByRole("dialog", { name: "New task" });
     await waitFor(() => expect(session.client.request).toHaveBeenCalledOnce());
 
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape", code: "Escape" });
@@ -125,8 +125,6 @@ describe("actual managed task dialogs", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(onDismiss).toHaveBeenCalledOnce();
-    expect(session.client.request.mock.calls.map(([path]) => path)).toEqual([
-      "managed/options?agent=claude-code",
-    ]);
+    expect(session.client.request.mock.calls.map(([path]) => path)).toEqual(["managed/options"]);
   });
 });

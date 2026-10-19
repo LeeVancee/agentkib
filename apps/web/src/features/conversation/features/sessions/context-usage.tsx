@@ -69,7 +69,10 @@ export function useContextUsage(fallback?: ContextUsage) {
       current?.id === selected &&
       current.agent === "claude-code" &&
       live?.sessionId === selected &&
-      live.reason === "handoff-required" &&
+      live.executionMode === "claude-managed" &&
+      !live.executionLocation &&
+      ["idle", "released"].includes(live.status) &&
+      !live.reason &&
       authorized &&
       online &&
       view.state === "unavailable" &&

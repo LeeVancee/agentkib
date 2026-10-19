@@ -459,7 +459,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     it("protects a fresh terminal connection before its first display snapshot", async () => {
       const f = fixture();
       await f.connect();
-      expect(f.bridge.live(f.target.sessionId, false).status).toBe("unsupported");
+      expect(f.bridge.live(f.target.sessionId, false)).toMatchObject({
+        status: "unsupported",
+        executionLocation: null,
+      });
       expect(f.bridge.blocksManagedResume(f.target.sessionId)).toBe(true);
       await expect(rejection(f.send())).resolves.toMatchObject({
         accepted: false,
@@ -611,6 +614,15 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         });
       const initialized = await rpc("backend.initialize", { dataDir: f.root });
       expect(initialized.error).toBeUndefined();
+      const command = await rpc("web.request", {
+        operation: "resume-command",
+        sessionId: indexedId,
+      });
+      expect(command.error).toBeUndefined();
+      expect(command.result).toMatchObject({ available: true, runOn: "host" });
+      expect((command.result as { command: string }).command).toContain(
+        `claude --resume '${f.target.nativeId}'`,
+      );
       const state = await rpc("claude.managed", {
         operation: "live",
         sessionId: indexedId,

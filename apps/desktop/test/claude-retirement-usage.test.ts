@@ -210,7 +210,10 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         return { success: true, bytes: Buffer.from("2.1.286 (Claude Code)\n") };
       });
       const owner = new ClaudeManagedReadOwner(
-        { workspacePath: () => f.workspace } as unknown as BackendStore,
+        {
+          workspacePath: () => f.workspace,
+          sessions: { id: (_agent: string, id: string) => id },
+        } as unknown as BackendStore,
         {
           verifiedClaudeControlTarget: (id: string) =>
             path.join(f.environment.CLAUDE_CONFIG_DIR, `${id}.jsonl`),
@@ -289,6 +292,18 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         (runner) => runner.sessionId === first.sourceSessionId,
       );
       expect(firstRunner?.hasWorker).toBe(true);
+      expect(owner.catalog().find((row) => row.id === first.sessionId)?.continuation).toMatchObject(
+        { status: "idle", executionLocation: "agentkib" },
+      );
+      const snapshotRead = vi.spyOn(firstRunner!, "snapshot").mockImplementation(() => {
+        throw new Error("catalog must not materialize the conversation");
+      });
+      expect(owner.catalogContinuation(first.sessionId)).toMatchObject({
+        status: "idle",
+        executionLocation: "agentkib",
+      });
+      expect(snapshotRead).not.toHaveBeenCalled();
+      snapshotRead.mockRestore();
       const eventOffset = events.length;
 
       const second = create();
@@ -297,6 +312,9 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const retired = await owner.live(first.sessionId, true);
       expect(retired.status).toBe("idle");
       expect(retired.sendEnabled).toBe(true);
+      expect(
+        owner.catalog().find((row) => row.id === first.sessionId)?.continuation,
+      ).toBeUndefined();
       expectStaleUsage(retired.usage, 1);
       expect((retired.usage as Record<string, unknown>).reportGeneration).toBe(reportGeneration);
       const usage = await owner.request({ operation: "usage", sessionId: first.sessionId });

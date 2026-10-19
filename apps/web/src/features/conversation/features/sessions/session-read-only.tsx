@@ -13,12 +13,14 @@ export function SessionReadOnly({ reason }: { reason?: string | null }) {
       if (
         !selected ||
         currentId !== selected ||
-        agent !== "codex" ||
+        !["codex", "claude-code"].includes(agent ?? "") ||
         accessStatus !== "approved" ||
         !deviceId
       )
         throw new Error("session-unavailable");
-      const result = await client.codexResumeCommand(selected, signal);
+      const result = await (agent === "claude-code"
+        ? client.claudeResumeCommand(selected, signal)
+        : client.codexResumeCommand(selected, signal));
       if (!result.available || !result.command.trim()) throw new Error("command-unavailable");
       return result.command;
     },

@@ -292,6 +292,50 @@ async function rejectedControl(action: Promise<unknown>) {
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude automatic continuation ownership boundaries (offline CLI)",
   () => {
+    it("reads a verified host resume command without checking owners, starting a CLI, or writing metadata", async () => {
+      const host = fixture();
+      const { id, nativeId } = host.create();
+      const before = readFileSync(path.join(host.root, "claude-managed", `${id}.json`), "utf8");
+      const probe = vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check");
+      const command = await host.owner.request({ operation: "resume-command", sessionId: id });
+      expect(command).toMatchObject({ available: true, runOn: "host", shell: "posix" });
+      expect((command as { command: string }).command).toContain(`claude --resume '${nativeId}'`);
+      expect((command as { command: string }).command).toContain("CLAUDE_CONFIG_DIR=");
+      expect(readFileSync(path.join(host.root, "claude-managed", `${id}.json`), "utf8")).toBe(
+        before,
+      );
+      expect(host.frames()).toEqual([]);
+      expect(probe).not.toHaveBeenCalled();
+    });
+    it("exposes only a verified transcript source in details after the first native transcript exists", async () => {
+      const host = fixture();
+      const { id, nativeId } = host.create();
+      expect(await host.owner.request({ operation: "context", sessionId: id })).toMatchObject({
+        sourceFile: null,
+      });
+      expect(host.frames()).toEqual([]);
+      await host.dispatch(id);
+      const frames = host.frames();
+      const context = (await host.owner.request({ operation: "context", sessionId: id })) as {
+        sourceFile: string;
+      };
+      expect(path.basename(context.sourceFile)).toBe(`${nativeId}.jsonl`);
+      expect(path.relative(host.root, context.sourceFile).startsWith("..")).toBe(false);
+      expect(readFileSync(context.sourceFile, "utf8")).toContain(nativeId);
+      expect(host.frames()).toEqual(frames);
+
+      // A missing optional source must not make the pre-existing workspace context unavailable.
+      rmSync(context.sourceFile);
+      vi.spyOn(host.owner.sessions, "verifiedClaudeControlTarget").mockImplementationOnce(() => {
+        throw new Error("unverified-session-identity");
+      });
+      expect(await host.owner.request({ operation: "context", sessionId: id })).toMatchObject({
+        available: true,
+        cwd: path.join(host.root, "workspace"),
+        sourceFile: null,
+      });
+      expect(host.frames()).toEqual(frames);
+    });
     it("rechecks an external writer before restarting a retained retired runner", async () => {
       const f = fixture();
       const session = f.create();

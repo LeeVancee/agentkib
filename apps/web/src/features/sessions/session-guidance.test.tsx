@@ -39,7 +39,7 @@ describe("production session guidance", () => {
   const t = dictionaries["zh-CN"];
   vi.spyOn(WebClient.prototype, "stream").mockImplementation(() => () => {});
   it.each([
-    ["handoff-required", t.handoffRequired],
+    ["handoff-required", t.unavailable],
     ["open-in-original-client", t.openOriginalClient],
     ["unverified-installation", t.unverifiedInstallation],
     ["platform-unsupported", t.unsupportedControl],

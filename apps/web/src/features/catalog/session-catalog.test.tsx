@@ -1,3 +1,4 @@
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -155,6 +156,62 @@ describe("SessionCatalog", () => {
         screen.queryByRole("button", { name: /Execution record|Auxiliary record/ }),
       ).toBeNull();
       expect(screen.queryByRole("button", { name: `${kind} · 1` })).toBeNull();
+    },
+  );
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "keeps runtime dots distinct from pending interactions in %s",
+    (locale) => {
+      const copy = sessionContinuationCopy(locale);
+      render(
+        <SessionCatalog
+          locale={locale}
+          workspaces={workspaces}
+          selected=""
+          onSelect={vi.fn()}
+          pendingSessions={{ running: true }}
+          sessions={[
+            { ...sessions[0], id: "idle", title: "Idle" },
+            {
+              ...sessions[0],
+              id: "running",
+              title: "Running",
+              continuation: { status: "starting", executionLocation: "agentkib" },
+            },
+            {
+              ...sessions[1],
+              id: "terminal",
+              title: "Terminal",
+              continuation: { status: "idle", executionLocation: "terminal" },
+            },
+            {
+              ...sessions[1],
+              id: "busy",
+              title: "Busy",
+              continuation: {
+                status: "idle",
+                executionLocation: "external",
+                ownershipReason: "claude-owner-busy",
+              },
+            },
+            {
+              ...sessions[1],
+              id: "unsupported",
+              title: "Unsupported",
+              continuation: { status: "unsupported", reason: "platform-unsupported" },
+            },
+          ]}
+        />,
+      );
+      expect(screen.getByRole("status", { name: copy.running })).toHaveClass("bg-primary");
+      expect(screen.getByRole("status", { name: copy.terminalBadge })).toHaveClass(
+        "bg-muted-foreground",
+      );
+      expect(screen.getByRole("status", { name: copy.busy("Claude Code") })).toHaveClass(
+        "bg-muted-foreground",
+      );
+      expect(screen.queryByRole("status", { name: copy.viewOnly })).toBeNull();
+      expect(screen.getByRole("button", { name: /Running/ }).textContent).toContain("●");
+      expect(screen.getAllByRole("status")).toHaveLength(3);
     },
   );
 });

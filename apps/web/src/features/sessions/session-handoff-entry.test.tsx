@@ -137,35 +137,43 @@ describe("reader handoff entries", () => {
     expect(request.mock.calls.some(([path]) => path === "managed/adopt")).toBe(false);
     expect(session.codexAction).not.toHaveBeenCalled();
   });
-  it("marks a Codex branch with its source title without exposing a missing source id", () => {
-    session.current!.forked_from_session_id = "source-id";
-    session.sessions = [{ ...session.current!, id: "source-id", title: "Original session" }];
-    session.sourceTitle = vi.fn(() => "Original session");
-    const view = render(<View />);
-    expect(screen.getByText("Forked from Original session")).toBeVisible();
-    session.sessions = [];
-    view.rerender(<View />);
-    expect(screen.queryByText(/source-id/)).not.toBeInTheDocument();
-  });
-  it("shows an optimistic Codex user message once and reconciles its persisted history", () => {
-    session.pendingSend = { sessionId: "session", text: "Continue without a manual step" };
-    const view = render(<View />);
-    expect(screen.getAllByText("Continue without a manual step")).toHaveLength(1);
-    session.page!.events = [
-      {
-        id: "persisted-user",
-        kind: "user-message",
-        content: "Continue without a manual step",
-        attachment_count: 0,
-        truncated: false,
-      },
-    ];
-    view.rerender(<View />);
-    expect(screen.getAllByText("Continue without a manual step")).toHaveLength(1);
-    session.pendingSend = { sessionId: "old-session", text: "Old pending message" };
-    view.rerender(<View />);
-    expect(screen.queryByText("Old pending message")).not.toBeInTheDocument();
-  });
+  it.each(["codex", "claude-code"] as const)(
+    "marks a %s branch with its source title without exposing a missing source id",
+    (agent) => {
+      session.current!.agent = agent;
+      session.current!.forked_from_session_id = "source-id";
+      session.sessions = [{ ...session.current!, id: "source-id", title: "Original session" }];
+      session.sourceTitle = vi.fn(() => "Original session");
+      const view = render(<View />);
+      expect(screen.getByText("Forked from Original session")).toBeVisible();
+      session.sessions = [];
+      view.rerender(<View />);
+      expect(screen.queryByText(/source-id/)).not.toBeInTheDocument();
+    },
+  );
+  it.each(["codex", "claude-code"] as const)(
+    "shows an optimistic %s user message once and reconciles its persisted history",
+    (agent) => {
+      session.current!.agent = agent;
+      session.pendingSend = { sessionId: "session", text: "Continue without a manual step" };
+      const view = render(<View />);
+      expect(screen.getAllByText("Continue without a manual step")).toHaveLength(1);
+      session.page!.events = [
+        {
+          id: "persisted-user",
+          kind: "user-message",
+          content: "Continue without a manual step",
+          attachment_count: 0,
+          truncated: false,
+        },
+      ];
+      view.rerender(<View />);
+      expect(screen.getAllByText("Continue without a manual step")).toHaveLength(1);
+      session.pendingSend = { sessionId: "old-session", text: "Old pending message" };
+      view.rerender(<View />);
+      expect(screen.queryByText("Old pending message")).not.toBeInTheDocument();
+    },
+  );
   it.each([
     "metadata",
     "remote",

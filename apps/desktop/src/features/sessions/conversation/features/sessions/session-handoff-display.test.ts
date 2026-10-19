@@ -1,12 +1,9 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
-import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
 import {
   sessionDisplayState,
   sessionNextAction,
 } from "@/features/sessions/conversation/features/sessions/session-display-state";
-import { webLayoutCopy } from "@/features/sessions/conversation/features/sessions/web-layout-copy";
-import { canConfirmClaudeHandoff } from "@/features/sessions/conversation/features/sessions/claude-handoff";
 import type { SessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
 
 function fixture(): SessionController {
@@ -52,19 +49,21 @@ function fixture(): SessionController {
 }
 describe("handoff-aware session presentation", () => {
   it.each(["idle", "released"] as const)(
-    "describes a qualified %s Claude source as awaiting handoff without enabling sending",
+    "continues an idle or retired %s Claude session without a handoff action",
     (status) => {
       const state = fixture();
       state.live!.status = status;
-      expect(canConfirmClaudeHandoff(state)).toBe(true);
+      state.live!.reason = undefined;
+      state.live!.sendEnabled = true;
+      state.capabilities!.features.send = { available: true };
+      state.canSend = true;
+      expect(sessionNextAction(state)).toBeUndefined();
       expect(sessionDisplayState(state)).toMatchObject({
-        label: "Handoff required",
-        nextAction: "managed-handoff",
-        tone: "warning",
+        label: "",
+        reason: "",
+        continuation: "idle",
       });
-      expect(sessionDisplayState(state).reason).toBe(codexReason("en-US", "handoff-required").text);
-      expect(state.canSend).toBe(false);
-      expect(state.live!.sendEnabled).toBe(false);
+      expect(state.canSend).toBe(true);
     },
   );
   function codexFixture() {
@@ -288,9 +287,9 @@ describe("handoff-aware session presentation", () => {
   it("keeps installation verification and unknown outcomes distinct from handoff", () => {
     const state = fixture();
     state.capabilities!.reason = "unverified-installation";
-    expect(sessionDisplayState(state)).toMatchObject({ label: "Unverified" });
+    expect(sessionDisplayState(state)).toMatchObject({ label: "View only" });
     state.controlReady = false;
-    expect(sessionDisplayState(state)).toMatchObject({ label: "Unverified" });
+    expect(sessionDisplayState(state)).toMatchObject({ label: "Verifying state" });
     state.notice = "uncertain";
     expect(sessionDisplayState(state)).toMatchObject({
       label: "Result unconfirmed",
@@ -308,12 +307,6 @@ describe("handoff-aware session presentation", () => {
       "Permission required",
       (s: SessionController) => {
         s.access!.device!.send = false;
-      },
-    ],
-    [
-      "Permission required",
-      (s: SessionController) => {
-        s.access!.device!.manage = false;
       },
     ],
     [
@@ -346,24 +339,34 @@ describe("handoff-aware session presentation", () => {
     state.live!.reason = undefined;
     state.canSend = true;
     state.capabilities!.features.send = { available: true };
-    expect(sessionDisplayState(state)).toMatchObject({ label: "Ready to send" });
+    expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
     expect(sessionDisplayState(state).nextAction).toBeUndefined();
   });
-  it("preserves Claude advice and localizes the Codex ownership state in all four locales", () => {
+  it("uses the same neutral ownership state for both Agents in all four locales", () => {
     for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
       const state = fixture();
       state.locale = locale;
-      expect(sessionDisplayState(state)).toMatchObject({
-        label: webLayoutCopy[locale].handoffPending,
-        reason: codexReason(locale, "handoff-required").text,
-      });
-      state.current!.agent = "codex";
-      state.live!.ownershipReason = "codex-owner-busy";
-      expect(sessionDisplayState(state)).toMatchObject({
-        label: sessionContinuationCopy(locale).busy("Codex"),
-        reason: "",
-        tone: "muted",
-      });
+      for (const [agent, reason, name] of [
+        ["claude-code", "claude-owner-busy", "Claude Code"],
+        ["codex", "codex-owner-busy", "Codex"],
+      ] as const) {
+        state.current!.agent = agent;
+        state.live!.ownershipReason = reason;
+        expect(sessionDisplayState(state)).toMatchObject({
+          label: sessionContinuationCopy(locale).busy(name),
+          reason: "",
+          tone: "muted",
+          continuation: "busy",
+        });
+      }
     }
+  });
+  it("does not require management permission for automatic Claude continuation", () => {
+    const state = fixture();
+    state.access!.device!.manage = false;
+    state.live!.reason = undefined;
+    state.live!.sendEnabled = true;
+    state.canSend = true;
+    expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
   });
 });

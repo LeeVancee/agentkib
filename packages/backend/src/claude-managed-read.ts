@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { homedir } from "node:os";
+import { claudeResumeCommand } from "./claude-resume-command";
 import { ClaudeSessionOwnerProbe } from "./claude-session-owner";
 import { resolveCommand } from "./command-resolution";
 import { validHistoryControl } from "./history-control-schema";
@@ -148,8 +149,12 @@ export class ClaudeManagedReadOwner {
   #lastPermission = new Map<string, ClaudeObservedPermissionMode>();
   #publishConversationEvent?: ClaudeConversationPublisher;
   #aliasConversationItem?: ClaudeConversationAliaser;
+  #catalogChanged?: () => void;
   #ownership: ClaudeSessionOwnerProbe;
   #ownershipReasons = new Map<string, { at: number; reason: string | null }>();
+  // A live read can fence an otherwise idle runner because another host command
+  // is unresolved. Catalog reads reuse that proof without opening the ledger.
+  #catalogUnconfirmed = new Set<string>();
   #idleSince = new Map<string, number>();
   #observed = new Set<string>();
   #starting = new Set<string>();
@@ -170,12 +175,14 @@ export class ClaudeManagedReadOwner {
     publishers?: {
       publish: ClaudeConversationPublisher;
       alias: ClaudeConversationAliaser;
+      catalogChanged?: () => void;
     },
     readonly continuation: ClaudeContinuationOptions = {},
   ) {
     this.#hostState = new ClaudeHostStateStore(dataDir, bootId);
     this.#publishConversationEvent = publishers?.publish;
     this.#aliasConversationItem = publishers?.alias;
+    this.#catalogChanged = publishers?.catalogChanged;
     this.#ownership = new ClaudeSessionOwnerProbe(commands, environment);
     const configuredIdle =
       continuation.idleTimeoutMs ??
@@ -352,6 +359,9 @@ export class ClaudeManagedReadOwner {
       case "inspect":
         if (!id) throw new Error("missing-session");
         return this.inspect(id, value.experimentalEnabled === true);
+      case "resume-command":
+        if (!id) throw new Error("missing-session");
+        return this.resumeCommand(id);
       case "context":
         if (!id) throw new Error("missing-session");
         return this.context(id);
@@ -2502,6 +2512,7 @@ export class ClaudeManagedReadOwner {
       reason = "claude-owner-check-unavailable";
     }
     this.#ownershipReasons.set(id, { at: Date.now(), reason });
+    if (cached?.reason !== reason) this.#catalogChanged?.();
     return reason;
   }
 
@@ -2778,6 +2789,65 @@ export class ClaudeManagedReadOwner {
     }
   }
 
+  #setCatalogUnconfirmed(id: string, value: boolean): void {
+    const previous = this.#catalogUnconfirmed.has(id);
+    if (value) this.#catalogUnconfirmed.add(id);
+    else this.#catalogUnconfirmed.delete(id);
+    if (previous !== value) this.#catalogChanged?.();
+  }
+
+  /** Catalog presentation never probes processes or starts a runner. */
+  catalogContinuation(
+    id: string,
+    persisted?: Record<string, unknown>,
+  ): Record<string, unknown> | undefined {
+    const runner = this.#runners.get(id);
+    const status = this.#catalogUnconfirmed.has(id)
+      ? "outcome-unknown"
+      : (runner?.status ?? persisted?.status);
+    // A cached external owner cannot turn an unresolved outcome into a fork choice.
+    if (status === "outcome-unknown")
+      return {
+        status,
+        executionLocation: runner?.hasWorker ? "agentkib" : null,
+        ownershipReason: null,
+        reason: "control-outcome-unconfirmed",
+      };
+    if (runner?.isRetiring)
+      return {
+        status: status ?? "idle",
+        executionLocation: "agentkib",
+        ownershipReason: null,
+        reason: "session-retiring",
+      };
+    const ownership = this.#ownershipReasons.get(id);
+    const reason = ownership && Date.now() - ownership.at < 5000 ? ownership.reason : null;
+    if (runner?.hasWorker || this.#starting.has(id))
+      return {
+        status: this.#starting.has(id) ? "starting" : (status ?? "idle"),
+        executionLocation: "agentkib",
+        ownershipReason: reason,
+      };
+    if (reason)
+      return {
+        status: "idle",
+        executionLocation: [
+          "claude-owner-busy",
+          "claude-background-session-running",
+          "owner-opened-elsewhere",
+        ].includes(reason)
+          ? "external"
+          : null,
+        ownershipReason: reason,
+        reason,
+      };
+    if (!supportsClaudeManagedRunner())
+      return { status: "unsupported", executionLocation: null, reason: "platform-unsupported" };
+    if (this.#version && this.#version.value === null)
+      return { status: "unsupported", executionLocation: null, reason: "claude-cli-unavailable" };
+    return undefined;
+  }
+
   catalog(): Array<Record<string, unknown>> {
     const records = this.#listRecords();
     return records.flatMap((record) => {
@@ -2801,6 +2871,7 @@ export class ClaudeManagedReadOwner {
             sidechain: false,
             availability: "readable",
             executionMode: "claude-managed",
+            continuation: this.catalogContinuation(record.id, record.snapshot),
             sourceSessionId: record.nativeId,
           },
         ];
@@ -3048,18 +3119,17 @@ export class ClaudeManagedReadOwner {
       this.#save(record);
       this.#recoverCompletions(record);
     }
+    const unconfirmed = managedSessionHasUnknownCommands(this.dataDir, id);
+    this.#setCatalogUnconfirmed(id, unconfirmed);
     let live: Record<string, unknown>;
-    if (
-      (!runner && record.snapshot.status !== "idle") ||
-      managedSessionHasUnknownCommands(this.dataDir, id)
-    ) {
+    if ((!runner && record.snapshot.status !== "idle") || unconfirmed) {
       // A session AgentKib stopped for a stated reason keeps that reason across a restart, unless a
       // command is also unresolved: then the generic "outcome unconfirmed" matters more.
       const stopped =
         !runner &&
         record.snapshot.status === "outcome-unknown" &&
         terminationCodeOf(record.snapshot.reason) !== null &&
-        !managedSessionHasUnknownCommands(this.dataDir, id);
+        !unconfirmed;
       live = {
         ...record.snapshot,
         status: "outcome-unknown",
@@ -3436,12 +3506,15 @@ export class ClaudeManagedReadOwner {
 
   #recoverCompletions(record: ClaudeRecord): void {
     if (record.completedRequests.length === 0) return;
+    let unconfirmed = false;
     for (const command of readUnknownManagedCommands(this.dataDir, record.id)) {
       if (
         command.evidence?.operation !== "send" ||
         !record.completedRequests.includes(command.requestId)
-      )
+      ) {
+        unconfirmed = true;
         continue;
+      }
       finishManagedCommand(this.dataDir, command.requestId, {
         accepted: true,
         completed: true,
@@ -3456,6 +3529,9 @@ export class ClaudeManagedReadOwner {
         completionObserved: true,
       });
     }
+    // The existing completion scan is authoritative for the remaining ledger
+    // identities. An ordinary idle frame alone cannot clear another host's fence.
+    this.#setCatalogUnconfirmed(record.id, unconfirmed);
   }
 
   async capabilities(id: string, controls = false): Promise<Record<string, unknown>> {
@@ -3612,12 +3688,48 @@ export class ClaudeManagedReadOwner {
     };
   }
 
+  async resumeCommand(id: string) {
+    const target = async () => {
+      const native = await this.#resolveNative(id);
+      const config = this.#home();
+      const directories = [native.workspace, config].map((directory) => {
+        const info = lstatSync(directory);
+        if (!info.isDirectory() || info.isSymbolicLink())
+          throw new Error("claude-context-unavailable");
+        return [pathIdentity(directory), info.dev, info.ino];
+      });
+      return {
+        ...native,
+        config,
+        key: JSON.stringify([native.workspaceId, native.nativeId, directories]),
+      };
+    };
+    const before = await target();
+    const after = await target();
+    if (before.key !== after.key) throw new Error("session-unavailable");
+    // Generating a command must remain possible on unsupported CLI/platforms and
+    // while another client owns the session. It never checks out a runner or a lease.
+    return claudeResumeCommand(after.workspace, after.config, after.nativeId);
+  }
+
   async context(id: string): Promise<Record<string, unknown>> {
     const record = this.#load(id);
-    const workspace = record
-      ? (this.#validate(record), record.workspace)
-      : (await this.#resolveNative(id)).workspace;
-    return { available: true, cwd: workspace, projectId: null, branchAtCreation: null };
+    const native = record ? null : await this.#resolveNative(id);
+    const workspace = record ? (this.#validate(record), record.workspace) : native!.workspace;
+    let sourceFile: string | null = null;
+    if (!record?.fresh) {
+      try {
+        sourceFile = this.sessions.verifiedClaudeControlTarget(
+          record?.nativeId ?? native!.nativeId,
+          workspace,
+        );
+      } catch {
+        // The source is optional display metadata. If it cannot be verified, omit
+        // it without blocking the workspace context validated above. Never infer
+        // a path or relax the separate control-path identity checks.
+      }
+    }
+    return { available: true, cwd: workspace, sourceFile, projectId: null, branchAtCreation: null };
   }
 
   async events(id: string, cursor: unknown, limit: unknown): Promise<unknown> {

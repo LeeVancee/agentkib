@@ -1240,6 +1240,11 @@ export class ClaudeManagedRunnerProcess {
     return this.state.snapshot();
   }
 
+  /** Catalog polling needs only protocol state, without cloning or truncating response text. */
+  get status(): string {
+    return this.state.status;
+  }
+
   get optionsSnapshot(): ClaudeRunnerOptionsSnapshot {
     return structuredClone({
       models: this.#models,

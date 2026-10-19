@@ -284,12 +284,7 @@ export function CodexTools({
               {actionButton("fork", copy.fork)}
             </div>
           </section>
-          {isClaude && (
-            <section className="space-y-3 border-t pt-3">
-              <h3 className="font-medium">{layout.ownership}</h3>
-              {ownership}
-            </section>
-          )}
+          {isClaude && ownership}
           {!isClaude && access?.device?.accessMode !== "full" && (
             <section className="space-y-3 border-t pt-3">
               <h3>{copy.settings}</h3>

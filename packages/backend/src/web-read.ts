@@ -308,6 +308,7 @@ export class WebReadRequests {
   #codex: CodexAppServerReader;
   #preflight: CodexRuntimePreflight;
   #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
+  #catalogObservations = new Map<string, { at: number; status: string; reason: string | null }>();
   #retirementTimer: ReturnType<typeof setInterval>;
   #retiring = false;
   #controlSessions = new Map<string, { count: number; observed: boolean }>();
@@ -333,6 +334,7 @@ export class WebReadRequests {
     ) => void,
     readonly isSessionObserved?: (sessionId: string) => boolean,
     readonly sessionIndex?: SessionIndex,
+    readonly catalogChanged?: () => void,
   ) {
     this.#codex = new CodexAppServerReader(environment);
     this.#preflight = new CodexRuntimePreflight(environment);
@@ -3331,7 +3333,56 @@ export class WebReadRequests {
         workspaces: workspaces
           .filter((workspace) => registered.has(workspace.id))
           .map(({ id, name, path }) => ({ id, name, path })),
-        sessions,
+        sessions: sessions.map((session) => {
+          if (!isSessionSummary(session) || !("agent" in session) || session.agent !== "codex")
+            return session;
+          const runner = this.#managedRunners.get(session.id);
+          const ownership = this.#ownership.get(session.id);
+          const reason =
+            ownership && Date.now() - ownership.checkedAt < 5000 ? ownership.reason : null;
+          const observation = this.#catalogObservations.get(session.id);
+          const observed =
+            observation && Date.now() - observation.at < 5000
+              ? {
+                  status: observation.status,
+                  executionLocation: null,
+                  ownershipReason: null,
+                  reason: observation.reason,
+                }
+              : undefined;
+          const unsafeObservation =
+            observed &&
+            ["control-outcome-unconfirmed", "session-retiring"].includes(observed.reason ?? "");
+          const continuation = runner?.retiring
+            ? {
+                status: runner.retirementFailed ? "outcome-unknown" : "idle",
+                executionLocation: "agentkib",
+                ownershipReason: null,
+                reason: runner.retirementFailed
+                  ? "control-outcome-unconfirmed"
+                  : "session-retiring",
+              }
+            : runner
+              ? {
+                  status: runner.state.status,
+                  executionLocation: "agentkib",
+                  ownershipReason: null,
+                  ...(runner.state.status === "outcome-unknown"
+                    ? { reason: "control-outcome-unconfirmed" }
+                    : {}),
+                }
+              : unsafeObservation
+                ? observed
+                : reason
+                  ? {
+                      status: "idle",
+                      executionLocation: reason === "codex-owner-busy" ? "external" : null,
+                      ownershipReason: reason,
+                      reason,
+                    }
+                  : observed;
+          return continuation ? { ...session, continuation } : session;
+        }),
         indexEnabled: enabled || managed.length > 0,
       };
     }
@@ -3455,6 +3506,13 @@ export class WebReadRequests {
     if (retiring)
       reason = retiringRunner.retirementFailed ? "control-outcome-unconfirmed" : "session-retiring";
     const starting = this.#controlSessions.has(record.id) && record.snapshot?.status === "starting";
+    const previousObservation = this.#catalogObservations.get(record.id);
+    this.#catalogObservations.set(record.id, {
+      at: Date.now(),
+      status: reason && reason !== "codex-owner-busy" ? "unsupported" : "idle",
+      reason,
+    });
+    if (previousObservation?.reason !== reason) this.catalogChanged?.();
     const state = new ManagedCodexState(record, record.snapshot?.revision ?? 0).snapshot(
       this.#bootId,
       false,

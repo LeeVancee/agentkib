@@ -1,3 +1,4 @@
+import { continuationResources } from "@/features/conversation/features/sessions/continuation-draft";
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -40,8 +41,8 @@ const nested: CodexContextOptions = {
   parentId: "opaque-root",
   resources: [nestedFile],
 };
-function Harness() {
-  const [resources, setResources] = useState<CodexContextResource[]>([]);
+function Harness({ initialResources = [] }: { initialResources?: CodexContextResource[] }) {
+  const [resources, setResources] = useState<CodexContextResource[]>(initialResources);
   return (
     <>
       <CodexComposerControls
@@ -162,4 +163,19 @@ it("keeps directory browsing disabled when context capability is unavailable", a
   fireEvent.click(screen.getByRole("button", { name: "Add context" }));
   expect(await screen.findByRole("button", { name: "Open folder: src" })).toBeDisabled();
   expect(screen.getByRole("checkbox", { name: /src/ })).toBeDisabled();
+});
+
+it("retains restored resource chips on initial mount without reusing source IDs or directory cursors", async () => {
+  const original = { ...rootFile, navigationId: "source-cursor" };
+  const draft = continuationResources([original]);
+  render(<Harness initialResources={draft} />);
+  await waitFor(() => expect(state.client.codexContextOptions).toHaveBeenCalled());
+  const chip = screen.getByRole("button", { name: "Remove attachment: README.md" }).parentElement!;
+  expect(chip).toHaveAttribute("aria-disabled", "true");
+  expect(chip).toHaveAttribute("title", "This resource is no longer valid. Select it again.");
+  expect(screen.getByLabelText("selected ids")).toHaveTextContent(draft[0]!.id);
+  expect(draft[0]!.id).not.toBe(original.id);
+  expect(draft[0]!.navigationId).toBeUndefined();
+  fireEvent.click(screen.getByRole("button", { name: "Remove attachment: README.md" }));
+  expect(screen.getByLabelText("selected ids")).toBeEmptyDOMElement();
 });

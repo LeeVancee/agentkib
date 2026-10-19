@@ -6,6 +6,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
+import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { SessionOverview } from "./SessionOverview";
 import { SessionDirectory } from "./SessionDirectory";
 import { useSessionHub } from "./SessionHubContext";
 import { filterSessions } from "./session-catalog";
@@ -521,4 +523,59 @@ describe("SessionDirectory", () => {
       sessionOrder: { "workspace-a": ["archived", "first"] },
     });
   });
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows runtime status in recent sessions and distinct sidebar dots in %s",
+    (locale) => {
+      initializeI18n(locale);
+      const copy = sessionContinuationCopy(locale);
+      hub.sessions = [
+        { ...first, id: "idle", title: "Idle" },
+        {
+          ...first,
+          id: "running",
+          title: "Running",
+          continuation: { status: "starting", executionLocation: "agentkib" },
+        },
+        {
+          ...second,
+          id: "terminal",
+          title: "Connected",
+          continuation: { status: "idle", executionLocation: "terminal" },
+        },
+        {
+          ...second,
+          id: "busy",
+          title: "External",
+          continuation: {
+            status: "idle",
+            executionLocation: "external",
+            ownershipReason: "claude-owner-busy",
+          },
+        },
+        {
+          ...second,
+          id: "unsupported",
+          title: "Unsupported",
+          continuation: { status: "unsupported", reason: "platform-unsupported" },
+        },
+      ];
+      const overview = render(<SessionOverview />);
+      expect(screen.getByText(copy.running)).toBeVisible();
+      expect(screen.getByText(copy.terminalBadge)).toBeVisible();
+      expect(screen.getByText(copy.busy("Claude Code"))).toBeVisible();
+      expect(screen.getByText(copy.viewOnly)).toBeVisible();
+      expect(overview.container.querySelectorAll('[role="status"]')).toHaveLength(4);
+      overview.unmount();
+      render(<SessionDirectory />);
+      expect(screen.getByRole("status", { name: copy.running })).toHaveClass("bg-primary");
+      expect(screen.getByRole("status", { name: copy.terminalBadge })).toHaveClass(
+        "bg-muted-foreground",
+      );
+      expect(screen.getByRole("status", { name: copy.busy("Claude Code") })).toHaveClass(
+        "bg-muted-foreground",
+      );
+      expect(screen.queryByRole("status", { name: copy.viewOnly })).toBeNull();
+      initializeI18n("en-US");
+    },
+  );
 });

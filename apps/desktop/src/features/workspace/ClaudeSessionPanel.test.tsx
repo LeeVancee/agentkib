@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { ClaudeSessionPanel } from "./ClaudeSessionPanel";
 import type { Live } from "../../../../../packages/web-client/src/index";
 import type { SessionStreamHandlers } from "@agentkib/web-client";
 import { permissionModeCopy } from "@/features/sessions/conversation/features/sessions/permission-mode-copy";
-import { claudeConnectionCopy } from "@/features/sessions/conversation/features/sessions/claude-connection-copy";
+import { sessionContinuationCopy } from "@agentkib/session-ui";
+const conversationRequest = vi.hoisted(() => vi.fn());
 import type { SupportedLocale as Locale } from "@/core/types";
 vi.mock("@/core/api", () => ({ api: { claudeRequest: vi.fn() } }));
 vi.mock("@/core/useI18n", () => ({ useI18n: () => ({ locale }) }));
@@ -17,15 +18,9 @@ vi.mock("@/components/MarkdownContent", () => ({
 vi.mock("@/core/conversation-bridge", () => ({
   hasDesktopConversation: () => true,
   createDesktopConversationAdapter: () => ({
-    request: async () => {
+    request: async (...args: unknown[]) => {
       if (accessError) throw accessError;
-      return {
-        protocolVersion: 2,
-        status: "approved",
-        bootId: "boot",
-        csrfToken: "local",
-        experimentalEnabled: true,
-      };
+      return conversationRequest(...args);
     },
     stream: (id: string, handlers: SessionStreamHandlers) => {
       const listeners = streams.get(id) ?? new Set<SessionStreamHandlers>();
@@ -107,6 +102,30 @@ beforeEach(() => {
   accessError = undefined;
   streams = new Map();
   stopped.mockReset();
+  conversationRequest.mockReset().mockImplementation(async (path) => {
+    if (path === "managed/action") {
+      live = {
+        ...live,
+        sessionId: "forked",
+        executionLocation: null,
+        ownershipReason: null,
+        sendEnabled: true,
+      };
+      return { accepted: true, sessionId: "forked" };
+    }
+    if (String(path).startsWith("requests/"))
+      return { found: false, requestId: String(path).slice(9) };
+    if (String(path).startsWith("managed/resume-command?"))
+      return { available: true, command: "claude --resume session", shell: "posix", runOn: "host" };
+    return {
+      protocolVersion: 2,
+      status: "approved",
+      bootId: "boot",
+      csrfToken: "local",
+      experimentalEnabled: true,
+      device: { manage: true, send: true },
+    };
+  });
   vi.spyOn(globalThis, "setInterval");
   live = {
     sessionId: "session",
@@ -148,6 +167,7 @@ beforeEach(() => {
             features: {
               attachments: { available: live.sendEnabled === true },
               files: { available: true },
+              fork: { available: true },
             },
           };
         case "files":
@@ -194,22 +214,20 @@ describe("Claude local owner panel", () => {
     expect(screen.getByText("unverified-installation")).toBeVisible();
     expect(screen.getByRole("button", { name: "New Claude task" })).toBeDisabled();
   });
-  it("shows an actionable handoff error with the original code in collapsed details", async () => {
-    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
-    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
-    vi.mocked(api.claudeRequest).mockImplementation((value) =>
-      value.operation === "inspect" ? Promise.reject(new Error("inspect_failed")) : original(value),
-    );
+  it("keeps a failed focus precheck actionable and never dispatches a command", async () => {
     mount();
     await screen.findByText("Synthetic history");
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not inspect the original client. Check the terminal and retry.",
+    await enabled(screen.getByLabelText("Message"));
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "live" ? Promise.reject(new Error("inspect_failed")) : original(value),
     );
-    const detail = screen.getByText("inspect_failed");
-    expect(detail).not.toBeVisible();
-    fireEvent.click(screen.getByText("Technical details"));
-    expect(detail).toBeVisible();
+    fireEvent.focus(screen.getByLabelText("Message"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not check session status. Refresh and retry.",
+    );
+    expect(screen.getByText("inspect_failed")).not.toBeVisible();
+    expect(calls("send")).toHaveLength(0);
     expect(calls("adopt")).toHaveLength(0);
   });
   it("shares native usage and compaction state while preserving native stop", async () => {
@@ -236,7 +254,9 @@ describe("Claude local owner panel", () => {
       "Compacting context",
     );
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Return to original client" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Return to original client" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
     act(() => emitNative(2, "state", { revision: 3, activity: null }));
     expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent(
@@ -683,7 +703,8 @@ describe("Claude local owner panel", () => {
       });
       emitNative(1, "invalidate", { domains: ["catalog"] }, "");
     });
-    expect(await screen.findByText("Idle")).toBeVisible();
+    await enabled(screen.getByLabelText("Message"));
+    expect(screen.queryByText("Idle")).not.toBeInTheDocument();
     await enabled(screen.getByLabelText("Add images or files"));
     expect(calls("capabilities").length).toBeGreaterThan(capabilityReads);
     expect(calls("send")).toHaveLength(0);
@@ -743,7 +764,8 @@ describe("Claude local owner panel", () => {
       emitNative(1, "invalidate", { domains: ["catalog"] }, "");
     });
     await act(async () => settle());
-    expect(await screen.findByText("Idle")).toBeVisible();
+    await enabled(screen.getByLabelText("Message"));
+    expect(screen.queryByText("Idle")).not.toBeInTheDocument();
     await enabled(screen.getByLabelText("Add images or files"));
     expect(calls("capabilities").length).toBeGreaterThan(1);
     expect(calls("send")).toHaveLength(0);
@@ -863,11 +885,12 @@ describe("Claude local owner panel", () => {
     expect(screen.queryByRole("button", { name: "Files and artifacts" })).not.toBeInTheDocument();
     expect(screen.queryByText("result.txt")).not.toBeInTheDocument();
   });
-  it("localizes idle status and renders completed history only once", async () => {
+  it("keeps idle status invisible and renders completed history only once", async () => {
     locale = "zh-CN";
     live = { ...live, streamText: "Synthetic history" };
     mount();
-    await screen.findByText("空闲");
+    await screen.findByText("Synthetic history");
+    expect(screen.queryByText("空闲")).not.toBeInTheDocument();
     expect(screen.getAllByText("Synthetic history")).toHaveLength(1);
     expect(screen.queryByText("idle")).not.toBeInTheDocument();
   });
@@ -885,58 +908,48 @@ describe("Claude local owner panel", () => {
     });
     expect(calls("send")).toHaveLength(0);
   });
-  it("binds the explicit takeover to the inspected source fingerprint", async () => {
-    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+  it("continues idle history directly without inspecting or adopting", async () => {
     mount();
     await screen.findByText("Synthetic history");
-    const prepare = screen.getByRole("button", { name: "Hand over to AgentKib" });
-    await waitFor(() => expect(prepare).toBeEnabled());
-    fireEvent.click(prepare);
-    fireEvent.click(await enabled(await screen.findByRole("checkbox")));
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    await waitFor(() => expect(calls("adopt")).toHaveLength(1));
-    expect(calls("adopt")[0][0]).toMatchObject({
-      sessionId: "session",
-      handoffConfirmed: true,
-      handoffFingerprint: "frozen-history",
-    });
+    await enterMessage("continue directly");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+    await waitFor(() => expect(calls("send")).toHaveLength(1));
+    expect(calls("send")[0][0]).toMatchObject({ sessionId: "session", text: "continue directly" });
+    expect(calls("inspect")).toHaveLength(0);
+    expect(calls("adopt")).toHaveLength(0);
+    expect(calls("release")).toHaveLength(0);
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-    "explains the follower handoff prerequisite without offering ownership controls in %s",
+    "explains connected terminal behavior without ownership controls in %s",
     async (language) => {
       locale = language;
-      live = { ...live, executionMode: "claude-follower", sendEnabled: false };
+      live = { ...live, executionMode: "claude-follower", executionLocation: "terminal" };
       mount();
-      expect(await screen.findByText(claudeConnectionCopy[language].disconnectFirst)).toBeVisible();
-      expect(
-        screen.getByText(claudeConnectionCopy[language].manage, { exact: false }),
-      ).toBeVisible();
+      const copy = sessionContinuationCopy(language);
+      expect(await screen.findByText(copy.terminalHint)).toBeVisible();
+      expect(screen.getByText(copy.terminalConnected)).toBeVisible();
       expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: /AgentKib/ })).not.toBeInTheDocument();
-      expect(
-        screen.queryByRole("button", {
-          name: /^(Return to original client|交还原客户端|交還原客戶端|元のクライアントに戻す)$/,
-        }),
-      ).not.toBeInTheDocument();
       expect(calls("inspect")).toHaveLength(0);
       expect(calls("adopt")).toHaveLength(0);
       expect(calls("release")).toHaveLength(0);
     },
   );
   it.each(["send", "stop"] as const)(
-    "retains the follower's verified %s capability while excluding handoff",
+    "retains the connected terminal's verified %s capability",
     async (operation) => {
       live = {
         ...live,
         executionMode: "claude-follower",
+        executionLocation: "terminal",
         status: operation === "send" ? "idle" : "running",
         sendEnabled: operation === "send",
         stopEnabled: operation === "stop",
         turnId: operation === "stop" ? "native-turn" : undefined,
       };
       mount();
-      await screen.findByText(claudeConnectionCopy["en-US"].disconnectFirst);
-      if (operation === "send") await enterMessage("continue in the original terminal");
+      await screen.findByText(sessionContinuationCopy("en-US").terminalHint);
+      if (operation === "send") await enterMessage("continue in terminal");
       fireEvent.click(
         await enabled(screen.getByRole("button", { name: operation === "send" ? "Send" : "Stop" })),
       );
@@ -945,48 +958,32 @@ describe("Claude local owner panel", () => {
         sessionId: "session",
         ...(operation === "stop" ? { turnId: "native-turn" } : {}),
       });
-      expect(calls("inspect")).toHaveLength(0);
       expect(calls("adopt")).toHaveLength(0);
       expect(calls("release")).toHaveLength(0);
     },
   );
-  it("discards an inspected confirmation when the original terminal connects and requires a fresh fingerprint after disconnect", async () => {
-    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
-    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
-    let fingerprint = "before-connection";
-    vi.mocked(api.claudeRequest).mockImplementation((value) =>
-      value.operation === "inspect"
-        ? Promise.resolve({ sessionId: "session", handoffFingerprint: fingerprint })
-        : original(value),
-    );
+  it("preserves a draft across terminal connection and disconnection without confirmation", async () => {
     mount();
     await screen.findByText("Synthetic history");
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    fireEvent.click(await screen.findByRole("checkbox"));
-    expect(screen.getByRole("checkbox")).toBeChecked();
-    live = { ...live, executionMode: "claude-follower", revision: 2 };
+    await enterMessage("same draft");
+    live = {
+      ...live,
+      executionMode: "claude-follower",
+      executionLocation: "terminal",
+      revision: 2,
+    };
     act(() => emitNative(1, "state", live));
-    expect(await screen.findByText(claudeConnectionCopy["en-US"].disconnectFirst)).toBeVisible();
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Hand over to AgentKib" })).not.toBeInTheDocument();
-    expect(calls("inspect")).toHaveLength(1);
-    expect(calls("adopt")).toHaveLength(0);
-    fingerprint = "after-disconnection";
-    live = { ...live, executionMode: "managed-resume", revision: 3 };
+    expect(await screen.findByText(sessionContinuationCopy("en-US").terminalHint)).toBeVisible();
+    expect(screen.getByLabelText("Message")).toHaveValue("same draft");
+    live = { ...live, executionMode: "claude-managed", executionLocation: null, revision: 3 };
     act(() => emitNative(2, "state", live));
-    const inspect = await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" }));
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    fireEvent.click(inspect);
-    expect(await screen.findByRole("checkbox")).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    await waitFor(() => expect(calls("adopt")).toHaveLength(1));
-    expect(calls("adopt")[0][0]).toMatchObject({
-      sessionId: "session",
-      handoffConfirmed: true,
-      handoffFingerprint: "after-disconnection",
-    });
+    expect(
+      screen.queryByText(sessionContinuationCopy("en-US").terminalHint),
+    ).not.toBeInTheDocument();
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+    await waitFor(() => expect(calls("send")).toHaveLength(1));
+    expect(calls("send")[0][0]).toMatchObject({ text: "same draft", expectedRevision: 3 });
+    expect(calls("adopt")).toHaveLength(0);
   });
   it.each([
     ["while connected", "resolve"],
@@ -994,250 +991,806 @@ describe("Claude local owner panel", () => {
     ["after disconnect", "resolve"],
     ["after disconnect", "reject"],
   ] as const)(
-    "ignores an inspection that settles %s with %s after an ownership-mode change",
+    "ignores a focus precheck settling %s with %s after terminal ownership changes",
     async (boundary, result) => {
-      live = { ...live, executionMode: "managed-resume", sendEnabled: false };
-      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
-      let finish!: (value: unknown) => void;
-      let fail!: (reason: Error) => void;
-      let inspections = 0;
-      vi.mocked(api.claudeRequest).mockImplementation((value) => {
-        if (value.operation !== "inspect") return original(value);
-        if (++inspections === 1)
-          return new Promise((resolve, reject) => {
-            finish = resolve;
-            fail = reject;
-          });
-        return Promise.resolve({ sessionId: "session", handoffFingerprint: "current-history" });
-      });
       mount();
       await screen.findByText("Synthetic history");
-      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-      await waitFor(() => expect(calls("inspect")).toHaveLength(1));
-      live = { ...live, executionMode: "claude-follower", revision: 2 };
-      act(() => emitNative(1, "state", live));
-      await screen.findByText(claudeConnectionCopy["en-US"].disconnectFirst);
-      const disconnect = () => {
-        live = { ...live, executionMode: "managed-resume", revision: 3 };
-        act(() => emitNative(2, "state", live));
-      };
-      if (boundary === "after disconnect") disconnect();
-      await act(async () => {
-        if (result === "resolve")
-          finish({ sessionId: "session", handoffFingerprint: "stale-history" });
-        else fail(new Error("inspect_failed"));
-      });
-      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-      if (boundary === "while connected") disconnect();
-      const inspect = await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" }));
-      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-      fireEvent.click(inspect);
-      expect(await screen.findByRole("checkbox")).not.toBeChecked();
-      fireEvent.click(screen.getByRole("checkbox"));
-      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-      await waitFor(() => expect(calls("adopt")).toHaveLength(1));
-      expect(calls("adopt")[0][0]).toMatchObject({
-        sessionId: "session",
-        handoffConfirmed: true,
-        handoffFingerprint: "current-history",
-      });
-    },
-  );
-  it.each(["released ownership", "connection generation"] as const)(
-    "requires a fresh confirmation after the %s changes without changing execution mode",
-    async (boundary) => {
-      live = {
-        ...live,
-        status: boundary === "released ownership" ? "released" : "idle",
-        executionMode: boundary === "released ownership" ? "claude-managed" : "managed-resume",
-        connectionGeneration: boundary === "connection generation" ? "first-binding" : undefined,
-        sendEnabled: false,
-      };
-      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
-      let fingerprint = "previous-history";
-      vi.mocked(api.claudeRequest).mockImplementation((value) =>
-        value.operation === "inspect"
-          ? Promise.resolve({ sessionId: "session", handoffFingerprint: fingerprint })
-          : original(value),
-      );
-      mount();
-      await screen.findByText("Synthetic history");
-      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-      fireEvent.click(await screen.findByRole("checkbox"));
-      expect(screen.getByRole("checkbox")).toBeChecked();
-      if (boundary === "released ownership") {
-        live = { ...live, status: "idle", revision: 2 };
-        act(() => emitNative(1, "state", live));
-        await screen.findByRole("button", { name: "Return to original client" });
-        live = { ...live, status: "released", revision: 3 };
-        act(() => emitNative(2, "state", live));
-      } else {
-        live = { ...live, connectionGeneration: "next-binding", revision: 2 };
-        act(() => emitNative(1, "state", live));
-      }
-      fingerprint = "current-history";
-      const inspect = await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" }));
-      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-      fireEvent.click(inspect);
-      expect(await screen.findByRole("checkbox")).not.toBeChecked();
-      fireEvent.click(screen.getByRole("checkbox"));
-      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-      await waitFor(() => expect(calls("adopt")).toHaveLength(1));
-      expect(calls("adopt")[0][0]).toMatchObject({ handoffFingerprint: "current-history" });
-    },
-  );
-  it.each(["resolve", "reject"] as const)(
-    "ignores a late inspection %s across a released ownership cycle with the same execution mode",
-    async (result) => {
-      live = { ...live, executionMode: "claude-managed", status: "released", sendEnabled: false };
       const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
       let finish!: (value: unknown) => void;
       let fail!: (reason: Error) => void;
       vi.mocked(api.claudeRequest).mockImplementation((value) =>
-        value.operation === "inspect"
+        value.operation === "live"
           ? new Promise((resolve, reject) => {
               finish = resolve;
               fail = reject;
             })
           : original(value),
       );
-      mount();
-      await screen.findByText("Synthetic history");
-      fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-      await waitFor(() => expect(calls("inspect")).toHaveLength(1));
-      live = { ...live, status: "idle", revision: 2 };
+      fireEvent.focus(await enabled(screen.getByLabelText("Message")));
+      await waitFor(() => expect(finish).toBeTypeOf("function"));
+      live = {
+        ...live,
+        executionMode: "claude-follower",
+        executionLocation: "terminal",
+        revision: 2,
+      };
       act(() => emitNative(1, "state", live));
-      await screen.findByRole("button", { name: "Return to original client" });
-      live = { ...live, status: "released", revision: 3 };
-      act(() => emitNative(2, "state", live));
+      const disconnect = () => {
+        live = { ...live, executionMode: "claude-managed", executionLocation: null, revision: 3 };
+        act(() => emitNative(2, "state", live));
+      };
+      if (boundary === "after disconnect") disconnect();
       await act(async () => {
         if (result === "resolve")
-          finish({ sessionId: "session", handoffFingerprint: "stale-history" });
+          finish({
+            ...live,
+            revision: 1,
+            executionLocation: "external",
+            ownershipReason: "claude-owner-busy",
+            sendEnabled: false,
+          });
         else fail(new Error("inspect_failed"));
       });
-      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(sessionContinuationCopy("en-US").choice("Claude Code")),
+      ).not.toBeInTheDocument();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      if (boundary === "while connected") disconnect();
+      expect(screen.getByLabelText("Message")).toBeEnabled();
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
+  it.each(["released ownership", "connection generation"] as const)(
+    "keeps draft and checks the current revision after %s changes",
+    async (boundary) => {
+      mount();
+      await screen.findByText("Synthetic history");
+      await enterMessage("preserved on recycle");
+      live = {
+        ...live,
+        revision: 2,
+        ...(boundary === "released ownership"
+          ? { status: "idle", executionLocation: null, continuationNotice: "background-ended" }
+          : { connectionGeneration: "next-binding" }),
+      };
+      act(() => emitNative(1, "state", live));
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+      await waitFor(() => expect(calls("send")).toHaveLength(1));
+      expect(calls("send")[0][0]).toMatchObject({
+        text: "preserved on recycle",
+        expectedRevision: 2,
+      });
       expect(calls("adopt")).toHaveLength(0);
     },
   );
-  it("rechecks changed source history and requires confirmation of the new fingerprint", async () => {
-    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
-    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
-    let finishInspection!: (value: unknown) => void;
-    let inspections = 0;
-    let sourceChanged = false;
-    vi.mocked(api.claudeRequest).mockImplementation((value) => {
-      if (value.operation === "inspect" && ++inspections === 2)
-        return new Promise((resolve) => {
-          finishInspection = resolve;
-        });
-      if (value.operation === "events" && sourceChanged)
-        return Promise.resolve({
-          events: [{ id: "next", kind: "agent-message", content: "Native session continued" }],
-          warnings: [],
-        });
-      return original(value);
-    });
+  it.each(["resolve", "reject"] as const)(
+    "ignores a stale focus precheck %s after a worker is recycled",
+    async (result) => {
+      mount();
+      await screen.findByText("Synthetic history");
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      let finish!: (value: unknown) => void, fail!: (error: Error) => void;
+      vi.mocked(api.claudeRequest).mockImplementation((value) =>
+        value.operation === "live"
+          ? new Promise((resolve, reject) => {
+              finish = resolve;
+              fail = reject;
+            })
+          : original(value),
+      );
+      fireEvent.focus(await enabled(screen.getByLabelText("Message")));
+      await waitFor(() => expect(finish).toBeTypeOf("function"));
+      live = { ...live, revision: 2, executionLocation: "agentkib" };
+      act(() => emitNative(1, "state", live));
+      live = {
+        ...live,
+        revision: 3,
+        executionLocation: null,
+        continuationNotice: "background-ended",
+      };
+      act(() => emitNative(2, "state", live));
+      await act(async () => {
+        if (result === "resolve")
+          finish({
+            ...live,
+            revision: 1,
+            executionLocation: "external",
+            ownershipReason: "claude-owner-busy",
+          });
+        else fail(new Error("inspect_failed"));
+      });
+      expect(screen.getByText(sessionContinuationCopy("en-US").backgroundEnded)).toBeVisible();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(sessionContinuationCopy("en-US").choice("Claude Code")),
+      ).not.toBeInTheDocument();
+      expect(calls("adopt")).toHaveLength(0);
+    },
+  );
+  it("checks ownership on focus and restores the untouched draft after the owner exits", async () => {
     mount();
     await screen.findByText("Synthetic history");
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    fireEvent.click(await screen.findByRole("checkbox"));
-    sourceChanged = true;
-    const historyReads = calls("events").length;
+    await enterMessage("keep original text");
+    live = {
+      ...live,
+      sendEnabled: false,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+    };
+    fireEvent.focus(screen.getByLabelText("Message"));
+    expect(
+      await screen.findByText(sessionContinuationCopy("en-US").choice("Claude Code")),
+    ).toBeVisible();
+    expect(screen.queryByLabelText("Message")).not.toBeInTheDocument();
+    expect(calls("send")).toHaveLength(0);
+    const poll = vi
+      .mocked(globalThis.setInterval)
+      .mock.calls.find(([, delay]) => delay === 4000)?.[0];
+    expect(poll).toBeTypeOf("function");
+    live = {
+      ...live,
+      revision: 2,
+      sendEnabled: true,
+      executionLocation: null,
+      ownershipReason: null,
+    };
+    await act(async () => {
+      if (typeof poll === "function") await poll();
+    });
+    expect(await screen.findByLabelText("Message")).toHaveValue("keep original text");
+    expect(calls("adopt")).toHaveLength(0);
+  });
+  it("recovers a failed focus read after refresh without replaying a send", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("keep after failure");
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let failed = true;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "live" && failed
+        ? Promise.reject(new Error("inspect_failed"))
+        : original(value),
+    );
+    fireEvent.focus(screen.getByLabelText("Message"));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    failed = false;
     fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
-    await waitFor(() => expect(calls("events").length).toBeGreaterThan(historyReads));
-    expect(await screen.findByText("Native session continued")).toBeVisible();
-    expect(calls("inspect")).toHaveLength(1);
-    expect(screen.getByRole("checkbox")).toBeChecked();
-    fireEvent.click(
-      await enabled(screen.getByRole("button", { name: "Recheck original session" })),
-    );
-    await waitFor(() => expect(calls("inspect")).toHaveLength(2));
-    expect(calls("inspect")[1][0]).toMatchObject({ sessionId: "session" });
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
-    expect(calls("adopt")).toHaveLength(0);
-    await act(async () =>
-      finishInspection({ sessionId: "session", handoffFingerprint: "history-after-native-turn" }),
-    );
-    expect(await screen.findByRole("checkbox")).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    await waitFor(() => expect(calls("adopt")).toHaveLength(1));
-    expect(calls("adopt")[0][0]).toMatchObject({
-      sessionId: "session",
-      handoffConfirmed: true,
-      handoffFingerprint: "history-after-native-turn",
-    });
+    expect(await enabled(screen.getByLabelText("Message"))).toHaveValue("keep after failure");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(calls("send")).toHaveLength(0);
   });
-  it("recovers from a failed recheck without retaining the old confirmation or error", async () => {
-    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
-    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
-    let inspections = 0;
-    vi.mocked(api.claudeRequest).mockImplementation((value) => {
-      if (value.operation === "inspect") {
-        inspections++;
-        if (inspections === 2) return Promise.reject(new Error("inspect_failed"));
-      }
-      return original(value);
-    });
+  it.each(["adopt", "release"] as const)(
+    "reconciles an existing %s receipt once and never replays it",
+    async (operation) => {
+      const requestId = crypto.randomUUID();
+      localStorage.setItem(
+        "agentkib:claude-owner-pending:v1:workspace",
+        JSON.stringify({ requestId, operation, workspaceId: "workspace", sessionId: "session" }),
+      );
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      vi.mocked(api.claudeRequest).mockImplementation((value) =>
+        value.operation === "receipt"
+          ? Promise.resolve({
+              found: true,
+              requestId,
+              operation,
+              sessionId: "session",
+              status: "accepted",
+            })
+          : original(value),
+      );
+      mount();
+      await screen.findByText("Synthetic history");
+      await enabled(screen.getByLabelText("Message"));
+      expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBeNull();
+      expect(calls(operation)).toHaveLength(0);
+    },
+  );
+  it("keeps unknown legacy handoff receipts blocking controls without offering execution management", async () => {
+    const requestId = crypto.randomUUID();
+    localStorage.setItem(
+      "agentkib:claude-owner-pending:v1:workspace",
+      JSON.stringify({
+        requestId,
+        operation: "adopt",
+        workspaceId: "workspace",
+        sessionId: "session",
+      }),
+    );
     mount();
     await screen.findByText("Synthetic history");
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    fireEvent.click(await screen.findByRole("checkbox"));
-    fireEvent.click(
-      await enabled(screen.getByRole("button", { name: "Recheck original session" })),
-    );
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not inspect");
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    expect(await screen.findByRole("checkbox")).not.toBeChecked();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(calls("inspect")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Hand over to AgentKib" })).not.toBeInTheDocument();
     expect(calls("adopt")).toHaveLength(0);
+    expect(calls("inspect")).toHaveLength(0);
   });
-  it("cannot recheck or discard a handoff whose outcome is still pending", async () => {
-    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+  it("keeps sending and focus reads blocked while compacting", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("after compaction");
+    act(() => emitNative(1, "state", { revision: 2, activity: "compacting" }));
+    const reads = calls("live").length;
+    fireEvent.focus(screen.getByLabelText("Message"));
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(calls("live")).toHaveLength(reads);
+    act(() => emitNative(2, "state", { revision: 3, activity: null }));
+    await enabled(screen.getByRole("button", { name: "Send" }));
+  });
+  it("keeps the full draft after a not-dispatched send finds an external owner", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("owner raced this send");
     const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
     vi.mocked(api.claudeRequest).mockImplementation((value) =>
-      value.operation === "adopt" ? Promise.reject(new Error("lost_response")) : original(value),
+      value.operation === "send"
+        ? Promise.resolve({
+            accepted: false,
+            controlOutcome: "not-dispatched",
+            error: "claude-owner-busy",
+          })
+        : original(value),
+    );
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+    expect(
+      await screen.findByText(sessionContinuationCopy("en-US").choice("Claude Code")),
+    ).toBeVisible();
+    expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBeNull();
+    live = {
+      ...live,
+      revision: 2,
+      sendEnabled: true,
+      executionLocation: null,
+      ownershipReason: null,
+    };
+    act(() => emitNative(1, "state", live));
+    expect(await screen.findByLabelText("Message")).toHaveValue("owner raced this send");
+    expect(calls("send")).toHaveLength(1);
+  });
+  it("renders a mid-run ownership conflict once and an idle shutdown as subdued feedback", async () => {
+    live = {
+      ...live,
+      executionLocation: "external",
+      sendEnabled: false,
+      ownershipReason: "owner-opened-elsewhere",
+      continuationNotice: "owner-opened-elsewhere",
+    };
+    mount();
+    await screen.findByText("Synthetic history");
+    expect(screen.getAllByText(sessionContinuationCopy("en-US").ownerOpenedElsewhere)).toHaveLength(
+      1,
+    );
+    expect(screen.getByText(sessionContinuationCopy("en-US").busy("Claude Code"))).toBeVisible();
+    expect(screen.getByText(sessionContinuationCopy("en-US").choice("Claude Code"))).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    live = {
+      ...live,
+      revision: 2,
+      executionLocation: null,
+      ownershipReason: null,
+      continuationNotice: "background-ended",
+      sendEnabled: true,
+    };
+    act(() => emitNative(1, "state", live));
+    expect(await screen.findByText(sessionContinuationCopy("en-US").backgroundEnded)).toBeVisible();
+    expect(
+      screen.queryByText(sessionContinuationCopy("en-US").busy("Claude Code")),
+    ).not.toBeInTheDocument();
+  });
+  it("shows the submitted message and starting state while the first send is pending", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("show while starting");
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "send"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : original(value),
+    );
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+    expect(await screen.findByText(sessionContinuationCopy("en-US").starting)).toBeVisible();
+    expect(screen.getByLabelText("History")).toHaveTextContent("show while starting");
+    expect(screen.getByLabelText("Message")).toHaveValue("show while starting");
+    act(() =>
+      emitNative(1, "item-upsert", {
+        id: "native-user",
+        kind: "user-message",
+        content: "show while starting",
+        attachment_count: 0,
+        truncated: false,
+      }),
+    );
+    expect(
+      within(screen.getByLabelText("History")).getAllByText("show while starting"),
+    ).toHaveLength(1);
+    await act(async () => finish({ accepted: true, sessionId: "session" }));
+    expect(await enabled(screen.getByLabelText("Message"))).toHaveValue("");
+  });
+  it.each([false, true])(
+    "keeps an accepted prompt visible until its native echo arrives (older match=%s)",
+    async (olderMatch) => {
+      if (olderMatch) {
+        const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+        vi.mocked(api.claudeRequest).mockImplementation((value) =>
+          value.operation === "events"
+            ? Promise.resolve({
+                events: [
+                  { id: "old-user", kind: "user-message", content: "accepted prompt" },
+                  { id: "reply", kind: "agent-message", content: "Synthetic history" },
+                ],
+                warnings: [],
+              })
+            : original(value),
+        );
+      }
+      mount();
+      await screen.findByText("Synthetic history");
+      await enterMessage("accepted prompt");
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+      await waitFor(() => expect(screen.getByLabelText("Message")).toHaveValue(""));
+      expect(screen.getAllByText("accepted prompt")).toHaveLength(olderMatch ? 2 : 1);
+      act(() =>
+        emitNative(1, "item-upsert", {
+          id: "current-user",
+          kind: "user-message",
+          content: "accepted prompt",
+          attachment_count: 0,
+          truncated: false,
+        }),
+      );
+      expect(screen.getAllByText("accepted prompt")).toHaveLength(olderMatch ? 2 : 1);
+    },
+  );
+  it("lets the user return to Claude Code and automatically restores their draft after exit", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("return later");
+    live = {
+      ...live,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+      sendEnabled: false,
+    };
+    fireEvent.focus(screen.getByLabelText("Message"));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: sessionContinuationCopy("en-US").returnTo("Claude Code"),
+      }),
+    );
+    expect(
+      screen.queryByText(sessionContinuationCopy("en-US").choice("Claude Code")),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: sessionContinuationCopy("en-US").copyCommand }),
+    ).toBeVisible();
+    const poll = vi
+      .mocked(globalThis.setInterval)
+      .mock.calls.find(([, delay]) => delay === 4000)?.[0];
+    live = {
+      ...live,
+      revision: 2,
+      executionLocation: null,
+      ownershipReason: null,
+      sendEnabled: true,
+    };
+    await act(async () => {
+      if (typeof poll === "function") await poll();
+    });
+    expect(await screen.findByLabelText("Message")).toHaveValue("return later");
+    expect(calls("send")).toHaveLength(0);
+  });
+  it("restores a dismissed composer when the native owner exits and shows a later conflict again", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("native exit keeps draft");
+    live = {
+      ...live,
+      revision: 2,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+      sendEnabled: false,
+    };
+    act(() => emitNative(1, "state", live));
+    fireEvent.click(
+      await enabled(
+        screen.getByRole("button", {
+          name: sessionContinuationCopy("en-US").returnTo("Claude Code"),
+        }),
+      ),
+    );
+    live = {
+      ...live,
+      revision: 3,
+      executionLocation: null,
+      ownershipReason: null,
+      sendEnabled: true,
+    };
+    act(() => emitNative(2, "state", live));
+    expect(await screen.findByLabelText("Message")).toHaveValue("native exit keeps draft");
+    live = {
+      ...live,
+      revision: 4,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+      sendEnabled: false,
+    };
+    act(() => emitNative(3, "state", live));
+    expect(
+      await screen.findByText(sessionContinuationCopy("en-US").choice("Claude Code")),
+    ).toBeVisible();
+    expect(calls("send")).toHaveLength(0);
+  });
+  it("opens the existing terminal wizard from an occupied session", async () => {
+    live = {
+      ...live,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+      sendEnabled: false,
+    };
+    const onConnectTerminal = vi.fn();
+    render(
+      <ClaudeSessionPanel
+        workspaceId="workspace"
+        initialSessionId="session"
+        onClose={vi.fn()}
+        onConnectTerminal={onConnectTerminal}
+      />,
+    );
+    fireEvent.click(
+      await enabled(
+        await screen.findByRole("button", { name: sessionContinuationCopy("en-US").installPlugin }),
+      ),
+    );
+    expect(onConnectTerminal).toHaveBeenCalledExactlyOnceWith("session");
+    expect(calls("adopt")).toHaveLength(0);
+  });
+  it("forks an occupied session and transfers the unsent draft exactly once", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("draft for fork");
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    const sourceLive = {
+      ...live,
+      sendEnabled: false,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+    };
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "catalog"
+        ? Promise.resolve({
+            indexEnabled: true,
+            sessions: [
+              { id: "session", workspace_id: "workspace", agent: "claude-code", title: "Original" },
+              {
+                id: "forked",
+                workspace_id: "workspace",
+                agent: "claude-code",
+                title: "Original (fork)",
+              },
+            ],
+          })
+        : value.operation === "live"
+          ? Promise.resolve(
+              value.sessionId === "forked" ? { ...live, sessionId: "forked" } : sourceLive,
+            )
+          : original(value),
+    );
+    fireEvent.focus(screen.getByLabelText("Message"));
+    fireEvent.click(
+      await enabled(
+        await screen.findByRole("button", { name: sessionContinuationCopy("en-US").fork }),
+      ),
+    );
+    expect(await screen.findByLabelText("Message")).toHaveValue("draft for fork");
+    expect(
+      conversationRequest.mock.calls.filter(([path]) => path === "managed/action"),
+    ).toHaveLength(1);
+    expect(conversationRequest).toHaveBeenCalledWith(
+      "managed/action",
+      expect.objectContaining({
+        operation: "fork",
+        agent: "claude-code",
+        sessionId: "session",
+        expectedRevision: 1,
+        bootId: "boot",
+      }),
+      undefined,
+    );
+    await enterMessage("edited after fork");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+    expect(await enabled(screen.getByLabelText("Message"))).toHaveValue("edited after fork");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+    await waitFor(() => expect(calls("send")).toHaveLength(1));
+    expect(calls("send")[0][0]).toMatchObject({ sessionId: "forked", text: "edited after fork" });
+  });
+  it("does not replay an uncertain fork after refresh", async () => {
+    live = {
+      ...live,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+      sendEnabled: false,
+    };
+    const original = conversationRequest.getMockImplementation()!;
+    conversationRequest.mockImplementation((path, ...args) =>
+      path === "managed/action"
+        ? Promise.reject(new Error("lost_fork_response"))
+        : original(path, ...args),
     );
     mount();
     await screen.findByText("Synthetic history");
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    fireEvent.click(await screen.findByRole("checkbox"));
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    await screen.findByRole("alert");
+    fireEvent.click(
+      await enabled(screen.getByRole("button", { name: sessionContinuationCopy("en-US").fork })),
+    );
+    await screen.findByText("lost_fork_response");
     const saved = localStorage.getItem("agentkib:claude-owner-pending:v1:workspace");
     expect(saved).not.toBeNull();
-    const recheck = screen.getByRole("button", { name: "Recheck original session" });
-    expect(recheck).toBeDisabled();
-    fireEvent.click(recheck);
-    const receipts = calls("receipt").length;
     fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
-    await waitFor(() => expect(calls("receipt").length).toBeGreaterThan(receipts));
-    expect(recheck).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        conversationRequest.mock.calls.some(([path]) => String(path).startsWith("requests/")),
+      ).toBe(true),
+    );
+    expect(
+      conversationRequest.mock.calls.filter(([path]) => path === "managed/action"),
+    ).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: sessionContinuationCopy("en-US").fork }),
+    ).toBeDisabled();
     expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBe(saved);
-    expect(calls("inspect")).toHaveLength(1);
-    expect(calls("adopt")).toHaveLength(1);
   });
-  it("keeps rechecking and handoff disabled while the original session is compacting", async () => {
-    live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+  it("keeps an undispatched fork's draft and allows a fresh explicit attempt", async () => {
     mount();
     await screen.findByText("Synthetic history");
-    fireEvent.click(await enabled(screen.getByRole("button", { name: "Hand over to AgentKib" })));
-    fireEvent.click(await screen.findByRole("checkbox"));
-    act(() => emitNative(1, "state", { revision: 2, activity: "compacting" }));
-    const recheck = screen.getByRole("button", { name: "Recheck original session" });
-    expect(recheck).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Hand over to AgentKib" })).toBeDisabled();
-    fireEvent.click(recheck);
-    expect(calls("inspect")).toHaveLength(1);
-    act(() => emitNative(2, "state", { revision: 3, activity: null }));
-    await enabled(recheck);
+    await enterMessage("not dispatched fork");
+    live = {
+      ...live,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+      sendEnabled: false,
+    };
+    fireEvent.focus(screen.getByLabelText("Message"));
+    const original = conversationRequest.getMockImplementation()!;
+    const { ApiError } = await import("@agentkib/web-client");
+    conversationRequest.mockImplementation((path, ...args) =>
+      path === "managed/action"
+        ? Promise.reject(new ApiError(409, "stale-Claude-revision", "not-dispatched"))
+        : original(path, ...args),
+    );
+    fireEvent.click(
+      await enabled(
+        await screen.findByRole("button", { name: sessionContinuationCopy("en-US").fork }),
+      ),
+    );
+    await screen.findByRole("alert");
+    expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBeNull();
+    await enabled(screen.getByRole("button", { name: sessionContinuationCopy("en-US").fork }));
+    live = {
+      ...live,
+      revision: 2,
+      executionLocation: null,
+      ownershipReason: null,
+      sendEnabled: true,
+    };
+    act(() => emitNative(1, "state", live));
+    expect(await screen.findByLabelText("Message")).toHaveValue("not dispatched fork");
+    expect(calls("send")).toHaveLength(0);
   });
+
+  it.each([false, true])(
+    "keeps fork attachments scoped to the new session (retry=%s)",
+    async (failFirstCopy) => {
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      let targetUploads = 0;
+      vi.mocked(api.claudeRequest).mockImplementation((value) => {
+        if (value.operation === "upload") {
+          if (value.sessionId === "forked" && ++targetUploads === 1 && failFirstCopy)
+            return Promise.reject(new Error("upload_failed"));
+          return Promise.resolve({
+            id: value.sessionId === "forked" ? "target-upload" : "source-upload",
+            name: "notes.txt",
+            mime: "text/plain",
+            size: 4,
+            version: "v1",
+          });
+        }
+        if (value.operation === "catalog")
+          return Promise.resolve({
+            indexEnabled: true,
+            sessions: [
+              { id: "session", workspace_id: "workspace", agent: "claude-code", title: "Original" },
+              { id: "forked", workspace_id: "workspace", agent: "claude-code", title: "Fork" },
+            ],
+          });
+        if (value.operation === "live" && value.sessionId === "forked")
+          return Promise.resolve({
+            ...live,
+            sessionId: "forked",
+            executionLocation: null,
+            ownershipReason: null,
+            sendEnabled: true,
+          });
+        if (value.operation === "capabilities" && value.sessionId === "forked")
+          return Promise.resolve({
+            sessionId: "forked",
+            features: { attachments: { available: true }, fork: { available: true } },
+          });
+        if (value.operation === "send")
+          return Promise.resolve({ accepted: true, sessionId: value.sessionId });
+        return original(value);
+      });
+      mount();
+      await screen.findByText("Synthetic history");
+      await enterMessage("with attachment");
+      const file = new File(["note"], "notes.txt", { type: "text/plain" });
+      Object.defineProperty(file, "arrayBuffer", {
+        value: async () => new TextEncoder().encode("note").buffer,
+      });
+      fireEvent.change(await enabled(screen.getByLabelText("Add images or files")), {
+        target: { files: [file] },
+      });
+      await screen.findByText("notes.txt");
+      live = {
+        ...live,
+        executionLocation: "external",
+        ownershipReason: "claude-owner-busy",
+        sendEnabled: false,
+      };
+      act(() => emitNative(1, "state", live));
+      fireEvent.click(
+        await enabled(screen.getByRole("button", { name: sessionContinuationCopy("en-US").fork })),
+      );
+      expect(await screen.findByLabelText("Message")).toHaveValue("with attachment");
+      if (failFirstCopy) {
+        expect(await screen.findByText("Attachment not uploaded")).toBeVisible();
+        expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+        fireEvent.click(await enabled(screen.getByRole("button", { name: "Retry upload" })));
+        await waitFor(() =>
+          expect(screen.queryByText("Attachment not uploaded")).not.toBeInTheDocument(),
+        );
+      }
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+      await waitFor(() => expect(calls("send")).toHaveLength(1));
+      expect(calls("send")[0][0]).toMatchObject({
+        sessionId: "forked",
+        text: "with attachment",
+        attachmentIds: ["target-upload"],
+      });
+      expect(
+        conversationRequest.mock.calls.filter(([path]) => path === "managed/action"),
+      ).toHaveLength(1);
+      expect(calls("upload").filter(([value]) => value.sessionId === "forked")).toHaveLength(
+        failFirstCopy ? 2 : 1,
+      );
+    },
+  );
+  it("moves a draft only after the original unknown fork receipt proves its target", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("recover fork draft");
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "catalog"
+        ? Promise.resolve({
+            indexEnabled: true,
+            sessions: [
+              { id: "session", workspace_id: "workspace", agent: "claude-code", title: "Original" },
+              { id: "forked", workspace_id: "workspace", agent: "claude-code", title: "Fork" },
+            ],
+          })
+        : value.operation === "live" && value.sessionId === "forked"
+          ? Promise.resolve({
+              ...live,
+              sessionId: "forked",
+              executionLocation: null,
+              ownershipReason: null,
+              sendEnabled: true,
+            })
+          : original(value),
+    );
+    live = {
+      ...live,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+      sendEnabled: false,
+    };
+    act(() => emitNative(1, "state", live));
+    const bridge = conversationRequest.getMockImplementation()!;
+    let proven = false;
+    conversationRequest.mockImplementation((path, ...args) =>
+      path === "managed/action"
+        ? Promise.reject(new Error("lost_fork_response"))
+        : String(path).startsWith("requests/") && proven
+          ? Promise.resolve({
+              found: true,
+              requestId: String(path).slice(9),
+              operation: "fork",
+              sessionId: "session",
+              status: "accepted",
+              ack: { accepted: true, sessionId: "forked" },
+              completionObserved: true,
+            })
+          : bridge(path, ...args),
+    );
+    fireEvent.click(
+      await enabled(screen.getByRole("button", { name: sessionContinuationCopy("en-US").fork })),
+    );
+    await screen.findByText("lost_fork_response");
+    proven = true;
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+    expect(await screen.findByLabelText("Message")).toHaveValue("recover fork draft");
+    expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBeNull();
+    expect(
+      conversationRequest.mock.calls.filter(([path]) => path === "managed/action"),
+    ).toHaveLength(1);
+  });
+  it.each([undefined, "session"])(
+    "does not forget an accepted fork with an unproven target %s",
+    async (target) => {
+      const requestId = crypto.randomUUID();
+      localStorage.setItem(
+        "agentkib:claude-owner-pending:v1:workspace",
+        JSON.stringify({
+          requestId,
+          operation: "fork",
+          transport: "conversation",
+          workspaceId: "workspace",
+          sessionId: "session",
+        }),
+      );
+      const original = conversationRequest.getMockImplementation()!;
+      conversationRequest.mockImplementation((path, ...args) =>
+        String(path).startsWith("requests/")
+          ? Promise.resolve({
+              found: true,
+              requestId,
+              operation: "fork",
+              sessionId: "session",
+              status: "accepted",
+              ack: { sessionId: target },
+              completionObserved: true,
+            })
+          : original(path, ...args),
+      );
+      mount();
+      await screen.findByText("Synthetic history");
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).not.toBeNull();
+      expect(
+        conversationRequest.mock.calls.filter(([path]) => path === "managed/action"),
+      ).toHaveLength(0);
+    },
+  );
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "shows one Windows view-only reason in %s",
+    async (language) => {
+      locale = language;
+      live = { ...live, status: "unsupported", reason: "platform-unsupported", sendEnabled: false };
+      mount();
+      await screen.findByText("Synthetic history");
+      const copy = sessionContinuationCopy(language);
+      expect(screen.getAllByText(copy.claudeWindowsUnsupported)).toHaveLength(1);
+      expect(screen.getByText(copy.viewOnly)).toBeVisible();
+      expect(screen.getByRole("button", { name: copy.copyCommand })).toBeVisible();
+      expect(screen.queryByPlaceholderText(copy.placeholder)).not.toBeInTheDocument();
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
+  it("keeps client versions inside session actions and details", async () => {
+    live = { ...live, cliVersion: "2.1.302", model: "model-name" };
+    mount();
+    await screen.findByText("Synthetic history");
+    expect(screen.queryByText(/2\.1\.302/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.queryByText(/2\.1\.302/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Session details" }));
+    expect(screen.getByText(/2\.1\.302/)).toBeVisible();
+    expect(screen.getByText(/model-name/)).toBeVisible();
+  });
+
   it("persists a lost send receipt across reopening and never replays it during refresh", async () => {
     const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
     vi.mocked(api.claudeRequest).mockImplementation((value) =>
@@ -1571,9 +2124,9 @@ describe("Claude local owner panel translated controls", () => {
       expect(screen.getByRole("button", { name: expected.create })).toBeVisible();
       expect(screen.getByRole("button", { name: expected.refresh })).toBeVisible();
       expect(await enabled(screen.getByLabelText(expected.message))).toBeVisible();
-      expect(screen.getByText(expected.idle)).toBeVisible();
+      expect(screen.queryByText(expected.idle)).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: expected.files })).toBeVisible();
-      expect(screen.getByRole("button", { name: expected.release })).toBeVisible();
+      expect(screen.queryByRole("button", { name: expected.release })).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: expected.send })).toBeDisabled();
       expect(calls("create")).toHaveLength(0);
       expect(calls("send")).toHaveLength(0);
@@ -1582,19 +2135,22 @@ describe("Claude local owner panel translated controls", () => {
   );
 
   it.each(languages)(
-    "translates the handoff confirmation and keeps its gate in $locale",
+    "translates occupied choices without a confirmation gate in $locale",
     async (expected) => {
       locale = expected.locale;
-      live = { ...live, executionMode: "managed-resume", sendEnabled: false };
+      live = {
+        ...live,
+        executionLocation: "external",
+        ownershipReason: "claude-owner-busy",
+        sendEnabled: false,
+      };
       mount();
       await screen.findByText("Synthetic history");
-      fireEvent.click(await enabled(screen.getByRole("button", { name: expected.prepare })));
-      expect(await screen.findByText(expected.confirmation)).toBeVisible();
-      expect(screen.getByRole("button", { name: expected.recheck })).toBeEnabled();
-      const handoff = screen.getByRole("button", { name: expected.handoff });
-      expect(handoff).toBeDisabled();
-      fireEvent.click(screen.getByRole("checkbox"));
-      expect(handoff).toBeEnabled();
+      const copy = sessionContinuationCopy(locale);
+      expect(screen.getByText(copy.choice("Claude Code"))).toBeVisible();
+      expect(screen.getByRole("button", { name: copy.fork })).toBeVisible();
+      expect(screen.getByRole("button", { name: copy.returnTo("Claude Code") })).toBeVisible();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
       expect(calls("adopt")).toHaveLength(0);
       expect(calls("send")).toHaveLength(0);
     },

@@ -23,11 +23,22 @@ export function DesktopConversationPane({
   create?: boolean;
 }) {
   const { locale, tr, localizeMessage } = useI18n();
-  const { select, conversationRefreshRevision } = useSessionHub();
+  const { select, selected, conversationRefreshRevision } = useSessionHub();
   const [client] = useState(createDesktopConversationClient);
   const [catalogError, setCatalogError] = useState("");
   const navigation = useRef(0);
   const controlsRef = useRef<EmbeddedConversationHandle>(null);
+  const requestedPanel = useSessionViewStore((state) => state.requestedPanel);
+  const initialPanel =
+    requestedPanel &&
+    (requestedPanel.sessionId === sessionId ||
+      (selected?.id === sessionId &&
+        selected?.indexedSessionIds?.includes(requestedPanel.sessionId)))
+      ? requestedPanel
+      : undefined;
+  const onInitialPanelConsumed = useCallback(() => {
+    if (initialPanel) useSessionViewStore.getState().consumePanel(initialPanel);
+  }, [initialPanel]);
   const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => subscribeConversationPanel((panel) => controlsRef.current?.openPanel(panel)), []);
   useEffect(
@@ -101,6 +112,8 @@ export function DesktopConversationPane({
       >
         <EmbeddedConversation
           controlsRef={controlsRef}
+          initialPanel={initialPanel?.panel}
+          onInitialPanelConsumed={onInitialPanelConsumed}
           client={client}
           sessionId={sessionId}
           create={create}

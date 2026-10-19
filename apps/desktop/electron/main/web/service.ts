@@ -3203,7 +3203,10 @@ export class WebAccessService {
       sessions?: { id: string; workspace_id: string; agent: string; availability: string }[];
     };
     const session = catalog.sessions?.find(
-      (item) => item.id === sessionId && item.agent === "codex" && item.availability === "readable",
+      (item) =>
+        item.id === sessionId &&
+        ["codex", "claude-code"].includes(item.agent) &&
+        item.availability === "readable",
     );
     const workspace = (await this.registeredWorkspaces()).find(
       (item) => item.id === session?.workspace_id && access.workspaces.includes(item.id),

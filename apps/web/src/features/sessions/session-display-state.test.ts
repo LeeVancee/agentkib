@@ -1,6 +1,7 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
 import { dictionaries } from "@/features/conversation/i18n";
+import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
 import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
 const state = {
@@ -84,7 +85,7 @@ describe("session display state", () => {
     expect(sessionDisplayState(state).reason).toBe("");
   });
   it.each([
-    ["handoff-required", dictionaries["zh-CN"].handoffRequired],
+    ["handoff-required", codexReason("zh-CN", "handoff-required").text],
     ["unverified-installation", dictionaries["zh-CN"].unverifiedInstallation],
     ["open-in-original-client", dictionaries["zh-CN"].openOriginalClient],
   ])("explains %s from live state or send capability", (reason, expected) => {
@@ -191,5 +192,90 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
         live: { ...codex.live!, ownershipReason: "codex-owner-busy" },
       }).continuation,
     ).toBeUndefined();
+  },
+);
+
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "projects Claude continuation without weakening dispatch in %s",
+  (locale) => {
+    const copy = sessionContinuationCopy(locale);
+    const claude = {
+      ...state,
+      locale,
+      selected: "claude",
+      current: { id: "claude", agent: "claude-code", availability: "readable" },
+      live: {
+        ...state.live!,
+        sessionId: "claude",
+        executionMode: "claude-managed",
+        executionLocation: null,
+        ownershipReason: null,
+      },
+      capabilities: { sessionId: "claude", features: { send: { available: true } } },
+    } as SessionController;
+    expect(sessionDisplayState(claude)).toMatchObject({ continuation: "idle", label: "" });
+    expect(
+      sessionDisplayState({ ...claude, pendingSend: { sessionId: "claude", text: "draft" } }),
+    ).toMatchObject({ continuation: "starting", label: copy.starting, loading: true });
+    expect(
+      sessionDisplayState({ ...claude, live: { ...claude.live!, executionLocation: "agentkib" } }),
+    ).toMatchObject({ continuation: "running", label: copy.running, tone: "active" });
+    expect(
+      sessionDisplayState({
+        ...claude,
+        live: {
+          ...claude.live!,
+          executionLocation: "terminal",
+          executionMode: "claude-follower",
+          reason: "claude-terminal-approval",
+        },
+        canSend: false,
+      }),
+    ).toMatchObject({ continuation: "terminal", label: copy.terminalConnected, tone: "muted" });
+    for (const ownershipReason of [
+      "claude-owner-busy",
+      "claude-background-session-running",
+      "owner-opened-elsewhere",
+    ])
+      expect(
+        sessionDisplayState({
+          ...claude,
+          canSend: false,
+          live: { ...claude.live!, ownershipReason },
+        }),
+      ).toMatchObject({
+        continuation: "busy",
+        label: copy.busy("Claude Code"),
+        reason: "",
+        tone: "muted",
+      });
+    expect(
+      sessionDisplayState({
+        ...claude,
+        canSend: false,
+        live: { ...claude.live!, sendEnabled: false, reason: "platform-unsupported" },
+      }),
+    ).toMatchObject({ continuation: "view-only", reason: copy.claudeWindowsUnsupported });
+    expect(
+      sessionDisplayState({
+        ...claude,
+        live: { ...claude.live!, sessionId: "old", executionLocation: "terminal" },
+      }),
+    ).toMatchObject({ loading: true });
+    expect(
+      sessionDisplayState({
+        ...claude,
+        live: { ...claude.live!, status: "outcome-unknown", executionLocation: "agentkib" },
+      }).continuation,
+    ).toBeUndefined();
+    for (const executionLocation of ["terminal", "agentkib"] as const)
+      expect(
+        sessionDisplayState({
+          ...claude,
+          pendingSend: { sessionId: "claude", text: "next" },
+          live: { ...claude.live!, executionLocation },
+        }).continuation,
+      ).toBe(executionLocation === "terminal" ? "terminal" : "running");
+    expect(claude.canSend).toBe(true);
   },
 );

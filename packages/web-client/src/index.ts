@@ -33,6 +33,13 @@ export function isHistoryReadPath(path: string): boolean {
 }
 
 export interface ConversationSessionSummary {
+  /** Read-only runtime observation; absent when the host has not observed an owner. */
+  continuation?: {
+    status: string;
+    executionLocation?: "agentkib" | "terminal" | "external" | null;
+    ownershipReason?: string | null;
+    reason?: string | null;
+  };
   /** Verified index identities that route to this managed session. */
   indexedSessionIds?: string[];
   id: string;
@@ -859,6 +866,13 @@ export class WebClient {
     );
   }
   codexResumeCommand(sessionId: string, signal?: AbortSignal) {
+    return this.request<CodexResumeCommand>(
+      `managed/resume-command?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  claudeResumeCommand(sessionId: string, signal?: AbortSignal) {
     return this.request<CodexResumeCommand>(
       `managed/resume-command?${new URLSearchParams({ sessionId })}`,
       undefined,

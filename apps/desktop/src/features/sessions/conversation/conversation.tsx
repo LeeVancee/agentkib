@@ -7,6 +7,7 @@ import {
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type Ref,
@@ -34,12 +35,14 @@ import { webLayoutCopy } from "./features/sessions/web-layout-copy";
 import { useSessionNavigate } from "./features/sessions/session-navigation";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
-export type ConversationPanel = "files" | "actions" | "search";
+export type ConversationPanel = "files" | "actions" | "search" | "terminal";
 export interface EmbeddedConversationHandle {
   openPanel: (panel: ConversationPanel) => void;
 }
 export interface EmbeddedConversationProps {
   controlsRef?: Ref<EmbeddedConversationHandle>;
+  initialPanel?: ConversationPanel;
+  onInitialPanelConsumed?: () => void;
   client: WebClient;
   sessionId?: string;
   /** Changes only when the host explicitly requests a conversation refresh. */
@@ -74,6 +77,7 @@ function EmbeddedShell() {
   const session = useSession();
   const [filesOpen, setFilesOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   useImperativeHandle(
     props.controlsRef,
     () => ({
@@ -85,10 +89,81 @@ function EmbeddedShell() {
         if (!session.selected) return;
         if (panel === "files" && session.access?.device?.files) setFilesOpen(true);
         if (panel === "actions") setActionsOpen(true);
+        if (
+          panel === "terminal" &&
+          session.current?.agent === "claude-code" &&
+          document.documentElement.dataset.platform === "macos"
+        )
+          setTerminalOpen(true);
       },
     }),
-    [session.selected, session.access?.device?.files],
+    [session.selected, session.current?.agent, session.access?.device?.files],
   );
+  const panelRequest = useMemo(
+    () => ({ panel: props.initialPanel, sessionId: props.sessionId }),
+    [props.initialPanel, props.sessionId],
+  );
+  const consumedPanel = useRef<typeof panelRequest | undefined>(undefined);
+  useEffect(() => {
+    if (
+      !panelRequest.panel ||
+      !panelRequest.sessionId ||
+      consumedPanel.current === panelRequest ||
+      session.selected !== panelRequest.sessionId ||
+      session.current?.id !== panelRequest.sessionId ||
+      session.access?.status !== "approved"
+    )
+      return;
+    if (panelRequest.panel === "terminal") {
+      if (
+        session.current.agent !== "claude-code" ||
+        document.documentElement.dataset.platform !== "macos"
+      ) {
+        consumedPanel.current = panelRequest;
+        props.onInitialPanelConsumed?.();
+        return;
+      }
+      if (
+        !session.online ||
+        !session.controlReady ||
+        session.live?.sessionId !== panelRequest.sessionId ||
+        session.busy ||
+        !!session.modal ||
+        session.notice === "uncertain" ||
+        session.live.status === "outcome-unknown" ||
+        session.live.reason === "control-outcome-unconfirmed" ||
+        session.access.protocolVersion !== 2 ||
+        !session.access.experimentalEnabled ||
+        !session.access.device?.manage
+      )
+        return;
+      setTerminalOpen(true);
+    } else if (panelRequest.panel === "actions") setActionsOpen(true);
+    else if (panelRequest.panel === "files" && session.access.device?.files) setFilesOpen(true);
+    else if (panelRequest.panel === "search") session.setHistorySearchOpen(true);
+    consumedPanel.current = panelRequest;
+    props.onInitialPanelConsumed?.();
+  }, [
+    panelRequest,
+    props.onInitialPanelConsumed,
+    session.selected,
+    session.current?.id,
+    session.current?.agent,
+    session.access?.status,
+    session.access?.protocolVersion,
+    session.access?.experimentalEnabled,
+    session.access?.device?.files,
+    session.access?.device?.manage,
+    session.online,
+    session.controlReady,
+    session.live?.sessionId,
+    session.live?.status,
+    session.live?.reason,
+    session.busy,
+    session.modal,
+    session.notice,
+    session.setHistorySearchOpen,
+  ]);
   const copy = webLayoutCopy[session.locale];
   const status = sessionDisplayState(session);
   const previousCatalog = useRef(session.sessions);
@@ -120,21 +195,32 @@ function EmbeddedShell() {
   useLayoutEffect(() => {
     setFilesOpen(false);
     setActionsOpen(false);
+    setTerminalOpen(false);
   }, [session.selected]);
   useEffect(() => {
     if (session.modal) {
       setFilesOpen(false);
       setActionsOpen(false);
+      setTerminalOpen(false);
     }
   }, [session.modal]);
   return (
-    <SessionPanelsContext value={{ filesOpen, setFilesOpen, actionsOpen, setActionsOpen }}>
+    <SessionPanelsContext
+      value={{
+        filesOpen,
+        setFilesOpen,
+        actionsOpen,
+        setActionsOpen,
+        terminalOpen,
+        setTerminalOpen,
+      }}
+    >
       <div className="agentkib-conversation flex min-h-0 flex-1 flex-col bg-background text-foreground">
         <div
           data-conversation-toolbar
           className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-b px-4 py-2"
         >
-          {session.current?.agent === "codex" && (
+          {["codex", "claude-code"].includes(session.current?.agent ?? "") && (
             <div className="min-w-0 flex-1">
               <SessionContinuationStatus
                 label={status.label}

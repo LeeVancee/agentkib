@@ -313,8 +313,12 @@ export class WebReadRequests {
   #retiring = false;
   #controlSessions = new Map<string, { count: number; observed: boolean }>();
   #closing?: Promise<void>;
+  #shuttingDown = false;
+  #operations = new Set<Promise<unknown>>();
   #bootId = randomUUID();
   #managedRunners = new Map<string, ManagedRunner>();
+  #startingRunners = new Map<string, ManagedRunner>();
+  #transientSessions = new Set<CodexAppServerSession>();
   #codexFollowers = new Map<string, CodexFollowerRecord>();
   #codexFollowerFlights = new Map<string, Promise<CodexFollowerRecord>>();
   #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
@@ -348,30 +352,84 @@ export class WebReadRequests {
 
   closeAsync(): Promise<void> {
     if (this.#closing) return this.#closing;
+    this.#shuttingDown = true;
     clearInterval(this.#retirementTimer);
     this.#preflight.close();
+    return (this.#closing = this.#close());
+  }
+
+  async #close(): Promise<void> {
     const pending = [this.#codex.closeAsync()];
     for (const record of this.#antigravityRunners.values()) record.runner.close();
     this.#antigravityRunners.clear();
     for (const follower of this.#codexFollowers.values()) follower.bridge.close();
     this.#codexFollowers.clear();
-    for (const [id, runner] of this.#managedRunners) {
-      runner.state.fail("codex-disconnected");
-      try {
-        runner.persist(runner.state);
-      } catch {
-        // Do not replace the persisted snapshot if another process changed it.
+    const closeRunners = () => {
+      for (const session of this.#transientSessions) pending.push(session.close());
+      for (const [id, runner] of new Map([...this.#startingRunners, ...this.#managedRunners])) {
+        runner.state.fail("codex-disconnected");
+        try {
+          runner.persist(runner.state);
+        } catch {
+          // Do not replace the persisted snapshot if another process changed it.
+        }
+        pending.push(this.#closeManagedRunner(id, runner));
       }
-      pending.push(this.#closeManagedRunner(id, runner));
-    }
-    this.#closing = Promise.allSettled(pending).then((results) => {
-      const failed = results.find((result) => result.status === "rejected");
-      if (failed?.status === "rejected") throw failed.reason;
-    });
-    return this.#closing;
+    };
+    closeRunners();
+    const initialClose = Promise.allSettled(pending);
+    // Keep the store and ledger alive until cancelled startups and controls have
+    // recorded their real dispatch outcomes. Admission is fenced synchronously.
+    await Promise.allSettled([...this.#operations]);
+    // A startup can finish between returning its runner and its caller registering
+    // it. The operation drain covers that microtask boundary before this last sweep.
+    pending.length = 0;
+    closeRunners();
+    const results = [...(await initialClose), ...(await Promise.allSettled(pending))];
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   }
 
-  async managedOptions() {
+  #assertOpen(): void {
+    if (this.#shuttingDown) throw new Error("backend-closing");
+  }
+
+  #trackTransientSession(session: CodexAppServerSession, release?: () => void): void {
+    this.#transientSessions.add(session);
+    session.once("close", () => {
+      this.#transientSessions.delete(session);
+      release?.();
+    });
+  }
+
+  #runOperation<T>(run: () => Promise<T>): Promise<T> {
+    if (this.#shuttingDown) return Promise.reject(new Error("backend-closing"));
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (error: unknown) => void;
+    const pending = new Promise<T>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    // Track before calling the operation, while preserving synchronous admission
+    // so a subscription installed immediately after this call cannot be missed.
+    this.#operations.add(pending);
+    void pending.then(
+      () => this.#operations.delete(pending),
+      () => this.#operations.delete(pending),
+    );
+    try {
+      resolve(run());
+    } catch (error) {
+      reject(error);
+    }
+    return pending;
+  }
+
+  managedOptions() {
+    return this.#runOperation(() => this.#managedOptions());
+  }
+
+  async #managedOptions() {
     const checked = await this.#preflight.check();
     const executable = checked.executable;
     if (!executable || checked.reason)
@@ -431,7 +489,11 @@ export class WebReadRequests {
     }
   }
 
-  async managedReconcile(value: unknown) {
+  managedReconcile(value: unknown) {
+    return this.#runOperation(() => this.#managedReconcile(value));
+  }
+
+  async #managedReconcile(value: unknown) {
     const request = managedReconcileSchema.parse(value);
     const records = readManagedRecords(this.dataDir, this.store);
     const record = records.find((item) => item.id === request.sessionId);
@@ -565,7 +627,11 @@ export class WebReadRequests {
     }
   }
 
-  async managedLifecycle(value: unknown, fingerprintOverride?: string) {
+  managedLifecycle(value: unknown, fingerprintOverride?: string) {
+    return this.#runOperation(() => this.#managedLifecycle(value, fingerprintOverride));
+  }
+
+  async #managedLifecycle(value: unknown, fingerprintOverride?: string) {
     const request = managedLifecycleSchema.parse(value);
     const fingerprint =
       fingerprintOverride ?? createHash("sha256").update(stableJson(value)).digest("hex");
@@ -854,7 +920,11 @@ export class WebReadRequests {
     }
   }
 
-  async managedResume(value: unknown, automatic = false) {
+  managedResume(value: unknown, automatic = false) {
+    return this.#runOperation(() => this.#managedResume(value, automatic));
+  }
+
+  async #managedResume(value: unknown, automatic = false) {
     const request = managedResumeSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -995,7 +1065,11 @@ export class WebReadRequests {
     }
   }
 
-  async managedQueueList(value: unknown) {
+  managedQueueList(value: unknown) {
+    return this.#runOperation(() => this.#managedQueueList(value));
+  }
+
+  async #managedQueueList(value: unknown) {
     const request = managedQueueSchema.parse(value);
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
@@ -1038,10 +1112,19 @@ export class WebReadRequests {
       const executable = resolveCommand("codex", this.environment);
       if (!executable) throw new Error("codex-cli-unavailable");
       const home = this.#assertManagedHome(latest);
-      session = await CodexAppServerSession.start(executable, workspace, home, {
-        ...process.env,
-        ...this.environment,
-      });
+      this.#assertOpen();
+      session = await CodexAppServerSession.start(
+        executable,
+        workspace,
+        home,
+        { ...process.env, ...this.environment },
+        undefined,
+        (started) => {
+          session = started;
+          this.#trackTransientSession(started, release);
+        },
+      );
+      this.#assertOpen();
       const response = await session.request("thread/read", {
         threadId: latest.native_id,
         includeTurns: false,
@@ -1056,12 +1139,16 @@ export class WebReadRequests {
       try {
         await session?.close();
       } finally {
-        release?.();
+        if (!session || session.closed) release?.();
       }
     }
   }
 
-  async managedUnarchive(value: unknown) {
+  managedUnarchive(value: unknown) {
+    return this.#runOperation(() => this.#managedUnarchive(value));
+  }
+
+  async #managedUnarchive(value: unknown) {
     const request = managedUnarchiveSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -1114,14 +1201,24 @@ export class WebReadRequests {
         throw new Error("session-unavailable");
       const executable = resolveCommand("codex", this.environment);
       if (!executable) throw new Error("codex-cli-unavailable");
-      session = await CodexAppServerSession.start(executable, workspace, home, {
-        ...process.env,
-        ...this.environment,
-      });
+      this.#assertOpen();
+      session = await CodexAppServerSession.start(
+        executable,
+        workspace,
+        home,
+        { ...process.env, ...this.environment },
+        undefined,
+        (started) => {
+          session = started;
+          this.#trackTransientSession(started, release);
+        },
+      );
+      this.#assertOpen();
       const response = await session.request(
         "thread/unarchive",
         { threadId: latest.native_id },
         () => {
+          this.#assertOpen();
           dispatchManagedCommand(this.dataDir, request.requestId);
           dispatched = true;
         },
@@ -1179,7 +1276,11 @@ export class WebReadRequests {
     }
   }
 
-  async managedSettingsState(value: unknown) {
+  managedSettingsState(value: unknown) {
+    return this.#runOperation(() => this.#managedSettingsState(value));
+  }
+
+  async #managedSettingsState(value: unknown) {
     const request = managedSettingsStateSchema.parse(value);
     const stored = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
@@ -1294,7 +1395,11 @@ export class WebReadRequests {
     };
   }
 
-  async managedQuery(value: unknown) {
+  managedQuery(value: unknown) {
+    return this.#runOperation(() => this.#managedQuery(value));
+  }
+
+  async #managedQuery(value: unknown) {
     const request = managedQuerySchema.parse(value);
     if (this.store.sessions.get(request.sessionId)?.agent === "antigravity") {
       let runner: AntigravityRunnerRecord;
@@ -1664,10 +1769,21 @@ export class WebReadRequests {
         let queueSession = runner?.session.connected ? runner.session : undefined;
         const ownsQueueSession = !queueSession;
         try {
-          queueSession ??= await CodexAppServerSession.start(executable, workspace, home, {
-            ...process.env,
-            ...this.environment,
-          });
+          if (!queueSession) {
+            this.#assertOpen();
+            queueSession = await CodexAppServerSession.start(
+              executable,
+              workspace,
+              home,
+              { ...process.env, ...this.environment },
+              undefined,
+              (started) => {
+                queueSession = started;
+                this.#trackTransientSession(started);
+              },
+            );
+            this.#assertOpen();
+          }
           queue = await readManagedQueue(queueSession, nativeId, 100);
         } catch {
           queue = null;
@@ -1743,7 +1859,11 @@ export class WebReadRequests {
     };
   }
 
-  async managedControl(value: unknown) {
+  managedControl(value: unknown) {
+    return this.#runOperation(() => this.#managedControlAdmission(value));
+  }
+
+  async #managedControlAdmission(value: unknown) {
     const request = managedControlSchema.parse(value);
     const id = request.sessionId;
     const admission = this.#controlSessions.get(id) ?? { count: 0, observed: false };
@@ -2202,6 +2322,7 @@ export class WebReadRequests {
       // Read the live state synchronously at the write boundary; an awaited snapshot can
       // become stale before its caller resumes. Rejected writes must remain undispatched.
       const beforeDispatch = () => {
+        this.#assertOpen();
         const latest = readManagedRecords(this.dataDir, this.store).find(
           (item) => item.id === request.sessionId,
         );
@@ -3025,52 +3146,76 @@ export class WebReadRequests {
     const checked = await this.#preflight.check();
     const executable = checked.executable;
     if (!executable || checked.reason) throw new Error(checked.reason ?? "codex-cli-unavailable");
+    this.#assertOpen();
     const nativeId = record.native_id ?? null;
-    const session = await CodexAppServerSession.start(executable, workspace, home, {
-      ...process.env,
-      ...this.environment,
-    });
     const state = new ManagedCodexState(record, record.snapshot?.revision ?? 0);
     const persist = createManagedSnapshotWriter(this.dataDir, record);
     let previousStreamText = "";
-    const bridge = new ManagedCodexEventBridge(
-      session,
-      state,
-      persist,
-      (value, result, current) => {
-        const live = current.snapshot(this.#bootId, session.connected);
-        const envelope = isObject(value) ? value : {};
-        const method = typeof envelope.method === "string" ? envelope.method : "";
-        const params = isObject(envelope.params) ? envelope.params : {};
-        if (method === "item/agentMessage/delta" || method === "item/plan/delta") {
-          const delta = typeof params.delta === "string" ? params.delta : "";
-          const streamText = typeof live.streamText === "string" ? live.streamText : "";
-          if (delta && streamText === previousStreamText + delta) {
-            this.publishConversationEvent?.(
-              record.id,
-              "text-delta",
-              {
-                text: delta,
-                offset: previousStreamText.length,
-                ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
-                ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
-                ephemeral: true,
-              },
-              live,
-            );
+    let startingRunner: ManagedRunner | undefined;
+    const captureRunner = (session: CodexAppServerSession) => {
+      if (startingRunner) return;
+      const bridge = new ManagedCodexEventBridge(
+        session,
+        state,
+        persist,
+        (value, result, current) => {
+          const live = current.snapshot(this.#bootId, session.connected);
+          const envelope = isObject(value) ? value : {};
+          const method = typeof envelope.method === "string" ? envelope.method : "";
+          const params = isObject(envelope.params) ? envelope.params : {};
+          if (method === "item/agentMessage/delta" || method === "item/plan/delta") {
+            const delta = typeof params.delta === "string" ? params.delta : "";
+            const streamText = typeof live.streamText === "string" ? live.streamText : "";
+            if (delta && streamText === previousStreamText + delta) {
+              this.publishConversationEvent?.(
+                record.id,
+                "text-delta",
+                {
+                  text: delta,
+                  offset: previousStreamText.length,
+                  ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+                  ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
+                  ephemeral: true,
+                },
+                live,
+              );
+            }
+            previousStreamText = streamText;
+            return;
           }
-          previousStreamText = streamText;
-          return;
-        }
-        previousStreamText = typeof live.streamText === "string" ? live.streamText : "";
-        if (result.event) {
-          this.publishConversationEvent?.(record.id, "item-upsert", result.event, live);
-          return;
-        }
-        this.publishConversationEvent?.(record.id, "state", live, live);
-      },
-    );
+          previousStreamText = typeof live.streamText === "string" ? live.streamText : "";
+          if (result.event) {
+            this.publishConversationEvent?.(record.id, "item-upsert", result.event, live);
+            return;
+          }
+          this.publishConversationEvent?.(record.id, "state", live, live);
+        },
+      );
+      startingRunner = {
+        session,
+        state,
+        bridge,
+        persist,
+        release: release ?? (() => {}),
+        planVerified: false,
+        idleSince: null,
+        observed: observedAtStart,
+      };
+      this.#startingRunners.set(record.id, startingRunner);
+    };
     try {
+      const session = await CodexAppServerSession.start(
+        executable,
+        workspace,
+        home,
+        { ...process.env, ...this.environment },
+        undefined,
+        captureRunner,
+      );
+      captureRunner(session);
+      const runner = startingRunner!;
+      const bridge = runner.bridge;
+      this.#assertOpen();
       const modelsResult = await session.request("model/list", { limit: 100 });
       const models = projectManagedModels(modelsResult);
       const requestedModel = record.model ?? null;
@@ -3103,7 +3248,10 @@ export class WebReadRequests {
         params.lastTurnId = fork.lastTurnId;
         params.deferGoalContinuation = true;
       } else if (nativeId) params.threadId = nativeId;
-      const beforeDispatch = () => dispatch?.();
+      const beforeDispatch = () => {
+        this.#assertOpen();
+        dispatch?.();
+      };
       const readRevision = state.revision;
       const responseValue = await session.request(
         fork ? "thread/fork" : nativeId ? "thread/resume" : "thread/start",
@@ -3166,47 +3314,35 @@ export class WebReadRequests {
       mutableRecord.default_effort = defaultModel?.defaultEffort ?? null;
       mutableRecord.default_service_tier = defaultModel?.defaultServiceTier ?? null;
       await bridge.flush();
+      this.#assertOpen();
       const hydrated = state.hydrate(nativeThread, true, readRevision);
       persist(state, hydrated.events);
-      return {
-        session,
-        state,
-        bridge,
-        persist,
-        release: release ?? (() => {}),
-        planVerified: false,
-        idleSince: Date.now(),
-        observed:
-          observedAtStart ||
-          this.#controlSessions.get(record.id)?.observed === true ||
-          this.isSessionObserved?.(record.id) === true,
-      };
+      runner.idleSince = Date.now();
+      runner.observed =
+        observedAtStart ||
+        this.#controlSessions.get(record.id)?.observed === true ||
+        this.isSessionObserved?.(record.id) === true;
+      this.#startingRunners.delete(record.id);
+      return runner;
     } catch (error) {
-      const failedRunner: ManagedRunner = {
-        session,
-        state,
-        bridge,
-        persist,
-        release: release ?? (() => {}),
-        planVerified: false,
-        idleSince: null,
-        observed:
-          observedAtStart ||
-          this.#controlSessions.get(record.id)?.observed === true ||
-          this.isSessionObserved?.(record.id) === true,
-        retiring: true,
-      };
-      this.#managedRunners.set(record.id, failedRunner);
-      try {
-        await this.#closeManagedRunner(record.id, failedRunner);
-      } catch {
-        /* Preserve the original native failure and retain the closing runner. */
+      if (startingRunner) {
+        this.#managedRunners.set(record.id, startingRunner);
+        this.#startingRunners.delete(record.id);
+        try {
+          await this.#closeManagedRunner(record.id, startingRunner);
+        } catch {
+          /* Preserve the original native failure and retain the closing runner. */
+        }
       }
       throw error;
     }
   }
 
-  async request(value: unknown) {
+  request(value: unknown) {
+    return this.#runOperation(() => this.#request(value));
+  }
+
+  async #request(value: unknown) {
     const request = requestSchema.parse(value);
     if (request.operation === "live") {
       const session = this.store.sessions.get(request.sessionId);
@@ -3606,6 +3742,7 @@ export class WebReadRequests {
       if (completed) return;
       completed = true;
       if (this.#managedRunners.get(id) === runner) this.#managedRunners.delete(id);
+      if (this.#startingRunners.get(id) === runner) this.#startingRunners.delete(id);
       this.#ownership.delete(id);
       runner.release();
     };

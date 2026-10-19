@@ -18,7 +18,9 @@ export type ClaudeSessionOwnership =
   | { kind: "interactive" | "background"; pid: number; source: "agents" | "registry" | "ps" };
 
 type Process = { start: string; command: string };
+type ProcessIdentities = Map<number, Set<string>>;
 const unavailable = () => new Error("claude-owner-check-unavailable");
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const pidOf = (value: unknown): number | null =>
@@ -26,6 +28,37 @@ const pidOf = (value: unknown): number | null =>
 const normalizedStart = (value: string) => value.trim().replace(/\s+/g, " ");
 const ownershipKind = (kind: unknown): "interactive" | "background" =>
   kind === "background" ? "background" : "interactive";
+
+function rememberIdentity(identities: ProcessIdentities, pid: number, sessionId: unknown): void {
+  if (typeof sessionId !== "string" || !sessionId) return;
+  const known = identities.get(pid) ?? new Set<string>();
+  known.add(sessionId);
+  identities.set(pid, known);
+}
+
+function readsForkSource(words: string[], nativeId: string, identities?: Set<string>): boolean {
+  const forks = words.filter(
+    (word) => word === "--fork-session" || word.startsWith("--fork-session="),
+  );
+  if (forks.length !== 1 || forks[0] !== "--fork-session" || identities?.size !== 1) return false;
+  const values = (flags: string[]) =>
+    words.flatMap((word, index) => {
+      if (flags.includes(word)) return [words[index + 1] ?? ""];
+      const flag = flags.find((flag) => word.startsWith(`${flag}=`));
+      return flag ? [word.slice(flag.length + 1)] : [];
+    });
+  const resumes = values(["--resume", "-r"]);
+  const targets = values(["--session-id"]);
+  return (
+    resumes.length === 1 &&
+    resumes[0] === nativeId &&
+    uuidPattern.test(nativeId) &&
+    targets.length === 1 &&
+    uuidPattern.test(targets[0]!) &&
+    targets[0] !== nativeId &&
+    identities.has(targets[0]!)
+  );
+}
 
 /** Read-only observations. No caching: every worker start must see current external ownership. */
 export class ClaudeSessionOwnerProbe {
@@ -42,20 +75,23 @@ export class ClaudeSessionOwnerProbe {
     const agents = await this.#agents().catch(() => null);
     const processes = await this.#processes().catch(() => null);
     let uncertain = false;
+    const identities: ProcessIdentities = new Map();
 
     for (const agent of agents ?? []) {
-      if (!object(agent) || agent.sessionId !== nativeId) continue;
+      if (!object(agent)) continue;
       const pid = pidOf(agent.pid);
       if (pid === null) {
-        uncertain = true;
+        uncertain ||= agent.sessionId === nativeId;
         continue;
       }
       if (pid === ownedPid || (processes && !processes.has(pid))) continue;
-      return { kind: ownershipKind(agent.kind), pid, source: "agents" };
+      rememberIdentity(identities, pid, agent.sessionId);
+      if (agent.sessionId === nativeId)
+        return { kind: ownershipKind(agent.kind), pid, source: "agents" };
     }
 
     if (processes) {
-      const registry = this.#registry(nativeId, ownedPid, processes);
+      const registry = this.#registry(nativeId, ownedPid, processes, identities);
       if (registry.owner) return registry.owner;
       uncertain ||= registry.uncertain;
       for (const [pid, row] of processes) {
@@ -68,7 +104,9 @@ export class ClaudeSessionOwnerProbe {
             word === `--session-id=${nativeId}` ||
             (["--resume", "-r", "--session-id"].includes(word) && words[index + 1] === nativeId),
         );
-        if (mentioned)
+        // ps flattens argv: fork-looking words may be user prompt text. Only a positive,
+        // consistent agents/verified registry identity can prove this PID writes the child.
+        if (mentioned && !readsForkSource(words, nativeId, identities.get(pid)))
           return {
             kind: words.some((word) => word === "--print" || word === "-p")
               ? "background"
@@ -128,6 +166,7 @@ export class ClaudeSessionOwnerProbe {
     nativeId: string,
     ownedPid: number | null,
     processes: Map<number, Process>,
+    identities: ProcessIdentities,
   ): { owner: ClaudeSessionOwnership | null; uncertain: boolean } {
     const home = this.environment.HOME ?? homedir();
     const config = resolveClaudeConfig(this.environment, home);
@@ -186,16 +225,18 @@ export class ClaudeSessionOwnerProbe {
         uncertain = true;
         continue;
       }
-      if (value.sessionId !== nativeId) continue;
+      const relevant = value.sessionId === nativeId;
       if (typeof value.pidDomain === "string" && value.pidDomain !== process.platform) continue;
       const pid = pidOf(value.pid);
       if (pid !== filenamePid || typeof value.procStart !== "string" || !value.procStart.trim()) {
-        uncertain = true;
+        uncertain ||= relevant;
         continue;
       }
       // CLI registry records use UTC lstart. Matching the birth time prevents a dead PID's
       // stale record from claiming an unrelated process after the OS reuses that PID.
       if (normalizedStart(value.procStart) !== processes.get(pid)!.start) continue;
+      rememberIdentity(identities, pid, value.sessionId);
+      if (!relevant) continue;
       return {
         owner: { kind: ownershipKind(value.kind), pid, source: "registry" },
         uncertain,

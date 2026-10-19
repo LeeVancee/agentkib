@@ -17,6 +17,7 @@ import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
+import { Commands } from "../../../packages/backend/src/commands";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import {
   CLAUDE_BRIDGE_PATHS,
@@ -63,6 +64,7 @@ describe.skipIf(process.platform !== "darwin")(
     let seq: number;
     let snapshot: ClaudeBridgeSnapshot;
     let received: ClaudeBridgeCommand[];
+    const processScans: Array<Parameters<Commands["run"]>[2]> = [];
 
     async function rpc<T>(method: string, params: unknown = {}): Promise<T> {
       const reply = await backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method, params });
@@ -221,6 +223,30 @@ describe.skipIf(process.platform !== "darwin")(
       expect(result.status, JSON.stringify(result.body)).toBe(200);
     }
     beforeEach(async () => {
+      processScans.length = 0;
+      const run = Commands.prototype.run;
+      vi.spyOn(Commands.prototype, "run").mockImplementation(
+        function (this: Commands, program, args, options) {
+          if (
+            program === "/bin/ps" &&
+            args.length === 2 &&
+            args[0] === "-axo" &&
+            args[1] === "pid=,lstart=,command="
+          ) {
+            // This fixture starts no execution worker. A global process scan can exceed
+            // its test budget during startup or exit; ownership parsing has separate tests.
+            processScans.push(options);
+            return Promise.resolve({
+              success: true,
+              bytes: Buffer.alloc(0),
+              error: "",
+              truncated: false,
+              exitCode: 0,
+            });
+          }
+          return run.call(this, program, args, options);
+        },
+      );
       directory = realpathSync(mkdtempSync(join(tmpdir(), "ak-claude-bridge-runtime-")));
       const data = join(directory, "data");
       workspace = join(directory, "workspace");
@@ -334,12 +360,15 @@ describe.skipIf(process.platform !== "darwin")(
       received = [];
     });
     afterEach(async () => {
+      // A timed-out hook can finish after the next fixture has replaced these bindings.
+      const fixture = { service, backend, directory, source, sourceBytes };
+      vi.restoreAllMocks();
       try {
-        await service?.dispose();
-        await backend?.close();
-        if (source) expect(readFileSync(source, "utf8")).toBe(sourceBytes);
-        if (existsSync(join(directory, "unexpected-cli"))) {
-          const frames = readFileSync(join(directory, "unexpected-cli"), "utf8")
+        await fixture.service?.dispose();
+        await fixture.backend?.close();
+        if (fixture.source) expect(readFileSync(fixture.source, "utf8")).toBe(fixture.sourceBytes);
+        if (existsSync(join(fixture.directory, "unexpected-cli"))) {
+          const frames = readFileSync(join(fixture.directory, "unexpected-cli"), "utf8")
             .trim()
             .split("\n")
             .filter(Boolean)
@@ -353,8 +382,7 @@ describe.skipIf(process.platform !== "darwin")(
           ).toBe(true);
         }
       } finally {
-        vi.restoreAllMocks();
-        if (directory) rmSync(directory, { recursive: true, force: true });
+        if (fixture.directory) rmSync(fixture.directory, { recursive: true, force: true });
       }
     });
 
@@ -365,6 +393,19 @@ describe.skipIf(process.platform !== "darwin")(
         status: "idle",
         sendEnabled: true,
       });
+      expect(processScans).toHaveLength(1);
+      expect(processScans[0]).toMatchObject({
+        timeout: 3000,
+        limit: 4 * 1024 * 1024,
+        strictOutput: true,
+        env: { TZ: "UTC", LC_ALL: "C", LANG: "C" },
+      });
+      expect(
+        readFileSync(join(directory, "unexpected-cli"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line)),
+      ).toEqual([["--version"], ["agents", "--json"]]);
       await connect();
       expect(await live()).toMatchObject({
         executionMode: "claude-follower",

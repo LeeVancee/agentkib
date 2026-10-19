@@ -1123,10 +1123,13 @@ describe("Claude local owner panel", () => {
     ).toBeVisible();
     expect(screen.queryByLabelText("Message")).not.toBeInTheDocument();
     expect(calls("send")).toHaveLength(0);
-    const poll = vi
-      .mocked(globalThis.setInterval)
-      .mock.calls.find(([, delay]) => delay === 4000)?.[0];
-    expect(poll).toBeTypeOf("function");
+    const poll = await waitFor(() => {
+      const callback = vi
+        .mocked(globalThis.setInterval)
+        .mock.calls.find(([, delay]) => delay === 4000)?.[0];
+      expect(callback).toBeTypeOf("function");
+      return callback;
+    });
     live = {
       ...live,
       revision: 2,
@@ -1666,6 +1669,196 @@ describe("Claude local owner panel", () => {
       );
     },
   );
+  it.each([
+    { first: "upload-failed", second: "accepted" },
+    { first: "upload-failed", second: "unknown" },
+    { first: "unknown", second: "accepted" },
+  ] as const)(
+    "keeps all same-name files through consecutive forks ($first → $second)",
+    async ({ first, second }) => {
+      const local = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      const bridge = conversationRequest.getMockImplementation()!;
+      const branches = ["session", "first-branch", "second-branch"];
+      const titles = ["Original", "First branch", "Second branch"];
+      const proven = new Set<string>();
+      const forks = new Map<string, { source: string; target: string }>();
+      let forkCount = 0;
+      const uploadPayload = (value: Record<string, unknown>) =>
+        new TextDecoder().decode(value.bytes as Uint8Array);
+      const uploadsFor = (id: string) =>
+        calls("upload").filter(([value]) => value.sessionId === id);
+      const selectBranch = (id: string) => {
+        live = {
+          ...live,
+          sessionId: id,
+          revision: 1,
+          status: "idle",
+          executionLocation: null,
+          ownershipReason: null,
+          sendEnabled: true,
+        };
+      };
+      vi.mocked(api.claudeRequest).mockImplementation((value) => {
+        if (value.operation === "catalog")
+          return Promise.resolve({
+            indexEnabled: true,
+            sessions: branches.map((id, index) => ({
+              id,
+              workspace_id: "workspace",
+              agent: "claude-code",
+              title: titles[index],
+            })),
+          });
+        if (value.operation === "capabilities")
+          return Promise.resolve({
+            sessionId: value.sessionId,
+            features: { attachments: { available: true }, fork: { available: true } },
+          });
+        if (value.operation === "upload") {
+          const payload = uploadPayload(value);
+          if (value.sessionId === "first-branch" && payload === "second")
+            return Promise.reject(new Error("upload_failed"));
+          return Promise.resolve({
+            id: `${value.sessionId}:${payload}`,
+            name: "same-name.txt",
+            mime: "text/plain",
+            size: payload.length,
+            version: "v1",
+          });
+        }
+        if (value.operation === "send")
+          return Promise.resolve({ accepted: true, sessionId: value.sessionId });
+        return local(value);
+      });
+      conversationRequest.mockImplementation((path, body, ...rest) => {
+        if (path === "managed/action") {
+          const command = body as { requestId: string; sessionId: string };
+          const target = branches[++forkCount];
+          forks.set(command.requestId, { source: command.sessionId, target });
+          if ((forkCount === 1 ? first : second) === "unknown")
+            return Promise.reject(new Error("lost_fork_response"));
+          selectBranch(target);
+          return Promise.resolve({ accepted: true, sessionId: target });
+        }
+        if (String(path).startsWith("requests/")) {
+          const requestId = String(path).slice(9);
+          const entry = forks.get(requestId);
+          if (entry && proven.has(requestId)) {
+            selectBranch(entry.target);
+            return Promise.resolve({
+              found: true,
+              requestId,
+              operation: "fork",
+              sessionId: entry.source,
+              status: "accepted",
+              ack: { accepted: true, sessionId: entry.target },
+              completionObserved: true,
+            });
+          }
+        }
+        return bridge(path, body, ...rest);
+      });
+      const forkButton = () =>
+        screen.getByRole("button", { name: sessionContinuationCopy("en-US").fork });
+      async function resolveUnknown(source: string, target: string) {
+        await screen.findByText("lost_fork_response");
+        const saved = localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")!;
+        const entry = JSON.parse(saved) as { requestId: string; sessionId: string };
+        expect(entry.sessionId).toBe(source);
+        expect(forkButton()).toBeDisabled();
+        fireEvent.click(forkButton());
+        const commandsBeforeRefresh = forkCount;
+        fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+        await waitFor(() =>
+          expect(
+            conversationRequest.mock.calls.some(([path]) => path === `requests/${entry.requestId}`),
+          ).toBe(true),
+        );
+        expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBe(saved);
+        expect(forkCount).toBe(commandsBeforeRefresh);
+        expect(uploadsFor(target)).toHaveLength(0);
+        expect(screen.getByRole("combobox", { name: "Session" })).toHaveTextContent(
+          titles[branches.indexOf(source)],
+        );
+        proven.add(entry.requestId);
+        fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+        expect(await screen.findByLabelText("Message")).toHaveValue("carry every draft file");
+        expect(localStorage.getItem("agentkib:claude-owner-pending:v1:workspace")).toBeNull();
+      }
+      function occupy(id: string) {
+        live = {
+          ...live,
+          sessionId: id,
+          revision: 2,
+          executionLocation: "external",
+          ownershipReason: "claude-owner-busy",
+          sendEnabled: false,
+        };
+        act(() => emitNative(1, "state", live, id));
+      }
+      mount();
+      await screen.findByText("Synthetic history");
+      await enterMessage("carry every draft file");
+      const files = ["first", "second"].map((content) => {
+        const file = new File([content], "same-name.txt", { type: "text/plain" });
+        Object.defineProperty(file, "arrayBuffer", {
+          value: async () => new TextEncoder().encode(content).buffer,
+        });
+        return file;
+      });
+      fireEvent.change(await enabled(screen.getByLabelText("Add images or files")), {
+        target: { files },
+      });
+      await waitFor(() => expect(screen.getAllByText("same-name.txt")).toHaveLength(2));
+      await enabled(screen.getByLabelText("Message"));
+      occupy("session");
+      fireEvent.click(await enabled(forkButton()));
+      if (first === "unknown") await resolveUnknown("session", "first-branch");
+      expect(await enabled(await screen.findByLabelText("Message"))).toHaveValue(
+        "carry every draft file",
+      );
+      expect(screen.getByRole("combobox", { name: "Session" })).toHaveTextContent("First branch");
+      expect(screen.getAllByRole("button", { name: "Retry upload" })).toHaveLength(
+        first === "unknown" ? 2 : 1,
+      );
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      occupy("first-branch");
+      fireEvent.click(await enabled(forkButton()));
+      if (second === "unknown") {
+        await resolveUnknown("first-branch", "second-branch");
+        expect(screen.getAllByRole("button", { name: "Retry upload" })).toHaveLength(2);
+        expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+        for (let remaining = 2; remaining > 0; remaining--) {
+          fireEvent.click(
+            await enabled(screen.getAllByRole("button", { name: "Retry upload" })[0]),
+          );
+          await waitFor(() =>
+            expect(screen.queryAllByRole("button", { name: "Retry upload" })).toHaveLength(
+              remaining - 1,
+            ),
+          );
+        }
+      }
+      expect(await screen.findByLabelText("Message")).toHaveValue("carry every draft file");
+      expect(screen.getByRole("combobox", { name: "Session" })).toHaveTextContent("Second branch");
+      expect(uploadsFor("second-branch").map(([value]) => uploadPayload(value))).toEqual([
+        "first",
+        "second",
+      ]);
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+      await waitFor(() => expect(calls("send")).toHaveLength(1));
+      expect(calls("send")[0][0]).toMatchObject({
+        sessionId: "second-branch",
+        text: "carry every draft file",
+        attachmentIds: ["second-branch:first", "second-branch:second"],
+      });
+      expect(forkCount).toBe(2);
+      expect(
+        conversationRequest.mock.calls.filter(([path]) => path === "managed/action"),
+      ).toHaveLength(2);
+    },
+  );
+
   it("moves a draft only after the original unknown fork receipt proves its target", async () => {
     mount();
     await screen.findByText("Synthetic history");

@@ -6,6 +6,7 @@ import { Commands, type CommandOutput } from "../../../packages/backend/src/comm
 import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
 
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const childId = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const procStart = "Mon Oct 19 04:52:14 2026";
 const cleanups: Array<() => void> = [];
 
@@ -202,6 +203,108 @@ describe.skipIf(process.platform === "win32")("Claude session ownership probe", 
       pid: 114,
       source: "ps",
     });
+  });
+
+  it.each([
+    ["agents", `--resume=${nativeId} --fork-session --session-id=${childId}`],
+    ["agents", `--resume ${nativeId} --fork-session --session-id ${childId}`],
+    ["registry", `--resume=${nativeId} --fork-session --session-id=${childId}`],
+    ["registry", `-r ${nativeId} --fork-session --session-id ${childId}`],
+  ])(
+    "treats a fork's resume ID as history with verified %s identity (%s)",
+    async (source, args) => {
+      const f = fixture();
+      f.process(130, `claude ${args} --print`);
+      if (source === "agents") f.agents([{ pid: 130, sessionId: childId, kind: "background" }]);
+      else {
+        f.failAgents();
+        f.record(130, { sessionId: childId, kind: "background" });
+      }
+
+      await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+      await expect(f.probe.check(childId)).resolves.toEqual({
+        kind: "background",
+        pid: 130,
+        source,
+      });
+    },
+  );
+
+  it("still detects an unregistered fork's child from the command line", async () => {
+    const f = fixture();
+    f.process(131, `claude --resume=${nativeId} --fork-session --session-id=${childId} --print`);
+    await expect(f.probe.check(childId)).resolves.toMatchObject({ pid: 131, source: "ps" });
+    // ps flattens argv, so apparent fork flags could also be words inside a user prompt.
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ pid: 131, source: "ps" });
+  });
+
+  it.each([
+    `--resume=${nativeId} --fork-session`,
+    `--resume=${nativeId} --fork-session --session-id=`,
+    `--resume=${nativeId} --fork-session --session-id --print`,
+    `--resume=${nativeId} --fork-session --session-id=invalid`,
+    `--resume=${nativeId} --fork-session --session-id=${childId} --session-id=${childId}`,
+    `--resume=${nativeId} --fork-session --session-id=${childId} --session-id=${nativeId}`,
+    `--resume=${nativeId} --resume=${childId} --fork-session --session-id=${childId}`,
+    `--resume=${nativeId} --fork-session --fork-session --session-id=${childId}`,
+    `--resume=${nativeId} --fork-session=false --session-id=${childId}`,
+    `--resume=${nativeId} --fork-session --session-id=${nativeId}`,
+  ])("keeps ambiguous or malformed fork arguments occupied (%s)", async (args) => {
+    const f = fixture();
+    f.process(132, `claude ${args} --print`);
+    f.agents([{ pid: 132, sessionId: childId, kind: "background" }]);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ pid: 132, source: "ps" });
+  });
+
+  it.each([
+    { procStart: "Mon Oct 19 05:52:14 2026" },
+    { procStart: undefined },
+    { pid: 134 },
+    { pidDomain: "foreign" },
+  ])(
+    "does not use an unverified child registry record to release the source (%j)",
+    async (extras) => {
+      const f = fixture();
+      f.failAgents();
+      f.process(133, `claude --resume=${nativeId} --fork-session --session-id=${childId} --print`);
+      f.record(133, { sessionId: childId, ...extras });
+      await expect(f.probe.check(nativeId)).resolves.toMatchObject({ pid: 133, source: "ps" });
+    },
+  );
+
+  it("does not use conflicting positive identities to release a fork source", async () => {
+    const f = fixture();
+    f.process(134, `claude --resume=${nativeId} --fork-session --session-id=${childId} --print`);
+    f.agents([
+      { pid: 134, sessionId: childId, kind: "background" },
+      { pid: 134, sessionId: "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee", kind: "background" },
+    ]);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ pid: 134, source: "ps" });
+  });
+
+  it("does not release a source when agents and the verified registry disagree on the child", async () => {
+    const f = fixture();
+    f.process(136, `claude --resume=${nativeId} --fork-session --session-id=${childId} --print`);
+    f.agents([{ pid: 136, sessionId: childId, kind: "background" }]);
+    f.record(136, { sessionId: "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ pid: 136, source: "ps" });
+  });
+
+  it("does not let a verified fork hide another process writing its source", async () => {
+    const f = fixture();
+    f.process(137, `claude --resume=${nativeId} --fork-session --session-id=${childId} --print`);
+    f.agents([{ pid: 137, sessionId: childId, kind: "background" }]);
+    f.process(138, `claude --resume=${nativeId} --print`);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ pid: 138, source: "ps" });
+  });
+
+  it("does not use fork-looking prompt text to release a normal resume owner", async () => {
+    const f = fixture();
+    f.process(
+      135,
+      `claude --resume=${nativeId} --print describe --fork-session --session-id=${childId}`,
+    );
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ pid: 135, source: "ps" });
   });
 
   it("excludes only the current owned PID and still detects another owner", async () => {

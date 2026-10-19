@@ -734,15 +734,21 @@ export function ClaudeSessionPanel({
         sessionId: source,
       };
       if (readPending(workspaceId)) throw new Error("control_outcome_unconfirmed");
+      // A previous fork or recovered receipt may still have files awaiting upload.
+      // Keep the whole draft by File identity, including distinct files with the same name.
+      const files = [
+        ...attachments.flatMap((item) => {
+          const file = attachmentFiles.current.get(item.id);
+          return file ? [file] : [];
+        }),
+        ...unuploadedAttachments,
+      ];
       forkDraft.current = {
         requestId: entry.requestId,
         source,
         generation,
         draft,
-        files: attachments.flatMap((item) => {
-          const file = attachmentFiles.current.get(item.id);
-          return file ? [file] : [];
-        }),
+        files,
       };
       localStorage.setItem(pendingKey(workspaceId), JSON.stringify(entry));
       setPending(entry);
@@ -763,9 +769,7 @@ export function ClaudeSessionPanel({
       setPending(undefined);
       const transferred: UploadedAttachment[] = [];
       const remaining: File[] = [];
-      for (const item of attachments) {
-        const file = attachmentFiles.current.get(item.id);
-        if (!file) continue;
+      for (const file of files) {
         try {
           const uploaded = await request<UploadedAttachment>("upload", {
             sessionId: result.sessionId,

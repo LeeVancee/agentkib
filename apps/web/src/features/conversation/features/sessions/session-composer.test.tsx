@@ -739,6 +739,39 @@ describe("composer sending shortcuts", () => {
       screen.getByRole("button", { name: `${codexCopy["en-US"].remove}: branch.txt` }),
     ).toBeEnabled();
   });
+  it.each(["codex", "claude-code"] as const)(
+    "keeps failed branch files for a later %s fork, including distinct files with the same name",
+    async (agent) => {
+      continuationFixture();
+      doubles.session.current = { ...doubles.session.current!, agent };
+      Object.assign(doubles.session.live!, {
+        executionMode: agent === "claude-code" ? "claude-managed" : "codex-managed",
+      });
+      const files = [new File(["first"], "branch.txt"), new File(["second"], "branch.txt")];
+      doubles.upload.mockRejectedValue(new Error("upload failed"));
+      doubles.session.takeContinuationDraft = vi
+        .fn()
+        .mockReturnValueOnce({ files, resources: [], historyReferences: [] });
+      doubles.session.forkContinuation = vi.fn(async () => "next-branch");
+      const { input, rerender } = renderComposer("Keep accompanying text");
+      await screen.findByRole("alert");
+      expect(screen.getAllByText("branch.txt")).toHaveLength(2);
+      expect(input).toHaveValue("Keep accompanying text");
+      externalOwner();
+      const reason = agent === "claude-code" ? "claude-owner-busy" : "codex-owner-busy";
+      Object.assign(doubles.session.live!, { reason, ownershipReason: reason });
+      rerender(<SessionComposer />);
+      fireEvent.click(screen.getByRole("button", { name: "Fork and continue" }));
+      await waitFor(() =>
+        expect(doubles.session.forkContinuation).toHaveBeenCalledExactlyOnceWith({
+          files,
+          resources: [],
+        }),
+      );
+      expect(doubles.control).not.toHaveBeenCalled();
+      expect(doubles.codexAction).not.toHaveBeenCalled();
+    },
+  );
   it("retains transferred resource descriptors for reselection and never dispatches source context IDs", () => {
     const take = vi.fn().mockReturnValueOnce({
       files: [],

@@ -16,6 +16,7 @@ import {
   dispatchManagedCommand,
   readManagedRecord,
   readUnknownManagedCommands,
+  saveManagedRecord,
 } from "../../../packages/backend/src/managed-ledger";
 import { ManagedCodexState } from "../../../packages/backend/src/managed-codex-state";
 import {
@@ -25,6 +26,9 @@ import {
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
+import { TypeScriptBackend } from "../../../packages/backend/src/index";
+import { McpHub } from "../../../packages/backend/src/mcp-hub";
+import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const forkId = "aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff";
@@ -222,6 +226,257 @@ function fixture() {
 }
 
 describe("Codex automatic CLI continuation", () => {
+  it.each(["backend.initialize", "agentkib.shutdown"])(
+    "closes an initializing automatic runner before acknowledging %s",
+    async (method) => {
+      const f = fixture();
+      await f.send();
+      await f.web.closeAsync();
+      writeFileSync(
+        path.join(f.root, "preferences.json"),
+        JSON.stringify({ session_index_enabled: false, session_content_search_enabled: false }),
+      );
+      vi.spyOn(McpHub.prototype, "start").mockResolvedValue();
+      vi.spyOn(RemoteAgent.prototype, "start").mockResolvedValue();
+      const backend = new TypeScriptBackend({
+        HOME: f.home,
+        CODEX_HOME: f.home,
+        PATH: path.join(f.root, "bin"),
+      });
+      cleanups.push(() => backend.closeAsync());
+      const rpc = (name: string, params: unknown) =>
+        backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method: name, params });
+      expect((await rpc("backend.initialize", { dataDir: f.root })).error).toBeUndefined();
+      const liveResponse = await rpc("web.request", {
+        operation: "live",
+        sessionId: f.summary.id,
+        experimentalEnabled: true,
+      });
+      expect(liveResponse.error).toBeUndefined();
+      const live = liveResponse.result as Record<string, unknown>;
+      const original = f.start.getMockImplementation()!;
+      let resume!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => (resume = resolve));
+      const started = new Promise<void>((resolve) => (entered = resolve));
+      f.start.mockImplementation(async (...args) => {
+        const server = await original(...args);
+        entered();
+        await gate;
+        return server;
+      });
+      const requestId = randomUUID();
+      const sending = rpc("codex.managed", {
+        operation: "send",
+        sessionId: f.summary.id,
+        requestId,
+        deviceId: "fixture",
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        text: "Continue",
+      });
+      await started;
+      f.methods.length = 0;
+      let acknowledged = false;
+      const closing = rpc(method, method === "backend.initialize" ? { dataDir: f.root } : {}).then(
+        (response) => {
+          acknowledged = true;
+          return response;
+        },
+      );
+      // Let the real Backend reach WebReadRequests.closeAsync without releasing startup.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const earlyAcknowledgement = acknowledged;
+      resume();
+      const [sent, closed] = await Promise.all([sending, closing]);
+      expect(closed.error).toBeUndefined();
+      expect(earlyAcknowledgement).toBe(false);
+      expect(f.servers.at(-1)?.closed).toBe(true);
+      expect(f.methods).not.toContain("thread/resume");
+      expect(f.methods).not.toContain("turn/start");
+      expect(sent.error).toBeUndefined();
+      expect(sent.result).toMatchObject({ controlOutcome: "not-dispatched" });
+      expect(readControlReceipt(f.root, { requestId, deviceId: "fixture" })).toMatchObject({
+        status: "not-dispatched",
+      });
+      const release = acquireManagedSessionLease(f.root, f.summary.id);
+      release();
+    },
+  );
+
+  it.each(["thread/resume", "turn/start"])(
+    "preserves the unknown receipt when shutdown interrupts dispatched %s",
+    async (method) => {
+      const f = fixture();
+      const live = await f.live();
+      const original = f.start.getMockImplementation()!;
+      let entered!: () => void;
+      const dispatched = new Promise<void>((resolve) => (entered = resolve));
+      f.start.mockImplementation(async (...args) => {
+        const server = await original(...args);
+        const request = server.request.bind(server);
+        vi.spyOn(server, "request").mockImplementation(async (name, params, dispatch) => {
+          const response = request(name, params, dispatch);
+          if (name !== method) return response;
+          entered();
+          await new Promise<void>((_resolve, reject) => {
+            server.once("close", () => reject(new Error("native response lost during shutdown")));
+          });
+          return response;
+        });
+        return server;
+      });
+      const requestId = randomUUID();
+      const sending = f.sendWithState(live, { requestId });
+      await dispatched;
+      const closing = f.web.closeAsync();
+      const sent = await sending;
+      await closing;
+      expect(sent).toMatchObject({
+        controlOutcome: method === "thread/resume" ? "not-dispatched" : "unknown",
+        reason: "control-outcome-unconfirmed",
+      });
+      const unresolved = readUnknownManagedCommands(f.root, f.summary.id);
+      expect(unresolved).toHaveLength(1);
+      expect(unresolved[0]?.evidence?.operation).toBe(
+        method === "thread/resume" ? "adopt" : "send",
+      );
+      expect(f.servers[0]?.closed).toBe(true);
+      const release = acquireManagedSessionLease(f.root, f.summary.id);
+      release();
+      await expect(f.sendWithState(live)).rejects.toThrow("backend-closing");
+    },
+  );
+
+  it("retains an initializing runner's lease when shutdown cannot confirm process closure", async () => {
+    const f = fixture();
+    const originalCleanup = cleanups.pop()!;
+    cleanups.push(async () => {
+      await expect(originalCleanup()).rejects.toThrow("process did not close after termination");
+    });
+    const live = await f.live();
+    const original = f.start.getMockImplementation()!;
+    let resume!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => (resume = resolve));
+    const started = new Promise<void>((resolve) => (entered = resolve));
+    f.start.mockImplementation(async (...args) => {
+      const session = await original(...args);
+      f.servers.at(-1)!.closeFailure = new Error("process did not close after termination");
+      entered();
+      await gate;
+      return session;
+    });
+    const sending = f.sendWithState(live);
+    await started;
+    const closing = f.web.closeAsync();
+    const rejectedClose = expect(closing).rejects.toThrow(
+      "process did not close after termination",
+    );
+    resume();
+    expect(await sending).toMatchObject({ controlOutcome: "not-dispatched" });
+    await rejectedClose;
+    expect(f.methods).not.toContain("thread/resume");
+    expect(() => acquireManagedSessionLease(f.root, f.summary.id)).toThrow(
+      "session-managed-by-another-runtime",
+    );
+    const server = f.servers.at(-1)!;
+    server.closed = true;
+    server.emit("close");
+    const release = acquireManagedSessionLease(f.root, f.summary.id);
+    release();
+  });
+
+  it("closes a runner returned across the startup registration microtask boundary", async () => {
+    const f = fixture();
+    const live = await f.live();
+    const hydrate = ManagedCodexState.prototype.hydrate;
+    let closing: Promise<void> | undefined;
+    vi.spyOn(ManagedCodexState.prototype, "hydrate").mockImplementation(function (...args) {
+      const result = hydrate.apply(this, args);
+      queueMicrotask(() => {
+        closing = f.web.closeAsync();
+      });
+      return result;
+    });
+    expect(await f.sendWithState(live)).toMatchObject({ controlOutcome: "not-dispatched" });
+    expect(closing).toBeDefined();
+    await closing;
+    expect(f.servers[0]?.closed).toBe(true);
+    expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+    expect(f.methods).not.toContain("turn/start");
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+    const release = acquireManagedSessionLease(f.root, f.summary.id);
+    release();
+  });
+
+  it("records a subscription installed synchronously after control admission", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.leave();
+    const live = await f.live();
+    const sending = f.sendWithState(live);
+    f.observe();
+    f.web.observeSession(f.summary.id);
+    f.leave();
+    expect(await sending).toMatchObject({ accepted: true });
+    f.servers[0]!.complete();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.servers[0]?.closed).toBe(true);
+  });
+
+  it.each([false, true])(
+    "closes a transient queue reader during shutdown and retains failed closure leases (%s)",
+    async (failClose) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      if (failClose) {
+        const originalCleanup = cleanups.pop()!;
+        cleanups.push(async () => {
+          await expect(originalCleanup()).rejects.toThrow("queue reader did not close");
+        });
+      }
+      await f.send();
+      f.servers[0]!.complete();
+      await vi.advanceTimersByTimeAsync(61_000);
+      saveManagedRecord(f.root, { ...readManagedRecord(f.root, f.summary.id)!, released: false });
+      const original = f.start.getMockImplementation()!;
+      let resume!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => (resume = resolve));
+      const started = new Promise<void>((resolve) => (entered = resolve));
+      f.start.mockImplementation(async (...args) => {
+        const session = await original(...args);
+        if (failClose) f.servers.at(-1)!.closeFailure = new Error("queue reader did not close");
+        entered();
+        await gate;
+        return session;
+      });
+      const reading = f.web.managedQueueList({ operation: "queue-list", sessionId: f.summary.id });
+      const rejectedRead = expect(reading).rejects.toThrow(
+        failClose ? "queue reader did not close" : "backend-closing",
+      );
+      await started;
+      const closing = f.web.closeAsync();
+      const closed = failClose
+        ? expect(closing).rejects.toThrow("queue reader did not close")
+        : closing;
+      resume();
+      await Promise.all([rejectedRead, closed]);
+      const server = f.servers.at(-1)!;
+      if (failClose) {
+        expect(() => acquireManagedSessionLease(f.root, f.summary.id)).toThrow(
+          "session-managed-by-another-runtime",
+        );
+        server.closed = true;
+        server.emit("close");
+      } else expect(server.closed).toBe(true);
+      const release = acquireManagedSessionLease(f.root, f.summary.id);
+      release();
+    },
+  );
+
   it("reads an inactive session without a runner and automatically adopts on send", async () => {
     const f = fixture();
     expect(await f.live()).toMatchObject({

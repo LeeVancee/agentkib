@@ -35,6 +35,7 @@ function fixture(
     idleTimeoutMs?: number;
     maintenanceIntervalMs?: number;
     isSessionObserved?: (id: string) => boolean;
+    registerWorkers?: boolean;
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-claude-auto-")));
@@ -66,6 +67,20 @@ if (process.env.AUTO_EXTERNAL === "1") {
 } else {
   const log = (value) => fs.appendFileSync(process.env.AUTO_LOG, JSON.stringify(value) + "\n");
   const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+  if (process.env.AUTO_REGISTER_WORKERS === "1") {
+    const args = process.argv.slice(2);
+    const sessionId = args.find((arg) => arg.startsWith("--session-id="))?.slice(13)
+      ?? args.find((arg) => arg.startsWith("--resume="))?.slice(9);
+    const registry = process.env.CLAUDE_CONFIG_DIR + "/sessions";
+    fs.mkdirSync(registry, { recursive: true });
+    fs.writeFileSync(registry + "/" + process.pid + ".json", JSON.stringify({
+      pid: process.pid, sessionId, kind: "background", pidDomain: process.platform,
+      procStart: "Mon Oct 19 00:00:00 2026",
+    }));
+    const agents = JSON.parse(fs.readFileSync(process.env.AUTO_AGENTS, "utf8"));
+    agents.push({ pid: process.pid, sessionId, kind: "background" });
+    fs.writeFileSync(process.env.AUTO_AGENTS, JSON.stringify(agents));
+  }
   log({ started: true, pid: process.pid, args: process.argv.slice(2) });
   require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
     const frame = JSON.parse(line);
@@ -106,6 +121,7 @@ if (process.env.AUTO_EXTERNAL === "1") {
     AUTO_READY: ready,
     AUTO_RESULT_GATE: resultGate,
     AUTO_AGENTS: agentsFile,
+    AUTO_REGISTER_WORKERS: options.registerWorkers ? "1" : "0",
   };
   const events: Array<{ id: string; type: string; live: Record<string, unknown> }> = [];
   const owner = new ClaudeManagedReadOwner(
@@ -568,6 +584,58 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(JSON.stringify(live)).toContain("owner-opened-elsewhere");
       expect(probe).toHaveBeenCalledWith(session.nativeId, workerPid);
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+    });
+
+    it("keeps a running source worker while a registered fork writes its child session", async () => {
+      const probe = vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check");
+      const f = fixture({ maintenanceIntervalMs: 10, registerWorkers: true });
+      const source = f.create();
+      await f.dispatch(source.id);
+      const retained = f.runner(source.nativeId);
+      await expect(f.control(source.id, "send", { text: "hold result" })).resolves.toMatchObject({
+        accepted: true,
+      });
+      await expect.poll(async () => (await f.owner.live(source.id, true)).status).toBe("running");
+      const child = f.create();
+      const file = path.join(f.root, "claude-managed", `${child.id}.json`);
+      const record = JSON.parse(readFileSync(file, "utf8"));
+      writeFileSync(
+        file,
+        JSON.stringify({
+          ...record,
+          forkSourceNativeId: source.nativeId,
+          forkCutoff: randomUUID(),
+        }),
+        { mode: 0o600 },
+      );
+
+      await f.dispatch(child.id);
+      const childRunner = f.runner(child.nativeId);
+      const sourcePid = retained.processId;
+      const maintenanceCalls = () =>
+        probe.mock.calls.filter(
+          ([nativeId, pid]) => nativeId === source.nativeId && pid === sourcePid,
+        ).length;
+      const before = maintenanceCalls();
+      await expect.poll(() => !retained.hasWorker || maintenanceCalls() > before + 1).toBe(true);
+
+      expect(retained.hasWorker).toBe(true);
+      expect(childRunner.hasWorker).toBe(true);
+      expect(await f.owner.live(source.id, true)).toMatchObject({
+        status: "running",
+        executionLocation: "agentkib",
+        continuationNotice: null,
+      });
+      expect(f.frames().filter((frame) => frame.started)).toHaveLength(2);
+      expect(f.frames().filter((frame) => frame.started)[1]!.args).toEqual(
+        expect.arrayContaining([
+          `--resume=${source.nativeId}`,
+          "--fork-session",
+          `--session-id=${child.nativeId}`,
+        ]),
+      );
+      writeFileSync(f.resultGate, "complete");
+      await expect.poll(async () => (await f.owner.live(source.id, true)).status).toBe("idle");
     });
 
     it("checks every restart rather than retaining a prior idle ownership result", async () => {

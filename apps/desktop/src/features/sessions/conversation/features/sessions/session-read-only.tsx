@@ -28,7 +28,13 @@ export function SessionReadOnly({ reason }: { reason?: string | null }) {
   );
   return (
     <div className="w-full max-w-3xl self-center">
-      <SessionContinuationReadOnly locale={locale} reason={reason} loadCommand={loadCommand} />
+      {/* The desktop app runs on the host, so the help does not name another computer. */}
+      <SessionContinuationReadOnly
+        locale={locale}
+        reason={reason}
+        loadCommand={loadCommand}
+        local
+      />
     </div>
   );
 }

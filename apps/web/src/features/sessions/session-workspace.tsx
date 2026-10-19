@@ -167,6 +167,8 @@ export function SessionWorkspace() {
                       label={status.label}
                       active={status.tone === "active"}
                       loading={status.loading}
+                      // The workspace name truncates first; the state stays on one line.
+                      className="shrink-0 whitespace-nowrap"
                     />
                   ) : (
                     <span

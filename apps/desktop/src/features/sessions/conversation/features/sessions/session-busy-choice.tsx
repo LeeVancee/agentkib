@@ -1,6 +1,5 @@
 import type { ContinuationComposerDraft } from "./continuation-draft";
 import { SessionContinuationChoice } from "@agentkib/session-ui";
-import { useSessionPanels } from "./session-panels";
 import { useSession } from "./session-context";
 import { useSessionNavigate } from "./session-navigation";
 import { managedControlCopy } from "./managed-control-copy";
@@ -14,23 +13,11 @@ export function SessionBusyChoice({
 }) {
   const session = useSession();
   const navigate = useSessionNavigate();
-  const panels = useSessionPanels();
   return (
     <div className="w-full max-w-3xl self-center space-y-2">
       <SessionContinuationChoice
         locale={session.locale}
         agent={session.current?.agent === "claude-code" ? "Claude Code" : "Codex"}
-        pluginAction={
-          session.current?.agent === "claude-code" &&
-          document.documentElement.dataset.platform === "macos" &&
-          panels?.setTerminalOpen &&
-          session.access?.device?.manage &&
-          session.online &&
-          session.controlReady &&
-          session.notice !== "uncertain"
-            ? () => panels?.setTerminalOpen?.(true)
-            : undefined
-        }
         title={session.currentTitle || session.current?.title || session.t.untitled}
         disabled={session.busy}
         forkDisabled={

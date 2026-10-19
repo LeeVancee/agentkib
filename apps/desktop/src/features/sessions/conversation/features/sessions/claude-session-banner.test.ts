@@ -77,20 +77,25 @@ describe("Claude execution and terminal connection presentation", () => {
       const connected = fixture(locale, "claude-follower", "idle");
       connected.live!.executionLocation = "terminal";
       expect(claudeSessionBanner(connected)).toBeNull();
+      // The released plugin cannot take messages from here, so the terminal is only followed.
       expect(sessionDisplayState(connected)).toMatchObject({
+        label: continuation.terminalConnected,
+        continuation: "terminal-watch",
+        tone: "muted",
+      });
+      expect(
+        sessionDisplayState({ ...connected, live: { ...connected.live!, terminalSend: true } }),
+      ).toMatchObject({
         label: continuation.terminalConnected,
         continuation: "terminal",
         tone: "muted",
       });
-      const unverified = {
-        ...connected,
-        live: { ...connected.live!, reason: "claude-follower-send-unverified" },
-      };
-      expect(claudeSessionBanner(unverified)).toEqual({
-        title: copy.connected,
-        body: copy.sendUnverified,
-      });
-      for (const reason of ["claude-terminal-approval", "claude-terminal-question"])
+      // A terminal that cannot take messages is explained once, in place of the composer.
+      for (const reason of [
+        "claude-follower-send-unverified",
+        "claude-terminal-approval",
+        "claude-terminal-question",
+      ])
         expect(
           claudeSessionBanner({ ...connected, live: { ...connected.live!, reason } }),
         ).toBeNull();

@@ -380,6 +380,9 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-owner-check-unavailable":
       "无法确认这条会话是否正在 Codex 中使用，目前仅可查看。请刷新重试。",
     "codex-cli-unavailable": "未找到 Codex CLI，安装后可以在这里继续",
+    "claude-owner-check-unavailable":
+      "无法确认这条会话是否正在 Claude Code 中使用，目前仅可查看。请刷新重试。",
+    "claude-cli-unavailable": "未找到 Claude Code，安装后可以在这里继续",
     "codex-protocol-incompatible": "当前 Codex 原生协议与会话快照不兼容，请更新客户端后重试。",
     "codex-connection-failed": "暂时无法连接 Codex，请检查主机状态后重试。",
     "codex-owner-changed": "Codex 的运行状态已变化，正在重新检查。",
@@ -416,6 +419,9 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-owner-check-unavailable":
       "無法確認這段對話是否正在 Codex 中使用，目前僅可查看。請重新整理再試。",
     "codex-cli-unavailable": "找不到 Codex CLI，安裝後可以在這裡繼續",
+    "claude-owner-check-unavailable":
+      "無法確認這段對話是否正在 Claude Code 中使用，目前僅可查看。請重新整理再試。",
+    "claude-cli-unavailable": "找不到 Claude Code，安裝後可以在這裡繼續",
     "codex-protocol-incompatible": "目前 Codex 原生協定與對話快照不相容，請更新客戶端後重試。",
     "codex-connection-failed": "暫時無法連線至 Codex，請檢查主機狀態後重試。",
     "codex-owner-changed": "Codex 的執行狀態已變更，正在重新檢查。",
@@ -452,6 +458,9 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-owner-check-unavailable":
       "Could not confirm whether this session is in use in Codex. It remains view only. Refresh to retry.",
     "codex-cli-unavailable": "Codex CLI was not found. Install it to continue here.",
+    "claude-owner-check-unavailable":
+      "Could not confirm whether this session is in use in Claude Code. It remains view only. Refresh to retry.",
+    "claude-cli-unavailable": "Claude Code was not found. Install it to continue here.",
     "codex-protocol-incompatible":
       "The Codex native protocol or session snapshot is incompatible. Update the client and retry.",
     "codex-connection-failed": "Codex could not be reached. Check the host and retry.",
@@ -497,6 +506,10 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-owner-check-unavailable":
       "この会話が Codex で使用中か確認できないため、閲覧のみです。再読み込みしてお試しください。",
     "codex-cli-unavailable": "Codex CLI が見つかりません。インストールすると、ここで続けられます。",
+    "claude-owner-check-unavailable":
+      "この会話が Claude Code で使用中か確認できないため、閲覧のみです。再読み込みしてお試しください。",
+    "claude-cli-unavailable":
+      "Claude Code が見つかりません。インストールすると、ここで続けられます。",
     "codex-protocol-incompatible":
       "Codex のネイティブプロトコルまたは会話スナップショットに互換性がありません。更新後に再試行してください。",
     "codex-connection-failed": "Codex に接続できません。ホストの状態を確認して再試行してください。",

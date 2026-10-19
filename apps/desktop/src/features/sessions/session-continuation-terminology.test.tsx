@@ -38,8 +38,10 @@ const wording = [
     terminalHint: "审批和提问在终端中处理",
     choice: "这条会话正在 Claude Code 中使用。为避免两边同时写入，请选择：",
     fork: "分支会话并继续",
-    forkHint: '原会话不受影响，新会话会标"分支自 Original"',
+    forkHint: "原会话不受影响，新会话会标“分支自 Original”",
     back: "回 Claude Code 继续",
+    returned: "这条会话在 AgentKib 中只读，Claude Code 那边关闭后会自动恢复",
+    watch: "在终端中继续这条会话，这里会同步显示",
     ended: "已结束后台进程，可以回 Claude Code 继续这条会话",
     conflict: "你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入",
     windows: "Windows 上暂不支持在这里继续 Claude Code 会话",
@@ -59,6 +61,8 @@ const wording = [
     fork: "分支對話並繼續",
     forkHint: "原對話不受影響，新對話會標「分支自 Original」",
     back: "回 Claude Code 繼續",
+    returned: "這段對話在 AgentKib 中為唯讀，Claude Code 那邊關閉後會自動恢復",
+    watch: "在終端中繼續這段對話，這裡會同步顯示",
     ended: "已結束背景程序，可以回 Claude Code 繼續這段對話",
     conflict: "你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入",
     windows: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
@@ -78,6 +82,9 @@ const wording = [
     fork: "Fork and continue",
     forkHint: 'The original session stays as is. The new one is marked "Forked from Original".',
     back: "Continue in Claude Code",
+    returned:
+      "This session is view only in AgentKib. You can continue here once it's closed in Claude Code.",
+    watch: "Continue this session in the terminal. It stays in sync here.",
     ended: "Background process ended. You can continue this session in Claude Code.",
     conflict:
       "You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once.",
@@ -99,6 +106,9 @@ const wording = [
     fork: "会話を分岐して続ける",
     forkHint: "元の会話には影響しません。新しい会話には「Original から分岐」と表示されます。",
     back: "Claude Code で続ける",
+    returned:
+      "この会話は AgentKib では閲覧のみです。Claude Code 側で閉じると、ここで続けられるようになります。",
+    watch: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
     ended: "バックグラウンドプロセスを終了しました。Claude Code でこの会話を続けられます。",
     conflict:
       "Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。",
@@ -259,6 +269,15 @@ describe("visible session continuation terminology", () => {
       expect(screen.getByRole("textbox", { name: session.t.message })).toHaveValue("Unsent draft");
       expectNoExecutionHandoff(expected.locale);
 
+      // The released plugin cannot take messages from here yet: the terminal is only followed.
+      Object.assign(session.live!, { sendEnabled: false, terminalSend: false });
+      session.canSend = false;
+      redraw(view);
+      expect(screen.getAllByText(expected.watch)).toHaveLength(1);
+      expect(screen.queryByText(expected.terminalHint)).not.toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: session.t.message })).not.toBeInTheDocument();
+      expectNoExecutionHandoff(expected.locale);
+
       Object.assign(session.live!, {
         executionMode: "claude-managed",
         executionLocation: "external",
@@ -273,6 +292,12 @@ describe("visible session continuation terminology", () => {
       expect(screen.getByRole("button", { name: expected.back })).toBeVisible();
       expect(screen.queryByRole("textbox", { name: session.t.message })).not.toBeInTheDocument();
       expectNoExecutionHandoff(expected.locale);
+
+      // Going back to the other client only says where to continue; it offers no resume command.
+      fireEvent.click(screen.getByRole("button", { name: expected.back }));
+      expect(screen.getAllByText(expected.returned)).toHaveLength(1);
+      expect(screen.queryByText(expected.choice)).not.toBeInTheDocument();
+      expect(session.client.claudeResumeCommand).not.toHaveBeenCalled();
 
       Object.assign(session.live!, {
         executionLocation: null,

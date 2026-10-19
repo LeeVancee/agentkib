@@ -8,13 +8,16 @@ export {
   SessionContinuationDot,
   SessionContinuationChoice,
   SessionContinuationReadOnly,
+  SessionContinuationReturned,
   SessionContinuationStatus,
+  SessionContinuationTerminal,
   type SessionContinuationAction,
   type SessionContinuationAgent,
   type SessionContinuationChoiceProps,
   type SessionContinuationCopy,
   type SessionContinuationReadOnlyProps,
   type SessionContinuationStatusProps,
+  type SessionContinuationTerminalProps,
 } from "./session-continuation";
 
 export function toolStatusLabel(status: string | undefined, locale: string): string {

@@ -227,11 +227,33 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
           ...claude.live!,
           executionLocation: "terminal",
           executionMode: "claude-follower",
+          sendEnabled: false,
+          terminalSend: true,
           reason: "claude-terminal-approval",
         },
         canSend: false,
       }),
     ).toMatchObject({ continuation: "terminal", label: copy.terminalConnected, tone: "muted" });
+    // The production plugin cannot take messages yet: follow the terminal, never offer an input.
+    expect(
+      sessionDisplayState({
+        ...claude,
+        live: {
+          ...claude.live!,
+          executionLocation: "terminal",
+          executionMode: "claude-follower",
+          sendEnabled: false,
+          terminalSend: false,
+          reason: "claude-follower-send-unverified",
+        },
+        canSend: false,
+      }),
+    ).toMatchObject({
+      continuation: "terminal-watch",
+      label: copy.terminalConnected,
+      reason: "",
+      tone: "muted",
+    });
     for (const ownershipReason of [
       "claude-owner-busy",
       "claude-background-session-running",

@@ -489,6 +489,9 @@ describe("desktop embedded conversation", () => {
     function claudeBridge(initial: Live, adoptAvailable = false) {
       if (initial.executionMode === "claude-follower" && initial.executionLocation === undefined)
         initial = { ...initial, executionLocation: "terminal" };
+      // Terminal cases model the experimental plugin that accepts messages unless told otherwise.
+      if (initial.executionMode === "claude-follower" && initial.terminalSend === undefined)
+        initial = { ...initial, terminalSend: true };
       const listeners = new Set<(event: SessionStreamEvent<Live>) => void>();
       const access: Access = {
         protocolVersion: 2,
@@ -881,19 +884,20 @@ describe("desktop embedded conversation", () => {
       ).toEqual([]);
     });
 
-    it("explains the unverified native send boundary without requesting a managed handoff", async () => {
+    it("follows a terminal that cannot take messages without a dead input or handoff", async () => {
       const { bridge } = await open({
         ...live(),
         executionMode: "claude-follower",
         connectionGeneration: "lease-a",
         sendEnabled: false,
+        terminalSend: false,
         reason: "claude-follower-send-unverified",
       });
-      expect(await screen.findByText(claudeConnectionCopy["zh-CN"].sendUnverified)).toBeVisible();
-      fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
-        target: { value: "Keep unsent draft" },
-      });
-      expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      expect(await screen.findByText(sessionContinuationCopy("zh-CN").terminalWatch)).toBeVisible();
+      // Said once: the bar replaces both the banner and the disabled composer.
+      expect(screen.queryByText(claudeConnectionCopy["zh-CN"].sendUnverified)).toBeNull();
+      expect(screen.queryByRole("textbox", { name: "发送消息" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "发送" })).toBeNull();
       expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
       expect(vi.mocked(bridge.request).mock.calls.filter(([path]) => path === "send")).toHaveLength(
         0,

@@ -4,7 +4,9 @@ import {
   sessionContinuationCopy,
   SessionContinuationChoice,
   SessionContinuationReadOnly,
+  SessionContinuationReturned,
   SessionContinuationStatus,
+  SessionContinuationTerminal,
 } from "@agentkib/session-ui";
 
 const localizedChoices = [
@@ -13,8 +15,10 @@ const localizedChoices = [
     fork: "分支会话并继续",
     returnTo: "回 Codex 继续",
     choice: "这条会话正在 Codex 中使用。为避免两边同时写入，请选择：",
-    hint: '原会话不受影响，新会话会标"分支自 Project"',
+    hint: "原会话不受影响，新会话会标“分支自 Project”",
     quit: "只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续",
+    returned: "这条会话在 AgentKib 中只读，Codex 那边关闭后会自动恢复",
+    watch: "在终端中继续这条会话，这里会同步显示",
     placeholder: "继续这条会话…",
     starting: "正在启动…",
     running: "在 AgentKib 中运行",
@@ -27,6 +31,8 @@ const localizedChoices = [
     choice: "這段對話正在 Codex 中使用。為避免兩邊同時寫入，請選擇：",
     hint: "原對話不受影響，新對話會標「分支自 Project」",
     quit: "只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續",
+    returned: "這段對話在 AgentKib 中為唯讀，Codex 那邊關閉後會自動恢復",
+    watch: "在終端中繼續這段對話，這裡會同步顯示",
     placeholder: "繼續這段對話…",
     starting: "正在啟動…",
     running: "在 AgentKib 中執行",
@@ -39,6 +45,9 @@ const localizedChoices = [
     choice: "この会話は Codex で使用中です。同時に書き込まれないよう、操作を選んでください：",
     hint: "元の会話には影響しません。新しい会話には「Project から分岐」と表示されます。",
     quit: "Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。",
+    returned:
+      "この会話は AgentKib では閲覧のみです。Codex 側で閉じると、ここで続けられるようになります。",
+    watch: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
     placeholder: "この会話を続ける…",
     starting: "起動中…",
     running: "AgentKib で実行中",
@@ -51,6 +60,9 @@ const localizedChoices = [
     choice: "This session is in use in Codex. To avoid both sides writing at once, choose:",
     hint: 'The original session stays as is. The new one is marked "Forked from Project".',
     quit: "Closing the Codex window may not be enough. Quit the app completely to continue here.",
+    returned:
+      "This session is view only in AgentKib. You can continue here once it's closed in Codex.",
+    watch: "Continue this session in the terminal. It stays in sync here.",
     placeholder: "Continue this session…",
     starting: "Starting…",
     running: "Running in AgentKib",
@@ -165,26 +177,65 @@ const readOnlyLocales = [
     copy: "复制续接命令",
     copied: "续接命令已复制",
     help: "在运行 AgentKib 的电脑上打开终端（Windows 请使用 PowerShell），粘贴并运行续接命令。如果原客户端仍占用这条会话，请先在原客户端继续。",
+    localHelp:
+      "打开终端（Windows 请使用 PowerShell），粘贴并运行续接命令。如果原客户端仍占用这条会话，请先在原客户端继续。",
   },
   {
     locale: "zh-TW",
     copy: "複製續接命令",
     copied: "續接命令已複製",
     help: "在執行 AgentKib 的電腦上開啟終端（Windows 請使用 PowerShell），貼上並執行續接命令。如果原客戶端仍在使用這段對話，請先在原客戶端繼續。",
+    localHelp:
+      "開啟終端（Windows 請使用 PowerShell），貼上並執行續接命令。如果原客戶端仍在使用這段對話，請先在原客戶端繼續。",
   },
   {
     locale: "ja-JP",
     copy: "再開コマンドをコピー",
     copied: "再開コマンドをコピーしました",
     help: "AgentKib を実行しているコンピューターでターミナル（Windows では PowerShell）を開き、再開コマンドを貼り付けて実行してください。元のクライアントでこの会話を使用中の場合は、先にそちらで続けてください。",
+    localHelp:
+      "ターミナル（Windows では PowerShell）を開き、再開コマンドを貼り付けて実行してください。元のクライアントでこの会話を使用中の場合は、先にそちらで続けてください。",
   },
   {
     locale: "en-US",
     copy: "Copy resume command",
     copied: "Resume command copied",
     help: "On the computer running AgentKib, open a terminal (use PowerShell on Windows), paste the resume command and run it. If this session is still in use in the original client, continue there first.",
+    localHelp:
+      "Open a terminal (use PowerShell on Windows), paste the resume command and run it. If this session is still in use in the original client, continue there first.",
   },
 ];
+
+describe("shared continuation after going back and while following a terminal", () => {
+  it.each(localizedChoices)("says once where to continue after going back in $locale", (copy) => {
+    render(<SessionContinuationReturned locale={copy.locale} agent="Codex" />);
+    expect(screen.getByRole("status")).toHaveTextContent(copy.returned);
+    expect(screen.getByText(copy.quit)).toBeVisible();
+    // Going back offers no resume command: the session is already open in the other client.
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("does not add the Codex quit note for Claude Code", () => {
+    render(<SessionContinuationReturned locale="zh-CN" agent="Claude Code" />);
+    expect(
+      screen.getByText("这条会话在 AgentKib 中只读，Claude Code 那边关闭后会自动恢复"),
+    ).toBeVisible();
+    expect(screen.queryByText(/完全退出应用/)).not.toBeInTheDocument();
+  });
+
+  it.each(localizedChoices)("follows a terminal and offers only stop in $locale", (copy) => {
+    const onStop = vi.fn();
+    const view = render(<SessionContinuationTerminal locale={copy.locale} />);
+    expect(screen.getByText(copy.watch)).toBeVisible();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    view.rerender(
+      <SessionContinuationTerminal locale={copy.locale} stop={{ label: "Stop", onStop }} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+});
 
 describe("shared read-only session continuation", () => {
   const command = "cd '/tmp/Project with spaces'\ncodex resume 'synthetic-session'";
@@ -234,6 +285,22 @@ describe("shared read-only session continuation", () => {
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getAllByRole("button")).toHaveLength(1);
   });
+
+  it.each(readOnlyLocales)(
+    "names no other computer on the host itself in $locale",
+    async (copy) => {
+      render(
+        <SessionContinuationReadOnly
+          locale={copy.locale}
+          loadCommand={async () => command}
+          local
+        />,
+      );
+      expect(screen.getByRole("group")).toHaveAccessibleDescription(copy.localHelp);
+      expect(screen.queryByText(copy.help)).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.getByRole("button", { name: copy.copy })).toBeEnabled());
+    },
+  );
 
   it("allows a failed preload to be retried without exposing its original error", async () => {
     const loadCommand = vi

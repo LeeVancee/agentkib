@@ -948,8 +948,14 @@ describe("Claude local owner panel", () => {
         turnId: operation === "stop" ? "native-turn" : undefined,
       };
       mount();
-      await screen.findByText(sessionContinuationCopy("en-US").terminalHint);
-      if (operation === "send") await enterMessage("continue in terminal");
+      if (operation === "send") {
+        await screen.findByText(sessionContinuationCopy("en-US").terminalHint);
+        await enterMessage("continue in terminal");
+      } else {
+        // The released plugin takes no messages from here: the terminal is followed, stop remains.
+        await screen.findByText(sessionContinuationCopy("en-US").terminalWatch);
+        expect(screen.queryByLabelText("Message")).not.toBeInTheDocument();
+      }
       fireEvent.click(
         await enabled(screen.getByRole("button", { name: operation === "send" ? "Send" : "Stop" })),
       );
@@ -1366,9 +1372,13 @@ describe("Claude local owner panel", () => {
     expect(
       screen.queryByText(sessionContinuationCopy("en-US").choice("Claude Code")),
     ).not.toBeInTheDocument();
+    // The session is open in Claude Code already, so no resume command is offered here.
     expect(
-      await screen.findByRole("button", { name: sessionContinuationCopy("en-US").copyCommand }),
+      await screen.findByText(sessionContinuationCopy("en-US").returned("Claude Code")),
     ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: sessionContinuationCopy("en-US").copyCommand }),
+    ).not.toBeInTheDocument();
     const poll = vi
       .mocked(globalThis.setInterval)
       .mock.calls.find(([, delay]) => delay === 4000)?.[0];
@@ -1426,7 +1436,7 @@ describe("Claude local owner panel", () => {
     ).toBeVisible();
     expect(calls("send")).toHaveLength(0);
   });
-  it("opens the existing terminal wizard from an occupied session", async () => {
+  it("keeps the terminal wizard in session actions instead of the occupied-session choice", async () => {
     live = {
       ...live,
       executionLocation: "external",
@@ -1442,9 +1452,17 @@ describe("Claude local owner panel", () => {
         onConnectTerminal={onConnectTerminal}
       />,
     );
+    expect(
+      await screen.findByText(sessionContinuationCopy("en-US").choice("Claude Code")),
+    ).toBeVisible();
+    // A connected terminal cannot take messages from here yet, so the choice does not promote it.
+    expect(
+      screen.queryByRole("button", { name: sessionContinuationCopy("en-US").installPlugin }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
     fireEvent.click(
       await enabled(
-        await screen.findByRole("button", { name: sessionContinuationCopy("en-US").installPlugin }),
+        screen.getByRole("button", { name: sessionContinuationCopy("en-US").connectTerminal }),
       ),
     );
     expect(onConnectTerminal).toHaveBeenCalledExactlyOnceWith("session");

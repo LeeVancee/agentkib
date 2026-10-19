@@ -41,6 +41,17 @@ describe("runtime-only session list presentation", () => {
       expect(
         sessionContinuationListState({ ...session, availability: "metadata-only" }, locale),
       ).toEqual({ label: sessionContinuationCopy(locale).viewOnly });
+      // Use elsewhere is confirmed after opening a session; a short-lived observation would flicker.
+      for (const continuation of [
+        { status: "idle", executionLocation: "external", ownershipReason: "claude-owner-busy" },
+        {
+          status: "idle",
+          executionLocation: null,
+          ownershipReason: "owner-opened-elsewhere",
+          reason: "owner-opened-elsewhere",
+        },
+      ])
+        expect(sessionContinuationListState({ ...session, continuation }, locale)).toBeUndefined();
     },
   );
 });

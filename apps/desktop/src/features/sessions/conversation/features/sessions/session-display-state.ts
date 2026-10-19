@@ -28,7 +28,14 @@ type DisplayState = {
   tone: "warning" | "active" | "muted";
   loading?: boolean;
   nextAction?: SessionNextAction;
-  continuation?: "idle" | "starting" | "running" | "terminal" | "busy" | "view-only";
+  continuation?:
+    | "idle"
+    | "starting"
+    | "running"
+    | "terminal"
+    | "terminal-watch"
+    | "busy"
+    | "view-only";
 };
 
 /** Execution ownership is automatic; no user-visible handoff action remains. */
@@ -178,7 +185,13 @@ export function sessionDisplayState(state: State): DisplayState {
         continuation: "starting",
       };
     if (live.executionLocation === "terminal")
-      return { label: copy.terminalConnected, reason: "", tone: "muted", continuation: "terminal" };
+      return {
+        label: copy.terminalConnected,
+        reason: "",
+        tone: "muted",
+        // Until the plugin takes messages from here, the terminal is followed, not typed into.
+        continuation: live.terminalSend || live.sendEnabled ? "terminal" : "terminal-watch",
+      };
     if (live.executionLocation === "agentkib")
       return { label: copy.running, reason: "", tone: "active", continuation: "running" };
     if (!controlReady)

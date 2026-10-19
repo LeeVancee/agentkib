@@ -1,5 +1,9 @@
 import { continuationResources } from "./continuation-draft";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import {
+  sessionContinuationCopy,
+  SessionContinuationReturned,
+  SessionContinuationTerminal,
+} from "@agentkib/session-ui";
 import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
@@ -339,7 +343,7 @@ export function SessionComposer({
   const primaryAction = canStop ? (
     <Button
       type="button"
-      variant={isCodex ? "outline" : "destructive"}
+      variant="outline"
       className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
       aria-label={t.stop}
       onClick={() => void control("stop")}
@@ -407,7 +411,9 @@ export function SessionComposer({
     ) : null;
   if ((isCodex || isClaude) && display.continuation === "busy")
     return returnedFor === returnKey ? (
-      <SessionReadOnly reason={continuation.viewOnly} />
+      <div className="w-full max-w-3xl self-center">
+        <SessionContinuationReturned locale={locale} agent={isClaude ? "Claude Code" : "Codex"} />
+      </div>
     ) : (
       <SessionBusyChoice
         onReturn={() => setReturnedFor(returnKey)}
@@ -419,6 +425,15 @@ export function SessionComposer({
     );
   if ((isCodex || isClaude) && display.continuation === "view-only")
     return <SessionReadOnly reason={display.reason} />;
+  if (isClaude && display.continuation === "terminal-watch")
+    return (
+      <div className="w-full max-w-3xl shrink-0 self-center">
+        <SessionContinuationTerminal
+          locale={locale}
+          stop={canStop ? { label: t.stop, onStop: () => void control("stop") } : undefined}
+        />
+      </div>
+    );
   return (
     <div className="w-full max-w-3xl shrink-0 self-center space-y-2">
       {isClaude && display.continuation === "terminal" && (

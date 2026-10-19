@@ -41,7 +41,14 @@ export function claudeSessionBanner({
         title: copy.connected,
         body: claudeConnectionReason(locale, live.reason) ?? copy.connectionUnconfirmed,
       };
-    if (!["claude-terminal-approval", "claude-terminal-question"].includes(live.reason ?? "")) {
+    // Approvals, questions and a terminal that cannot take messages are explained in place.
+    if (
+      ![
+        "claude-terminal-approval",
+        "claude-terminal-question",
+        "claude-follower-send-unverified",
+      ].includes(live.reason ?? "")
+    ) {
       const reason = claudeConnectionReason(locale, live.reason);
       if (reason) return { title: copy.connected, body: reason };
     }

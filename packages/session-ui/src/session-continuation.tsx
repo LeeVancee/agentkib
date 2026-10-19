@@ -10,11 +10,13 @@ export type SessionContinuationCopy = {
   terminalConnected: string;
   terminalBadge: string;
   terminalHint: string;
+  terminalWatch: string;
   busy: (agent: string) => string;
   choice: (agent: string) => string;
   fork: string;
   forkHint: (title: string) => string;
   returnTo: (agent: string) => string;
+  returned: (agent: string) => string;
   installPlugin: string;
   codexQuit: string;
   backgroundEnded: string;
@@ -34,6 +36,7 @@ export type SessionContinuationCopy = {
   manualCopy: string;
   commandLabel: string;
   hostCommandHelp: string;
+  localCommandHelp: string;
 };
 
 const continuationCopy: Record<string, SessionContinuationCopy> = {
@@ -44,11 +47,13 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     terminalConnected: "在终端中运行 · 已连接",
     terminalBadge: "终端",
     terminalHint: "审批和提问在终端中处理",
+    terminalWatch: "在终端中继续这条会话，这里会同步显示",
     busy: (agent) => `正在 ${agent} 中使用`,
     choice: (agent) => `这条会话正在 ${agent} 中使用。为避免两边同时写入，请选择：`,
     fork: "分支会话并继续",
-    forkHint: (title) => `原会话不受影响，新会话会标"分支自 ${title}"`,
+    forkHint: (title) => `原会话不受影响，新会话会标“分支自 ${title}”`,
     returnTo: (agent) => `回 ${agent} 继续`,
+    returned: (agent) => `这条会话在 AgentKib 中只读，${agent} 那边关闭后会自动恢复`,
     installPlugin: "安装连接插件，以后自动连接",
     codexQuit: "只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续",
     backgroundEnded: "已结束后台进程，可以回 Claude Code 继续这条会话",
@@ -69,6 +74,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     commandLabel: "续接命令（手动复制）",
     hostCommandHelp:
       "在运行 AgentKib 的电脑上打开终端（Windows 请使用 PowerShell），粘贴并运行续接命令。如果原客户端仍占用这条会话，请先在原客户端继续。",
+    localCommandHelp:
+      "打开终端（Windows 请使用 PowerShell），粘贴并运行续接命令。如果原客户端仍占用这条会话，请先在原客户端继续。",
   },
   "zh-TW": {
     placeholder: "繼續這段對話…",
@@ -77,11 +84,13 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     terminalConnected: "在終端中執行 · 已連線",
     terminalBadge: "終端",
     terminalHint: "核准和提問在終端中處理",
+    terminalWatch: "在終端中繼續這段對話，這裡會同步顯示",
     busy: (agent) => `正在 ${agent} 中使用`,
     choice: (agent) => `這段對話正在 ${agent} 中使用。為避免兩邊同時寫入，請選擇：`,
     fork: "分支對話並繼續",
     forkHint: (title) => `原對話不受影響，新對話會標「分支自 ${title}」`,
     returnTo: (agent) => `回 ${agent} 繼續`,
+    returned: (agent) => `這段對話在 AgentKib 中為唯讀，${agent} 那邊關閉後會自動恢復`,
     installPlugin: "安裝連線外掛，以後自動連線",
     codexQuit: "只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續",
     backgroundEnded: "已結束背景程序，可以回 Claude Code 繼續這段對話",
@@ -102,6 +111,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     commandLabel: "續接命令（手動複製）",
     hostCommandHelp:
       "在執行 AgentKib 的電腦上開啟終端（Windows 請使用 PowerShell），貼上並執行續接命令。如果原客戶端仍在使用這段對話，請先在原客戶端繼續。",
+    localCommandHelp:
+      "開啟終端（Windows 請使用 PowerShell），貼上並執行續接命令。如果原客戶端仍在使用這段對話，請先在原客戶端繼續。",
   },
   "ja-JP": {
     placeholder: "この会話を続ける…",
@@ -110,6 +121,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     terminalConnected: "ターミナルで実行中 · 接続済み",
     terminalBadge: "ターミナル",
     terminalHint: "承認と質問はターミナルで対応してください",
+    terminalWatch: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
     busy: (agent) => `${agent} で使用中`,
     choice: (agent) =>
       `この会話は ${agent} で使用中です。同時に書き込まれないよう、操作を選んでください：`,
@@ -117,6 +129,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     forkHint: (title) =>
       `元の会話には影響しません。新しい会話には「${title} から分岐」と表示されます。`,
     returnTo: (agent) => `${agent} で続ける`,
+    returned: (agent) =>
+      `この会話は AgentKib では閲覧のみです。${agent} 側で閉じると、ここで続けられるようになります。`,
     installPlugin: "接続プラグインをインストールすると、次回から自動で接続されます",
     codexQuit:
       "Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。",
@@ -140,6 +154,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     commandLabel: "再開コマンド（手動コピー）",
     hostCommandHelp:
       "AgentKib を実行しているコンピューターでターミナル（Windows では PowerShell）を開き、再開コマンドを貼り付けて実行してください。元のクライアントでこの会話を使用中の場合は、先にそちらで続けてください。",
+    localCommandHelp:
+      "ターミナル（Windows では PowerShell）を開き、再開コマンドを貼り付けて実行してください。元のクライアントでこの会話を使用中の場合は、先にそちらで続けてください。",
   },
   "en-US": {
     placeholder: "Continue this session…",
@@ -148,6 +164,7 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     terminalConnected: "Running in terminal · Connected",
     terminalBadge: "Terminal",
     terminalHint: "Handle approvals and questions in the terminal",
+    terminalWatch: "Continue this session in the terminal. It stays in sync here.",
     busy: (agent) => `In use in ${agent}`,
     choice: (agent) =>
       `This session is in use in ${agent}. To avoid both sides writing at once, choose:`,
@@ -155,6 +172,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     forkHint: (title) =>
       `The original session stays as is. The new one is marked "Forked from ${title}".`,
     returnTo: (agent) => `Continue in ${agent}`,
+    returned: (agent) =>
+      `This session is view only in AgentKib. You can continue here once it's closed in ${agent}.`,
     installPlugin: "Install the connection plugin to connect automatically",
     codexQuit:
       "Closing the Codex window may not be enough. Quit the app completely to continue here.",
@@ -177,6 +196,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     commandLabel: "Resume command (manual copy)",
     hostCommandHelp:
       "On the computer running AgentKib, open a terminal (use PowerShell on Windows), paste the resume command and run it. If this session is still in use in the original client, continue there first.",
+    localCommandHelp:
+      "Open a terminal (use PowerShell on Windows), paste the resume command and run it. If this session is still in use in the original client, continue there first.",
   },
 };
 
@@ -200,6 +221,7 @@ export type SessionContinuationChoiceProps = {
   onReturn: SessionContinuationAction;
   disabled?: boolean;
   forkDisabled?: boolean;
+  /** Offer only once a connected terminal accepts messages sent from AgentKib. */
   pluginAction?: SessionContinuationAction;
 };
 
@@ -302,10 +324,61 @@ export function SessionContinuationStatus({
   );
 }
 
+/** Shown after the user chooses to continue in the other client instead of forking. */
+export function SessionContinuationReturned({
+  locale,
+  agent,
+}: {
+  locale: string;
+  agent: SessionContinuationAgent;
+}) {
+  const copy = sessionContinuationCopy(locale);
+  return (
+    <div
+      role="status"
+      className="min-w-0 space-y-1.5 rounded-xl border border-border bg-muted/30 p-4"
+    >
+      <p className="text-sm leading-6 text-foreground">{copy.returned(agent)}</p>
+      {agent === "Codex" ? (
+        <p className="text-xs leading-5 text-muted-foreground">{copy.codexQuit}</p>
+      ) : null}
+    </div>
+  );
+}
+
+export type SessionContinuationTerminalProps = {
+  locale: string;
+  stop?: { label: string; onStop: SessionContinuationAction; disabled?: boolean };
+};
+
+/** A connected terminal that cannot take messages from AgentKib is followed, not typed into. */
+export function SessionContinuationTerminal({ locale, stop }: SessionContinuationTerminalProps) {
+  const copy = sessionContinuationCopy(locale);
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-3 rounded-xl border border-border bg-muted/30 p-4">
+      <p className="min-w-0 flex-1 basis-60 text-sm leading-6 text-foreground">
+        {copy.terminalWatch}
+      </p>
+      {stop ? (
+        <button
+          type="button"
+          className={`${continuationButtonClass} border border-border bg-background text-foreground hover:bg-muted`}
+          disabled={stop.disabled}
+          onClick={stop.onStop}
+        >
+          {stop.label}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export type SessionContinuationReadOnlyProps = {
   locale: string;
   reason?: string | null;
   loadCommand: (signal: AbortSignal) => Promise<string>;
+  /** The viewer is on the computer that runs AgentKib, so the help need not name it. */
+  local?: boolean;
 };
 
 type CommandSource = {
@@ -319,6 +392,7 @@ export function SessionContinuationReadOnly({
   locale,
   reason,
   loadCommand,
+  local,
 }: SessionContinuationReadOnlyProps) {
   const copy = sessionContinuationCopy(locale);
   const helpId = useId();
@@ -403,7 +477,7 @@ export function SessionContinuationReadOnly({
     >
       {reason?.trim() ? <p className="text-sm leading-6 text-foreground">{reason}</p> : null}
       <p id={helpId} className="text-xs leading-5 text-muted-foreground">
-        {copy.hostCommandHelp}
+        {local ? copy.localCommandHelp : copy.hostCommandHelp}
       </p>
       <div className="flex flex-wrap gap-2">
         <button
@@ -471,6 +545,8 @@ export function sessionContinuationListState(
   if (!state || !["codex", "claude-code"].includes(session.agent)) return undefined;
   if (state.status === "outcome-unknown" || state.reason === "control-outcome-unconfirmed")
     return undefined;
+  // Lists show only what is known without probing other clients. Use elsewhere is confirmed when
+  // the session is opened; a short-lived observation here would flicker in and out.
   if (
     state.executionLocation === "external" ||
     [
@@ -480,7 +556,7 @@ export function sessionContinuationListState(
       "owner-opened-elsewhere",
     ].includes(state.ownershipReason ?? "")
   )
-    return { label: copy.busy(session.agent === "codex" ? "Codex" : "Claude Code"), dot: true };
+    return undefined;
   if (state.executionLocation === "terminal" && session.agent === "claude-code")
     return { label: copy.terminalBadge, dot: true };
   if (state.executionLocation === "agentkib" || state.status === "starting")

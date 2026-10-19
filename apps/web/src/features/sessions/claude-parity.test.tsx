@@ -288,6 +288,8 @@ function createHost({
       ...state.live,
       executionMode: "claude-follower",
       executionLocation: "terminal",
+      // These cases cover the experimental plugin that accepts messages sent from here.
+      terminalSend: true,
       connectionGeneration: "lease-a",
     };
     for (const key of Object.keys(state.features)) state.features[key] = unavailable;
@@ -378,21 +380,44 @@ describe("original Claude terminal over Web", () => {
     expect(state.mutations).toEqual([]);
   });
 
-  it("keeps unverified native sending disabled with a specific reason", async () => {
+  it("follows a terminal that cannot take messages instead of offering a dead input", async () => {
     const { state } = createHost({ follower: true });
-    state.live = { ...state.live, sendEnabled: false, reason: "claude-follower-send-unverified" };
+    state.live = {
+      ...state.live,
+      sendEnabled: false,
+      terminalSend: false,
+      reason: "claude-follower-send-unverified",
+    };
     await openSession();
+    expect(await screen.findByText("在终端中继续这条会话，这里会同步显示")).toBeVisible();
+    expect(screen.getByText("在终端中运行 · 已连接")).toBeVisible();
+    // The limitation is explained once, by the bar, not again in a banner.
     expect(
-      await screen.findByText(
-        "会话发送尚未开放，请在终端发送；AgentKib 可同步观察并取消当前轮次。",
-      ),
-    ).toBeVisible();
-    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
-      target: { value: "Keep original terminal draft" },
-    });
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      screen.queryByText("会话发送尚未开放，请在终端发送；AgentKib 可同步观察并取消当前轮次。"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "发送消息" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
+  });
+
+  it("keeps stopping a terminal turn available while following it", async () => {
+    const { state } = createHost({ follower: true });
+    state.live = {
+      ...state.live,
+      status: "running",
+      turnId: "turn-terminal",
+      sendEnabled: false,
+      stopEnabled: true,
+      terminalSend: false,
+    };
+    state.features.stop = available;
+    await openSession();
+    expect(await screen.findByText("在终端中继续这条会话，这里会同步显示")).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "发送消息" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "停止当前轮次" }));
+    await waitFor(() => expect(state.mutations).toHaveLength(1));
+    expect(state.mutations[0]).toMatchObject({ path: "stop", sessionId: "session" });
   });
 
   it("invalidates the old form when the terminal binding changes and keeps unsent text", async () => {

@@ -562,18 +562,17 @@ describe("SessionDirectory", () => {
       const overview = render(<SessionOverview />);
       expect(screen.getByText(copy.running)).toBeVisible();
       expect(screen.getByText(copy.terminalBadge)).toBeVisible();
-      expect(screen.getByText(copy.busy("Claude Code"))).toBeVisible();
+      // Use elsewhere is confirmed after opening a session, never guessed in the list.
+      expect(screen.queryByText(copy.busy("Claude Code"))).toBeNull();
       expect(screen.getByText(copy.viewOnly)).toBeVisible();
-      expect(overview.container.querySelectorAll('[role="status"]')).toHaveLength(4);
+      expect(overview.container.querySelectorAll('[role="status"]')).toHaveLength(3);
       overview.unmount();
       render(<SessionDirectory />);
       expect(screen.getByRole("status", { name: copy.running })).toHaveClass("bg-primary");
       expect(screen.getByRole("status", { name: copy.terminalBadge })).toHaveClass(
         "bg-muted-foreground",
       );
-      expect(screen.getByRole("status", { name: copy.busy("Claude Code") })).toHaveClass(
-        "bg-muted-foreground",
-      );
+      expect(screen.queryByRole("status", { name: copy.busy("Claude Code") })).toBeNull();
       expect(screen.queryByRole("status", { name: copy.viewOnly })).toBeNull();
       initializeI18n("en-US");
     },

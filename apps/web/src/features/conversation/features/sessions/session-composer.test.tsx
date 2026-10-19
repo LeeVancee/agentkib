@@ -553,7 +553,11 @@ describe("composer sending shortcuts", () => {
     expect(screen.getByRole("button", { name: "Fork and continue" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Continue in Codex" }));
     expect(screen.queryByRole("button", { name: "Fork and continue" })).not.toBeInTheDocument();
-    expect(screen.getByText("View only")).toBeVisible();
+    expect(
+      screen.getByText(
+        "This session is view only in AgentKib. You can continue here once it's closed in Codex.",
+      ),
+    ).toBeVisible();
     doubles.session.canSend = true;
     Object.assign(doubles.session.live!, {
       sendEnabled: true,
@@ -621,16 +625,19 @@ describe("composer sending shortcuts", () => {
     expect(doubles.codexAction).not.toHaveBeenCalled();
     expect(doubles.navigate).not.toHaveBeenCalled();
   });
-  it("loads a resume command only after choosing to return to the existing owner", async () => {
+  it("goes back to the existing owner without offering a second resume", () => {
     continuationFixture();
     externalOwner();
     const { rerender } = render(<SessionComposer />);
-    expect(doubles.resumeCommand).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Continue in Codex" }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Copy resume command" })).toBeEnabled(),
-    );
-    const signal = doubles.resumeCommand.mock.calls[0][1] as AbortSignal;
+    expect(
+      screen.getByText(
+        "This session is view only in AgentKib. You can continue here once it's closed in Codex.",
+      ),
+    ).toBeVisible();
+    // The session is already open there; running the resume command again would add a writer.
+    expect(screen.queryByRole("button", { name: "Copy resume command" })).not.toBeInTheDocument();
+    expect(doubles.resumeCommand).not.toHaveBeenCalled();
     doubles.session.selected = "next-session";
     doubles.session.current = {
       id: "next-session",
@@ -639,9 +646,9 @@ describe("composer sending shortcuts", () => {
     Object.assign(doubles.session.live!, { sessionId: "next-session" });
     doubles.session.capabilities!.sessionId = "next-session";
     rerender(<SessionComposer />);
-    expect(signal.aborted).toBe(true);
+    // The choice belongs to the session it was made for.
     expect(screen.getByRole("button", { name: "Continue in Codex" })).toBeEnabled();
-    expect(doubles.resumeCommand).toHaveBeenCalledTimes(1);
+    expect(doubles.resumeCommand).not.toHaveBeenCalled();
     expect(doubles.control).not.toHaveBeenCalled();
     expect(doubles.codexAction).not.toHaveBeenCalled();
   });

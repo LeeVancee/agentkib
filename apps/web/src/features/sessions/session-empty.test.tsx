@@ -95,7 +95,11 @@ describe("recent sessions on the Web home", () => {
       render(<SessionEmpty />);
       expect(screen.getByText(copy.running)).toBeVisible();
       expect(screen.getByText(copy.terminalBadge)).toBeVisible();
-      expect(screen.getByText(copy.busy("Claude Code"))).toBeVisible();
+      // Use elsewhere is confirmed after opening a session, never guessed in the list.
+      expect(screen.queryByText(copy.busy("Claude Code"))).toBeNull();
+      expect(
+        within(screen.getByRole("link", { name: /External/ })).queryByRole("status"),
+      ).toBeNull();
       expect(screen.getByText(copy.viewOnly)).toBeVisible();
       expect(within(screen.getByRole("link", { name: /Idle/ })).queryByRole("status")).toBeNull();
       expect(screen.queryByRole("link", { name: /Archived|Helper/ })).toBeNull();

@@ -20,7 +20,9 @@ import { ApiError, WebClient } from "@agentkib/web-client";
 import {
   SessionContinuationChoice,
   SessionContinuationReadOnly,
+  SessionContinuationReturned,
   SessionContinuationStatus,
+  SessionContinuationTerminal,
   sessionContinuationCopy,
 } from "@agentkib/session-ui";
 import { contextUsageCopy } from "@/features/sessions/conversation/features/sessions/context-usage-copy";
@@ -879,13 +881,14 @@ export function ClaudeSessionPanel({
               ? statusLabels[live.status]
               : undefined;
   const viewOnly =
-    (returnedToClient && ownerBusy) ||
-    (!ownerBusy &&
-      (live?.status === "unsupported" ||
-        live?.status === "readonly" ||
-        ["platform-unsupported", "claude-cli-unavailable", "unsupported-Claude-version"].includes(
-          live?.reason ?? "",
-        )));
+    !ownerBusy &&
+    (live?.status === "unsupported" ||
+      live?.status === "readonly" ||
+      ["platform-unsupported", "claude-cli-unavailable", "unsupported-Claude-version"].includes(
+        live?.reason ?? "",
+      ));
+  // Until the plugin takes messages from here, a connected terminal is followed, not typed into.
+  const terminalWatch = terminalConnected && !live?.terminalSend && !live?.sendEnabled;
   const continuationNotice =
     live?.continuationNotice === "owner-opened-elsewhere"
       ? continuationCopy.ownerOpenedElsewhere
@@ -1277,19 +1280,32 @@ export function ClaudeSessionPanel({
                 forkDisabled={blocked || !capabilities?.features.fork?.available}
                 onFork={() => void forkContinuation()}
                 onReturn={() => setReturnedToClient(true)}
-                pluginAction={onConnectTerminal ? () => onConnectTerminal(sessionId) : undefined}
               />
+            ) : ownerBusy ? (
+              <SessionContinuationReturned locale={locale} agent="Claude Code" />
             ) : viewOnly ? (
               <SessionContinuationReadOnly
                 key={sessionId}
                 locale={locale}
                 loadCommand={loadResumeCommand}
+                local
                 reason={
                   live?.reason === "platform-unsupported"
                     ? continuationCopy.claudeWindowsUnsupported
-                    : !ownerBusy
-                      ? stoppedReason?.text
-                      : undefined
+                    : stoppedReason?.text
+                }
+              />
+            ) : terminalWatch ? (
+              <SessionContinuationTerminal
+                locale={locale}
+                stop={
+                  live?.stopEnabled && live.turnId
+                    ? {
+                        label: text("停止", "Stop", "停止", "停止"),
+                        onStop: () => void mutate("stop", { turnId: live.turnId }),
+                        disabled: blocked,
+                      }
+                    : undefined
                 }
               />
             ) : (
@@ -1412,7 +1428,7 @@ export function ClaudeSessionPanel({
                   </Button>
                   {live?.stopEnabled && live.turnId && (
                     <Button
-                      variant="destructive"
+                      variant="outline"
                       disabled={blocked}
                       onClick={() => void mutate("stop", { turnId: live.turnId })}
                     >

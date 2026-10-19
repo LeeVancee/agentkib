@@ -222,6 +222,8 @@ export interface Live {
   executionLocation?: "agentkib" | "terminal" | "external" | null;
   ownershipReason?: string | null;
   continuationNotice?: "background-ended" | "owner-opened-elsewhere" | null;
+  /** Whether a connected terminal can take messages sent from AgentKib at all. */
+  terminalSend?: boolean;
   executionMode?:
     | "managed-resume"
     | "claude-managed"

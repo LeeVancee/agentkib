@@ -65,26 +65,28 @@ D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用
 | 使用已有客户端继续 | 在原客户端继续 | 在原客戶端繼續 | 元のクライアントで続ける | Continue in the original client |
 | 复制主机上的续接命令 | 复制续接命令 | 複製續接命令 | 再開コマンドをコピー | Copy resume command |
 | Claude Code 连接设置向导 | 连接终端 | 連接終端 | ターミナルに接続 | Connect terminal |
-| 外部占用时打开插件安装指引 | 安装连接插件，以后自动连接 | 安裝連線外掛，以後自動連線 | 接続プラグインをインストールすると、次回から自動で接続されます | Install the connection plugin to connect automatically |
+| 外部占用时打开插件安装指引（终端能接收从这里发的消息后才显示） | 安装连接插件，以后自动连接 | 安裝連線外掛，以後自動連線 | 接続プラグインをインストールすると、次回から自動で接続されます | Install the connection plugin to connect automatically |
 | Codex 下一轮待发消息 | 待发队列 | 待發佇列 | 送信待ちキュー | Queued messages |
 
 “会话”指实体，正文可称消息、内容或历史；用户输入、引用原文与文件正文不做术语替换。繁体界面使用“對話”，日文沿用“会話”，按地区自然表达保持各语言内部一致。英文实体统一为 `Session`，协议名与第三方产品的正式名称保持原样。
 
-空闲时不显示额外状态徽标。启动中、运行中、已连接终端、外部占用、仅可查看使用中性色或主色；首页、侧栏和详情沿用同一概念。侧栏用圆点时，悬停及无障碍标签写出对应状态；仅可查看不增加运行圆点。同一个原因在一屏只说明一次。客户端版本、会话 ID、来源文件放在“会话操作 → 会话详情”，输入区不堆放这些技术信息。
+空闲时不显示额外状态徽标。启动中、运行中、已连接终端、外部占用、仅可查看使用中性色或主色；首页、侧栏和详情沿用同一概念。首页和侧栏只显示不必检查其他客户端就能确定的状态：在 AgentKib 中运行、终端、仅可查看；“正在 {agent} 中使用”在打开会话后显示。侧栏用圆点时，悬停及无障碍标签写出对应状态；仅可查看不增加运行圆点。同一个原因在一屏只说明一次。客户端版本、会话 ID、来源文件放在“会话操作 → 会话详情”，输入区不堆放这些技术信息。
 
-外部占用时才显示选择条，`{agent}` 使用实际产品名（Claude Code、Codex）。主要操作创建分支，原会话不受影响；返回该 Agent 的操作保持当前草稿。选择条定期检查占用，发送仍以主机权威检查为准。只读时给出具体原因；校验中、未知操作结果、连接异常、缺少权限分别解释，不能统一当作平台或版本不支持，也不能承诺自动重发。
+外部占用时才显示选择条，`{agent}` 使用实际产品名（Claude Code、Codex）。主要操作创建分支，原会话不受影响；返回该 Agent 的操作保持当前草稿，只说明在哪里继续，不提供续接命令，因为会话已经在那边打开。选择条定期检查占用，发送仍以主机权威检查为准。只读时给出具体原因；校验中、未知操作结果、连接异常、缺少权限分别解释，不能统一当作平台或版本不支持，也不能承诺自动重发。
 
 | 提示用途 | 简体中文 | 繁體中文 | 日本語 | English |
 | --- | --- | --- | --- | --- |
 | 外部占用选择 | 这条会话正在 {agent} 中使用。为避免两边同时写入，请选择： | 這段對話正在 {agent} 中使用。為避免兩邊同時寫入，請選擇： | この会話は {agent} で使用中です。同時に書き込まれないよう、操作を選んでください： | This session is in use in {agent}. To avoid both sides writing at once, choose: |
-| 分支说明 | 原会话不受影响，新会话会标"分支自 {title}" | 原對話不受影響，新對話會標「分支自 {title}」 | 元の会話には影響しません。新しい会話には「{title} から分岐」と表示されます。 | The original session stays as is. The new one is marked "Forked from {title}". |
+| 分支说明 | 原会话不受影响，新会话会标“分支自 {title}” | 原對話不受影響，新對話會標「分支自 {title}」 | 元の会話には影響しません。新しい会話には「{title} から分岐」と表示されます。 | The original session stays as is. The new one is marked "Forked from {title}". |
+| 返回该 Agent 之后 | 这条会话在 AgentKib 中只读，{agent} 那边关闭后会自动恢复 | 這段對話在 AgentKib 中為唯讀，{agent} 那邊關閉後會自動恢復 | この会話は AgentKib では閲覧のみです。{agent} 側で閉じると、ここで続けられるようになります。 | This session is view only in AgentKib. You can continue here once it's closed in {agent}. |
+| 已连接终端但不能从这里发送 | 在终端中继续这条会话，这里会同步显示 | 在終端中繼續這段對話，這裡會同步顯示 | この会話はターミナルで続けてください。ここにも同期して表示されます。 | Continue this session in the terminal. It stays in sync here. |
 | Codex 完全退出说明 | 只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续 | 只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續 | Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。 | Closing the Codex window may not be enough. Quit the app completely to continue here. |
 | Claude Code 后台自动结束 | 已结束后台进程，可以回 Claude Code 继续这条会话 | 已結束背景程序，可以回 Claude Code 繼續這段對話 | バックグラウンドプロセスを終了しました。Claude Code でこの会話を続けられます。 | Background process ended. You can continue this session in Claude Code. |
 | Claude Code 中途外部打开 | 你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入 | 你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入 | Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。 | You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once. |
 | Windows Claude Code 原因 | Windows 上暂不支持在这里继续 Claude Code 会话 | Windows 上暫不支援在這裡繼續 Claude Code 對話 | Windows では、ここで Claude Code の会話を続ける機能はまだ使えません | Continuing Claude Code sessions here isn't supported on Windows yet |
 | Codex 版本过低原因 | Codex 版本过低，升级后可以在这里继续 | Codex 版本過舊，升級後可以在這裡繼續 | Codex のバージョンが古いため、更新するとここで続けられます。 | Your Codex version is too old. Update it to continue here. |
 
-Claude Code 自动结束在对话底部显示浅色提示，中途冲突显示信息提示；Codex 自动释放不显示结束提示。连接终端设置只在 macOS 桌面提供，沿用现有三步向导。Web 沿用现有能力提供复制续接命令与主机操作说明，不增加跨 Agent 功能。
+Claude Code 自动结束在对话底部显示浅色提示，中途冲突显示信息提示；Codex 自动释放不显示结束提示。连接终端设置只在 macOS 桌面提供，沿用现有三步向导，入口在“会话操作”。当前生产插件还不能接收从 AgentKib 发出的消息：已连接时输入区换成“在终端中继续这条会话，这里会同步显示”，终端运行中保留“停止”；选择条在此之前不显示插件链接。Web 沿用现有能力提供复制续接命令与主机操作说明，不增加跨 Agent 功能。
 
 同 Agent 续接的可见入口不再使用“交给 AgentKib”“交还原客户端”“待交接”“执行管理”“由 AgentKib 执行”“已连接原会话”“仅查看历史”“恢复执行”，连接指引不再称“原终端”，队列不再称“原客户端待发队列”。这些规则不要求改名 API、类型、诊断码或旧操作回执，也不改变资产管理中的“由 AgentKib 管理”概念。
 

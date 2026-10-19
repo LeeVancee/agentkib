@@ -206,12 +206,11 @@ describe("SessionCatalog", () => {
       expect(screen.getByRole("status", { name: copy.terminalBadge })).toHaveClass(
         "bg-muted-foreground",
       );
-      expect(screen.getByRole("status", { name: copy.busy("Claude Code") })).toHaveClass(
-        "bg-muted-foreground",
-      );
+      // Use elsewhere is confirmed after opening a session, never guessed in the list.
+      expect(screen.queryByRole("status", { name: copy.busy("Claude Code") })).toBeNull();
       expect(screen.queryByRole("status", { name: copy.viewOnly })).toBeNull();
       expect(screen.getByRole("button", { name: /Running/ }).textContent).toContain("●");
-      expect(screen.getAllByRole("status")).toHaveLength(3);
+      expect(screen.getAllByRole("status")).toHaveLength(2);
     },
   );
   it.each([

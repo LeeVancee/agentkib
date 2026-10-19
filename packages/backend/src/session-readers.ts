@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { sessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessions } from "./codex-sessions";
+import { codexRollouts } from "./codex-rollout-files";
 import { ClaudeSessions } from "./claude-sessions";
 import { GrokSessions } from "./grok-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";
@@ -291,7 +292,16 @@ export class SessionReaders {
     switch (agent) {
       case "codex":
       case "claude-code": {
-        if (transcript) return this.#paging.read(transcript, offset, count, agent);
+        // Pages seek backwards, so a compressed Codex rollout is read from a
+        // decompressed copy with the same offsets.
+        const page = async (file: string) =>
+          this.#paging.read(
+            agent === "codex" ? await codexRollouts.plain(file) : file,
+            offset,
+            count,
+            agent,
+          );
+        if (transcript) return page(transcript);
         const provider = agent === "codex" ? this.#codex : this.#claude;
         const source = provider
           .list(null)
@@ -302,7 +312,7 @@ export class SessionReaders {
               ? "Codex session is no longer available"
               : "Claude session is no longer available",
           );
-        return this.#paging.read(source.transcript, offset, count, agent);
+        return page(source.transcript);
       }
       case "grok-build":
         return this.#paging.read(this.#grok.resolve(ref).transcript, offset, count, agent);
@@ -372,7 +382,10 @@ export class SessionReaders {
     const { native, workspace, transcript } = await this.resolve(sessionId);
     if (native.agent === "codex") {
       if (!transcript) throw new Error("Codex session is no longer available");
-      return readCodexDocument(summary as Parameters<typeof readCodexDocument>[0], transcript);
+      return readCodexDocument(
+        summary as Parameters<typeof readCodexDocument>[0],
+        await codexRollouts.plain(transcript),
+      );
     }
     if (native.agent === "claude-code") {
       if (!transcript) throw new Error("Claude session is no longer available");

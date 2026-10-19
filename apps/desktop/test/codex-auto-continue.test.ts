@@ -3,6 +3,8 @@ import { EventEmitter } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerError,
@@ -23,7 +25,9 @@ import {
   acquireManagedSessionLease,
   acquirePortableFileLease,
 } from "../../../packages/backend/src/managed-session-lock";
-import type { SessionReaders } from "../../../packages/backend/src/session-readers";
+import { SessionReaders } from "../../../packages/backend/src/session-readers";
+import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
+import type { Commands } from "../../../packages/backend/src/commands";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
@@ -39,7 +43,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function fixture() {
+function fixture(compressedHistory = false) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-codex-auto-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
@@ -69,18 +73,56 @@ function fixture() {
     sidechain: false,
     archived: false,
   };
-  vi.spyOn(store.sessions, "get").mockImplementation((id) =>
-    id === summary.id ? (summary as ReturnType<typeof store.sessions.get>) : undefined,
-  );
-  const readers = {
-    codexHome: () => home,
-    resolve: vi.fn(async () => ({
-      summary,
-      native: { agent: "codex", native_ref: nativeId },
-      workspace,
-    })),
-    verifiedCodexControlIds: () => new Set([nativeId]),
-  } as unknown as SessionReaders;
+  const transcript = path.join(home, "sessions", `rollout-${nativeId}.jsonl`);
+  const history =
+    [
+      { type: "session_meta", payload: { id: nativeId, cwd: workspace, source: "cli" } },
+      { type: "event_msg", payload: { type: "user_message", message: "Earlier user input" } },
+      { type: "event_msg", payload: { type: "agent_message", message: "Earlier answer" } },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join("\n") + "\n";
+  let readers: SessionReaders;
+  if (compressedHistory) {
+    mkdirSync(path.dirname(transcript), { recursive: true });
+    writeFileSync(`${transcript}.zst`, zstdCompressSync(history));
+    const nativeDb = new DatabaseSync(path.join(home, "state_5.sqlite"));
+    try {
+      nativeDb.exec(
+        "CREATE TABLE threads(id TEXT PRIMARY KEY,rollout_path TEXT,cwd TEXT,title TEXT,source TEXT,archived INTEGER)",
+      );
+      nativeDb
+        .prepare("INSERT INTO threads VALUES(?,?,?,?,?,?)")
+        .run(nativeId, transcript, workspace, summary.title, "cli", 0);
+    } finally {
+      nativeDb.close();
+    }
+    const environment = { CODEX_HOME: home, PATH: bin };
+    const listing = new CodexSessions(environment).list(workspace);
+    store.sessions.sync(
+      "workspace",
+      "codex",
+      listing.sessions.map((item) => item.session),
+    );
+    summary.id = store.sessions.id("codex", nativeId);
+    readers = new SessionReaders(store.sessions, {} as Commands, environment, {
+      profiles: async () => [],
+    });
+    cleanups.push(() => readers.close());
+  } else {
+    vi.spyOn(store.sessions, "get").mockImplementation((id) =>
+      id === summary.id ? (summary as ReturnType<typeof store.sessions.get>) : undefined,
+    );
+    readers = {
+      codexHome: () => home,
+      resolve: vi.fn(async () => ({
+        summary,
+        native: { agent: "codex", native_ref: nativeId },
+        workspace,
+      })),
+      verifiedCodexControlIds: () => new Set([nativeId]),
+    } as unknown as SessionReaders;
+  }
   const version = vi
     .spyOn(CodexRuntimePreflight.prototype, "check")
     .mockResolvedValue({ executable, reason: null });
@@ -204,6 +246,9 @@ function fixture() {
     workspace,
     summary,
     store,
+    readers,
+    compressedTranscript: `${transcript}.zst`,
+    history,
     web,
     live,
     send,
@@ -226,6 +271,62 @@ function fixture() {
 }
 
 describe("Codex automatic CLI continuation", () => {
+  it("reads a compressed native history and continues automatically through the CLI", async () => {
+    const f = fixture(true);
+    expect((await f.readers.resolve(f.summary.id)).transcript).toBe(f.compressedTranscript);
+    expect(await f.readers.events({ sessionId: f.summary.id, limit: 20 })).toMatchObject({
+      events: expect.arrayContaining([expect.objectContaining({ content: "Earlier answer" })]),
+    });
+    const live = await f.live();
+    expect(live).toMatchObject({ sendEnabled: true, executionLocation: null });
+    expect(f.start).not.toHaveBeenCalled();
+    expect(await f.sendWithState(live)).toMatchObject({ accepted: true });
+    expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    expect(f.start.mock.calls[0]?.[2]).toBe(f.home);
+    expect(f.follower).not.toHaveBeenCalled();
+  });
+
+  it("keeps native writer conflicts authoritative for compressed history", async () => {
+    const f = fixture(true);
+    f.setFailure(
+      new CodexAppServerError({
+        code: -32600,
+        message: `thread ${nativeId} already has an active writer`,
+      }),
+    );
+    expect(await f.send()).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "codex-owner-busy",
+    });
+    expect(f.methods).not.toContain("turn/start");
+    expect(await f.live()).toMatchObject({ sendEnabled: false, executionLocation: "external" });
+    expect(f.follower).not.toHaveBeenCalled();
+  });
+
+  it("keeps lost native resume receipts blocking compressed-history resends", async () => {
+    const f = fixture(true);
+    f.setFailure(new Error("Codex app-server request timed out"));
+    expect(await f.send()).toMatchObject({ reason: "control-outcome-unconfirmed" });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toHaveLength(1);
+    expect(await f.send()).toMatchObject({
+      controlOutcome: "not-dispatched",
+      reason: "control-outcome-unconfirmed",
+    });
+    expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+    expect(f.methods).not.toContain("turn/start");
+    expect(f.follower).not.toHaveBeenCalled();
+  });
+
+  it("rejects a changed compressed session identity before any CLI continuation", async () => {
+    const f = fixture(true);
+    writeFileSync(f.compressedTranscript, zstdCompressSync(f.history.replace(nativeId, forkId)));
+    await expect(f.live()).rejects.toThrow("unverified-session-identity");
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.follower).not.toHaveBeenCalled();
+  });
+
   it.each(["backend.initialize", "agentkib.shutdown"])(
     "closes an initializing automatic runner before acknowledging %s",
     async (method) => {

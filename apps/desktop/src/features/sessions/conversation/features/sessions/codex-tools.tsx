@@ -177,7 +177,6 @@ export function CodexTools({
     );
   }
   const actionLabels: Record<string, string> = {
-    resume: copy.resume,
     inspect: copy.inspect,
     steer: copy.steer,
     "queue-add": copy.queueAdd,

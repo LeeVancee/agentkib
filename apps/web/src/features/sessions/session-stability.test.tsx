@@ -334,7 +334,9 @@ describe("control outcome recovery", () => {
     fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "draft" } });
 
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByText(/结果未确认/);
+    await screen.findByText(
+      "上次控制结果尚未确认，控制已暂停。请刷新核对已保存请求的处理状态，勿重复提交。",
+    );
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
     expect(screen.getByLabelText("发送消息")).toHaveValue("draft");
 
@@ -618,7 +620,7 @@ describe("durable Codex control recovery", () => {
       target: { value: "private prompt never persisted" },
     });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
-    await screen.findByText(/结果未确认/);
+    await screen.findByText("结果尚未确认。请刷新核对已保存请求的处理状态，不会自动重发。");
     const scope = pendingScope("", "browser");
     const pending = readPending(scope)[0];
     expect(pending.kind).toBe("send");

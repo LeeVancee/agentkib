@@ -35,10 +35,8 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
       "The original client has pending approvals. Resolve them there, then refresh the session before handing it over.",
     questions:
       "The original client has unanswered questions. Answer them there, then refresh the session before handing it over.",
-    access:
-      "Access is not approved. Reconnect and have the desktop app approve access before handing over.",
-    protocol:
-      "The connection protocol is incompatible. Update the host and reconnect before handing over.",
+    access: "Access is not approved. Reconnect and approve access in the desktop app.",
+    protocol: "The connection protocol is incompatible. Update the host and reconnect.",
     experimental:
       "Execution management is not enabled. Enable it in desktop Web settings, then refresh.",
     management:
@@ -65,8 +63,8 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
     turn: "原客户端尚未空闲或释放会话。请结束或停止当前轮次及后台命令，再刷新会话。",
     approvals: "原客户端还有待审批事项。请先在那里处理，再刷新会话后交接。",
     questions: "原客户端还有待回答的问题。请先在那里回答，再刷新会话后交接。",
-    access: "访问尚未获批。请重新连接，并在桌面端批准访问后交接。",
-    protocol: "连接协议不兼容。请更新主机并重新连接后交接。",
+    access: "访问尚未获批。请重新连接，并在桌面端批准访问。",
+    protocol: "连接协议不兼容。请更新主机并重新连接。",
     experimental: "尚未启用执行管理。请在桌面 Web 设置中启用，再刷新。",
     management: "此设备没有管理权限。请在桌面 Web 设置中授权，再重新连接。",
     send: "当前访问没有发送权限。请在运行 AgentKib 的电脑上检查此访问的权限。",
@@ -90,8 +88,8 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
     turn: "原客戶端尚未閒置或釋放對話。請結束或停止目前輪次及背景命令，再重新整理對話。",
     approvals: "原客戶端還有待審批事項。請先在該處處理，再重新整理對話後交接。",
     questions: "原客戶端還有待回答的問題。請先在該處回答，再重新整理對話後交接。",
-    access: "存取尚未獲准。請重新連線，並在桌面端批准存取後交接。",
-    protocol: "連線協定不相容。請更新主機並重新連線後交接。",
+    access: "存取尚未獲准。請重新連線，並在桌面端批准存取。",
+    protocol: "連線協定不相容。請更新主機並重新連線。",
     experimental: "尚未啟用執行管理。請在桌面 Web 設定中啟用，再重新整理。",
     management: "此裝置沒有管理權限。請在桌面 Web 設定中授權，再重新連線。",
     send: "目前存取沒有傳送權限。請在執行 AgentKib 的電腦上檢查此存取的權限。",
@@ -120,9 +118,8 @@ export const managedControlCopy: Record<Locale, Record<ManagedControlBlockReason
       "元のクライアントに承認待ちの項目があります。元のクライアントで処理し、会話を更新してから引き渡してください。",
     questions:
       "元のクライアントに未回答の質問があります。元のクライアントで回答し、会話を更新してから引き渡してください。",
-    access: "アクセスが未承認です。再接続し、デスクトップアプリで承認してから引き渡してください。",
-    protocol:
-      "接続プロトコルに互換性がありません。ホストを更新し、再接続してから引き渡してください。",
+    access: "アクセスが未承認です。再接続し、デスクトップアプリで承認してください。",
+    protocol: "接続プロトコルに互換性がありません。ホストを更新して再接続してください。",
     experimental: "実行管理が無効です。デスクトップの Web 設定で有効にし、更新してください。",
     management:
       "このデバイスには管理権限がありません。デスクトップの Web 設定で許可し、再接続してください。",

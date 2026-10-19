@@ -49,7 +49,7 @@ const zh = {
   retry: "重新连接",
   unknown: "状态未确认",
   controlUnconfirmed:
-    "上次控制结果未确认，本次主机运行期间已禁用控制。请到原客户端检查，勿重复提交。",
+    "上次控制结果尚未确认，控制已暂停。请刷新核对已保存请求的处理状态，勿重复提交。",
   idle: "空闲",
   running: "运行中",
   unavailable: "实时控制暂不可用，请在桌面端检查连接状态。",
@@ -72,7 +72,7 @@ const zh = {
   experimental: "实验控制",
   controlInfo: "仅在明确空闲时发送；运行中可停止当前轮次，不排队。",
   accepted: "请求已接收，不代表执行完成。",
-  uncertain: "结果未确认。不会自动重发，请刷新状态后检查原客户端。",
+  uncertain: "结果尚未确认。请刷新核对已保存请求的处理状态，不会自动重发。",
   notDispatched: "本次操作未执行。请刷新状态后重试，不会自动重发。",
   approval: "等待审批",
   accept: "允许一次",
@@ -168,7 +168,7 @@ const en: Words = {
   retry: "Reconnect",
   unknown: "State unconfirmed",
   controlUnconfirmed:
-    "The previous control outcome is unconfirmed. Controls are disabled for this host run. Check the original client; do not resubmit.",
+    "The previous control outcome is unconfirmed, so controls are paused. Refresh to check the saved request; do not resubmit.",
   idle: "Idle",
   running: "Running",
   unavailable: "Live control is unavailable. Check the connection in the desktop app.",
@@ -194,7 +194,7 @@ const en: Words = {
   controlInfo: "Send only when confirmed idle; stop the current turn while running. No queueing.",
   accepted: "Request acknowledged; execution is not necessarily complete.",
   uncertain:
-    "Outcome unconfirmed. Nothing will be retried automatically. Refresh and check the original client.",
+    "The outcome is unconfirmed. Refresh to check the saved request; it will not be sent again automatically.",
   notDispatched:
     "This operation was not executed. Refresh the state before retrying. No automatic retry.",
   approval: "Approval required",
@@ -290,7 +290,7 @@ const tw: Words = {
   retry: "重新連線",
   unknown: "狀態未確認",
   controlUnconfirmed:
-    "上次控制結果未確認，本次主機執行期間已停用控制。請到原客戶端檢查，勿重複提交。",
+    "上次控制結果尚未確認，控制已暫停。請重新整理核對已儲存請求的處理狀態，勿重複提交。",
   idle: "閒置",
   running: "執行中",
   unavailable: "即時控制暫時無法使用，請在桌面端檢查連線狀態。",
@@ -313,7 +313,7 @@ const tw: Words = {
   experimental: "實驗控制",
   controlInfo: "僅在明確閒置時傳送；執行中可停止目前輪次，不排隊。",
   accepted: "請求已接收，不代表執行完成。",
-  uncertain: "結果未確認。不會自動重送，請重新整理狀態後檢查原客戶端。",
+  uncertain: "結果尚未確認。請重新整理核對已儲存請求的處理狀態，不會自動重傳。",
   notDispatched: "本次操作未執行。請重新整理狀態後重試，不會自動重送。",
   approval: "等待審批",
   accept: "允許一次",
@@ -407,7 +407,7 @@ const ja: Words = {
   retry: "再接続",
   unknown: "状態未確認",
   controlUnconfirmed:
-    "前回の操作結果が未確認のため、今回のホスト起動中は操作できません。元のクライアントで確認し、再送しないでください。",
+    "前回の操作結果が未確認のため、操作を一時停止しています。更新して保存済みリクエストの処理状況を確認し、再送しないでください。",
   idle: "待機中",
   running: "実行中",
   unavailable: "リアルタイム制御は利用できません。デスクトップアプリで接続状態を確認してください。",
@@ -433,7 +433,8 @@ const ja: Words = {
   controlInfo:
     "待機状態が確認されたときのみ送信し、実行中は現在のターンを停止できます。キューは利用できません。",
   accepted: "リクエストを受け付けました。実行完了を意味しません。",
-  uncertain: "結果は未確認です。自動再送はしません。更新して元のクライアントを確認してください。",
+  uncertain:
+    "結果は未確認です。更新して保存済みリクエストの処理状況を確認してください。自動で再送しません。",
   notDispatched:
     "今回の操作は実行されませんでした。状態を更新してから再試行してください。自動再送はしません。",
   approval: "承認待ち",

@@ -214,4 +214,22 @@ describe("SessionCatalog", () => {
       expect(screen.getAllByRole("status")).toHaveLength(3);
     },
   );
+  it.each([
+    ["zh-CN", "没有匹配的会话"],
+    ["zh-TW", "沒有符合的對話"],
+    ["en-US", "No matching sessions"],
+    ["ja-JP", "該当する会話はありません"],
+  ] as const)("uses session terminology in empty search feedback in %s", (locale, noResults) => {
+    render(
+      <SessionCatalog
+        locale={locale}
+        sessions={sessions}
+        workspaces={workspaces}
+        selected=""
+        onSelect={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "No such session title" } });
+    expect(screen.getByText(noResults)).toBeVisible();
+  });
 });

@@ -234,4 +234,40 @@ describe("Codex native session details", () => {
       screen.getByText(copy.sourceFile, { selector: "dt" }).nextElementSibling,
     ).toHaveTextContent(copy.unknown);
   });
+  it.each([
+    ["zh-CN", "交互会话", "辅助会话"],
+    ["zh-TW", "互動對話", "輔助對話"],
+    ["en-US", "Interactive session", "Auxiliary session"],
+    ["ja-JP", "対話型の会話", "補助会話"],
+  ] as const)(
+    "uses session terminology for source labels in %s",
+    (locale, interactive, auxiliary) => {
+      const copy = catalogCopy[locale];
+      session.value = {
+        t: dictionaries[locale],
+        c: copy,
+        setModal: vi.fn(),
+        current: { id: "session", agent: "claude-code", origin: "interactive" },
+        currentWorkspace: { name: "Repo", path: "/repo" },
+        formatCatalogTime: () => copy.unknown,
+        sourceTitle: () => "",
+        online: true,
+        liveText: "",
+        client: { request: vi.fn().mockResolvedValue({ available: false }) },
+        access: { status: "approved", device: { id: "browser" } },
+      };
+      const view = render(<SessionDetailsDialog />);
+      expect(
+        screen.getByText(copy.source, { selector: "dt" }).nextElementSibling,
+      ).toHaveTextContent(interactive);
+      session.value = {
+        ...session.value,
+        current: { id: "session", agent: "claude-code", origin: "auxiliary" },
+      };
+      view.rerender(<SessionDetailsDialog />);
+      expect(
+        screen.getByText(copy.source, { selector: "dt" }).nextElementSibling,
+      ).toHaveTextContent(auxiliary);
+    },
+  );
 });

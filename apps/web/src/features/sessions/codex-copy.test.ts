@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { codexCopy, codexReason } from "@/features/conversation/features/sessions/codex-copy";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
 
 describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
@@ -72,6 +73,45 @@ describe("Codex capability reasons", () => {
       context: "Original-client context",
     });
   });
+
+  it.each(locales)("keeps automatic continuation recovery actionable in %s", (locale) => {
+    const removedWorkflow =
+      /原客户端|原客戶端|original.client|元のクライアント|交给|交給|交还|交還|handed over|引き渡|恢复执行|恢復執行|resume execution|実行を再開/i;
+    for (const reason of [
+      "codex-connection-failed",
+      "codex-owner-changed",
+      "session-already-managed",
+      "session-released",
+      "recovery-required",
+      "native-session-unconfirmed",
+      "session-state-unavailable",
+      "control-outcome-unconfirmed",
+    ]) {
+      expect(codexReason(locale, reason).text).not.toMatch(removedWorkflow);
+    }
+    for (const key of ["access", "protocol"] as const) {
+      expect(managedControlCopy[locale][key]).not.toMatch(/交接|handing over|引き渡/i);
+    }
+    expect(dictionaries[locale].controlUnconfirmed).not.toMatch(removedWorkflow);
+    expect(dictionaries[locale].uncertain).not.toMatch(removedWorkflow);
+  });
+
+  it.each([
+    ["zh-CN", "已保存请求", "不会自动重发", "勿重复提交"],
+    ["zh-TW", "已儲存請求", "不會自動重傳", "勿重複提交"],
+    ["en-US", "saved request", "not be sent again automatically", "do not resubmit"],
+    ["ja-JP", "保存済みリクエスト", "自動で再送しません", "再送しないでください"],
+  ] as const)(
+    "requires checking an unknown outcome without resending in %s",
+    (locale, request, noAutomaticResend, noResubmit) => {
+      const reason = codexReason(locale, "control-outcome-unconfirmed").text;
+      expect(reason).toContain(request);
+      expect(reason).toContain(noAutomaticResend);
+      expect(reason).toContain(noResubmit);
+      expect(dictionaries[locale].controlUnconfirmed).toContain(noResubmit);
+      expect(dictionaries[locale].uncertain).toContain(request);
+    },
+  );
   it.each(locales)(
     "explains state restrictions without reporting a read failure in %s",
     (locale) => {
@@ -173,7 +213,7 @@ describe("reasons a Claude session was stopped for", () => {
 
   it("keeps general unknown outcomes separate from stopped Claude sessions", () => {
     expect(codexReason("en-US", "control-outcome-unconfirmed")).toEqual({
-      text: "The previous outcome is unconfirmed. Check the original client and the saved request status; it will not be sent again automatically.",
+      text: "The previous outcome is unconfirmed. Refresh to check the saved request; do not resubmit. It will not be sent again automatically.",
     });
     expect(codexReason("en-US", "codex-connection-failed").technical).toBeUndefined();
     expect(codexReason("en-US", "Claude process exited (1)").technical).toBe(

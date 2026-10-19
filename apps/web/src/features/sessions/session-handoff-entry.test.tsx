@@ -5,7 +5,6 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
 import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
-import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
 import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
 import { dictionaries } from "@/features/conversation/i18n";
 const words = dictionaries["en-US"];
@@ -117,7 +116,7 @@ describe("reader handoff entries", () => {
     const dialog = await screen.findByRole("dialog", { name: "Session actions" });
     expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(
-      within(dialog).queryByRole("button", { name: codexCopy["en-US"].resume }),
+      within(dialog).queryByRole("button", { name: "Resume execution" }),
     ).not.toBeInTheDocument();
     expect(session.codexAction).not.toHaveBeenCalled();
     expect(request.mock.calls.some(([path]) => path === "managed/adopt")).toBe(false);
@@ -191,9 +190,7 @@ describe("reader handoff entries", () => {
     if (blocked === "uncertain") session.notice = "uncertain";
     if (blocked === "compacting") session.live!.activity = "compacting";
     render(<View />);
-    expect(
-      screen.queryByRole("button", { name: codexCopy["en-US"].resume }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume execution" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Hand over to AgentKib" })).not.toBeInTheDocument();
     expect(session.codexAction).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();

@@ -455,10 +455,20 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     const view = render(<CodexTools open ownership={<span>Legacy ownership controls</span>} />);
     await screen.findByText("Pending turn");
     const copy = codexCopy[locale];
+    const obsoleteResume = {
+      "zh-CN": "恢复执行",
+      "zh-TW": "恢復執行",
+      "en-US": "Resume execution",
+      "ja-JP": "実行を再開",
+    }[locale];
     expect(screen.getByRole("heading", { name: copy.queue })).toBeVisible();
     expect(screen.queryByRole("button", { name: copy.queueStart })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: copy.resume })).not.toBeInTheDocument();
-    expect(screen.queryByText(copy.handoff)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: obsoleteResume })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        /我已处理待审批事项|我已處理待審批事項|I have handled pending|保留中のリクエストとバックグラウンド/,
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(screen.queryByText("Legacy ownership controls")).not.toBeInTheDocument();
     fireEvent.click(screen.getByText(webLayoutCopy[locale].diagnostics));
@@ -473,7 +483,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     };
     view.rerender(<CodexTools open />);
     expect(
-      screen.queryByText(new RegExp(`${copy.resume}|${copy.queueStart}`)),
+      screen.queryByText(new RegExp(`${obsoleteResume}|${copy.queueStart}`)),
     ).not.toBeInTheDocument();
   },
 );

@@ -3,7 +3,6 @@ import { claudeConnectionReason } from "./claude-connection-copy";
 import { dictionaries, type Locale } from "../../i18n";
 import { unavailableReasonText } from "../../live-status";
 const zh = {
-  handoff: "我已处理待审批事项和后台命令，并关闭原执行客户端；以原会话 ID 恢复执行，不自动分支。",
   composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入待发队列。队列消息将自动执行。",
   queueTooLarge: "待发队列超过 100 条，此处暂不允许编辑或排序。",
   queueAttachments: "含附件的待发消息暂不支持编辑正文，可删除后重新添加。",
@@ -13,7 +12,6 @@ const zh = {
   capabilities: "主机能力",
   unavailable: "主机未提供或尚未验证此能力",
   permission: "当前访问没有附件上传权限。",
-  resume: "恢复执行",
   inspect: "检查会话状态",
   steer: "追加到当前轮次",
   queue: "待发队列",
@@ -103,12 +101,10 @@ export const codexCopy: Record<Locale, Copy> = {
     queueAttachments: "含附件的待傳送訊息暫不支援編輯內文，可刪除後重新新增。",
     keep: "保持目前設定",
     pendingInfo: "彙整此頁已查看對話的待處理事項及此瀏覽器尚未確認的請求。",
-    handoff: "我已處理待審批事項和背景命令，並關閉原執行客戶端；以原對話 ID 恢復執行，不自動分支。",
     title: "Codex 控制",
     capabilities: "主機能力",
     unavailable: "主機未提供或尚未驗證此能力",
     permission: "目前存取沒有附件上傳權限。",
-    resume: "恢復執行",
     inspect: "檢查對話狀態",
     steer: "追加到目前輪次",
     queue: "待發佇列",
@@ -197,13 +193,10 @@ export const codexCopy: Record<Locale, Copy> = {
     keep: "Keep current settings",
     pendingInfo:
       "Pending actions from sessions viewed on this page and unconfirmed requests from this browser.",
-    handoff:
-      "I have handled pending requests and background commands and closed the original execution client. Resume execution with the same session ID without an automatic fork.",
     title: "Codex controls",
     capabilities: "Host capabilities",
     unavailable: "The host does not provide or has not verified this capability",
     permission: "This access does not include permission to upload attachments.",
-    resume: "Resume execution",
     inspect: "Inspect session state",
     steer: "Add to current turn",
     queue: "Queued messages",
@@ -294,13 +287,10 @@ export const codexCopy: Record<Locale, Copy> = {
     keep: "現在の設定を保持",
     pendingInfo:
       "このページで閲覧した会話の対応待ち項目と、このブラウザーの未確認リクエストを表示します。",
-    handoff:
-      "保留中のリクエストとバックグラウンドコマンドを確認し、元の実行クライアントを閉じました。自動分岐せず元の会話 ID で実行を再開します。",
     title: "Codex 操作",
     capabilities: "ホストの機能",
     unavailable: "ホストで未提供または未検証の機能です",
     permission: "現在のアクセスでは添付ファイルをアップロードできません。",
-    resume: "実行を再開",
     inspect: "会話の状態を確認",
     steer: "現在のターンに追加",
     queue: "送信待ちキュー",
@@ -390,27 +380,27 @@ const reasons: Record<Locale, Record<string, string>> = {
       "无法确认这条会话是否正在 Codex 中使用，目前仅可查看。请刷新重试。",
     "codex-cli-unavailable": "未找到 Codex CLI，安装后可以在这里继续",
     "codex-protocol-incompatible": "当前 Codex 原生协议与会话快照不兼容，请更新客户端后重试。",
-    "codex-connection-failed": "暂时无法连接 Codex 原客户端，请核对客户端状态后重试。",
-    "codex-owner-changed": "执行此会话的 Codex 客户端已变化，正在重新检查状态。",
+    "codex-connection-failed": "暂时无法连接 Codex，请检查主机状态后重试。",
+    "codex-owner-changed": "Codex 的运行状态已变化，正在重新检查。",
     "session-compacting": "上下文正在压缩，请等待上下文压缩完成后继续。",
     "settings-not-applied": "设置尚未由 Codex 确认，请先发送一轮应用设置，再开始或恢复目标。",
     "collaboration-modes-unavailable": "主机尚未提供已验证的 Codex 协作模式列表。",
     "session-busy": "此操作需要会话空闲，请等待当前轮次结束。",
     "session-requires-running-turn": "此操作仅在轮次运行中可用。",
     "no-active-turn": "当前没有可停止的轮次。",
-    "session-already-managed": "此会话已交给 AgentKib，无需再次恢复执行。",
+    "session-already-managed": "这条会话已可在 AgentKib 中继续，无需重复操作。",
     "session-not-archived": "此会话尚未归档，无需取消归档。",
     "session-archived": "此会话已归档，请先取消归档。",
-    "session-released": "此会话已交还原客户端，请先恢复执行。",
-    "recovery-required": "执行连接需要恢复，请先检查原客户端状态。",
-    "native-session-unconfirmed": "尚未确认原客户端的会话 ID，请先检查该客户端状态。",
+    "session-released": "后台进程已结束，请刷新会话状态后重试。",
+    "recovery-required": "暂时无法继续这条会话，请刷新状态后重试。",
+    "native-session-unconfirmed": "无法确认这条会话的身份，请刷新状态后重试。",
     "follower-operation-unverified": "当前原客户端尚未验证此操作，请在原客户端完成。",
     "control-disabled": "桌面尚未开启执行控制。",
-    "session-state-unavailable": "暂时无法读取会话状态，请核对原客户端后刷新。",
+    "session-state-unavailable": "暂时无法读取会话状态，请刷新后重试。",
     "unsupported-codex-cli-version": "当前 Codex 版本未经兼容验证，此能力保持只读。",
     "native-operation-not-integrated": "尚不支持通过远程访问执行此原客户端操作。",
     "control-outcome-unconfirmed":
-      "上次操作结果尚未确认。请先检查原客户端状态与已保存请求的处理状态；不会自动重发。",
+      "上次操作结果尚未确认。请刷新核对已保存请求的处理状态，勿重复提交；不会自动重发。",
     "claude-background-task":
       "Claude 启动了后台任务。AgentKib 无法监管后台任务，所以 AgentKib 停止了该会话，避免进程无人看管。Claude Code 自己保存着此前的会话（最后几条消息可能缺失）。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。",
     "claude-unrequested-turn":
@@ -426,27 +416,27 @@ const reasons: Record<Locale, Record<string, string>> = {
       "無法確認這段對話是否正在 Codex 中使用，目前僅可查看。請重新整理再試。",
     "codex-cli-unavailable": "找不到 Codex CLI，安裝後可以在這裡繼續",
     "codex-protocol-incompatible": "目前 Codex 原生協定與對話快照不相容，請更新客戶端後重試。",
-    "codex-connection-failed": "暫時無法連線至 Codex 原客戶端，請核對客戶端狀態後重試。",
-    "codex-owner-changed": "執行此對話的 Codex 客戶端已變更，正在重新檢查狀態。",
+    "codex-connection-failed": "暫時無法連線至 Codex，請檢查主機狀態後重試。",
+    "codex-owner-changed": "Codex 的執行狀態已變更，正在重新檢查。",
     "session-compacting": "上下文正在壓縮，請等待上下文壓縮完成後繼續。",
     "settings-not-applied": "設定尚未由 Codex 確認，請先傳送一回合套用設定，再開始或恢復目標。",
     "collaboration-modes-unavailable": "主機尚未提供已驗證的 Codex 協作模式清單。",
     "session-busy": "此操作需要對話閒置，請等待目前輪次結束。",
     "session-requires-running-turn": "此操作僅在輪次執行中可用。",
     "no-active-turn": "目前沒有可停止的輪次。",
-    "session-already-managed": "此對話已交給 AgentKib，無需再次恢復執行。",
+    "session-already-managed": "這段對話已可在 AgentKib 中繼續，無需重複操作。",
     "session-not-archived": "此對話尚未封存，無需取消封存。",
     "session-archived": "此對話已封存，請先取消封存。",
-    "session-released": "此對話已交還原客戶端，請先恢復執行。",
-    "recovery-required": "執行連線需要恢復，請先檢查原客戶端狀態。",
-    "native-session-unconfirmed": "尚未確認原客戶端的對話 ID，請先檢查該客戶端狀態。",
+    "session-released": "背景程序已結束，請重新整理對話狀態後重試。",
+    "recovery-required": "暫時無法繼續這段對話，請重新整理狀態後重試。",
+    "native-session-unconfirmed": "無法確認這段對話的身分，請重新整理狀態後重試。",
     "follower-operation-unverified": "目前原客戶端尚未驗證此操作，請在原客戶端完成。",
     "control-disabled": "桌面尚未啟用執行控制。",
-    "session-state-unavailable": "暫時無法讀取對話狀態，請核對原客戶端後重新整理。",
+    "session-state-unavailable": "暫時無法讀取對話狀態，請重新整理後重試。",
     "unsupported-codex-cli-version": "目前 Codex 版本未經相容驗證，此能力保持唯讀。",
     "native-operation-not-integrated": "尚不支援透過遠端存取執行此原客戶端操作。",
     "control-outcome-unconfirmed":
-      "上次操作結果尚未確認。請先檢查原客戶端狀態與已儲存請求的處理狀態；不會自動重傳。",
+      "上次操作結果尚未確認。請重新整理核對已儲存請求的處理狀態，勿重複提交；不會自動重傳。",
     "claude-background-task":
       "Claude 啟動了背景任務。AgentKib 無法監管背景任務，所以 AgentKib 停止了該對話，避免程序無人看管。Claude Code 自己保存著先前的對話（最後幾則訊息可能缺失）。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。",
     "claude-unrequested-turn":
@@ -463,10 +453,8 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-cli-unavailable": "Codex CLI was not found. Install it to continue here.",
     "codex-protocol-incompatible":
       "The Codex native protocol or session snapshot is incompatible. Update the client and retry.",
-    "codex-connection-failed":
-      "The original Codex client could not be reached. Check its state and retry.",
-    "codex-owner-changed":
-      "The Codex client running this session changed. Its state needs to be checked again.",
+    "codex-connection-failed": "Codex could not be reached. Check the host and retry.",
+    "codex-owner-changed": "The Codex execution state changed. Checking it again.",
     "session-compacting":
       "Context is compacting. Wait for context compaction to finish before continuing.",
     "settings-not-applied":
@@ -477,26 +465,23 @@ const reasons: Record<Locale, Record<string, string>> = {
     "session-requires-running-turn": "This operation is only available while a turn is running.",
     "no-active-turn": "There is no active turn to stop.",
     "session-already-managed":
-      "This session has already been handed over to AgentKib. Resuming it again is unnecessary.",
+      "This session is already available in AgentKib. No additional action is needed.",
     "session-not-archived": "This session is not archived, so there is nothing to unarchive.",
     "session-archived": "This session is archived. Unarchive it first.",
-    "session-released":
-      "This session has been returned to the original client. Resume execution first.",
-    "recovery-required":
-      "The execution connection needs recovery. Check the original client first.",
+    "session-released": "The background process ended. Refresh the session state and retry.",
+    "recovery-required": "This session cannot continue yet. Refresh its state and retry.",
     "native-session-unconfirmed":
-      "The session ID in the original client is unconfirmed. Check that client first.",
+      "This session's identity could not be confirmed. Refresh its state and retry.",
     "follower-operation-unverified":
       "This operation has not been verified with the original client. Use that client instead.",
     "control-disabled": "Execution control is not enabled on desktop.",
-    "session-state-unavailable":
-      "Session state is unavailable. Check the original client and refresh.",
+    "session-state-unavailable": "Session state is unavailable. Refresh and retry.",
     "unsupported-codex-cli-version":
       "This Codex version has not passed compatibility verification. This capability remains read-only.",
     "native-operation-not-integrated":
       "This original-client operation is not available through remote access yet.",
     "control-outcome-unconfirmed":
-      "The previous outcome is unconfirmed. Check the original client and the saved request status; it will not be sent again automatically.",
+      "The previous outcome is unconfirmed. Refresh to check the saved request; do not resubmit. It will not be sent again automatically.",
     "claude-background-task":
       "Claude started a background task. AgentKib cannot supervise background work, so AgentKib stopped it rather than leave processes running unattended. Claude Code keeps the session up to that point (the last messages may be missing). This session is read-only in AgentKib; continue it in the Claude Code terminal.",
     "claude-unrequested-turn":
@@ -513,10 +498,8 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-cli-unavailable": "Codex CLI が見つかりません。インストールすると、ここで続けられます。",
     "codex-protocol-incompatible":
       "Codex のネイティブプロトコルまたは会話スナップショットに互換性がありません。更新後に再試行してください。",
-    "codex-connection-failed":
-      "元の Codex クライアントに接続できません。状態を確認して再試行してください。",
-    "codex-owner-changed":
-      "この会話を実行する Codex クライアントが変わりました。状態を再確認しています。",
+    "codex-connection-failed": "Codex に接続できません。ホストの状態を確認して再試行してください。",
+    "codex-owner-changed": "Codex の実行状態が変わりました。再確認しています。",
     "session-compacting": "コンテキストを圧縮中です。圧縮が完了するまでお待ちください。",
     "settings-not-applied":
       "設定は Codex で未確認です。ターンを送信して反映した後、目標を開始または再開してください。",
@@ -525,24 +508,23 @@ const reasons: Record<Locale, Record<string, string>> = {
     "session-busy": "この操作は待機中に利用できます。現在のターンの終了をお待ちください。",
     "session-requires-running-turn": "この操作はターンの実行中のみ利用できます。",
     "no-active-turn": "停止できるターンはありません。",
-    "session-already-managed":
-      "この会話はすでに AgentKib に引き渡されています。再開する必要はありません。",
+    "session-already-managed": "この会話はすでに AgentKib で続けられます。追加の操作は不要です。",
     "session-not-archived": "この会話はアーカイブされていないため、解除する必要はありません。",
     "session-archived": "この会話はアーカイブされています。先にアーカイブを解除してください。",
-    "session-released": "この会話の実行は引き渡されました。先に実行を再開してください。",
-    "recovery-required": "実行接続の復旧が必要です。先に元のクライアントの状態を確認してください。",
+    "session-released":
+      "バックグラウンドプロセスは終了しました。会話の状態を更新して再試行してください。",
+    "recovery-required": "この会話はまだ続けられません。状態を更新して再試行してください。",
     "native-session-unconfirmed":
-      "元のクライアントの会話 ID が未確認です。先にその状態を確認してください。",
+      "この会話の識別情報を確認できません。状態を更新して再試行してください。",
     "follower-operation-unverified":
       "元のクライアントでこの操作は未検証です。元のクライアントで操作してください。",
     "control-disabled": "デスクトップで実行操作が有効になっていません。",
-    "session-state-unavailable":
-      "会話の状態を取得できません。元のクライアントを確認して更新してください。",
+    "session-state-unavailable": "会話の状態を取得できません。更新して再試行してください。",
     "unsupported-codex-cli-version":
       "この Codex バージョンは互換性が未検証のため、この機能は読み取り専用です。",
     "native-operation-not-integrated": "元のクライアントのこの操作はリモートアクセスに未対応です。",
     "control-outcome-unconfirmed":
-      "前回の結果は未確認です。元のクライアントと保存済みリクエストの処理状況を確認してください。自動で再送しません。",
+      "前回の結果は未確認です。更新して保存済みリクエストの処理状況を確認し、再送しないでください。自動で再送しません。",
     "claude-background-task":
       "Claude がバックグラウンドタスクを開始しました。AgentKib はバックグラウンド作業を監督できないため、プロセスが放置されないよう AgentKib が会話を停止しました。Claude Code はそれまでの会話を保存しています（最後の数件は欠けている可能性があります）。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。",
     "claude-unrequested-turn":

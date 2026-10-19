@@ -538,7 +538,7 @@ describe("composer sending shortcuts", () => {
     fireEvent.focus(input);
     expect(doubles.session.checkContinuation).toHaveBeenCalledOnce();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(screen.queryByText(codexCopy["en-US"].resume)).not.toBeInTheDocument();
+    expect(screen.queryByText("Resume execution")).not.toBeInTheDocument();
   });
   it("preserves a rejected send draft through the owner choice and restores input after release", async () => {
     continuationFixture();

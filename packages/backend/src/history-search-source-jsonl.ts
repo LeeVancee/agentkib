@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { decompressedChunks, isCompressedRollout } from "./codex-rollout-files";
 import { isReparseOrSymlink } from "./native-files";
 import { messageText } from "./session-events";
 import { jsonTimestamp } from "./session-history";
@@ -27,11 +28,16 @@ async function lines(
   const entry = lstatSync(file);
   if (!entry.isFile() || isReparseOrSymlink(file, entry)) throw new Error("history-source-unsafe");
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  // Cleared before fd is closed, so a decompressing stream never reads it later.
+  let reading = true;
   try {
     const before = fstatSync(fd, { bigint: true });
     if (!before.isFile()) throw new Error("history-source-unsafe");
+    // A compressed rollout's limit applies to the bytes it decompresses to.
+    const compressed = isCompressedRollout(file);
     const maximum = Number(before.size > BigInt(MAX_BYTES) ? BigInt(MAX_BYTES) : before.size);
-    if (before.size > BigInt(MAX_BYTES)) sink.limit("source-byte-limit");
+    let truncated = !compressed && before.size > BigInt(MAX_BYTES);
+    if (truncated) sink.limit("source-byte-limit");
     const hash = createHash("sha256").update(
       `${before.dev}:${before.ino}:${before.size}:${before.mtimeNs}`,
     );
@@ -68,17 +74,7 @@ async function lines(
       size = 0;
       oversized = false;
     };
-    // This function alone owns fd. Async stream destruction could close it again after
-    // finally has released it and another request has reused the descriptor number.
-    let position = 0;
-    while (position < maximum) {
-      sink.checkpoint();
-      // Keep each buffer immutable while fragments from its unfinished line are retained.
-      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maximum - position));
-      const length = readSync(fd, chunk, 0, chunk.length, position);
-      if (length === 0) throw new Error("history-source-changed");
-      position += length;
-      const buffer = chunk.subarray(0, length);
+    const take = async (buffer: Buffer) => {
       hash.update(buffer);
       let start = 0;
       while (start < buffer.length) {
@@ -95,9 +91,36 @@ async function lines(
         await finish();
         start = newline + 1;
       }
-    }
+    };
+    // This function alone owns fd. Async stream destruction could close it again after
+    // finally has released it and another request has reused the descriptor number.
+    let position = 0;
+    if (compressed) {
+      // The stream only decompresses; fd is read here, while `reading` holds.
+      for await (const chunk of decompressedChunks(fd, Number(before.size), () => reading)) {
+        sink.checkpoint();
+        const room = MAX_BYTES - position,
+          buffer = (chunk as Buffer).subarray(0, Math.min((chunk as Buffer).length, room));
+        position += buffer.length;
+        await take(buffer);
+        if ((chunk as Buffer).length > room) {
+          truncated = true;
+          sink.limit("source-byte-limit");
+          break;
+        }
+      }
+    } else
+      while (position < maximum) {
+        sink.checkpoint();
+        // Keep each buffer immutable while fragments from its unfinished line are retained.
+        const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maximum - position));
+        const length = readSync(fd, chunk, 0, chunk.length, position);
+        if (length === 0) throw new Error("history-source-changed");
+        position += length;
+        await take(chunk.subarray(0, length));
+      }
     if (size) {
-      if (before.size > BigInt(MAX_BYTES)) sink.limit("source-record-limit");
+      if (truncated) sink.limit("source-record-limit");
       else await finish();
     }
     const after = fstatSync(fd, { bigint: true }),
@@ -112,6 +135,7 @@ async function lines(
       throw new Error("history-source-changed");
     return hash.digest("hex");
   } finally {
+    reading = false;
     closeSync(fd);
   }
 }

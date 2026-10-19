@@ -97,13 +97,15 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   const commands = {
     run: vi.fn(async (command: string, args: string[]) => {
       if (command === "/bin/ps") {
-        expect(args).toEqual(["-axo", "pid=,lstart=,command="]);
+        expect(args).toEqual(["-axo", "pid=,pgid=,lstart=,command="]);
         // Model only this fixture's owner; process-wide ps parsing has dedicated coverage.
         if (externalOwner) process.kill(process.pid, 0);
         return {
           success: true,
           bytes: Buffer.from(
-            externalOwner ? `${process.pid} Mon Oct 19 00:00:00 2026 node fixture-owner\n` : "",
+            externalOwner
+              ? `${process.pid} ${process.pid} Mon Oct 19 00:00:00 2026 node fixture-owner\n`
+              : "",
           ),
         };
       }

@@ -17,8 +17,19 @@ export type ClaudeSessionOwnership =
   | { kind: "idle" }
   | { kind: "interactive" | "background"; pid: number; source: "agents" | "registry" | "ps" };
 
-type Process = { start: string; command: string };
+type Process = { group: number; start: string; command: string };
 type ProcessIdentities = Map<number, Set<string>>;
+/** A live PID's registry file, read once per observation; failures are judged per session. */
+type RegistryEntry = { pid: number; value?: unknown; unreadable?: true };
+/** Read-only ownership sources, collected once and evaluated per session. */
+export type ClaudeOwnerObservation = {
+  readonly agents: unknown[] | null;
+  readonly processes: ReadonlyMap<number, Process> | null;
+  readonly registry: { readonly uncertain: boolean; readonly entries: readonly RegistryEntry[] };
+};
+/** Lets one maintenance tick evaluate all of its workers against a single observation. */
+export type ClaudeOwnerObservationShare = { current?: Promise<ClaudeOwnerObservation> };
+
 const unavailable = () => new Error("claude-owner-check-unavailable");
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -26,8 +37,9 @@ const object = (value: unknown): value is Record<string, unknown> =>
 const pidOf = (value: unknown): number | null =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 const normalizedStart = (value: string) => value.trim().replace(/\s+/g, " ");
+// Claude Code registers interactive | bg | daemon | daemon-worker; older fixtures say background.
 const ownershipKind = (kind: unknown): "interactive" | "background" =>
-  kind === "background" ? "background" : "interactive";
+  kind === "background" || kind === "bg" ? "background" : "interactive";
 
 function rememberIdentity(identities: ProcessIdentities, pid: number, sessionId: unknown): void {
   if (typeof sessionId !== "string" || !sessionId) return;
@@ -60,20 +72,49 @@ function readsForkSource(words: string[], nativeId: string, identities?: Set<str
   );
 }
 
-/** Read-only observations. No caching: every worker start must see current external ownership. */
+/**
+ * Read-only observations. Startup checks never reuse one: every worker start must see current
+ * external ownership. Only a maintenance tick shares one observation across its live workers.
+ */
 export class ClaudeSessionOwnerProbe {
   constructor(
     readonly commands: Commands,
     readonly environment: NodeJS.ProcessEnv,
   ) {}
 
-  async check(nativeId: string, ownedPid: number | null = null): Promise<ClaudeSessionOwnership> {
+  async check(
+    nativeId: string,
+    ownedPid: number | null = null,
+    share?: ClaudeOwnerObservationShare,
+  ): Promise<ClaudeSessionOwnership> {
+    const observation = share ? (share.current ??= this.observe()) : this.observe();
+    return this.#evaluate(await observation, nativeId, ownedPid);
+  }
+
+  async observe(): Promise<ClaudeOwnerObservation> {
     if (process.platform !== "darwin" && process.platform !== "linux")
       throw new Error("platform-unsupported");
     // Liveness must be newer than the agents observation: an earlier process snapshot can
     // omit a newly opened session and incorrectly discard positive ownership as a dead PID.
     const agents = await this.#agents().catch(() => null);
     const processes = await this.#processes().catch(() => null);
+    return {
+      agents,
+      processes,
+      registry: processes ? this.#registry(processes) : { uncertain: false, entries: [] },
+    };
+  }
+
+  #evaluate(
+    observation: ClaudeOwnerObservation,
+    nativeId: string,
+    ownedPid: number | null,
+  ): ClaudeSessionOwnership {
+    const { agents, processes } = observation;
+    // The worker leads its own process group (detached spawn). A launcher shim can run the real
+    // CLI as its child, which then registers a PID other than the one AgentKib spawned.
+    const owned = (pid: number) =>
+      ownedPid !== null && (pid === ownedPid || processes?.get(pid)?.group === ownedPid);
     let uncertain = false;
     const identities: ProcessIdentities = new Map();
 
@@ -84,18 +125,18 @@ export class ClaudeSessionOwnerProbe {
         uncertain ||= agent.sessionId === nativeId;
         continue;
       }
-      if (pid === ownedPid || (processes && !processes.has(pid))) continue;
+      if (owned(pid) || (processes && !processes.has(pid))) continue;
       rememberIdentity(identities, pid, agent.sessionId);
       if (agent.sessionId === nativeId)
         return { kind: ownershipKind(agent.kind), pid, source: "agents" };
     }
 
     if (processes) {
-      const registry = this.#registry(nativeId, ownedPid, processes, identities);
+      const registry = this.#registryOwner(observation, nativeId, owned, identities);
       if (registry.owner) return registry.owner;
       uncertain ||= registry.uncertain;
       for (const [pid, row] of processes) {
-        if (pid === ownedPid) continue;
+        if (owned(pid)) continue;
         const words = row.command.trim().split(/\s+/);
         if (!words.some((word) => path.posix.basename(word) === "claude")) continue;
         const mentioned = words.some(
@@ -142,7 +183,7 @@ export class ClaudeSessionOwnerProbe {
   }
 
   async #processes(): Promise<Map<number, Process>> {
-    const result = await this.commands.run("/bin/ps", ["-axo", "pid=,lstart=,command="], {
+    const result = await this.commands.run("/bin/ps", ["-axo", "pid=,pgid=,lstart=,command="], {
       env: { ...this.environment, TZ: "UTC", LC_ALL: "C", LANG: "C" },
       timeout: 3000,
       limit: 4 * 1024 * 1024,
@@ -153,48 +194,45 @@ export class ClaudeSessionOwnerProbe {
     for (const line of result.bytes.toString("utf8").split("\n")) {
       if (!line.trim()) continue;
       const match =
-        /^\s*(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/.exec(line);
+        /^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/.exec(
+          line,
+        );
       if (!match) throw unavailable();
       const pid = pidOf(Number(match[1]));
-      if (pid === null) throw unavailable();
-      processes.set(pid, { start: normalizedStart(match[2]!), command: match[3]! });
+      const group = Number(match[2]);
+      if (pid === null || !Number.isSafeInteger(group)) throw unavailable();
+      processes.set(pid, { group, start: normalizedStart(match[3]!), command: match[4]! });
     }
     return processes;
   }
 
-  #registry(
-    nativeId: string,
-    ownedPid: number | null,
-    processes: Map<number, Process>,
-    identities: ProcessIdentities,
-  ): { owner: ClaudeSessionOwnership | null; uncertain: boolean } {
+  #registry(processes: ReadonlyMap<number, Process>): ClaudeOwnerObservation["registry"] {
     const home = this.environment.HOME ?? homedir();
     const config = resolveClaudeConfig(this.environment, home);
-    if (config.invalid) return { owner: null, uncertain: true };
+    if (config.invalid) return { uncertain: true, entries: [] };
     const directory = path.join(config.dir, "sessions");
-    let entries: string[];
+    let names: string[];
     try {
       const stat = lstatSync(directory);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) return { owner: null, uncertain: true };
-      entries = readdirSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return { uncertain: true, entries: [] };
+      names = readdirSync(directory);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      return { owner: null, uncertain: code !== "ENOENT" && code !== "ENOTDIR" };
+      return { uncertain: code !== "ENOENT" && code !== "ENOTDIR", entries: [] };
     }
-    if (entries.length > 4096) return { owner: null, uncertain: true };
-    let uncertain = false;
-    for (const name of entries) {
+    if (names.length > 4096) return { uncertain: true, entries: [] };
+    const entries: RegistryEntry[] = [];
+    for (const name of names) {
       if (!/^[1-9]\d*\.json$/.test(name)) continue;
-      const filenamePid = Number(name.slice(0, -5));
-      if (!processes.has(filenamePid) || filenamePid === ownedPid) continue;
-      let value: unknown;
+      const pid = Number(name.slice(0, -5));
+      if (!processes.has(pid)) continue;
       let fd: number | undefined;
       try {
         const file = path.join(directory, name);
         const stat = lstatSync(file);
         if (stat.isSymbolicLink()) continue;
         if (!stat.isFile() || stat.size > 64 * 1024) {
-          uncertain = true;
+          entries.push({ pid, unreadable: true });
           continue;
         }
         fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -214,21 +252,38 @@ export class ClaudeSessionOwnerProbe {
           length += size;
         }
         if (length > 64 * 1024) throw unavailable();
-        value = JSON.parse(bytes.subarray(0, length).toString("utf8"));
+        entries.push({ pid, value: JSON.parse(bytes.subarray(0, length).toString("utf8")) });
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") uncertain = true;
-        continue;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+          entries.push({ pid, unreadable: true });
       } finally {
         if (fd !== undefined) closeSync(fd);
       }
-      if (!object(value)) {
+    }
+    return { uncertain: false, entries };
+  }
+
+  #registryOwner(
+    observation: ClaudeOwnerObservation,
+    nativeId: string,
+    owned: (pid: number) => boolean,
+    identities: ProcessIdentities,
+  ): { owner: ClaudeSessionOwnership | null; uncertain: boolean } {
+    const { processes, registry } = observation;
+    if (registry.uncertain || !processes) return { owner: null, uncertain: registry.uncertain };
+    let uncertain = false;
+    for (const entry of registry.entries) {
+      // Our own worker's record is skipped before its readability can matter, as it always was.
+      if (owned(entry.pid)) continue;
+      if (entry.unreadable || !object(entry.value)) {
         uncertain = true;
         continue;
       }
+      const value = entry.value;
       const relevant = value.sessionId === nativeId;
       if (typeof value.pidDomain === "string" && value.pidDomain !== process.platform) continue;
       const pid = pidOf(value.pid);
-      if (pid !== filenamePid || typeof value.procStart !== "string" || !value.procStart.trim()) {
+      if (pid !== entry.pid || typeof value.procStart !== "string" || !value.procStart.trim()) {
         uncertain ||= relevant;
         continue;
       }

@@ -308,7 +308,7 @@ describe.skipIf(process.platform !== "darwin")(
       const commandRun = Commands.prototype.run;
       vi.spyOn(Commands.prototype, "run").mockImplementation(
         async function (this: Commands, program, args, options) {
-          if (program === "/bin/ps" && args.join(" ") === "-axo pid=,lstart=,command=")
+          if (program === "/bin/ps" && args.join(" ") === "-axo pid=,pgid=,lstart=,command=")
             return {
               success: true,
               bytes: Buffer.from(""),

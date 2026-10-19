@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Commands, type CommandOutput } from "../../../packages/backend/src/commands";
-import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
+import {
+  ClaudeSessionOwnerProbe,
+  type ClaudeOwnerObservationShare,
+} from "../../../packages/backend/src/claude-session-owner";
 
 const nativeId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const childId = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -42,7 +45,7 @@ function fixture() {
   let agents: unknown = [];
   let agentsError = false;
   let psError = false;
-  const processes = new Map<number, { start: string; command: string }>();
+  const processes = new Map<number, { start: string; command: string; group: number }>();
   const run = vi.spyOn(commands, "run").mockImplementation(async (program, args, options) => {
     if (program === executable) {
       expect(args).toEqual(["agents", "--json"]);
@@ -51,14 +54,16 @@ function fixture() {
       return output(agents);
     }
     expect(program).toBe("/bin/ps");
-    expect(args).toEqual(["-axo", "pid=,lstart=,command="]);
+    expect(args).toEqual(["-axo", "pid=,pgid=,lstart=,command="]);
     expect(options?.env).toMatchObject({ TZ: "UTC", LC_ALL: "C" });
     if (psError) throw new Error("ps unavailable");
-    return output([...processes].map(([pid, p]) => ` ${pid} ${p.start} ${p.command}`).join("\n"));
+    return output(
+      [...processes].map(([pid, p]) => ` ${pid} ${p.group} ${p.start} ${p.command}`).join("\n"),
+    );
   });
   const probe = new ClaudeSessionOwnerProbe(commands, environment);
-  function process(pid: number, command = "claude claude", start = procStart) {
-    processes.set(pid, { start, command });
+  function process(pid: number, command = "claude claude", start = procStart, group = pid) {
+    processes.set(pid, { start, command, group });
   }
   function record(pid: number, extras: Record<string, unknown> = {}) {
     writeFileSync(
@@ -383,7 +388,8 @@ describe.skipIf(process.platform === "win32")("Claude session ownership probe", 
     const f = fixture();
     let registered = false;
     f.run.mockImplementation(async (program) => {
-      if (program === "/bin/ps") return output(registered ? `123 ${procStart} claude claude` : "");
+      if (program === "/bin/ps")
+        return output(registered ? `123 123 ${procStart} claude claude` : "");
       // The official read can observe a process started after an earlier ps snapshot.
       await new Promise<void>((resolve) => setImmediate(resolve));
       registered = true;
@@ -395,4 +401,110 @@ describe.skipIf(process.platform === "win32")("Claude session ownership probe", 
       source: "agents",
     });
   });
+
+  it.each(["agents", "registry"] as const)(
+    "excludes the owned process group when a launcher shim's CLI child registers via %s",
+    async (source) => {
+      const f = fixture();
+      // AgentKib spawned 200, a shim leading its own group; the real CLI runs as its child 201.
+      f.process(200, `/home/user/.volta/bin/claude --resume=${nativeId} --print`, procStart, 200);
+      f.process(201, `/opt/claude-code/bin/claude --resume=${nativeId} --print`, procStart, 200);
+      if (source === "agents") f.agents([{ pid: 201, sessionId: nativeId, kind: "interactive" }]);
+      else {
+        f.failAgents();
+        f.record(201);
+      }
+      await expect(f.probe.check(nativeId, 200)).resolves.toEqual({ kind: "idle" });
+      // Without an owned worker, the same child is an ordinary owner.
+      await expect(f.probe.check(nativeId, null)).resolves.toEqual({
+        kind: "interactive",
+        pid: 201,
+        source,
+      });
+      f.process(202, `claude --resume=${nativeId}`, procStart, 202);
+      await expect(f.probe.check(nativeId, 200)).resolves.toEqual({
+        kind: "interactive",
+        pid: 202,
+        source: "ps",
+      });
+    },
+  );
+
+  it("still reports a registered owner outside the owned process group", async () => {
+    const f = fixture();
+    f.process(200, `claude --session-id=${nativeId} --print`, procStart, 200);
+    f.process(203, "claude claude", procStart, 203);
+    f.agents([{ pid: 203, sessionId: nativeId, kind: "interactive" }]);
+    await expect(f.probe.check(nativeId, 200)).resolves.toEqual({
+      kind: "interactive",
+      pid: 203,
+      source: "agents",
+    });
+  });
+
+  it("does not report the owned group's command lines from the process scan", async () => {
+    const f = fixture();
+    f.failAgents();
+    f.process(200, `/home/user/.volta/bin/claude --resume=${nativeId} --print`, procStart, 200);
+    f.process(201, `/opt/claude-code/bin/claude --resume=${nativeId} --print`, procStart, 200);
+    await expect(f.probe.check(nativeId, 200)).resolves.toEqual({ kind: "idle" });
+    await expect(f.probe.check(nativeId, 201)).resolves.toMatchObject({ pid: 200, source: "ps" });
+  });
+
+  it("excludes only the spawned PID when the process table is unavailable", async () => {
+    const f = fixture();
+    f.failPs();
+    f.agents([
+      { pid: 200, sessionId: nativeId, kind: "interactive" },
+      { pid: 201, sessionId: nativeId, kind: "interactive" },
+    ]);
+    await expect(f.probe.check(nativeId, 200)).resolves.toEqual({
+      kind: "interactive",
+      pid: 201,
+      source: "agents",
+    });
+  });
+
+  it("evaluates several sessions against one shared observation", async () => {
+    const f = fixture();
+    f.process(140, `claude --resume=${nativeId} --print`);
+    f.process(141);
+    f.agents([{ pid: 141, sessionId: childId, kind: "interactive" }]);
+    const share: ClaudeOwnerObservationShare = {};
+    await expect(f.probe.check(nativeId, null, share)).resolves.toMatchObject({
+      pid: 140,
+      source: "ps",
+    });
+    // Later changes are invisible to the shared observation but seen by the next fresh check.
+    f.processes.delete(140);
+    await expect(f.probe.check(childId, null, share)).resolves.toMatchObject({
+      pid: 141,
+      source: "agents",
+    });
+    await expect(f.probe.check(nativeId, null, share)).resolves.toMatchObject({ pid: 140 });
+    expect(f.run.mock.calls.map(([program]) => program)).toEqual([
+      expect.stringMatching(/claude$/),
+      "/bin/ps",
+    ]);
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+    expect(f.run).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["agents", "registry"] as const)(
+    "treats Claude Code's bg kind from %s as a background owner",
+    async (source) => {
+      const f = fixture();
+      f.process(150);
+      if (source === "agents") f.agents([{ pid: 150, sessionId: nativeId, kind: "bg" }]);
+      else {
+        f.failAgents();
+        f.record(150, { kind: "bg" });
+      }
+      await expect(f.probe.check(nativeId)).resolves.toEqual({
+        kind: "background",
+        pid: 150,
+        source,
+      });
+    },
+  );
 });

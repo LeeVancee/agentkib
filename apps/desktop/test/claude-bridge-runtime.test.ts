@@ -231,7 +231,7 @@ describe.skipIf(process.platform !== "darwin")(
             program === "/bin/ps" &&
             args.length === 2 &&
             args[0] === "-axo" &&
-            args[1] === "pid=,lstart=,command="
+            args[1] === "pid=,pgid=,lstart=,command="
           ) {
             // This fixture starts no execution worker. A global process scan can exceed
             // its test budget during startup or exit; ownership parsing has separate tests.

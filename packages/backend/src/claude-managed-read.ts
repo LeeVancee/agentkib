@@ -20,7 +20,7 @@ import {
 import path from "node:path";
 import { homedir } from "node:os";
 import { claudeResumeCommand } from "./claude-resume-command";
-import { ClaudeSessionOwnerProbe } from "./claude-session-owner";
+import { ClaudeSessionOwnerProbe, type ClaudeOwnerObservationShare } from "./claude-session-owner";
 import { resolveCommand } from "./command-resolution";
 import { validHistoryControl } from "./history-control-schema";
 import type { Commands } from "./commands";
@@ -2620,8 +2620,13 @@ export class ClaudeManagedReadOwner {
   }
 
   async #maintain(): Promise<void> {
+    // One read-only observation per tick serves every live worker, so the patrol cost does not
+    // grow with the number of sessions. Each worker is still evaluated with its own process.
+    const share: ClaudeOwnerObservationShare = {};
+    const runners = [...this.#runners];
+    const workers = new Map(runners.map(([id, runner]) => [id, runner.processId] as const));
     await Promise.allSettled(
-      [...this.#runners].map(async ([id, runner]) => {
+      runners.map(async ([id, runner]) => {
         if (this.#shuttingDown || runner.isRetiring) return;
         await this.#serializeSession(id, async () => {
           if (this.#shuttingDown || this.#runners.get(id) !== runner || !runner.hasWorker) return;
@@ -2629,9 +2634,12 @@ export class ClaudeManagedReadOwner {
           if (!record || record.released) return;
           const observed = this.continuation.isSessionObserved?.(id) === true;
           if (observed) this.#observed.add(id);
+          // A worker started during this tick waits for the next one: the shared observation
+          // may predate it and still show its predecessor writing the same session.
+          if (runner.processId !== workers.get(id)) return;
           let owner;
           try {
-            owner = await this.#ownership.check(record.nativeId, runner.processId);
+            owner = await this.#ownership.check(record.nativeId, runner.processId, share);
           } catch {
             // An unreadable ownership source is never treated as evidence of freedom.
             this.#ownershipReasons.set(id, {

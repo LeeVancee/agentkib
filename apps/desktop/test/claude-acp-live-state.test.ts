@@ -475,7 +475,7 @@ function claudeOwnerFixture(status = "idle") {
   const readOnlyProbes: Array<[string, string[]]> = [
     [executable, ["--version"]],
     [executable, ["agents", "--json"]],
-    ["/bin/ps", ["-axo", "pid=,lstart=,command="]],
+    ["/bin/ps", ["-axo", "pid=,pgid=,lstart=,command="]],
   ];
   const run = vi.fn(async (command: string, args: string[]) => {
     const probe = readOnlyProbes.findIndex(

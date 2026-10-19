@@ -14,7 +14,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
 import { ClaudeManagedRunnerProcess } from "../../../packages/backend/src/claude-managed-runner";
-import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
+import {
+  ClaudeSessionOwnerProbe,
+  type ClaudeOwnerObservationShare,
+} from "../../../packages/backend/src/claude-session-owner";
 import { acquirePortableFileLease } from "../../../packages/backend/src/managed-session-lock";
 import type { Commands } from "../../../packages/backend/src/commands";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
@@ -36,6 +39,8 @@ function fixture(
     maintenanceIntervalMs?: number;
     isSessionObserved?: (id: string) => boolean;
     registerWorkers?: boolean;
+    /** Put a launcher on PATH that runs the CLI as its child, as Volta-style shims do. */
+    shim?: boolean;
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-claude-auto-")));
@@ -43,9 +48,12 @@ function fixture(
   const workspace = path.join(root, "workspace");
   const config = path.join(home, ".claude");
   const bin = path.join(root, "bin");
-  for (const directory of [home, workspace, config, bin]) mkdirSync(directory, { mode: 0o700 });
+  const real = path.join(root, "real");
+  for (const directory of [home, workspace, config, bin, real])
+    mkdirSync(directory, { mode: 0o700 });
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executable = path.join(bin, "claude");
+  const cli = options.shim ? path.join(real, "claude") : executable;
   const log = path.join(root, "frames.jsonl");
   const ready = path.join(root, "external-ready");
   const resultGate = path.join(root, "result-gate");
@@ -54,7 +62,7 @@ function fixture(
   writeFileSync(agentsFile, "[]");
   // All processes use this isolated fixture. It never reads the installed CLI or user home.
   writeFileSync(
-    executable,
+    cli,
     `#!${process.execPath}\n${String.raw`
 const fs = require("node:fs");
 if (process.env.AUTO_EXTERNAL === "1") {
@@ -81,7 +89,7 @@ if (process.env.AUTO_EXTERNAL === "1") {
     agents.push({ pid: process.pid, sessionId, kind: "background" });
     fs.writeFileSync(process.env.AUTO_AGENTS, JSON.stringify(agents));
   }
-  log({ started: true, pid: process.pid, args: process.argv.slice(2) });
+  log({ started: true, pid: process.pid, ppid: process.ppid, args: process.argv.slice(2) });
   require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
     const frame = JSON.parse(line);
     log(frame);
@@ -112,6 +120,19 @@ if (process.env.AUTO_EXTERNAL === "1") {
 `}`,
     { mode: 0o700 },
   );
+  if (options.shim)
+    writeFileSync(
+      executable,
+      `#!${process.execPath}\n${String.raw`
+const fs = require("node:fs");
+fs.appendFileSync(process.env.AUTO_LOG,
+  JSON.stringify({ shim: true, pid: process.pid, args: process.argv.slice(2) }) + "\n");
+const child = require("node:child_process").spawn(process.env.AUTO_REAL_CLI,
+  process.argv.slice(2), { stdio: "inherit" });
+child.on("exit", (code) => process.exit(code ?? 1));
+`}`,
+      { mode: 0o700 },
+    );
   const environment = {
     PATH: bin,
     HOME: home,
@@ -122,6 +143,7 @@ if (process.env.AUTO_EXTERNAL === "1") {
     AUTO_RESULT_GATE: resultGate,
     AUTO_AGENTS: agentsFile,
     AUTO_REGISTER_WORKERS: options.registerWorkers ? "1" : "0",
+    AUTO_REAL_CLI: cli,
   };
   const events: Array<{ id: string; type: string; live: Record<string, unknown> }> = [];
   const owner = new ClaudeManagedReadOwner(
@@ -165,17 +187,31 @@ if (process.env.AUTO_EXTERNAL === "1") {
   // The probe gets only the fixture's real live processes. Its full OS output parser is covered
   // separately; repeated whole-machine scans would make these lifecycle tests depend on load.
   const processTable = () => {
-    const processes = new Map(externalProcesses);
-    for (const frame of frames())
-      if (frame.started) processes.set(Number(frame.pid), frame.args as string[]);
+    const processes = new Map<number, { group: number; command: string }>();
+    for (const [pid, args] of externalProcesses)
+      processes.set(pid, { group: pid, command: `${cli} ${args.join(" ")}` });
+    for (const frame of frames()) {
+      const pid = Number(frame.pid);
+      const args = (frame.args as string[] | undefined)?.join(" ") ?? "";
+      // AgentKib spawns workers detached, as leaders of their own process groups. A shim's
+      // CLI child stays in the group led by the process AgentKib spawned.
+      if (frame.shim) processes.set(pid, { group: pid, command: `${executable} ${args}` });
+      else if (frame.started)
+        processes.set(
+          pid,
+          frame.ppid === process.pid
+            ? { group: pid, command: `${executable} ${args}` }
+            : { group: Number(frame.ppid), command: `${cli} ${args}` },
+        );
+    }
     const rows: string[] = [];
-    for (const [pid, args] of processes) {
+    for (const [pid, row] of processes) {
       try {
         process.kill(pid, 0);
       } catch {
         continue;
       }
-      rows.push(`${pid} Mon Oct 19 00:00:00 2026 ${executable} ${args.join(" ")}`);
+      rows.push(`${pid} ${row.group} Mon Oct 19 00:00:00 2026 ${row.command}`);
     }
     return Buffer.from(rows.join("\n"));
   };
@@ -241,7 +277,7 @@ if (process.env.AUTO_EXTERNAL === "1") {
   };
   const startExternal = async (nativeId: string, registeredKind?: "interactive" | "background") => {
     rmSync(ready, { force: true });
-    const child = spawn(executable, registeredKind ? [] : [`--session-id=${nativeId}`], {
+    const child = spawn(cli, registeredKind ? [] : [`--session-id=${nativeId}`], {
       cwd: workspace,
       env: { ...environment, AUTO_EXTERNAL: "1" },
       stdio: "ignore",
@@ -251,7 +287,7 @@ if (process.env.AUTO_EXTERNAL === "1") {
     expect(child.pid).toBeGreaterThan(0);
     externalProcesses.set(child.pid!, registeredKind ? [] : [`--session-id=${nativeId}`]);
     if (registeredKind) {
-      expect(child.spawnargs.at(-1)).toBe(executable);
+      expect(child.spawnargs.at(-1)).toBe(cli);
       writeFileSync(
         agentsFile,
         JSON.stringify([
@@ -582,7 +618,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const live = await f.owner.live(session.id, true);
       expect(live).toMatchObject({ sendEnabled: false, executionLocation: "external" });
       expect(JSON.stringify(live)).toContain("owner-opened-elsewhere");
-      expect(probe).toHaveBeenCalledWith(session.nativeId, workerPid);
+      expect(probe).toHaveBeenCalledWith(session.nativeId, workerPid, expect.anything());
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
     });
 
@@ -636,6 +672,79 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       );
       writeFileSync(f.resultGate, "complete");
       await expect.poll(async () => (await f.owner.live(source.id, true)).status).toBe("idle");
+    });
+
+    it("keeps its own worker when a launcher shim runs the registered CLI as a child", async () => {
+      const probe = vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check");
+      const f = fixture({ maintenanceIntervalMs: 10, registerWorkers: true, shim: true });
+      const session = f.create();
+      await f.dispatch(session.id);
+      const retained = f.runner(session.nativeId);
+      const shimPid = retained.processId;
+      const started = f.frames().find((frame) => frame.started);
+      // The CLI child registers its own PID, not the one AgentKib spawned.
+      expect(started).toMatchObject({ ppid: shimPid });
+      expect(started!.pid).not.toBe(shimPid);
+      const maintenanceCalls = () =>
+        probe.mock.calls.filter(
+          ([nativeId, pid, share]) => nativeId === session.nativeId && pid === shimPid && !!share,
+        ).length;
+      const before = maintenanceCalls();
+      await expect.poll(() => !retained.hasWorker || maintenanceCalls() > before + 2).toBe(true);
+
+      expect(retained.hasWorker).toBe(true);
+      expect(await f.owner.live(session.id, true)).toMatchObject({
+        status: "idle",
+        executionLocation: "agentkib",
+        continuationNotice: null,
+      });
+
+      // A process outside the worker's group is still an external owner.
+      await f.startExternal(session.nativeId);
+      await expect.poll(() => retained.hasWorker).toBe(false);
+      expect(JSON.stringify(await f.owner.live(session.id, true))).toContain(
+        "owner-opened-elsewhere",
+      );
+    });
+
+    it("evaluates every live worker against one ownership observation per maintenance tick", async () => {
+      const check = vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check");
+      const observe = vi.spyOn(ClaudeSessionOwnerProbe.prototype, "observe");
+      const f = fixture({ maintenanceIntervalMs: 10 });
+      const first = f.create();
+      const second = f.create();
+      // Starting a worker retires other idle ones, so the first one keeps a turn open.
+      await expect(f.control(first.id, "send", { text: "hold result" })).resolves.toMatchObject({
+        accepted: true,
+      });
+      await expect.poll(async () => (await f.owner.live(first.id, true)).status).toBe("running");
+      await f.dispatch(second.id);
+      const workers = new Map([
+        [first.nativeId, f.runner(first.nativeId)],
+        [second.nativeId, f.runner(second.nativeId)],
+      ]);
+      const ticks = () => {
+        const shares = new Map<ClaudeOwnerObservationShare, string[]>();
+        for (const [nativeId, pid, share] of check.mock.calls)
+          if (share && workers.get(nativeId)?.processId === pid)
+            shares.set(share, [...(shares.get(share) ?? []), nativeId]);
+        return [...shares];
+      };
+      await expect
+        .poll(() => ticks().filter(([, nativeIds]) => nativeIds.length === 2).length)
+        .toBeGreaterThan(2);
+
+      const observations = ticks().map(([share, nativeIds]) => {
+        // Each worker is evaluated once per tick, against the tick's single observation.
+        expect(new Set(nativeIds).size).toBe(nativeIds.length);
+        expect(share.current).toBeDefined();
+        return share.current;
+      });
+      expect(new Set(observations).size).toBe(observations.length);
+      const started = observe.mock.results.map(({ value }) => value);
+      expect(observations.every((observation) => started.includes(observation))).toBe(true);
+      expect([...workers.values()].every((worker) => worker.hasWorker)).toBe(true);
+      writeFileSync(f.resultGate, "complete");
     });
 
     it("checks every restart rather than retaining a prior idle ownership result", async () => {

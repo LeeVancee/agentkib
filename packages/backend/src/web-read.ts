@@ -277,6 +277,7 @@ type ManagedRunner = {
   observed: boolean;
   retiring?: boolean;
   retirementFailed?: boolean;
+  leaseReleased?: boolean;
 };
 
 type CodexFollowerRecord = {
@@ -711,19 +712,20 @@ export class WebReadRequests {
         if (current.reason || current.status !== "idle" || current.revision !== live.revision)
           throw new Error("session-busy");
         dispatchManagedCommand(this.dataDir, request.requestId);
-        await this.#closeManagedRunner(request.sessionId, runner);
-        const latest = readManagedRecords(this.dataDir, this.store).find(
-          (item) => item.id === request.sessionId,
-        );
-        if (!latest || latest.native_id !== record.native_id)
-          throw new Error("session-unavailable");
-        latest.released = true;
-        latest.snapshot = {
-          ...(isObject(latest.snapshot) ? latest.snapshot : {}),
-          status: "released",
-          sendEnabled: false,
-        };
-        saveManagedRecord(this.dataDir, latest as unknown as Record<string, unknown>);
+        await this.#closeManagedRunner(request.sessionId, runner, () => {
+          const latest = readManagedRecords(this.dataDir, this.store).find(
+            (item) => item.id === request.sessionId,
+          );
+          if (!latest || latest.native_id !== record.native_id)
+            throw new Error("session-unavailable");
+          latest.released = true;
+          latest.snapshot = {
+            ...(isObject(latest.snapshot) ? latest.snapshot : {}),
+            status: "released",
+            sendEnabled: false,
+          };
+          saveManagedRecord(this.dataDir, latest as unknown as Record<string, unknown>);
+        });
         const result = {
           sessionId: request.sessionId,
           released: true,
@@ -863,11 +865,26 @@ export class WebReadRequests {
 
     saveManagedRecord(this.dataDir, record);
     let dispatched = false;
+    let failureFinalized = false;
+    let runner: ManagedRunner | undefined;
+    const finalizeFailure = (error: unknown, ownsLease: boolean) => {
+      if (failureFinalized) return;
+      if (ownsLease) this.#recordStartupFailure(id, error, dispatched, "unsupported");
+      failureFinalized = true;
+    };
     try {
-      const runner = await this.#attachManagedRunner(record, workspace, home, release, () => {
-        dispatchManagedCommand(this.dataDir, request.requestId);
-        dispatched = true;
-      });
+      runner = await this.#attachManagedRunner(
+        record,
+        workspace,
+        home,
+        release,
+        () => {
+          dispatchManagedCommand(this.dataDir, request.requestId);
+          dispatched = true;
+        },
+        undefined,
+        finalizeFailure,
+      );
       release = undefined;
       this.#managedRunners.set(id, runner);
       const live = await runner.bridge.snapshot(this.#bootId, true);
@@ -882,24 +899,15 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
+      finalizeFailure(
+        error,
+        release !== undefined ||
+          (runner !== undefined &&
+            this.#managedRunners.get(id) === runner &&
+            !runner.leaseReleased),
+      );
       if (!this.#managedRunners.has(id)) release?.();
       const definite = !dispatched || codexWriterBusy(error);
-      const current = readManagedRecords(this.dataDir, this.store).find((item) => item.id === id);
-      if (current) {
-        current.snapshot = {
-          ...(isObject(current.snapshot) ? current.snapshot : {}),
-          status: definite ? "unsupported" : "outcome-unknown",
-          reason: definite
-            ? codexWriterBusy(error)
-              ? "codex-owner-busy"
-              : error instanceof Error
-                ? error.message
-                : "codex-app-server-unavailable"
-            : "control-outcome-unconfirmed",
-        };
-        if (definite) current.released = true;
-        saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
-      }
       const result = {
         sessionId: id,
         accepted: false,
@@ -1006,11 +1014,26 @@ export class WebReadRequests {
     };
     saveManagedRecord(this.dataDir, resumed as unknown as Record<string, unknown>);
     let dispatched = false;
+    let failureFinalized = false;
+    let runner: ManagedRunner | undefined;
+    const finalizeFailure = (error: unknown, ownsLease: boolean) => {
+      if (failureFinalized) return;
+      if (ownsLease) this.#recordStartupFailure(request.sessionId, error, dispatched, "released");
+      failureFinalized = true;
+    };
     try {
-      const runner = await this.#attachManagedRunner(resumed, workspace, home, release, () => {
-        dispatchManagedCommand(this.dataDir, request.requestId);
-        dispatched = true;
-      });
+      runner = await this.#attachManagedRunner(
+        resumed,
+        workspace,
+        home,
+        release,
+        () => {
+          dispatchManagedCommand(this.dataDir, request.requestId);
+          dispatched = true;
+        },
+        undefined,
+        finalizeFailure,
+      );
       release = undefined;
       this.#managedRunners.set(request.sessionId, runner);
       const live = await runner.bridge.snapshot(this.#bootId, true);
@@ -1025,26 +1048,15 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
+      finalizeFailure(
+        error,
+        release !== undefined ||
+          (runner !== undefined &&
+            this.#managedRunners.get(request.sessionId) === runner &&
+            !runner.leaseReleased),
+      );
       if (!this.#managedRunners.has(request.sessionId)) release?.();
       const definite = !dispatched || codexWriterBusy(error);
-      const current = readManagedRecords(this.dataDir, this.store).find(
-        (item) => item.id === request.sessionId,
-      );
-      if (current) {
-        current.snapshot = {
-          ...(isObject(current.snapshot) ? current.snapshot : {}),
-          status: definite ? "released" : "outcome-unknown",
-          reason: definite
-            ? codexWriterBusy(error)
-              ? "codex-owner-busy"
-              : error instanceof Error
-                ? error.message
-                : "codex-app-server-unavailable"
-            : "control-outcome-unconfirmed",
-        };
-        if (definite) current.released = true;
-        saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
-      }
       const result = {
         sessionId: request.sessionId,
         accepted: false,
@@ -1210,7 +1222,8 @@ export class WebReadRequests {
         undefined,
         (started) => {
           session = started;
-          this.#trackTransientSession(started, release);
+          // Unarchive still has a durable state change to finish after native close.
+          this.#trackTransientSession(started);
         },
       );
       this.#assertOpen();
@@ -1230,9 +1243,6 @@ export class WebReadRequests {
       )
         throw new Error("native-session-unconfirmed");
       await session.close();
-      session = undefined;
-      release();
-      release = undefined;
       latest.archived = false;
       latest.released = true;
       latest.snapshot = {
@@ -1253,8 +1263,6 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
-      await session?.close();
-      release?.();
       const definite = !dispatched || codexWriterBusy(error);
       const result = {
         sessionId: request.sessionId,
@@ -1273,6 +1281,13 @@ export class WebReadRequests {
       };
       if (definite) finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
+    } finally {
+      try {
+        await session?.close();
+      } finally {
+        if (!session || session.closed) release?.();
+        else session.once("close", () => release?.());
+      }
     }
   }
 
@@ -2897,8 +2912,15 @@ export class WebReadRequests {
     };
     saveManagedRecord(this.dataDir, child as unknown as Record<string, unknown>);
     let dispatched = false;
+    let failureFinalized = false;
+    let runner: ManagedRunner | undefined;
+    const finalizeFailure = (error: unknown, ownsLease: boolean) => {
+      if (failureFinalized) return;
+      if (ownsLease) this.#recordStartupFailure(childId, error, dispatched, "unsupported");
+      failureFinalized = true;
+    };
     try {
-      const runner = await this.#attachManagedRunner(
+      runner = await this.#attachManagedRunner(
         child,
         canonicalize(source.workspace),
         this.#assertManagedHome(source),
@@ -2914,6 +2936,7 @@ export class WebReadRequests {
           dispatched = true;
         },
         { nativeId, lastTurnId: last.id },
+        finalizeFailure,
       );
       release = undefined;
       this.#managedRunners.set(childId, runner);
@@ -2930,26 +2953,15 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
+      finalizeFailure(
+        error,
+        release !== undefined ||
+          (runner !== undefined &&
+            this.#managedRunners.get(childId) === runner &&
+            !runner.leaseReleased),
+      );
       if (!this.#managedRunners.has(childId)) release?.();
       const definite = !dispatched || codexWriterBusy(error);
-      const current = readManagedRecords(this.dataDir, this.store).find(
-        (item) => item.id === childId,
-      );
-      if (current) {
-        current.snapshot = {
-          ...(isObject(current.snapshot) ? current.snapshot : {}),
-          status: definite ? "unsupported" : "outcome-unknown",
-          reason: definite
-            ? codexWriterBusy(error)
-              ? "codex-owner-busy"
-              : error instanceof Error
-                ? error.message
-                : "codex-app-server-unavailable"
-            : "control-outcome-unconfirmed",
-        };
-        if (definite) current.released = true;
-        saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
-      }
       const result = {
         sessionId: childId,
         sourceSessionId: source.id,
@@ -3131,6 +3143,30 @@ export class WebReadRequests {
     };
   }
 
+  #recordStartupFailure(
+    id: string,
+    error: unknown,
+    dispatched: boolean,
+    definiteStatus: "released" | "unsupported",
+  ): void {
+    const definite = !dispatched || codexWriterBusy(error);
+    const current = readManagedRecords(this.dataDir, this.store).find((item) => item.id === id);
+    if (!current) return;
+    current.snapshot = {
+      ...(isObject(current.snapshot) ? current.snapshot : {}),
+      status: definite ? definiteStatus : "outcome-unknown",
+      reason: definite
+        ? codexWriterBusy(error)
+          ? "codex-owner-busy"
+          : error instanceof Error
+            ? error.message
+            : "codex-app-server-unavailable"
+        : "control-outcome-unconfirmed",
+    };
+    if (definite) current.released = true;
+    saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
+  }
+
   async #attachManagedRunner(
     record: ManagedRecord,
     workspace: string,
@@ -3138,6 +3174,7 @@ export class WebReadRequests {
     release: (() => void) | undefined,
     dispatch?: () => void,
     fork?: { nativeId: string; lastTurnId: string },
+    onFailure?: (error: unknown, ownsLease: boolean) => void,
   ): Promise<ManagedRunner> {
     // Startup can outlive the last subscriber; retain the observation before any await.
     const observedAtStart =
@@ -3326,13 +3363,20 @@ export class WebReadRequests {
       return runner;
     } catch (error) {
       if (startingRunner) {
+        // Shutdown may already have closed and transferred this generation's lease.
+        // Its delayed startup failure must not rewrite a successor's durable state.
+        if (startingRunner.leaseReleased) {
+          onFailure?.(error, false);
+          throw error;
+        }
         this.#managedRunners.set(record.id, startingRunner);
         this.#startingRunners.delete(record.id);
         try {
-          await this.#closeManagedRunner(record.id, startingRunner);
+          await this.#closeManagedRunner(record.id, startingRunner, () => onFailure?.(error, true));
         } catch {
           /* Preserve the original native failure and retain the closing runner. */
         }
+        if (startingRunner.leaseReleased) onFailure?.(error, false);
       }
       throw error;
     }
@@ -3709,23 +3753,23 @@ export class WebReadRequests {
           continue;
         runner.retiring = true;
         try {
-          await this.#closeManagedRunner(id, runner);
-          if (this.#closing) continue;
-          const latest = readManagedRecords(this.dataDir, this.store).find(
-            (record) => record.id === id,
-          );
-          if (latest) {
-            latest.released = true;
-            latest.snapshot = {
-              ...latest.snapshot,
-              status: "idle",
-              executionLocation: null,
-              ownershipReason: null,
-              reason: null,
-            };
-            saveManagedRecord(this.dataDir, latest);
-          }
-          this.#ownership.delete(id);
+          await this.#closeManagedRunner(id, runner, () => {
+            if (this.#closing) return;
+            const latest = readManagedRecords(this.dataDir, this.store).find(
+              (record) => record.id === id,
+            );
+            if (latest) {
+              latest.released = true;
+              latest.snapshot = {
+                ...latest.snapshot,
+                status: "idle",
+                executionLocation: null,
+                ownershipReason: null,
+                reason: null,
+              };
+              saveManagedRecord(this.dataDir, latest);
+            }
+          });
         } catch {
           // The closing runner stays fenced until its real process-close event.
         }
@@ -3735,20 +3779,44 @@ export class WebReadRequests {
     }
   }
 
-  async #closeManagedRunner(id: string, runner: ManagedRunner): Promise<void> {
+  async #closeManagedRunner(
+    id: string,
+    runner: ManagedRunner,
+    beforeRelease?: () => void,
+  ): Promise<void> {
     runner.retiring = true;
     let completed = false;
     const complete = () => {
       if (completed) return;
+      // Concurrent shutdown/release callers can await the same native close. Only
+      // the caller still owning this generation may finalize its durable state.
+      if (this.#managedRunners.get(id) !== runner && this.#startingRunners.get(id) !== runner) {
+        completed = true;
+        return;
+      }
+      try {
+        // Persist retirement while the lease still excludes a new runtime.
+        beforeRelease?.();
+      } catch (error) {
+        runner.retirementFailed = true;
+        throw error;
+      }
       completed = true;
       if (this.#managedRunners.get(id) === runner) this.#managedRunners.delete(id);
       if (this.#startingRunners.get(id) === runner) this.#startingRunners.delete(id);
       this.#ownership.delete(id);
+      runner.leaseReleased = true;
       runner.release();
     };
     let failed = false;
     const closed = () => {
-      if (failed) complete();
+      if (failed) {
+        try {
+          complete();
+        } catch {
+          // A failed final write retains ownership rather than escaping an event callback.
+        }
+      }
     };
     runner.session.once("close", closed);
     try {

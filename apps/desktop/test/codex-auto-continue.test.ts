@@ -25,6 +25,7 @@ import {
   acquireManagedSessionLease,
   acquirePortableFileLease,
 } from "../../../packages/backend/src/managed-session-lock";
+import * as managedSessionLocks from "../../../packages/backend/src/managed-session-lock";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
 import type { Commands } from "../../../packages/backend/src/commands";
@@ -163,7 +164,7 @@ function fixture(compressedHistory = false) {
           },
         };
       if (method === "thread/queue/list") return { data: [], nextCursor: null };
-      if (["thread/resume", "thread/start", "thread/fork"].includes(method))
+      if (["thread/resume", "thread/start", "thread/fork", "thread/unarchive"].includes(method))
         return {
           thread: {
             id: method === "thread/fork" ? forkId : nativeId,
@@ -489,6 +490,55 @@ describe("Codex automatic CLI continuation", () => {
     release();
   });
 
+  it("does not rewrite a new owner when a shutdown startup settles after lease transfer", async () => {
+    const f = fixture();
+    const live = await f.live();
+    const acquire = acquireManagedSessionLease;
+    let afterRelease: (() => void) | undefined;
+    vi.spyOn(managedSessionLocks, "acquireManagedSessionLease").mockImplementation((data, id) => {
+      const release = acquire(data, id);
+      return () => {
+        release();
+        const transferred = afterRelease;
+        afterRelease = undefined;
+        transferred?.();
+      };
+    });
+    const start = f.start.getMockImplementation()!;
+    let resume!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => (resume = resolve));
+    const started = new Promise<void>((resolve) => (entered = resolve));
+    cleanups.push(() => resume());
+    f.start.mockImplementation(async (...args) => {
+      const server = await start(...args);
+      entered();
+      await gate;
+      return server;
+    });
+    const sending = f.sendWithState(live);
+    await started;
+    let otherRelease: (() => void) | undefined;
+    cleanups.push(() => otherRelease?.());
+    afterRelease = () => {
+      otherRelease = acquire(f.root, f.summary.id);
+      saveManagedRecord(f.root, {
+        ...readManagedRecord(f.root, f.summary.id)!,
+        released: false,
+        snapshot: { status: "running", revision: 99, turnId: "other-runtime-turn" },
+      });
+    };
+    const closing = f.web.closeAsync();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(otherRelease).toBeDefined();
+    resume();
+    expect(await sending).toMatchObject({ controlOutcome: "not-dispatched" });
+    await closing;
+    expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+      released: false,
+      snapshot: { status: "running", revision: 99, turnId: "other-runtime-turn" },
+    });
+  });
+
   it("closes a runner returned across the startup registration microtask boundary", async () => {
     const f = fixture();
     const live = await f.live();
@@ -746,6 +796,193 @@ describe("Codex automatic CLI continuation", () => {
     expect(await f.send()).toMatchObject({ accepted: true });
     expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(2);
   });
+
+  it.each(["idle", "leave", "release"] as const)(
+    "finishes %s retirement before transferring its lease to another runtime",
+    async (reason) => {
+      vi.useFakeTimers();
+      const acquire = acquireManagedSessionLease;
+      let afterRelease: (() => void) | undefined;
+      vi.spyOn(managedSessionLocks, "acquireManagedSessionLease").mockImplementation((data, id) => {
+        const release = acquire(data, id);
+        return () => {
+          release();
+          const transferred = afterRelease;
+          afterRelease = undefined;
+          transferred?.();
+        };
+      });
+      const f = fixture();
+      await f.send();
+      f.servers[0]!.complete();
+      await f.live();
+      let transferredRecord: Record<string, unknown> | null = null;
+      let otherRelease: (() => void) | undefined;
+      cleanups.push(() => otherRelease?.());
+      afterRelease = () => {
+        // Another process can acquire immediately after the native file lease is released.
+        otherRelease = acquire(f.root, f.summary.id);
+        transferredRecord = readManagedRecord(f.root, f.summary.id)!;
+        saveManagedRecord(f.root, {
+          ...transferredRecord,
+          released: false,
+          snapshot: { status: "running", revision: 99, turnId: "other-runtime-turn" },
+        });
+      };
+      if (reason === "release") {
+        expect(
+          await f.web.managedLifecycle({
+            operation: "release",
+            sessionId: f.summary.id,
+            requestId: randomUUID(),
+            deviceId: "fixture",
+          }),
+        ).toMatchObject({ accepted: true, released: true });
+      } else {
+        if (reason === "leave") f.leave();
+        await vi.advanceTimersByTimeAsync(reason === "leave" ? 1000 : 61_000);
+      }
+      expect(transferredRecord).toMatchObject({ released: true });
+      expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+        released: false,
+        snapshot: { status: "running", revision: 99, turnId: "other-runtime-turn" },
+      });
+    },
+  );
+
+  it.each(["adopt", "resume", "create", "fork"] as const)(
+    "records a refused %s startup before transferring its lease",
+    async (operation) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      if (operation === "resume") {
+        await f.send();
+        f.servers[0]!.complete();
+        await vi.advanceTimersByTimeAsync(61_000);
+      }
+      const live = await f.live();
+      const start = f.start.getMockImplementation()!;
+      f.start.mockImplementation(async (...args) => {
+        const server = await start(...args);
+        const request = server.request.bind(server);
+        vi.spyOn(server, "request").mockImplementation(async (method, ...params) => {
+          if (method === "model/list") throw new Error("fixture-startup-refused");
+          return request(method, ...params);
+        });
+        return server;
+      });
+      const acquire = acquireManagedSessionLease;
+      let transferredRecord: Record<string, unknown> | null = null;
+      let otherRelease: (() => void) | undefined;
+      cleanups.push(() => otherRelease?.());
+      vi.spyOn(managedSessionLocks, "acquireManagedSessionLease").mockImplementation((data, id) => {
+        const release = acquire(data, id);
+        let transferred = false;
+        return () => {
+          release();
+          if (transferred) return;
+          transferred = true;
+          otherRelease = acquire(data, id);
+          transferredRecord = readManagedRecord(data, id)!;
+          saveManagedRecord(data, {
+            ...transferredRecord,
+            released: false,
+            snapshot: { status: "running", revision: 99, turnId: "other-runtime-turn" },
+          });
+        };
+      });
+      const request = { requestId: randomUUID(), deviceId: "fixture" };
+      const result =
+        operation === "fork"
+          ? await f.web.managedControl({
+              ...request,
+              operation,
+              sessionId: f.summary.id,
+              runtimeBootId: live.runtimeBootId,
+              expectedRevision: live.revision,
+              experimentalEnabled: true,
+            })
+          : operation === "resume"
+            ? await f.web.managedResume({
+                ...request,
+                operation,
+                sessionId: f.summary.id,
+                runtimeBootId: live.runtimeBootId,
+                expectedRevision: live.revision,
+                experimentalEnabled: true,
+              })
+            : await f.web.managedLifecycle({
+                ...request,
+                operation,
+                ...(operation === "create"
+                  ? { workspaceId: "workspace", policyId: "workspace-write-on-request" }
+                  : { sessionId: f.summary.id }),
+              });
+      expect(result).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason: "fixture-startup-refused",
+      });
+      expect(transferredRecord).toMatchObject({
+        released: true,
+        snapshot: { reason: "fixture-startup-refused" },
+      });
+      expect(readManagedRecord(f.root, String(result.sessionId))).toMatchObject({
+        released: false,
+        snapshot: { status: "running", revision: 99, turnId: "other-runtime-turn" },
+      });
+    },
+  );
+
+  it.each([false, true])(
+    "keeps an unarchive lease through its durable result (closure fails: %s)",
+    async (failClose) => {
+      vi.useFakeTimers();
+      const f = fixture();
+      await f.send();
+      f.servers[0]!.complete();
+      await vi.advanceTimersByTimeAsync(61_000);
+      saveManagedRecord(f.root, { ...readManagedRecord(f.root, f.summary.id)!, archived: true });
+      const live = await f.live();
+      const start = f.start.getMockImplementation()!;
+      f.start.mockImplementation(async (...args) => {
+        const server = await start(...args);
+        if (failClose) f.servers.at(-1)!.closeFailure = new Error("unarchive did not close");
+        return server;
+      });
+      const acquire = acquireManagedSessionLease;
+      let transferredRecord: Record<string, unknown> | null = null;
+      vi.spyOn(managedSessionLocks, "acquireManagedSessionLease").mockImplementation((data, id) => {
+        const release = acquire(data, id);
+        return () => {
+          transferredRecord = readManagedRecord(data, id);
+          release();
+        };
+      });
+      const pending = f.web.managedUnarchive({
+        operation: "unarchive",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+      });
+      if (failClose) {
+        await expect(pending).rejects.toThrow("unarchive did not close");
+        expect(transferredRecord).toBeNull();
+        expect(() => acquire(f.root, f.summary.id)).toThrow("session-managed-by-another-runtime");
+        const server = f.servers.at(-1)!;
+        server.closed = true;
+        server.emit("close");
+        const release = acquire(f.root, f.summary.id);
+        release();
+      } else {
+        expect(await pending).toMatchObject({ accepted: true, requiresResume: true });
+        expect(transferredRecord).toMatchObject({ archived: false, released: true });
+      }
+    },
+  );
 
   it.each([false, true])(
     "waits for the active turn after the last subscriber leaves, then releases (active goal: %s)",

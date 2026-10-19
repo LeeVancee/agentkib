@@ -1,6 +1,6 @@
 # Codex 托管执行
 
-本实现面向 macOS，将官方客户端 follower 与 AgentKib 自己持有的 app-server 分开。Follower 的 `executionMode` 为 `codex-follower`，托管为 `codex-managed`。创建和原 ID 交接须单独的设备管理授权；执行还须启用实验控制、允许对应工作区。Web/Electron 负责授权，TypeScript backend 只接受注册工作区 ID，并在每次操作前复核 canonical 路径和 CODEX_HOME。
+Codex 同 Agent 续接统一使用 AgentKib 自己启动的 `codex app-server`，`executionMode` 为 `codex-managed`，支持 macOS、Linux 和 Windows 的这条链路。follower 模块保留，主流程不调用，也不作为占用检查或续接失败后的回退。打开页面只观察，空闲会话发送时自动续接，不再勾选交接。创建与管理仍须对应设备授权；发送继续检查实验控制、工作区和未知回执。Web/Electron 负责授权，TypeScript backend 在每次操作前复核 canonical 路径、会话身份和同一 CODEX_HOME。
 
 ## RPC
 
@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | options | 无 | `available`, `models:[{id,name,isDefault,efforts}]`, `policies`，不可用附 `reason` |
 | create | `workspaceId`, UUID `requestId`, 可选 `model`, `effort`, `policyId` | `sessionId`, `accepted`, `completed`, `runtimeBootId`, `live` |
-| adopt | 原有 opaque `sessionId`, UUID `requestId`, `handoffConfirmed:true` | 同上；保留原生 thread ID |
+| adopt | 原有 opaque `sessionId`, UUID `requestId`；兼容字段不作为用户确认门 | 同上；保留原生 thread ID，仍做内部身份与占用校验 |
 | release | `sessionId`, UUID `requestId` | `released:true`, `accepted:true` |
 | reconcile | `sessionId`, UUID `requestId` | `reconciled:true` 和 `live`，或 `false` 和原因 |
 
@@ -26,29 +26,37 @@ HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runt
 
 新建托管会话默认使用 `workspace-write-on-request`：`workspace-write`、`on-request`、人工 reviewer、sandbox network=false。完整授权浏览器可在主机返回的映射策略中显式切换为完全访问（不弹审批）或工作区写入／自动审核；浏览器不能提交任意 sandbox 对象、cwd、CLI 参数、额外可写根或审核器参数。策略更新必须在空闲时携带当前 revision，由原生 settings 通知和 `thread/read` 回读确认后写入账本；后续 turn/start 从账本使用已确认策略，不再被固定默认值覆盖。旧记录缺少策略字段时仍使用原受限默认。
 
-模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`。新增托管模式仅对完成隔离验证的 `0.155.1` 开放。空闲时保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。
+模型、思考强度和服务档位来自 `model/list`；Plan／执行模式来自实验协议 `collaborationMode/list`，按当前原生能力及返回结构校验，`0.155.1` 是既有隔离验证版本。空闲时保存设置只改变 `selected`，不启动轮次；`current` 保留原生确认值，`applicationStatus` 区分 `pending`、`confirmed` 和 `unknown`。下一次显式发送在 `turn/start.collaborationMode` 传入选择，内外模型和强度一致，`developer_instructions:null` 由 Codex 加载内置指令。没有自定义计划提示词、隐藏空轮次或自动执行计划。
 
 切换模型会重新校验 effort 与 service tier；恢复默认只在主机能给出明确默认模型时开放，且不改变计划模式或执行策略。重启保留选择但不把旧 mode 当作原生事实；`0.155.1` 恢复响应缺少模式时，等待下一轮原生事件确认。执行期间原生明确请求的额外权限，只有单独获扩展审批授权的浏览器才能按原生候选决定；完整浏览器授权不等于自动批准。一次最多持有 8 个托管进程，每个会话一个专用 app-server。
 
 Goal 使用 `thread/goal/get/set/clear` 和原生事件。`goal-set` 的 `intent:update` 不传原生 status，保留暂停、阻塞或受限状态；`intent:start`（旧请求缺省值）仅创建不存在的目标并明确激活。已有目标的旧缺省请求拒绝，避免意外恢复。预算字段缺省保留、`null` 清空，修改不重置消耗。仅活动目标可暂停；暂停／阻塞可显式恢复，预算或用量受限可尝试恢复，仍以 Codex 返回的最终状态为准。完成目标须清除后新建。设置尚未原生确认时阻止目标启动／恢复；不发送隐藏消息补偿，不新增目标调度器。
 
-托管只放行已核对的 `codex-cli 0.155.1` 与 `0.155.0-alpha.16.3`。通过已有平台发现解析 codex，再读取 `--version`；未知版本 fail closed。官方 thread/start/resume 回包还必须确认 cwd、sandbox、reviewer、可写根及本地环境。版本号不能替代运行时身份与策略验证。
+通过已有平台发现解析 codex，再读取严格格式的 `--version`，要求不低于写锁起始版本 `0.147.0`；无法取得可信版本、版本过低或格式无效时保守拒绝。最低版本实测及能力限制见[第 1 阶段 QA](../qa/session-continue-stage-1-validation-2026-10-19.md)。官方 thread/start/resume 回包还必须确认 cwd、sandbox、reviewer、可写根及本地环境。版本门槛不表示每个版本或可选能力都已验收；模型、Plan、Goal 等仍分别核验原生能力。
 
-Follower 连接 CODEX_HOME 下官方 IPC，使用操作系统核实的实际 peer executable 推导 app bundle，支持移动安装位置和用户 Applications；不再依赖固定 `/Applications/ChatGPT.app` 或必须安装 VS Code 扩展。基础 follower 要求 Desktop `26.917.62051` 或更新版本；owner 的 `thread-follower-update-thread-settings` v2 要求 `26.924.22138` 或更新版本。版本必须恰好包含三段数字，按三段数值组成的元组比较最低门槛；低于对应门槛或格式无效时拒绝。此调整仅适用于 Desktop follower，不改变上文托管 CLI 的精确版本限制或其他 agent 策略。
+### 保留的 follower 模块（不接入主流程）
+
+Follower 连接 CODEX_HOME 下官方 IPC，使用操作系统核实的实际 peer executable 推导 app bundle，支持移动安装位置和用户 Applications；不再依赖固定 `/Applications/ChatGPT.app` 或必须安装 VS Code 扩展。基础 follower 要求 Desktop `26.917.62051` 或更新版本；owner 的 `thread-follower-update-thread-settings` v2 要求 `26.924.22138` 或更新版本。版本必须恰好包含三段数字，按三段数值组成的元组比较最低门槛；低于对应门槛或格式无效时拒绝。这些历史模块检查不改变当前托管 CLI 的最低门槛、逐项能力校验或其他 Agent 策略。
 
 满足 Desktop 最低版本仅允许继续运行时兼容性检查，不表示该版本已通过真实控制验收。各方法仍使用固定协议版本，并继续核对 peer、owner、host、thread、revision 和原生 ACK；超时或回执丢失仍保持 unknown 屏障，版本升级不能清除屏障。当前 `26.930.51102` 仅完成方法映射及关键 payload 字段的静态核对，尚未进行真实 owner 控制或端到端验收；`26.924.22138` 的历史 owner 设置验证也只证明当时记录的操作。
+
+以上保留代码和历史验证说明不代表 D11 主路由会连接 Desktop。旧模块及其测试暂不删除。
+
+### 原生状态与用量
 
 实时快照以独立 `activity: compacting | null` 表示上下文压缩，不改写原生 turn 状态。托管侧跟踪匹配 thread、turn 和 item 的 `contextCompaction` 开始／完成；follower 从已验证快照的活动 turn 与 `completed:false` item 识别，包含官方手动压缩的无 turn ID 占位。压缩期间禁止即时发送、steer、设置、目标修改和执行转移；有已确认活动 turn 时仍可原生停止，已有原生排队及有效待处理请求按各自能力保留。无 turn ID 时不制造停止目标。压缩结束、失败或中断由匹配原生生命周期确认；断线及过期 hydrate 不得恢复旧运行态。
 
 `usage` 仅投影最近原生报告的上下文占用与累计消费，保留兼容 `tokenUsage`。`reportGeneration` 区分原生观察实例，在当前 backend 进程内递增；`reportId` 只随真实 usage 事件或 follower usage 字段变化递增，普通 revision 或重复快照不算新报告。连接重建后可以重置 `reportId`，即使另一端持续订阅使传输 epoch 不变，两端仍能接受新实例的报告并拒绝旧实例晚到的报告。backend 重启仍通过运行实例作用域重置；没有原生观察实例的持久旧报告不沿用其代次。压缩开始使旧 Gauge 失效；期间到达的报告保留为 pending 候选，结束后同 turn 报告保持 stale，因为压缩调用输入可能仍是压缩前上下文。模型身份或托管模型选择变化也使旧报告失效；明确仍待应用的模型选择不得复用旧窗口。匹配后续新 turn 的报告可恢复 ready；无法归属、重连或恢复时不沿用旧百分比，不通过发送任务补刷新，控制恢复也不等待用量报告。
 
-由于 follower 快照没有目标主机的模型／服务档位目录，Web 只开放计划模式和三个固定策略，拒绝浏览器提交模型、effort 或服务档位字符串。上下文用量来自已验证快照的 `latestTokenUsageInfo`；主机默认、goal、技能／插件资源仍无可靠 follower 读取路径，保持 unavailable。
+Web 的模型、服务档位、策略和资源能力取自当前 app-server 的已验证目录及权限，不沿用旧 follower 快照推测能力。保留的 follower 实现缺少相应目录时继续关闭这些操作。
 
-## 原 ID 交接与退出
+## 原 ID 自动续接与退出
 
-交接要求用户明确确认，并先在原客户端停止任务、暂停 active goal、释放会话。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。源索引与 rollout 元数据共同验证原始 thread ID 和工作区；专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时返回 `codex-owner-busy`；“找不到 owner”不能作为排他证明。active goal 会被拒绝以免恢复引起自动循环。
+没有本机活动 runner 时，发送自动准备并续接同一原生 thread ID；源索引与 rollout 元数据共同验证 ID 和工作区。专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时返回 `codex-owner-busy`，界面提供显式分支或返回 Codex 的选择，保留草稿并重新检查占用；“找不到 owner”不能作为排他证明。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。原生 active goal 等恢复风险及未知结果仍按内部规则阻断，不因省去用户确认而放行。
 
-release 关闭且必要时终止仅由本服务创建的子进程组，等待进程退出释放原生锁。已交接的会话随后回到 follower 路由；新建会话保留托管历史、显示已释放只读状态。当前版本没有对已释放新建会话的隐式自动重启。关闭 Web 页面不结束任务；退出 AgentKib/runtime 会关闭专用子进程。没有独立常驻 daemon，也没有自动 goal 循环。
+自动回收和兼容 release 路径只关闭本服务创建的子进程组，必要时终止，并等待实际退出后释放 lease 与原生锁。正常轮次完成后空闲约 1 分钟回收；最后订阅者离开时等待当前轮次完成后回收。关闭失败或存在未知回执时保留相应保护，不把超时当作已安全退出。回收后保留历史和原生身份，下次发送自动重新校验、启动，不回到 follower。退出 AgentKib/runtime 会关闭专用子进程，没有独立常驻 daemon 或新增 goal 调度器。
+
+Codex 把闲置记录压缩为 `.jsonl.zst`、线程表仍登记原 `.jsonl` 时，原文件缺失才尝试压缩同名文件；直接登记 `.zst` 也支持。有限头部用于原生身份校验，私有解压副本供历史分页和文档读取，索引流式解压；不修改原始记录或源索引。单份副本上限 2 GiB，缓存按 4 GiB 目标淘汰旧副本，15 分钟内近期使用的副本保留以保护游标，因此总量可能暂时超过目标。缓存命中不改变副本 mtime，并发首次发布不替换已发布 inode；文件安全、头部和解压上限不放宽。
 
 ## 持久账本及恢复
 
@@ -58,7 +66,7 @@ release 关闭且必要时终止仅由本服务创建的子进程组，等待进
 - `managed_commands(request_id PRIMARY KEY,session_id,fingerprint,phase,result,evidence)`：请求 SHA256、prepared/dispatched/resolved 状态、回执与最小原生证据。不会持久化完整原始控制请求。
 - `managed_events(sequence PRIMARY KEY,session_id,event_id,event)`：显示历史，按 `(session_id,event_id)` 去重。
 
-会话记录在 thread/start 之前写入；thread/started 通知也会尽早持久化 native ID，所以创建 HTTP 回执丢失后仍可在 catalog 找回任务。发送前先写 dispatched，再向原生 pipe 写入；超时/断开保持 unknown fence，不自动重发。runtime 重启不会自动恢复模型执行，显示 recovery-required，由管理操作 reconcile 尝试同 ID 恢复。
+会话记录在 thread/start 之前写入；thread/started 通知也会尽早持久化 native ID，所以创建 HTTP 回执丢失后仍可在 catalog 找回任务。发送前先写 dispatched，再向原生 pipe 写入；超时/断开保持 unknown fence，不自动重发。runtime 重启不会自动恢复模型执行；没有未决回执且原生身份安全可恢复时，下次显式发送触发自动续接，有未知结果时仍先查询回执并核对证据。
 
 reconcile 读取原生 thread/read。send/steer/queue-add 必须找到对应 `userMessage.clientId == requestId`；stop 必须找到其目标 turn 的明确终态；审批和问答必须确认原生 `serverRequest/resolved`，单纯轮次结束不能证明对应决定已执行；创建/交接须已获得并重新核实同一个 native ID。通过后才记账并返回 `reconciled:true`，供 Electron 清除不确定结果屏障。无法核对、native ID 缺失、原客户端仍持锁、原生历史未持久化，均返回 false，不允许手工跳过未知发送。实测官方零消息线程（包括 persistExtendedHistory 或设置名称）尚未生成可恢复 rollout；若在首条消息前退出 runtime，会保留可找到的账本任务，但不能恢复这个空 native ID，须 release 后显式新建。
 
@@ -76,7 +84,7 @@ pnpm --filter @agentkib/desktop exec vitest run electron/main/web/codex-actions.
 
 ## 持久控制回执与本机 CSR
 
-Codex follower 的 send/stop/approve/answer 现在复用 `executions.sqlite` 命令账本。SQLite 成功记录 dispatched 后，桥接才可发送原生请求；无法写账本时不发送。收到匹配的原生回执才写 resolved。释放会话前也检查未确认记录；存在已派发但结果未知的审批、问答或其他控制时，release 明确返回未派发，保留执行进程及其原生 resolved 证据。应先 inspect 核对，确认后再以新 requestId 显式释放，不自动重试旧 release。runtime 重启后，任何设备对同一 session 的后续控制仍受未确认记录阻挡；idle 快照、页面刷新和重新连接均不能清除此屏障。
+当前 managed 控制和保留的旧 follower 账本都使用 `executions.sqlite` 的持久去重与 unknown 保护；旧账本仍需可核对，不表示主路由重新调用 follower。SQLite 成功记录 dispatched 后才发送原生请求；无法写账本时不发送。收到匹配的原生回执才写 resolved。释放会话前也检查未确认记录；存在已派发但结果未知的审批、问答或其他控制时，release 明确返回未派发，保留执行进程及其原生 resolved 证据。应先 inspect 核对，不自动重试旧命令。runtime 重启后，任何设备对同一 session 的后续控制仍受未确认记录阻挡；idle 快照、页面刷新和重新连接均不能清除此屏障。
 
 本机 `control.receipt {requestId,deviceId}` 查询通常返回 `{found:false,requestId}`，或包含 sessionId、workspaceId、operation、executionMode、原 runtimeBootId/expectedRevision/turnId、status、ack 的记录。status 为 not-dispatched / accepted / unknown。deviceId 必须与原命令一致，设备权限与 workspace 授权由 Electron 再验证；跨设备同 UUID 不会返回他人回执。旧账本添加 device_id 列，旧记录保留但不自动分配给任何新设备。UUID 保留全局唯一约束，跨设备 UUID 碰撞拒绝。`completionObserved:false` 明确表示 accepted 仅确认请求回执，不表示审批、工具或轮次已经结束，UI 必须继续显示原生 pending 事项。
 
@@ -90,13 +98,13 @@ Web 将 Codex 控制和管理操作的 requestId、sessionId/workspaceId、kind 
 
 ## 扩展控制与能力查询（2026-09-26）
 
-`GET /api/web/v1/codex/capabilities?sessionId=…` 返回每项原生能力的可用性与禁用原因，桌面服务再次与设备权限、工作区、实验执行开关求交集。官方 follower 与托管 app-server 不共享未经验证的高级操作；已验证的基本发送/停止/审批/问答保持兼容。工作树创建、分支切换继续不可用，不能以自行运行 Git 替代官方语义。
+`GET /api/web/v1/codex/capabilities?sessionId=…` 返回每项原生能力的可用性与禁用原因，桌面服务再次与设备权限、工作区、实验执行开关求交集。app-server 各项能力独立核验，不从保留的 follower 继承未经验证的操作。工作树创建、Git 分支切换继续不可用，不能以自行运行 Git 替代官方语义。
 
-`POST /api/web/v1/codex/<action>` 扩展 `inspect`、`resume`、`steer`、原生 `queue-add/update/delete/reorder`、`rename/archive/unarchive/fork/settings`。写操作携带唯一 requestId、bootId 和适用的 expectedRevision。inspect 只读核对，不启动执行、不重新发送。resume 要求明确交接确认，仍由官方 writer 锁决定是否成功。
+`POST /api/web/v1/codex/<action>` 保留兼容 `inspect`、`resume`、`steer`、原生 `queue-add/update/delete/reorder`、`rename/archive/unarchive/fork/settings`。写操作携带唯一 requestId、bootId 和适用的 expectedRevision。inspect 只读核对，不发送模型消息；内部 resume 不要求用户勾选，仍由官方 writer 锁决定是否成功。正常输入区不再提供手动 resume 入口。
 
 原生队列在空闲时添加消息会立即执行，任务完成后自动消费下一条。因此网页只在运行中开放加入队列；不提供自建离线发送队列，也不自动重放未确认队列操作。`queue-start` 的成功路径尚未验证，能力保持关闭。含附件的原生队列消息暂不支持正文编辑，避免替换输入时静默丢失附件；可删除后重新添加。只读队列投影不返回本机绝对附件路径。
 
-归档使用官方 thread/archive；取消归档仅恢复历史可见性，原生引擎不会自动持有该线程。需明确恢复后才能继续发送。fork 创建新的官方 thread ID，不能作为同 ID 交接失败的自动回退。下一轮模型、思考强度和计划/普通模式使用官方 settings 更新；省略字段表示保持当前设置。
+归档使用官方 thread/archive；取消归档恢复历史可见性，下次发送仍须通过自动续接校验。fork 创建新的官方 thread ID，只在用户明确分支时执行，不能作为同 ID 续接失败的自动回退。下一轮模型、思考强度和计划/普通模式使用官方 settings 更新；省略字段表示保持当前设置。
 
 扩展审批保留原生提供的完整决定与作用范围。结构化决定必须精确匹配当前请求的候选，包括拟议命令规则、网络规则及权限配置；未知作用域关闭操作。基本浏览器授权不会获得会话级或持久权限决定。秘密问答以密码输入显示，只按请求 ID 和 turn ID 向原生引擎回答；本地命令账本和浏览器回执不保存答案正文。
 

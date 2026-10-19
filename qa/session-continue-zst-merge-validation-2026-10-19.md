@@ -1,6 +1,6 @@
 # Codex 压缩记录合并与无感续接回归
 
-日期：2026-10-19。用户授权将 `/Users/kouzen/Documents/data/agentkib-codex-zst` 合并至当前分支，并检查是否回退到旧续接实现；不推送。
+日期：2026-10-19。用户授权将 `agentkib-codex-zst` worktree 合并至当前分支，并检查是否回退到旧续接实现；不推送。来源分支和提交见下文，省略个人本机目录。
 
 ## 合并与保留范围
 
@@ -123,3 +123,5 @@ git diff --cached --check
 ```
 
 日志位于 `/tmp/agentkib-zst-merge-{build,auto,desktop,supplement,web,typecheck,lint,format,testlint,compressed-final}.log`；工具输出还记录了早期专项压缩测试与额外测试文件格式检查。
+
+合并后的再次独立审查及后续修复、验证另见[合并后独立复审](session-continue-merged-independent-review-2026-10-19.md)。本记录中的结果保留为合并时证据。

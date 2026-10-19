@@ -17,8 +17,11 @@ const doubles = vi.hoisted(() => ({
   panels: null as SessionPanels | null,
   control: vi.fn(),
   codexAction: vi.fn(),
+  navigate: vi.fn(),
   upload: vi.fn(),
+  resumeCommand: vi.fn(),
 }));
+vi.mock("./session-navigation", () => ({ useSessionNavigate: () => doubles.navigate }));
 vi.mock("./session-context", () => ({
   useSession: () => {
     const [message, setMessage] = useState("");
@@ -83,6 +86,12 @@ describe("composer sending shortcuts", () => {
     vi.resetAllMocks();
     doubles.panels = null;
     doubles.control.mockResolvedValue(true);
+    doubles.resumeCommand.mockResolvedValue({
+      available: true,
+      command: "CODEX_HOME='/host/codex' codex resume '00000000-0000-4000-8000-000000000001'",
+      shell: "posix",
+      runOn: "host",
+    });
     doubles.codexAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
@@ -119,6 +128,7 @@ describe("composer sending shortcuts", () => {
       codexAction: doubles.codexAction,
       client: {
         uploadAttachment: doubles.upload,
+        codexResumeCommand: doubles.resumeCommand,
         request: vi.fn(),
       } as unknown as SessionController["client"],
     };
@@ -467,4 +477,137 @@ describe("composer sending shortcuts", () => {
       expect(input).toHaveAttribute("aria-describedby", hint.id);
     },
   );
+  function continuationFixture() {
+    doubles.session.access!.status = "approved";
+    doubles.session.access!.device!.id = "device";
+    doubles.session.access!.device!.manage = true;
+    doubles.session.capabilities!.features.fork = { available: true };
+    doubles.session.capabilities!.features.send = { available: true };
+    Object.assign(doubles.session.live!, {
+      executionMode: "codex-managed",
+      executionLocation: null,
+      ownershipReason: null,
+      reason: undefined,
+    });
+  }
+  function externalOwner() {
+    doubles.session.canSend = false;
+    Object.assign(doubles.session.live!, {
+      sendEnabled: false,
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      reason: "codex-owner-busy",
+    });
+  }
+  it("checks continuation on focus without presenting resume or handoff confirmation", () => {
+    continuationFixture();
+    doubles.session.checkContinuation = vi.fn(async () => {});
+    const { input } = renderComposer();
+    expect(input).toHaveAttribute("placeholder", "Continue this session…");
+    fireEvent.focus(input);
+    expect(doubles.session.checkContinuation).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByText(codexCopy["en-US"].resume)).not.toBeInTheDocument();
+  });
+  it("preserves a rejected send draft through the owner choice and restores input after release", async () => {
+    continuationFixture();
+    const pending = deferred<boolean>();
+    doubles.control.mockReturnValue(pending.promise);
+    const { input, form, rerender } = renderComposer("Keep this draft");
+    fireEvent.submit(form);
+    await act(async () => pending.resolve(false));
+    externalOwner();
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fork and continue" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Continue in Codex" }));
+    expect(screen.queryByRole("button", { name: "Fork and continue" })).not.toBeInTheDocument();
+    expect(screen.getByText("View only")).toBeVisible();
+    doubles.session.canSend = true;
+    Object.assign(doubles.session.live!, {
+      sendEnabled: true,
+      executionLocation: null,
+      ownershipReason: null,
+      reason: undefined,
+    });
+    rerender(<SessionComposer />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Keep this draft");
+    expect(doubles.control).toHaveBeenCalledTimes(1);
+    expect(input.isConnected).toBe(false);
+  });
+  it("offers a verified host command for an unsupported Codex version without dispatching", async () => {
+    continuationFixture();
+    doubles.session.canSend = false;
+    Object.assign(doubles.session.live!, {
+      sendEnabled: false,
+      reason: "codex-cli-version-too-old",
+    });
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(<SessionComposer />);
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(
+      screen.getAllByText("Your Codex version is too old. Update it to continue here."),
+    ).toHaveLength(1);
+    const button = screen.getByRole("button", { name: "Copy resume command" });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(doubles.resumeCommand).toHaveBeenCalledWith("session", expect.any(AbortSignal));
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        "CODEX_HOME='/host/codex' codex resume '00000000-0000-4000-8000-000000000001'",
+      ),
+    );
+    expect(screen.getByText(/On the computer running AgentKib/)).toBeVisible();
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.navigate).not.toHaveBeenCalled();
+  });
+  it("loads a resume command only after choosing to return to the existing owner", async () => {
+    continuationFixture();
+    externalOwner();
+    const { rerender } = render(<SessionComposer />);
+    expect(doubles.resumeCommand).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Continue in Codex" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Copy resume command" })).toBeEnabled(),
+    );
+    const signal = doubles.resumeCommand.mock.calls[0][1] as AbortSignal;
+    doubles.session.selected = "next-session";
+    doubles.session.current = {
+      id: "next-session",
+      agent: "codex",
+    } as SessionController["current"];
+    Object.assign(doubles.session.live!, { sessionId: "next-session" });
+    doubles.session.capabilities!.sessionId = "next-session";
+    rerender(<SessionComposer />);
+    expect(signal.aborted).toBe(true);
+    expect(screen.getByRole("button", { name: "Continue in Codex" })).toBeEnabled();
+    expect(doubles.resumeCommand).toHaveBeenCalledTimes(1);
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+  it("opens the fork returned by the guarded controller action", async () => {
+    continuationFixture();
+    externalOwner();
+    doubles.session.forkContinuation = vi.fn(async () => "forked-session");
+    render(<SessionComposer />);
+    fireEvent.click(screen.getByRole("button", { name: "Fork and continue" }));
+    await waitFor(() =>
+      expect(doubles.navigate).toHaveBeenCalledWith({
+        to: "/sessions/$sessionId",
+        params: { sessionId: "forked-session" },
+      }),
+    );
+    expect(doubles.session.forkContinuation).toHaveBeenCalledOnce();
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+  it("allows returning to Codex when management permission disables forking", () => {
+    continuationFixture();
+    externalOwner();
+    doubles.session.access!.device!.manage = false;
+    render(<SessionComposer />);
+    expect(screen.getByRole("button", { name: "Fork and continue" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Continue in Codex" })).toBeEnabled();
+  });
 });

@@ -2,6 +2,19 @@ import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
 
+export {
+  sessionContinuationCopy,
+  SessionContinuationChoice,
+  SessionContinuationReadOnly,
+  SessionContinuationStatus,
+  type SessionContinuationAction,
+  type SessionContinuationAgent,
+  type SessionContinuationChoiceProps,
+  type SessionContinuationCopy,
+  type SessionContinuationReadOnlyProps,
+  type SessionContinuationStatusProps,
+} from "./session-continuation";
+
 export function toolStatusLabel(status: string | undefined, locale: string): string {
   const names =
     locale === "zh-TW"

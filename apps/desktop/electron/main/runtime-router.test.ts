@@ -125,6 +125,21 @@ describe("RuntimeRouter Skill ownership", () => {
   );
 });
 
+describe("RuntimeRouter read-only Codex continuation", () => {
+  it("forwards resume-command as a TypeScript history read without invoking controls", async () => {
+    const host = new Host();
+    const router = new RuntimeRouter(host);
+    await router.start();
+    const params = { operation: "resume-command", sessionId: "session" };
+    const result = { available: true, command: "verified command", shell: "posix", runOn: "host" };
+    const received = vi.fn(() => result);
+    host.handler = received;
+    expect(await router.request(RUNTIME_METHODS.webRequest, params)).toBe(result);
+    expect(received).toHaveBeenCalledExactlyOnceWith(RUNTIME_METHODS.webRequest, params);
+    await router.stop();
+  });
+});
+
 describe("RuntimeRouter history search ownership", () => {
   it.each(historyRequests)(
     "forwards $method and its exact parameters once",

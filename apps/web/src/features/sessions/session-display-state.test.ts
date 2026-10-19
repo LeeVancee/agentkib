@@ -1,3 +1,4 @@
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
 import { dictionaries } from "@/features/conversation/i18n";
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
@@ -125,3 +126,70 @@ it("shows a cancelled Claude turn while leaving the idle send eligibility unchan
   expect(value.canSend).toBe(true);
   expect(sessionDisplayState({ ...value, online: false }).label).toBe("已断线");
 });
+
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "projects Codex continuation states in %s",
+  (locale) => {
+    const copy = sessionContinuationCopy(locale);
+    const codex = {
+      ...state,
+      locale,
+      selected: "codex",
+      current: { id: "codex", agent: "codex", availability: "readable" },
+      live: {
+        ...state.live!,
+        sessionId: "codex",
+        executionMode: "codex-managed",
+        executionLocation: null,
+        ownershipReason: null,
+      },
+      capabilities: { sessionId: "codex", features: { send: { available: true } } },
+    } as SessionController;
+    expect(sessionDisplayState(codex)).toMatchObject({
+      continuation: "idle",
+      label: "",
+      reason: "",
+    });
+    expect(
+      sessionDisplayState({ ...codex, pendingSend: { sessionId: "codex", text: "draft" } }),
+    ).toMatchObject({ continuation: "starting", label: copy.starting, loading: true });
+    expect(
+      sessionDisplayState({ ...codex, live: { ...codex.live!, executionLocation: "agentkib" } }),
+    ).toMatchObject({ continuation: "running", label: copy.running, tone: "active" });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        canSend: false,
+        live: {
+          ...codex.live!,
+          ownershipReason: "codex-owner-busy",
+          executionLocation: "external",
+        },
+      }),
+    ).toMatchObject({ continuation: "busy", label: copy.busy("Codex"), tone: "muted" });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        canSend: false,
+        live: { ...codex.live!, sendEnabled: false, reason: "codex-cli-version-too-old" },
+      }),
+    ).toMatchObject({
+      continuation: "view-only",
+      label: copy.viewOnly,
+      reason: copy.codexVersionTooOld,
+    });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        live: { ...codex.live!, sessionId: "old", ownershipReason: "codex-owner-busy" },
+      }),
+    ).toMatchObject({ loading: true });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        notice: "uncertain",
+        live: { ...codex.live!, ownershipReason: "codex-owner-busy" },
+      }).continuation,
+    ).toBeUndefined();
+  },
+);

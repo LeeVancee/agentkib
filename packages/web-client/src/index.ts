@@ -212,6 +212,8 @@ export interface Live {
   approvals: Approval[];
   questions?: UserQuestionRequest[];
   reason?: string;
+  executionLocation?: "agentkib" | "terminal" | "external" | null;
+  ownershipReason?: string | null;
   executionMode?:
     | "managed-resume"
     | "claude-managed"
@@ -368,6 +370,14 @@ export interface ManagedInspection {
   handoffFingerprint?: string;
   available?: boolean;
   reason?: string;
+  executionLocation?: "agentkib" | "terminal" | "external" | null;
+  ownershipReason?: string | null;
+}
+export interface CodexResumeCommand {
+  available: true;
+  command: string;
+  shell: "posix" | "powershell";
+  runOn: "host";
 }
 export interface ManagedActionBody {
   expectedRevision?: number;
@@ -843,6 +853,13 @@ export class WebClient {
   managedInspect(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
     return this.request<ManagedInspection>(
       `managed/inspect?${new URLSearchParams({ sessionId, agent })}`,
+      undefined,
+      signal,
+    );
+  }
+  codexResumeCommand(sessionId: string, signal?: AbortSignal) {
+    return this.request<CodexResumeCommand>(
+      `managed/resume-command?${new URLSearchParams({ sessionId })}`,
       undefined,
       signal,
     );

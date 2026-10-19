@@ -15,7 +15,7 @@ let csrf = "";
 let bootId = "";
 let executionMode = "codex-managed";
 let status = "running";
-const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
+const runtimeHandler = async (input: unknown): Promise<unknown> => {
   const p = input as { operation: string; requestId?: string };
   if (p.operation === "catalog")
     return { sessions: [{ id: "session", agent: "codex", workspace_id: "workspace" }] };
@@ -31,7 +31,16 @@ const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
       ),
     };
   if (p.operation === "live")
-    return { revision: 1, runtimeBootId: "runtime", status, sendEnabled: true, executionMode };
+    return {
+      revision: 1,
+      runtimeBootId: "runtime",
+      status,
+      sendEnabled: true,
+      executionMode,
+      workspaceId: "workspace",
+      executionLocation: null,
+      ownershipReason: null,
+    };
   if (p.operation === "queue-list")
     return {
       data: [
@@ -46,7 +55,8 @@ const runtime = vi.fn(async (input: unknown): Promise<unknown> => {
       ],
     };
   return { accepted: true, requestId: p.requestId };
-});
+};
+const runtime = vi.fn(runtimeHandler);
 async function http(path: string, data?: unknown, raw = false) {
   return new Promise<{ status: number; data: any; cookie?: string }>((resolve, reject) => {
     const req = request(
@@ -86,6 +96,7 @@ async function pair(flags: Partial<Extract<WebAdminRequest, { operation: "approv
 }
 beforeEach(async () => {
   runtime.mockClear();
+  runtime.mockImplementation(runtimeHandler);
   executionMode = "codex-managed";
   status = "running";
   cookie = "";
@@ -304,14 +315,97 @@ it("forwards an exact advertised native decision separately from the legacy stri
   ).toMatchObject({ decision: "native", nativeDecision: decision });
 });
 
-it("allows explicit follower handoff only with manage and workspace grants", async () => {
+it("allows a scoped managed resume without a handoff confirmation", async () => {
+  await pair({ manage: true });
+  const result = await http("/codex/resume", action());
+  expect(result.status).toBe(200);
+  const dispatched = runtime.mock.calls.find(
+    ([p]) => (p as { operation: string }).operation === "resume",
+  )![0];
+  expect(dispatched).not.toHaveProperty("handoffConfirmed");
+});
+it("keeps explicit resume behind manage permission", async () => {
+  await pair();
+  expect((await http("/codex/resume", action())).status).toBe(403);
+});
+it("rejects follower resume even with manage permission", async () => {
   await pair({ manage: true });
   executionMode = "codex-follower";
-  const result = await http("/codex/resume", { ...action(), handoffConfirmed: true });
-  expect(result.status).toBe(200);
+  expect((await http("/codex/resume", action())).data.error).toBe("capability_unavailable");
   expect(
     runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "resume"),
-  ).toBe(true);
+  ).toBe(false);
+});
+it("dispatches an idle Codex send with only the existing send grant", async () => {
+  await pair();
+  status = "idle";
+  expect((await http("/send", action())).status).toBe(200);
+  const dispatched = runtime.mock.calls.find(
+    ([p]) => (p as { operation: string }).operation === "send",
+  )![0];
+  expect(dispatched).toMatchObject({ expectedRevision: 1, runtimeBootId: "runtime" });
+  expect(dispatched).not.toHaveProperty("handoffConfirmed");
+});
+it.each([
+  "codex-owner-busy",
+  "codex-cli-version-too-old",
+  "codex-cli-unavailable",
+  "codex-cli-version-unavailable",
+  "codex-owner-check-unavailable",
+  "platform-unsupported",
+])("preserves the scoped Codex send preflight reason %s", async (reason) => {
+  await pair();
+  runtime.mockImplementation(async (input) => {
+    const result = await runtimeHandler(input);
+    return (input as { operation: string }).operation === "live"
+      ? { ...(result as object), sendEnabled: false, ownershipReason: reason }
+      : result;
+  });
+  const result = await http("/send", action());
+  expect(result.status).toBe(409);
+  expect(result.data).toEqual({ error: reason, controlOutcome: "not-dispatched" });
+  expect(runtime.mock.calls.some(([p]) => (p as { operation: string }).operation === "send")).toBe(
+    false,
+  );
+});
+it("preserves a correlated writer-lock rejection and clears only its unknown fence", async () => {
+  await pair();
+  runtime.mockImplementation(async (input) => {
+    const p = input as { operation: string; requestId?: string };
+    return p.operation === "send"
+      ? {
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          requestId: p.requestId,
+          runtimeBootId: "runtime",
+          reason: "codex-owner-busy",
+        }
+      : runtimeHandler(input);
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await http("/send", action());
+    expect(result.status).toBe(409);
+    expect(result.data).toEqual({ error: "codex-owner-busy", controlOutcome: "not-dispatched" });
+  }
+});
+it("keeps an uncorrelated writer-lock result uncertain", async () => {
+  await pair();
+  runtime.mockImplementation(async (input) =>
+    (input as { operation: string }).operation === "send"
+      ? {
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          requestId: "different-request",
+          runtimeBootId: "runtime",
+          reason: "codex-owner-busy",
+        }
+      : runtimeHandler(input),
+  );
+  const result = await http("/send", action());
+  expect(result.status).toBe(502);
+  expect(result.data).toEqual({ error: "outcome_unknown", controlOutcome: "unknown" });
 });
 it("does not silently discard original queue attachments on text edits", async () => {
   await pair({ advancedControl: true });

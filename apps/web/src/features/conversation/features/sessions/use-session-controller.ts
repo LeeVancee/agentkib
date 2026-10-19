@@ -178,6 +178,12 @@ export function useSessionController({
     { sessionId: string; requestId: string; turnId?: string; observedActive: boolean } | undefined
   >(undefined);
   const [pendingSessions, setPendingSessions] = useState<Record<string, boolean>>({});
+  const [pendingSend, setPendingSend] = useState<{
+    sessionId: string;
+    text: string;
+    afterEventId?: string;
+  }>();
+  const continuationCheck = useRef({ sessionId: "", generation: -1, at: 0, pending: false });
   const generation = useRef(0),
     selection = useRef(""),
     accessRef = useRef<Access | undefined>(undefined),
@@ -242,6 +248,7 @@ export function useSessionController({
     setCapabilities(undefined);
     setModal(undefined);
     setMessage("");
+    setPendingSend(undefined);
     setHistoryReferences([]);
     setHistorySearchOpen(false);
     setNotice(undefined);
@@ -1068,7 +1075,7 @@ export function useSessionController({
     setPage,
   });
   const choose = useCallback(
-    async (id: string) => {
+    async (id: string, initialDraft?: string) => {
       if (excludedIds.current.has(id)) {
         if (selection.current) leaveSession();
         setCatalogNotice(true);
@@ -1088,7 +1095,8 @@ export function useSessionController({
       setPage(undefined);
       setLive(undefined);
       setModal(undefined);
-      setMessage("");
+      setMessage(initialDraft ?? "");
+      setPendingSend(undefined);
       setHistoryReferences([]);
       setHistorySearchOpen(false);
       setNotice(undefined);
@@ -1647,6 +1655,11 @@ export function useSessionController({
     const g = generation.current,
       id = selected;
     const requestId = crypto.randomUUID();
+    if (
+      kind === "send" &&
+      catalogSessions.current.find((item) => item.id === id)?.agent === "codex"
+    )
+      setPendingSend({ sessionId: id, text, afterEventId: page?.events.at(-1)?.id });
     const needsDurableReceipt =
       ["codex", "claude-code"].includes(
         sessions.find((session) => session.id === id)?.agent ?? "",
@@ -1755,9 +1768,67 @@ export function useSessionController({
         }
       }
     } finally {
+      if (g === generation.current) setPendingSend(undefined);
       mutating.current = false;
       setBusy(false);
     }
+  }
+  const checkContinuation = useCallback(async () => {
+    const id = selection.current;
+    const prior = continuationCheck.current;
+    if (
+      !id ||
+      (prior.pending && prior.sessionId === id && prior.generation === generation.current) ||
+      mutating.current ||
+      excludedIds.current.has(id) ||
+      uncertainOutcomes.current.has(id) ||
+      hasDurablePending(id) ||
+      accessRef.current?.status !== "approved" ||
+      accessRef.current.protocolVersion !== 2 ||
+      catalogSessions.current.find((item) => item.id === id)?.agent !== "codex" ||
+      (prior.sessionId === id &&
+        prior.generation === generation.current &&
+        Date.now() - prior.at < 4000)
+    )
+      return;
+    const check = { sessionId: id, generation: generation.current, at: Date.now(), pending: true };
+    continuationCheck.current = check;
+    try {
+      await refresh(false, true);
+    } finally {
+      check.pending = false;
+    }
+  }, [refresh, hasDurablePending]);
+  useEffect(() => {
+    if (
+      !online ||
+      live?.sessionId !== selected ||
+      (live.ownershipReason !== "codex-owner-busy" && live.reason !== "codex-owner-busy")
+    )
+      return;
+    const timer = setInterval(() => void checkContinuation(), 4000);
+    return () => clearInterval(timer);
+  }, [online, selected, live?.sessionId, live?.ownershipReason, live?.reason, checkContinuation]);
+  async function forkContinuation() {
+    const id = selected,
+      g = generation.current,
+      draft = message;
+    if (catalogSessions.current.find((item) => item.id === id)?.agent !== "codex") return;
+    const result = await codexAction("fork");
+    if (
+      g !== generation.current ||
+      selection.current !== id ||
+      !result?.sessionId ||
+      result.sessionId === id
+    )
+      return;
+    // Transfer the draft with selection, before asynchronous history reads can
+    // expose the new composer. A later read must not replace edits made there.
+    const choosing = choose(result.sessionId, draft);
+    const targetGeneration = generation.current;
+    await choosing;
+    if (generation.current !== targetGeneration || selection.current !== result.sessionId) return;
+    return result.sessionId;
   }
   const current = sessions.find((s) => s.id === selected);
   const currentWorkspace = workspaces?.find((w) => w.id === current?.workspace_id);
@@ -1842,6 +1913,9 @@ export function useSessionController({
     embedded,
     capabilities,
     codexAction,
+    checkContinuation,
+    forkContinuation,
+    pendingSend,
     origin,
     connection: client.connection,
     disconnect,

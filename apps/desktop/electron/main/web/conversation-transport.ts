@@ -103,6 +103,7 @@ export function isConversationPath(path: string, post: boolean) {
         "/managed/capabilities",
         "/managed/inspect",
         "/managed/context",
+        "/managed/resume-command",
         "/managed/settings",
         "/managed/queue",
         "/managed/goals",

@@ -1,10 +1,11 @@
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "./claude-connection-copy";
 import { dictionaries, type Locale } from "../../i18n";
 import { unavailableReasonText } from "../../live-status";
 const zh = {
   handoff: "我已处理待审批事项和后台命令，并关闭原执行客户端；以原会话 ID 恢复执行，不自动分支。",
-  composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入原客户端队列。队列消息将自动执行。",
-  queueTooLarge: "原客户端队列超过 100 条，请先在原客户端处理；此处暂不允许编辑或排序。",
+  composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入待发队列。队列消息将自动执行。",
+  queueTooLarge: "待发队列超过 100 条，此处暂不允许编辑或排序。",
   queueAttachments: "含附件的待发消息暂不支持编辑正文，可删除后重新添加。",
   keep: "保持当前设置",
   pendingInfo: "汇总本页已查看会话的待处理事项及本浏览器尚未确认的请求。",
@@ -13,9 +14,9 @@ const zh = {
   unavailable: "主机未提供或尚未验证此能力",
   permission: "当前访问没有附件上传权限。",
   resume: "恢复执行",
-  inspect: "检查原客户端状态",
+  inspect: "检查会话状态",
   steer: "追加到当前轮次",
-  queue: "原客户端待发队列",
+  queue: "待发队列",
   queueAdd: "加入队列（将自动执行）",
   queueUpdate: "修改",
   queueDelete: "移除",
@@ -97,9 +98,8 @@ export const codexCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
   "zh-TW": {
     previewAttachment: "預覽附件",
-    composerHint:
-      "閒置時傳送；執行中可停止，獲授權後可追加或加入原客戶端佇列。佇列訊息將自動執行。",
-    queueTooLarge: "原客戶端佇列超過 100 條，請先在原客戶端處理；此處暫不允許編輯或排序。",
+    composerHint: "閒置時傳送；執行中可停止，獲授權後可追加或加入待發佇列。佇列訊息將自動執行。",
+    queueTooLarge: "待發佇列超過 100 條，此處暫不允許編輯或排序。",
     queueAttachments: "含附件的待傳送訊息暫不支援編輯內文，可刪除後重新新增。",
     keep: "保持目前設定",
     pendingInfo: "彙整此頁已查看對話的待處理事項及此瀏覽器尚未確認的請求。",
@@ -109,9 +109,9 @@ export const codexCopy: Record<Locale, Copy> = {
     unavailable: "主機未提供或尚未驗證此能力",
     permission: "目前存取沒有附件上傳權限。",
     resume: "恢復執行",
-    inspect: "檢查原客戶端狀態",
+    inspect: "檢查對話狀態",
     steer: "追加到目前輪次",
-    queue: "原客戶端待傳送佇列",
+    queue: "待發佇列",
     queueAdd: "加入佇列（將自動執行）",
     queueUpdate: "修改",
     queueDelete: "移除",
@@ -190,9 +190,8 @@ export const codexCopy: Record<Locale, Copy> = {
   "en-US": {
     previewAttachment: "Preview attachment",
     composerHint:
-      "Send when idle. While running, stop or—with permission—steer or queue messages. Messages queued in the original client execute automatically.",
-    queueTooLarge:
-      "The original-client queue exceeds 100 items. Manage it in the original client first; editing and reordering are disabled here.",
+      "Send when idle. While running, stop or—with permission—steer or queue messages. Queued messages execute automatically.",
+    queueTooLarge: "The queue exceeds 100 items. Editing and reordering are disabled here.",
     queueAttachments:
       "Queued messages with attachments cannot be edited yet. Remove and add them again instead.",
     keep: "Keep current settings",
@@ -205,9 +204,9 @@ export const codexCopy: Record<Locale, Copy> = {
     unavailable: "The host does not provide or has not verified this capability",
     permission: "This access does not include permission to upload attachments.",
     resume: "Resume execution",
-    inspect: "Inspect original-client state",
+    inspect: "Inspect session state",
     steer: "Add to current turn",
-    queue: "Original-client submission queue",
+    queue: "Queued messages",
     queueAdd: "Queue for automatic execution",
     queueUpdate: "Edit",
     queueDelete: "Remove",
@@ -289,8 +288,7 @@ export const codexCopy: Record<Locale, Copy> = {
     previewAttachment: "添付ファイルをプレビュー",
     composerHint:
       "待機中は送信できます。実行中は停止、許可があれば追加入力やキュー登録ができます。キューは自動実行されます。",
-    queueTooLarge:
-      "元のクライアントのキューが 100 件を超えています。元のクライアントで整理してください。ここでの編集と並べ替えは無効です。",
+    queueTooLarge: "送信待ちキューが 100 件を超えています。ここでの編集と並べ替えは無効です。",
     queueAttachments:
       "添付付きの送信待ちメッセージは編集できません。削除して追加し直してください。",
     keep: "現在の設定を保持",
@@ -303,9 +301,9 @@ export const codexCopy: Record<Locale, Copy> = {
     unavailable: "ホストで未提供または未検証の機能です",
     permission: "現在のアクセスでは添付ファイルをアップロードできません。",
     resume: "実行を再開",
-    inspect: "元のクライアントの状態を確認",
+    inspect: "会話の状態を確認",
     steer: "現在のターンに追加",
-    queue: "元のクライアントの送信キュー",
+    queue: "送信待ちキュー",
     queueAdd: "キューに追加（自動実行）",
     queueUpdate: "編集",
     queueDelete: "削除",
@@ -386,6 +384,11 @@ export const codexCopy: Record<Locale, Copy> = {
 
 const reasons: Record<Locale, Record<string, string>> = {
   "zh-CN": {
+    "codex-cli-version-unavailable":
+      "无法确认 Codex 版本，目前仅可查看。请检查 Codex CLI 后刷新重试。",
+    "codex-owner-check-unavailable":
+      "无法确认这条会话是否正在 Codex 中使用，目前仅可查看。请刷新重试。",
+    "codex-cli-unavailable": "未找到 Codex CLI，安装后可以在这里继续",
     "codex-protocol-incompatible": "当前 Codex 原生协议与会话快照不兼容，请更新客户端后重试。",
     "codex-connection-failed": "暂时无法连接 Codex 原客户端，请核对客户端状态后重试。",
     "codex-owner-changed": "执行此会话的 Codex 客户端已变化，正在重新检查状态。",
@@ -417,6 +420,11 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "此浏览器尚未获得对应权限，请在桌面授权。",
   },
   "zh-TW": {
+    "codex-cli-version-unavailable":
+      "無法確認 Codex 版本，目前僅可查看。請檢查 Codex CLI 後重新整理再試。",
+    "codex-owner-check-unavailable":
+      "無法確認這段對話是否正在 Codex 中使用，目前僅可查看。請重新整理再試。",
+    "codex-cli-unavailable": "找不到 Codex CLI，安裝後可以在這裡繼續",
     "codex-protocol-incompatible": "目前 Codex 原生協定與對話快照不相容，請更新客戶端後重試。",
     "codex-connection-failed": "暫時無法連線至 Codex 原客戶端，請核對客戶端狀態後重試。",
     "codex-owner-changed": "執行此對話的 Codex 客戶端已變更，正在重新檢查狀態。",
@@ -448,6 +456,11 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "此瀏覽器尚未取得對應權限，請在桌面授權。",
   },
   "en-US": {
+    "codex-cli-version-unavailable":
+      "The Codex version could not be confirmed. This session is view only. Check Codex CLI, then refresh to retry.",
+    "codex-owner-check-unavailable":
+      "Could not confirm whether this session is in use in Codex. It remains view only. Refresh to retry.",
+    "codex-cli-unavailable": "Codex CLI was not found. Install it to continue here.",
     "codex-protocol-incompatible":
       "The Codex native protocol or session snapshot is incompatible. Update the client and retry.",
     "codex-connection-failed":
@@ -493,6 +506,11 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "This browser needs the corresponding desktop permission.",
   },
   "ja-JP": {
+    "codex-cli-version-unavailable":
+      "Codex のバージョンを確認できないため、この会話は閲覧のみです。Codex CLI を確認してから再読み込みしてください。",
+    "codex-owner-check-unavailable":
+      "この会話が Codex で使用中か確認できないため、閲覧のみです。再読み込みしてお試しください。",
+    "codex-cli-unavailable": "Codex CLI が見つかりません。インストールすると、ここで続けられます。",
     "codex-protocol-incompatible":
       "Codex のネイティブプロトコルまたは会話スナップショットに互換性がありません。更新後に再試行してください。",
     "codex-connection-failed":
@@ -540,6 +558,9 @@ const claudeStopCodes = [
   "claude-protocol-violation",
 ];
 export function codexReason(locale: Locale, reason?: string): { text: string; technical?: string } {
+  const continuation = sessionContinuationCopy(locale);
+  if (reason === "codex-owner-busy") return { text: continuation.busy("Codex") };
+  if (reason === "codex-cli-version-too-old") return { text: continuation.codexVersionTooOld };
   const claudeReason = claudeConnectionReason(locale, reason);
   if (claudeReason) return { text: claudeReason };
   if (

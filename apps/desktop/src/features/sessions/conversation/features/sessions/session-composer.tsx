@@ -1,3 +1,6 @@
+import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { SessionBusyChoice } from "./session-busy-choice";
+import { SessionReadOnly } from "./session-read-only";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
@@ -78,6 +81,11 @@ export function SessionComposer({
     notice,
   } = session;
   const isClaude = current?.agent === "claude-code";
+  const isCodex = current?.agent === "codex";
+  const continuation = sessionContinuationCopy(locale);
+  const returnKey = JSON.stringify([selected, live?.ownershipReason, live?.reason]);
+  const [returnedFor, setReturnedFor] = useState<string | null>(null);
+  useEffect(() => setReturnedFor(null), [returnKey]);
   const copy = codexCopy[locale];
   const layout = composerLayoutCopy[locale];
   const display = sessionDisplayState(session);
@@ -106,7 +114,6 @@ export function SessionComposer({
     const controllers = active.current;
     const urls = previewUrls.current;
     setUploads([]);
-    setComposerText("");
     setResources([]);
     setSubmitted(false);
     submitPending.current = false;
@@ -302,7 +309,7 @@ export function SessionComposer({
   const primaryAction = canStop ? (
     <Button
       type="button"
-      variant="destructive"
+      variant={isCodex ? "outline" : "destructive"}
       className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
       aria-label={t.stop}
       onClick={() => void control("stop")}
@@ -368,6 +375,14 @@ export function SessionComposer({
         </DropdownMenuContent>
       </DropdownMenu>
     ) : null;
+  if (isCodex && display.continuation === "busy")
+    return returnedFor === returnKey ? (
+      <SessionReadOnly reason={continuation.viewOnly} />
+    ) : (
+      <SessionBusyChoice onReturn={() => setReturnedFor(returnKey)} />
+    );
+  if (isCodex && display.continuation === "view-only")
+    return <SessionReadOnly reason={display.reason} />;
   return (
     <div className="w-full max-w-3xl shrink-0 self-center space-y-2">
       <form
@@ -395,7 +410,10 @@ export function SessionComposer({
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder={t.message}
+          placeholder={isCodex ? continuation.placeholder : t.message}
+          onFocus={() => {
+            if (isCodex) void session.checkContinuation?.();
+          }}
           disabled={busy || submitted}
           aria-describedby={
             enterSends && canSubmit && !compacting && !busy && !submitted

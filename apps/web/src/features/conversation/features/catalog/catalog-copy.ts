@@ -25,7 +25,7 @@ export const catalogCopy = {
     contextUnavailable: "Codex 信息不可用",
     codexContextNote:
       "这里显示 Codex 原生线程信息。当前无法在手机端创建 Codex 工作树或指定起始分支；目录路径不代表工作树类型。",
-    fork: "分叉自",
+    fork: "分支自",
     spawned: "派生自",
     unknown: "未知",
     source: "来源",
@@ -57,7 +57,7 @@ export const catalogCopy = {
     contextUnavailable: "Codex 資訊無法取得",
     codexContextNote:
       "這裡顯示 Codex 原生工作階段資訊。目前無法在手機建立 Codex 工作樹或指定起始分支；目錄路徑不代表工作樹類型。",
-    fork: "分叉自",
+    fork: "分支自",
     spawned: "衍生自",
     unknown: "未知",
     source: "來源",

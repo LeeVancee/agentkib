@@ -1,3 +1,4 @@
+import { catalogCopy } from "../catalog/catalog-copy";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { claudeSessionBanner } from "./claude-session-banner";
 import { HistoryReferenceChips } from "../history/history-search-controls";
@@ -17,8 +18,6 @@ import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
 import { useLayoutEffect, useRef, useState } from "react";
 import { webLayoutCopy } from "./web-layout-copy";
-import { sessionDisplayState } from "./session-display-state";
-import { codexCopy } from "./codex-copy";
 import { approvalSummary } from "./approval-summary";
 export function SessionReader() {
   const session = useSession();
@@ -49,7 +48,9 @@ export function SessionReader() {
   const submitPending = useRef(false);
   const banner = claudeSessionBanner(session);
   const panels = useSessionPanels();
-  const display = sessionDisplayState(session);
+  const forkSource = current?.forked_from_session_id
+    ? session.sessions?.find((item) => item.id === current.forked_from_session_id)
+    : undefined;
   const hasNativeReply =
     !!live?.turnId &&
     page?.events.some((event) => event.kind === "agent-message" && event.turn_id === live.turnId);
@@ -131,6 +132,12 @@ export function SessionReader() {
                   {banner.body}
                 </aside>
               )}
+              {current?.agent === "codex" && current.forked_from_session_id && (
+                <p className="mx-auto mb-4 w-full max-w-3xl text-xs text-muted-foreground">
+                  {catalogCopy[locale].fork}{" "}
+                  {forkSource ? session.sourceTitle(forkSource.id) : t.untitled}
+                </p>
+              )}
               {page?.warnings.length ? (
                 <aside className="mx-auto mb-5 max-w-3xl rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-6 text-amber-600">
                   {t.warnings}: {page.warnings.join(" · ")}
@@ -154,6 +161,30 @@ export function SessionReader() {
                   await earlier();
                 }}
               />
+              {session.pendingSend?.sessionId === selected &&
+                !page.events
+                  .slice(
+                    Math.max(
+                      0,
+                      page.events.findIndex(
+                        (item) => item.id === session.pendingSend?.afterEventId,
+                      ) + 1,
+                    ),
+                  )
+                  .some(
+                    (item) =>
+                      item.kind === "user-message" &&
+                      item.content?.trim() === session.pendingSend?.text,
+                  ) && (
+                  <div
+                    data-message-role="user"
+                    className="mx-auto flex w-full max-w-3xl justify-end px-1 py-3"
+                  >
+                    <p className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                      {session.pendingSend.text}
+                    </p>
+                  </div>
+                )}
             </>
           )}
         </section>
@@ -212,22 +243,6 @@ export function SessionReader() {
               >
                 {t[notice]}
               </p>
-            )}
-            {panels && display.nextAction && current?.agent !== "claude-code" && (
-              <div className="mx-auto w-full max-w-3xl space-y-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs">
-                <strong>{display.label}</strong>
-                <p>{display.reason}</p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => panels.setActionsOpen(true)}
-                >
-                  {display.nextAction === "managed-handoff"
-                    ? t.confirmHandoff
-                    : codexCopy[locale].resume}
-                </Button>
-              </div>
             )}
             {(current?.agent === "codex" ||
               current?.agent === "claude-code" ||

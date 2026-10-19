@@ -313,7 +313,7 @@ describe("WebAccessService loopback security boundary", () => {
       executionMode: "codex-follower",
       status: "accepted",
     });
-    expect((await http(`/api/web/v1/requests/${id}`)).status).toBe(200);
+    expect((await http(`/api/web/v1/requests/${id}`)).status).toBe(403);
     receiptQuery.mockResolvedValueOnce({
       found: true,
       requestId: id,

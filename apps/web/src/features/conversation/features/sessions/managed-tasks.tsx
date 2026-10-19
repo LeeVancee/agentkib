@@ -63,6 +63,7 @@ export function ManagedTasks({
     : current?.agent === "claude-code"
       ? "claude-code"
       : "codex";
+  const legacyCodex = !create && agent === "codex";
   const handoffMode = !create && agent === "claude-code" ? live?.executionMode : undefined;
   const handoffGeneration =
     !create && agent === "claude-code" ? live?.connectionGeneration : undefined;
@@ -233,7 +234,7 @@ export function ManagedTasks({
     locale,
   ]);
   useEffect(() => {
-    if (!open || !access?.device?.manage || !access.experimentalEnabled) return;
+    if (legacyCodex || !open || !access?.device?.manage || !access.experimentalEnabled) return;
     const abort = new AbortController();
     setOptions(undefined);
     void client
@@ -260,6 +261,7 @@ export function ManagedTasks({
     open,
     agent,
     create,
+    legacyCodex,
     client,
     selected,
     access?.bootId,
@@ -320,7 +322,8 @@ export function ManagedTasks({
   if (
     !access?.device?.manage ||
     !access.experimentalEnabled ||
-    (!create && current?.agent !== "codex" && current?.agent !== "claude-code")
+    (!create && current?.agent !== "codex" && current?.agent !== "claude-code") ||
+    (legacyCodex && !uncertain)
   )
     return renderContent ? renderContent(null) : null;
   const managed =
@@ -348,6 +351,7 @@ export function ManagedTasks({
   async function run(operation: "create" | "adopt" | "release" | "reconcile") {
     if (
       flight.current ||
+      (agent === "codex" && operation !== "create") ||
       (operation === "adopt" && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
       (live?.activity === "compacting" && (operation === "adopt" || operation === "release")) ||
       (uncertain && operation !== "reconcile") ||
@@ -440,13 +444,15 @@ export function ManagedTasks({
   }
   const content = (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        {managedText(
-          locale,
-          "AgentKib must stay running on the host (the computer running the Agent). Tasks use workspace access and request approval when needed.",
-          "AgentKib 需要在主机（运行 Agent 的电脑）上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
-        )}
-      </p>
+      {!legacyCodex && (
+        <p className="text-sm text-muted-foreground">
+          {managedText(
+            locale,
+            "AgentKib must stay running on the host (the computer running the Agent). Tasks use workspace access and request approval when needed.",
+            "AgentKib 需要在主机（运行 Agent 的电脑）上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
+          )}
+        </p>
+      )}
       {create && (
         <label>
           {managedText(locale, "Agent", "执行工具")}
@@ -490,7 +496,7 @@ export function ManagedTasks({
           </p>
         </div>
       )}
-      {!options ? (
+      {legacyCodex ? null : !options ? (
         <p role="status">{managedText(locale, "Loading…", "正在读取…")}</p>
       ) : (
         <>
@@ -693,7 +699,9 @@ export function ManagedTasks({
           {create && <Plus size={16} />}
           {create
             ? managedText(locale, "New task", "新建任务")
-            : managedText(locale, "Execution management", "执行管理")}
+            : legacyCodex
+              ? managedText(locale, "Check previous outcome", "检查上次操作结果")
+              : managedText(locale, "Execution management", "执行管理")}
         </Button>
       )}
       <Dialog
@@ -709,7 +717,9 @@ export function ManagedTasks({
           <DialogTitle>
             {create
               ? managedText(locale, "New task", "新建任务")
-              : managedText(locale, "Execution management", "执行管理")}
+              : legacyCodex
+                ? managedText(locale, "Check previous outcome", "检查上次操作结果")
+                : managedText(locale, "Execution management", "执行管理")}
           </DialogTitle>
           {content}
         </DialogContent>

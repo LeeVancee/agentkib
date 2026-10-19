@@ -1,3 +1,4 @@
+import { SessionContinuationStatus } from "@agentkib/session-ui";
 import { HistorySearchTrigger } from "@/features/conversation/features/history/history-search-controls";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState } from "react";
@@ -160,16 +161,24 @@ export function SessionWorkspace() {
                   <span className="max-w-[45%] truncate md:max-w-40" title={currentWorkspace?.path}>
                     {currentWorkspace?.name}
                   </span>
-                  <span aria-hidden="true">·</span>
-                  <span
-                    role="status"
-                    className={cn(
-                      "truncate",
-                      status.tone === "warning" && "text-amber-700 dark:text-amber-300",
-                    )}
-                  >
-                    {status.label}
-                  </span>
+                  {status.label && <span aria-hidden="true">·</span>}
+                  {session.current?.agent === "codex" ? (
+                    <SessionContinuationStatus
+                      label={status.label}
+                      active={status.tone === "active"}
+                      loading={status.loading}
+                    />
+                  ) : (
+                    <span
+                      role="status"
+                      className={cn(
+                        "truncate",
+                        status.tone === "warning" && "text-amber-700 dark:text-amber-300",
+                      )}
+                    >
+                      {status.label}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

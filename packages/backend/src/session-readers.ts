@@ -80,6 +80,10 @@ export class SessionReaders {
   verifiedCodexControlIds(nativeRefs: Iterable<string>): Set<string> {
     return this.#codex.verifiedControlIds(nativeRefs);
   }
+  verifiedCodexResumeIdentity(nativeRef: string): { id: string; cwd: string } | undefined {
+    if (!this.#codex.verifiedControlIds([nativeRef]).has(nativeRef.toLowerCase())) return;
+    return this.#codex.verifiedIndexedIdentities([nativeRef]).get(nativeRef.toLowerCase());
+  }
   antigravityControlExecutable(): string {
     return this.#antigravity.controlExecutable();
   }

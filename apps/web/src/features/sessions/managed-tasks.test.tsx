@@ -105,6 +105,60 @@ describe("ManagedTasks", () => {
     await screen.findByRole("button", { name: create ? "Create" : /Hand over|Return to/ });
     return view;
   }
+
+  it.each(["external", "codex-managed"])(
+    "hides Codex ownership controls and their obsolete options lookup (%s)",
+    (executionMode) => {
+      session.live.executionMode = executionMode;
+      render(<ManagedTasks initialOpen />);
+      expect(screen.queryByRole("button")).not.toBeInTheDocument();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(session.client.request).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["adopt", "release", "reconcile"] as const)(
+    "keeps a saved Codex %s fenced and checks its receipt while the operations panel is hidden",
+    async (kind) => {
+      const requestId = crypto.randomUUID();
+      const scope = pendingScope("", "browser");
+      rememberPending(scope, { requestId, sessionId: "original-session", kind });
+      session.client.receipt.mockResolvedValue({ found: true, requestId, status: "unknown" });
+      const panel = (active: boolean) => (
+        <ManagedTasks
+          active={active}
+          renderContent={(content) => (active ? <div role="group">{content}</div> : null)}
+        />
+      );
+      const view = render(panel(false));
+      await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
+      expect(readPending(scope)).toHaveLength(1);
+      view.rerender(panel(true));
+      expect(screen.getByText(/The previous outcome is unconfirmed/)).toBeInTheDocument();
+      expect(screen.queryByRole("button")).not.toBeInTheDocument();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(mutations()).toEqual([]);
+
+      view.rerender(panel(false));
+      session.client.receipt.mockResolvedValue({
+        found: true,
+        requestId,
+        sessionId: "original-session",
+        operation: kind,
+        status: "accepted",
+      });
+      act(() =>
+        publishSessionInvalidation(session.client as unknown as WebClient, "original-session", [
+          "receipts",
+        ]),
+      );
+      await waitFor(() => expect(readPending(scope)).toEqual([]));
+      expect(session.refresh).toHaveBeenCalledWith(true);
+      expect(session.client.request).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+    },
+  );
+
   it("creates Claude tasks through the shared management entry without Codex model fields", async () => {
     await show(true);
     fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "claude-code" } });
@@ -157,6 +211,7 @@ describe("ManagedTasks", () => {
   it.each(["permission", "experimental", "agent"])(
     "hides execution management when %s is unavailable",
     (reason) => {
+      session.current.agent = "claude-code";
       if (reason === "permission") session.access.device.manage = false;
       if (reason === "experimental") session.access.experimentalEnabled = false;
       if (reason === "agent") session.current.agent = "claude";
@@ -216,7 +271,8 @@ describe("ManagedTasks", () => {
       handoffFingerprint: "second-history",
     });
   });
-  it("requires an explicit handoff confirmation and keeps the existing session id", async () => {
+  it("requires an explicit Claude handoff confirmation and keeps the existing session id", async () => {
+    session.current.agent = "claude-code";
     await show();
     const handoff = screen.getByRole("button", { name: "Hand over to AgentKib" });
     expect(handoff).toBeDisabled();
@@ -269,9 +325,10 @@ describe("ManagedTasks", () => {
     });
   });
   it("keeps a failed reconciliation open without claiming success or replaying a command", async () => {
-    session.live.executionMode = "codex-managed";
+    session.current.agent = "claude-code";
+    session.live.executionMode = "claude-managed";
     session.client.request.mockImplementation(async (path: string) =>
-      path === "managed/options" ? options : { reconciled: false },
+      path.startsWith("managed/options") ? options : { reconciled: false },
     );
     await show();
     fireEvent.click(screen.getByRole("button", { name: "Check previous outcome" }));
@@ -373,11 +430,12 @@ describe("ManagedTasks", () => {
     expect(readPending(scope)).toEqual([]);
     expect(mutations()).toEqual([]);
   });
-  it("reconciles a late unknown handoff while its panel is closed and blocks replay after reopening", async () => {
+  it("reconciles a late unknown Claude handoff while its panel is closed and blocks replay after reopening", async () => {
+    session.current.agent = "claude-code";
     let fail!: (error: Error) => void;
     let receipt!: (result: unknown) => void;
     session.client.request.mockImplementation((path: string) =>
-      path === "managed/options"
+      path.startsWith("managed/options")
         ? Promise.resolve(options)
         : new Promise((_resolve, reject) => {
             fail = reject;
@@ -495,7 +553,8 @@ describe("ManagedTasks", () => {
         recovery: "legacy-prepared",
         completionObserved: false,
       });
-      await show(kind === "create");
+      if (kind === "create") await show(true);
+      else render(<ManagedTasks />);
       await waitFor(() => expect(readPending(scope)).toEqual([]));
       expect(mutations()).toHaveLength(0);
       expect(navigate).not.toHaveBeenCalled();

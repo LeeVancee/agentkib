@@ -1,3 +1,4 @@
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
 import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
 import {
@@ -66,39 +67,58 @@ describe("handoff-aware session presentation", () => {
       expect(state.live!.sendEnabled).toBe(false);
     },
   );
-  it("uses Codex's native resume when it is available, preserving its separate meaning", () => {
+  function codexFixture() {
     const state = fixture();
     state.current!.agent = "codex";
-    state.capabilities!.features.resume = { available: true };
-    expect(sessionDisplayState(state)).toMatchObject({
-      label: "Resume required",
-      nextAction: "native-resume",
+    Object.assign(state.live!, {
+      executionMode: "codex-managed",
+      reason: undefined,
+      ownershipReason: null,
+      executionLocation: null,
+      sendEnabled: true,
     });
-    expect(state.canSend).toBe(false);
+    state.capabilities!.executionMode = "codex-managed";
+    state.capabilities!.features.send = { available: true };
+    state.canSend = true;
+    return state;
+  }
+  it("keeps an idle Codex session ready without a badge or manual resume", () => {
+    const state = codexFixture();
+    state.capabilities!.features.resume = { available: true };
+    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "",
+      reason: "",
+      continuation: "idle",
+    });
   });
-  it("can enter the native Codex review without management permission when the native capability remains available", () => {
-    const state = fixture();
-    state.current!.agent = "codex";
+  it("does not require management permission to send to an automatically continued Codex session", () => {
+    const state = codexFixture();
     state.access!.device!.manage = false;
-    state.capabilities!.features.resume = { available: true };
-    expect(sessionNextAction(state)).toBe("native-resume");
+    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state).continuation).toBe("idle");
   });
-  it("uses the real managed Codex handoff entry when native resume is unavailable", () => {
-    const state = fixture();
-    state.current!.agent = "codex";
+  it("identifies the external Codex owner without a handoff action or warning color", () => {
+    const state = codexFixture();
+    state.canSend = false;
+    Object.assign(state.live!, {
+      sendEnabled: false,
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      reason: "codex-owner-busy",
+    });
+    expect(sessionNextAction(state)).toBeUndefined();
     expect(sessionDisplayState(state)).toMatchObject({
-      label: "Handoff required",
-      nextAction: "managed-handoff",
+      label: "In use in Codex",
+      continuation: "busy",
+      tone: "muted",
     });
   });
-  it("recognizes a released native Codex source without rebranding resume as managed handoff", () => {
-    const state = fixture();
-    state.current!.agent = "codex";
+  it("returns a retired Codex session to idle without asking for resume confirmation", () => {
+    const state = codexFixture();
     state.live!.status = "released";
-    state.live!.reason = "session-released";
-    state.capabilities!.reason = "session-released";
-    state.capabilities!.features.resume = { available: true };
-    expect(sessionNextAction(state)).toBe("native-resume");
+    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
   });
   const blocked: [string, (state: SessionController) => void][] = [
     [
@@ -329,7 +349,7 @@ describe("handoff-aware session presentation", () => {
     expect(sessionDisplayState(state)).toMatchObject({ label: "Ready to send" });
     expect(sessionDisplayState(state).nextAction).toBeUndefined();
   });
-  it("provides the distinct pending labels and advice in all four locales", () => {
+  it("preserves Claude advice and localizes the Codex ownership state in all four locales", () => {
     for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
       const state = fixture();
       state.locale = locale;
@@ -338,10 +358,11 @@ describe("handoff-aware session presentation", () => {
         reason: codexReason(locale, "handoff-required").text,
       });
       state.current!.agent = "codex";
-      state.capabilities!.features.resume = { available: true };
+      state.live!.ownershipReason = "codex-owner-busy";
       expect(sessionDisplayState(state)).toMatchObject({
-        label: webLayoutCopy[locale].resumePending,
-        reason: webLayoutCopy[locale].resumeInfo,
+        label: sessionContinuationCopy(locale).busy("Codex"),
+        reason: "",
+        tone: "muted",
       });
     }
   });

@@ -559,6 +559,7 @@ export class TypeScriptBackend {
             this.notify(SESSION_EVENT_NOTIFICATION, event);
             if (event.type === "invalidate") this.#historySearch?.refresh(event.sessionId);
           },
+          (sessionId) => this.#webRead?.observeSession(sessionId),
         );
         this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
         this.#historySearch.refresh();
@@ -708,6 +709,7 @@ export class TypeScriptBackend {
         params.operation === "catalog" ||
         params.operation === "events" ||
         params.operation === "context" ||
+        params.operation === "resume-command" ||
         params.operation === "usage" ||
         params.operation === "goal" ||
         params.operation === "resources"

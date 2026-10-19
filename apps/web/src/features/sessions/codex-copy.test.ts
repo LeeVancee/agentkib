@@ -1,9 +1,77 @@
 import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopy, codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 
 describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  it.each(locales)("explains ownership, version and installation failures in %s", (locale) => {
+    const continuation = sessionContinuationCopy(locale);
+    expect(codexReason(locale, "codex-owner-busy")).toEqual({
+      text: continuation.busy("Codex"),
+    });
+    expect(codexReason(locale, "codex-cli-version-too-old")).toEqual({
+      text: continuation.codexVersionTooOld,
+    });
+    const missing = codexReason(locale, "codex-cli-unavailable");
+    expect(missing.technical).toBeUndefined();
+    expect(missing.text).toContain("Codex CLI");
+    expect(missing.text).not.toBe(codexReason(locale).text);
+  });
+
+  it.each([
+    [
+      "zh-CN",
+      "无法确认 Codex 版本，目前仅可查看。请检查 Codex CLI 后刷新重试。",
+      "无法确认这条会话是否正在 Codex 中使用，目前仅可查看。请刷新重试。",
+    ],
+    [
+      "zh-TW",
+      "無法確認 Codex 版本，目前僅可查看。請檢查 Codex CLI 後重新整理再試。",
+      "無法確認這段對話是否正在 Codex 中使用，目前僅可查看。請重新整理再試。",
+    ],
+    [
+      "en-US",
+      "The Codex version could not be confirmed. This session is view only. Check Codex CLI, then refresh to retry.",
+      "Could not confirm whether this session is in use in Codex. It remains view only. Refresh to retry.",
+    ],
+    [
+      "ja-JP",
+      "Codex のバージョンを確認できないため、この会話は閲覧のみです。Codex CLI を確認してから再読み込みしてください。",
+      "この会話が Codex で使用中か確認できないため、閲覧のみです。再読み込みしてお試しください。",
+    ],
+  ] as const)(
+    "keeps failed version and owner checks view only with specific recovery advice in %s",
+    (locale, version, ownership) => {
+      expect(codexReason(locale, "codex-cli-version-unavailable")).toEqual({ text: version });
+      expect(codexReason(locale, "codex-owner-check-unavailable")).toEqual({ text: ownership });
+      expect(version).not.toBe(codexReason(locale, "codex-cli-version-too-old").text);
+      expect(ownership).not.toBe(codexReason(locale, "codex-owner-busy").text);
+      expect(version).not.toBe(codexReason(locale, "control-outcome-unconfirmed").text);
+    },
+  );
+
+  it.each([
+    ["zh-CN", "待发队列", "检查会话状态"],
+    ["zh-TW", "待發佇列", "檢查對話狀態"],
+    ["en-US", "Queued messages", "Inspect session state"],
+    ["ja-JP", "送信待ちキュー", "会話の状態を確認"],
+  ] as const)("describes the managed queue and inspection in %s", (locale, queue, inspect) => {
+    const copy = codexCopy[locale];
+    expect(copy.queue).toBe(queue);
+    expect(copy.inspect).toBe(inspect);
+    expect(copy.composerHint + copy.queueTooLarge).not.toMatch(
+      /原客户端|原客戶端|original.client|元のクライアント/i,
+    );
+  });
+
+  it("retains approval scope and original-client context labels", () => {
+    expect(codexCopy["en-US"]).toMatchObject({
+      native: "Original-client approval options",
+      accepted: "Request accepted; check the original client for its current state",
+      context: "Original-client context",
+    });
+  });
   it.each(locales)(
     "explains state restrictions without reporting a read failure in %s",
     (locale) => {

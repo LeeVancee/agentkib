@@ -25,6 +25,35 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it("reads a host resume command with the selected identity and cancellation without dispatching", async () => {
+    const command = {
+      available: true,
+      command: "CODEX_HOME='/host/codex' codex resume '00000000-0000-4000-8000-000000000001'",
+      shell: "posix",
+      runOn: "host",
+    };
+    const transport = vi.fn().mockResolvedValue(json(command));
+    const client = new WebClient(transport);
+    const abort = new AbortController();
+    await expect(
+      client.codexResumeCommand("session &other=foreign", abort.signal),
+    ).resolves.toEqual(command);
+    expect(transport).toHaveBeenCalledExactlyOnceWith(
+      "/api/web/v1/managed/resume-command?sessionId=session+%26other%3Dforeign",
+      expect.objectContaining({ method: "GET", signal: abort.signal, cache: "no-store" }),
+    );
+    expect(transport.mock.calls[0][1].body).toBeUndefined();
+  });
+
+  it("rejects command reads from an unpaired LAN device before contacting its host", async () => {
+    const transport = vi.fn();
+    const client = new WebClient(transport, "http://192.168.1.10:1422");
+    await expect(client.codexResumeCommand("session")).rejects.toMatchObject({
+      code: "access_ended",
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it("posts history search text without placing it in a URL", async () => {
     const transport = vi
       .fn()

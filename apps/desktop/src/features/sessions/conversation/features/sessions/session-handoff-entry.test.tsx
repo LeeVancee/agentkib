@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useState, type ReactNode } from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionReader } from "@/features/sessions/conversation/features/sessions/session-reader";
 import { SessionPanelsContext } from "@/features/sessions/conversation/features/sessions/session-panels";
@@ -34,6 +34,7 @@ function View() {
     <SessionPanelsContext
       value={{ filesOpen: false, setFilesOpen: vi.fn(), actionsOpen, setActionsOpen }}
     >
+      <button onClick={() => setActionsOpen(true)}>Open actions</button>
       <SessionReader />
     </SessionPanelsContext>
   );
@@ -100,50 +101,70 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 describe("reader handoff entries", () => {
-  it("opens the actual native resume review expanded, requiring its original confirmation before dispatch", async () => {
+  it("shows the composer directly and removes native resume confirmation from operations", async () => {
+    session.canSend = true;
+    Object.assign(session.live!, {
+      executionMode: "codex-managed",
+      reason: undefined,
+      sendEnabled: true,
+      executionLocation: null,
+    });
+    session.capabilities!.features.send = { available: true };
     render(<View />);
-    expect(screen.getByText("Resume required")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: codexCopy["en-US"].resume }));
+    expect(screen.getByText("Existing composer")).toBeVisible();
+    expect(screen.queryByText("Resume required")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open actions" }));
     const dialog = await screen.findByRole("dialog", { name: "Session actions" });
-    const confirmation = within(dialog).getByLabelText(codexCopy["en-US"].handoff);
-    expect(confirmation.closest("details")).toHaveAttribute("open");
-    const resume = within(dialog).getByRole("button", { name: codexCopy["en-US"].resume });
-    expect(resume).toBeDisabled();
-    fireEvent.click(resume);
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: codexCopy["en-US"].resume }),
+    ).not.toBeInTheDocument();
     expect(session.codexAction).not.toHaveBeenCalled();
-    fireEvent.click(confirmation);
-    expect(resume).toBeEnabled();
-    fireEvent.click(resume);
-    await waitFor(() =>
-      expect(session.codexAction).toHaveBeenCalledExactlyOnceWith("resume", {
-        handoffConfirmed: true,
-      }),
-    );
     expect(request.mock.calls.some(([path]) => path === "managed/adopt")).toBe(false);
-    expect(session.canSend).toBe(false);
   });
-  it("opens the real managed Codex handoff review without treating entry as confirmation or dispatch", async () => {
+  it("does not expose the old Codex handoff even when legacy capabilities advertise adoption", async () => {
     session.capabilities!.features.resume = { available: false };
     session.capabilities!.features.adopt = { available: true };
     render(<View />);
-    expect(screen.getByText("Handoff required")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Hand over to AgentKib" }));
+    expect(screen.getByText("Existing composer")).toBeVisible();
+    expect(screen.queryByText("Handoff required")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open actions" }));
     const dialog = await screen.findByRole("dialog", { name: "Session actions" });
-    const handoff = await within(dialog).findByRole("button", { name: "Hand over to AgentKib" });
-    expect(handoff).toBeDisabled();
+    expect(
+      within(dialog).queryByRole("button", { name: "Hand over to AgentKib" }),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(request.mock.calls.some(([path]) => path === "managed/adopt")).toBe(false);
-    const confirmation = within(dialog).getByLabelText(/I have stopped the turn/);
-    fireEvent.click(confirmation);
-    await waitFor(() => expect(handoff).toBeEnabled());
-    fireEvent.click(handoff);
-    await waitFor(() =>
-      expect(request).toHaveBeenCalledWith(
-        "managed/adopt",
-        expect.objectContaining({ sessionId: "session", handoffConfirmed: true }),
-      ),
-    );
     expect(session.codexAction).not.toHaveBeenCalled();
-    expect(session.canSend).toBe(false);
+  });
+  it("marks a Codex branch with its source title without exposing a missing source id", () => {
+    session.current!.forked_from_session_id = "source-id";
+    session.sessions = [{ ...session.current!, id: "source-id", title: "Original session" }];
+    session.sourceTitle = vi.fn(() => "Original session");
+    const view = render(<View />);
+    expect(screen.getByText("Forked from Original session")).toBeVisible();
+    session.sessions = [];
+    view.rerender(<View />);
+    expect(screen.queryByText(/source-id/)).not.toBeInTheDocument();
+  });
+  it("shows an optimistic Codex user message once and reconciles its persisted history", () => {
+    session.pendingSend = { sessionId: "session", text: "Continue without a manual step" };
+    const view = render(<View />);
+    expect(screen.getAllByText("Continue without a manual step")).toHaveLength(1);
+    session.page!.events = [
+      {
+        id: "persisted-user",
+        kind: "user-message",
+        content: "Continue without a manual step",
+        attachment_count: 0,
+        truncated: false,
+      },
+    ];
+    view.rerender(<View />);
+    expect(screen.getAllByText("Continue without a manual step")).toHaveLength(1);
+    session.pendingSend = { sessionId: "old-session", text: "Old pending message" };
+    view.rerender(<View />);
+    expect(screen.queryByText("Old pending message")).not.toBeInTheDocument();
   });
   it.each([
     "metadata",

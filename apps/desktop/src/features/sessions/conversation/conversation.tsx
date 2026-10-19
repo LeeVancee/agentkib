@@ -1,3 +1,5 @@
+import { SessionContinuationStatus } from "@agentkib/session-ui";
+import { sessionDisplayState } from "./features/sessions/session-display-state";
 import { HistorySearchTrigger } from "./features/history/history-search-controls";
 import {
   createContext,
@@ -88,6 +90,7 @@ function EmbeddedShell() {
     [session.selected, session.access?.device?.files],
   );
   const copy = webLayoutCopy[session.locale];
+  const status = sessionDisplayState(session);
   const previousCatalog = useRef(session.sessions);
   const hostRefresh = useRef<{
     revision?: number;
@@ -131,6 +134,15 @@ function EmbeddedShell() {
           data-conversation-toolbar
           className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-b px-4 py-2"
         >
+          {session.current?.agent === "codex" && (
+            <div className="min-w-0 flex-1">
+              <SessionContinuationStatus
+                label={status.label}
+                active={status.tone === "active"}
+                loading={status.loading}
+              />
+            </div>
+          )}
           <ManagedTasks
             key={String(props.create)}
             create

@@ -5,6 +5,7 @@ import { contextUsageCopy } from "./context-usage-copy";
 import { webLayoutCopy } from "./web-layout-copy";
 import { canConfirmClaudeHandoff } from "./claude-handoff";
 import { managedControlCopy } from "./managed-control-copy";
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 
 type State = Pick<
   SessionController,
@@ -19,15 +20,16 @@ type State = Pick<
   | "selected"
   | "current"
   | "notice"
->;
+> & { pendingSend?: SessionController["pendingSend"] };
 
-export type SessionNextAction = "managed-handoff" | "native-resume";
+export type SessionNextAction = "managed-handoff";
 type DisplayState = {
   label: string;
   reason: string;
   tone: "warning" | "active" | "muted";
   loading?: boolean;
   nextAction?: SessionNextAction;
+  continuation?: "idle" | "starting" | "running" | "busy" | "view-only";
 };
 
 /** An entry into an existing review flow, never permission to send or dispatch it. */
@@ -58,20 +60,9 @@ export function sessionNextAction(state: State): SessionNextAction | undefined {
     (capabilities.reason && !["handoff-required", "session-released"].includes(capabilities.reason))
   )
     return undefined;
-  const reason = live.reason || capabilities.features.send?.reason || capabilities.reason;
-  if (current.agent === "claude-code")
-    return canConfirmClaudeHandoff(state) ? "managed-handoff" : undefined;
-  if (current.agent !== "codex" || !["handoff-required", "session-released"].includes(reason ?? ""))
-    return undefined;
-  // Codex's native resume keeps its own confirmation and dispatch path.
-  if (capabilities.features.resume?.available) return "native-resume";
-  if (
-    reason === "handoff-required" &&
-    access.device.manage &&
-    capabilities.features.adopt?.available
-  )
-    return "managed-handoff";
-  return undefined;
+  return current.agent === "claude-code" && canConfirmClaudeHandoff(state)
+    ? "managed-handoff"
+    : undefined;
 }
 /** Presentation only: never grants capabilities or changes dispatch eligibility. */
 export function sessionDisplayState(state: State): DisplayState {
@@ -110,6 +101,58 @@ export function sessionDisplayState(state: State): DisplayState {
       tone: "warning",
       loading: !live,
     };
+  if (state.current?.agent === "codex") {
+    const copy = sessionContinuationCopy(locale);
+    if (access?.status !== "approved")
+      return { label: c.accessRequired, reason: managedControlCopy[locale].access, tone: "muted" };
+    if (access.protocolVersion !== 2)
+      return {
+        label: c.controlUnavailable,
+        reason: managedControlCopy[locale].protocol,
+        tone: "muted",
+      };
+    if (!access.experimentalEnabled)
+      return {
+        label: c.controlDisabled,
+        reason: codexReason(locale, "control-disabled").text,
+        tone: "muted",
+      };
+    if (!access.device?.send)
+      return {
+        label: c.permissionRequired,
+        reason: managedControlCopy[locale].send,
+        tone: "muted",
+      };
+    // Only the selected session's authoritative projection can describe its owner.
+    if (
+      state.current.id !== state.selected ||
+      live?.sessionId !== state.selected ||
+      capabilities?.sessionId !== state.selected
+    )
+      return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
+    if (live.ownershipReason === "codex-owner-busy" || reason === "codex-owner-busy")
+      return { label: copy.busy("Codex"), reason: "", tone: "muted", continuation: "busy" };
+    if (state.pendingSend?.sessionId === state.selected || live.status === "starting")
+      return {
+        label: copy.starting,
+        reason: "",
+        tone: "muted",
+        loading: true,
+        continuation: "starting",
+      };
+    if (live.executionLocation === "agentkib")
+      return { label: copy.running, reason: "", tone: "active", continuation: "running" };
+    if (!controlReady)
+      return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
+    if (canSend || (live.sendEnabled && !reason))
+      return { label: "", reason: "", tone: "muted", continuation: "idle" };
+    return {
+      label: copy.viewOnly,
+      reason: codexReason(locale, reason).text,
+      tone: "muted",
+      continuation: "view-only",
+    };
+  }
   if (
     live?.executionMode === "claude-follower" &&
     ["claude-terminal-approval", "claude-terminal-question"].includes(live.reason ?? "")
@@ -193,11 +236,8 @@ export function sessionDisplayState(state: State): DisplayState {
   const nextAction = !canSend ? sessionNextAction(state) : undefined;
   if (nextAction)
     return {
-      label: nextAction === "managed-handoff" ? c.handoffPending : c.resumePending,
-      reason:
-        nextAction === "managed-handoff"
-          ? codexReason(locale, "handoff-required").text
-          : c.resumeInfo,
+      label: c.handoffPending,
+      reason: codexReason(locale, "handoff-required").text,
       tone: "warning",
       nextAction,
     };

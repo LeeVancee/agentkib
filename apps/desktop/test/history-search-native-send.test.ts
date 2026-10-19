@@ -40,6 +40,10 @@ const sourceBody = "Historical decision native-marker-73ad: preserve the blue re
 // Only the external CLI boundary is synthetic. The packaged Backend owns command
 // admission, the durable ledger and native writes; references use its real Workers.
 const appServer = String.raw`
+if (process.argv.includes('--version')) {
+  console.log('codex-cli 0.147.0');
+  process.exit(0);
+}
 const fs = require('node:fs');
 const readline = require('node:readline');
 const id = process.env.FIXTURE_NATIVE_ID;

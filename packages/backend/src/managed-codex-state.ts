@@ -98,6 +98,8 @@ export class ManagedCodexState {
       workspaceId: this.#record.workspace_id,
       runtimeBootId,
       executionMode: "codex-managed",
+      executionLocation: "agentkib",
+      ownershipReason: null,
       status: this.#status,
       activity: this.activity,
       revision: this.#revision,
@@ -509,6 +511,7 @@ export class ManagedCodexState {
 export class ManagedCodexEventBridge {
   #pending: Promise<void> = Promise.resolve();
   #closed = false;
+  #closing?: Promise<void>;
 
   constructor(
     readonly session: CodexAppServerSession,
@@ -534,8 +537,11 @@ export class ManagedCodexEventBridge {
     await this.#pending;
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    return (this.#closing ??= this.#close());
+  }
+
+  async #close(): Promise<void> {
     this.#closed = true;
     await this.#pending;
     await this.session.close();

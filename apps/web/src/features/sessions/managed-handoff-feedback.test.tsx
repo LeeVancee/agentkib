@@ -531,7 +531,7 @@ describe("managed handoff feedback", () => {
     expect(button).toHaveAccessibleDescription(managedControlCopy["en-US"].tool);
     expect(mutations()).toEqual([]);
   });
-  it.each(["codex", "claude-code"] as const)(
+  it.each(["claude-code"] as const)(
     "explains compaction for %s handoff and release without changing either gate",
     async (agent) => {
       session.current.agent = agent;
@@ -542,7 +542,7 @@ describe("managed handoff feedback", () => {
       expect(adopt).toBeDisabled();
       expect(adopt).toHaveAccessibleDescription(managedControlCopy["en-US"].compacting);
       fireEvent.click(adopt);
-      session.live.executionMode = agent === "codex" ? "codex-managed" : "claude-managed";
+      session.live.executionMode = "claude-managed";
       view.rerender(<ManagedTasks initialOpen />);
       const release = screen.getByRole("button", { name: "Return to original client" });
       expect(release).toBeDisabled();

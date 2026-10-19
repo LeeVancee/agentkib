@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerReader,
   CodexAppServerSession,
+  CodexAppServerError,
+  codexWriterBusy,
 } from "../../../packages/backend/src/codex-app-server";
 
 const { spawn, tree } = vi.hoisted(() => ({
@@ -84,6 +86,39 @@ function useWindows() {
 }
 
 describe("Codex app-server dispatch cleanup", () => {
+  it("preserves native rejection code, message and data separately from transport errors", async () => {
+    const f = await fixture();
+    f.setRespond(false);
+    const pending = f.session.request("thread/resume", {});
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: -32600,
+      message: "thread already has an active writer",
+      data: { threadId: "thread" },
+    });
+    const frame = f.frames.at(-1)!;
+    f.child.stdout.write(
+      JSON.stringify({
+        id: frame.id,
+        error: {
+          code: -32600,
+          message: "thread already has an active writer",
+          data: { threadId: "thread" },
+        },
+      }) + "\n",
+    );
+    await rejection;
+    expect(
+      codexWriterBusy(
+        new CodexAppServerError({ code: -32600, message: "thread already has an active writer" }),
+      ),
+    ).toBe(true);
+    expect(
+      codexWriterBusy(
+        new CodexAppServerError({ code: -32603, message: "thread already has an active writer" }),
+      ),
+    ).toBe(false);
+    expect(codexWriterBusy(new Error("thread already has an active writer"))).toBe(false);
+  });
   it("rejects before writing and releases the response timer without an unhandled rejection", async () => {
     const f = await fixture();
     const unhandled = vi.fn();
@@ -259,7 +294,7 @@ describe("Codex app-server shutdown completion", () => {
     f.setRespond(false);
     const reader = new CodexAppServerReader({});
     const reading = reader.readThread("/synthetic/codex", "/workspace", "/home", "thread");
-    const rejection = expect(reading).rejects.toThrow("Codex app-server rejected the request");
+    const rejection = expect(reading).rejects.toThrow("Codex app-server session closed");
     const settled = vi.fn();
     const closing = reader.closeAsync().then(settled);
     await vi.advanceTimersByTimeAsync(0);

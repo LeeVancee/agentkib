@@ -55,6 +55,7 @@ export class SessionStreamHub {
     private readonly bootId: string,
     private readonly readSnapshot: (sessionId: string) => Promise<Snapshot>,
     private readonly notify: (event: SessionStreamEvent) => void,
+    private readonly onSubscribed?: (sessionId: string) => void,
   ) {
     this.#timer = setInterval(() => void this.#poll(), SNAPSHOT_INTERVAL_MS);
     this.#timer.unref();
@@ -133,6 +134,7 @@ export class SessionStreamHub {
       sessionId,
       delivered: source.seq,
     });
+    if (sessionId) this.onSubscribed?.(sessionId);
     const last = events.at(-1);
     return {
       subscriptionId,

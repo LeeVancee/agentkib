@@ -615,3 +615,32 @@
 - 本轮仅使用当前 CLI，未安装或切换旧版本，未手工修改系统技能。没有本轮开始时的 `.system` 字节快照，不能把前一轮“49 文件一致”的证据沿用为本轮逐字恢复证明，也没有用来源不明的旧备份覆盖技能。此项是环境核验覆盖限制，不据此推断技能有损坏。
 - macOS 真实 CLI 已覆盖 F1、旧/新 Codex 首发、F3 故障与单次重试、R2 锁定与返回 Claude Code。原生 Linux、Windows、Codex 桌面应用未覆盖，Android 本轮未重跑。旧队列错误的精确原始原因仍无证据；空线程缺少 rollout 的身份保护、模型/强度不兼容的准确拒绝、持续探测失败时的只读及 Linux/旧记录 unknown 限制均保留。没有未关闭的确定代码 finding。
 - 本轮按 P1 清理证明、F1 占用探测、Codex 首发与桌面交接、Claude 恢复状态与限制指引拆分本地提交，QA 随修复提交，不推送。仅纳入本任务代码、测试和文档；原 `.agents/`、`prototypes/` 与两份未跟踪背景 QA 文档保持原状。
+
+### 四提交独立复审：F1～F3 与 P1（2026-10-20）
+
+本次按 `code-review` 再次固定比较 `git diff b6084ac17...af0f41987`，包含 `af19365f2`、`671be8c9c`、`425586554`、`af0f41987` 四个本地提交。Standards、Spec 分开只读审查，另加一位独立审查者深查 P1、F1、F3；此前的 no finding 仅作为历史记录，不作为本轮结论的依据。本节之后的修复保留在工作区，不提交或推送。
+
+#### 确认遗漏与修复
+
+- 新确认 1 个 P2：桌面创建已成功后，`DesktopConversationPane.onSessionChange` 若因目录连续忙碌而最终收到 `operation_busy`，忽略提示后会丢失待导航意图。共享目录稍后恢复只更新列表，内层 Reader 的 `readable` 等依赖没有变化，不会再通知外层完成导航；结果是外层停在旧或空选择，创建态无法收敛。原有忙读和正常创建交接测试分别通过，未覆盖这两者的组合。
+- `DesktopConversationCreateNavigation.test.tsx` 先增加真实 TanStack Router 组合回归，旧实现得到 1 失败、3 通过：目录恢复后外层 search 仍为空，没有选择已创建会话。修复在 Pane 保留绑定请求序号和同步选择代次的待交接 ID，由首次读取、显式重试或共享目录订阅统一完成；目录尚无目标时不提前 select，不丢输入区、草稿或新会话订阅，不重放 create/send。
+- 较新选择（包括再次选择同一个旧 ID）、取消、父层会话变化及卸载均淘汰旧意图。真实读取错误继续显示并可重试；忙碌不伪装成读取错误。新增 10 项回归，涵盖创建/非创建两类入口各自的 busy、目录暂缺、真实错误恢复，以及显式重试、同旧 ID 选择、取消和卸载。两文件最终 23 项通过（3.77s），三文件 `oxfmt --check` 与 `git diff --check` 通过，原超时预算不变。
+- 修改仅涉及桌面独有的内外路由交接，Web 没有对应桌面壳，不复制该逻辑。没有新增用户文案；原双端四语指引、控制器与约定镜像文件保持同步。`docs/CONVERSATIONS.md` 补充目录恢复后续交接及淘汰旧意图的行为。
+
+#### 安全复核与验证
+
+- P1 逐路径核对 v2 证明写入先于恢复、未派发约束、v1 在 idle/resolved/released/索引别名的隔离、alias 锁忙、HOME/工作目录/native ID/代际/revision/最大安全整数及 retained runner 每次 beforeStart。Linux send/prepare 仍不能由进程组清理恢复，Mac 证明仍要求实际 owned-tree 成功；没有发现新的确定安全缺陷。
+- F1 仅重试准确的 ps 执行超时一次，保留命令取消 checkpoint、输出/身份校验及持续失败只读。F2 完整状态和内部变更代次继续拦截设置、目标、轮次及 ABA，只有自动 resume 后的首条 send 容忍纯观察更新。F3 保留内部 unknown、已派发和协议异常保护，启动投影及迟到读取重新核实没有发现新遗漏。
+- 补丁前主代理运行相关桌面组合：14 文件、474 项通过（81.28s）。安全审查者另独立运行 startup-recovery/session-owner：2 文件、127 项通过；retained runner 别名隔离 2 项通过、24 项因过滤未执行。后者不记为完整 auto-continue 套件通过。
+- `pnpm test:web --maxWorkers=1`：63 文件、1389 项全部通过（169.45s）。使用临时 userconfig 关闭包管理器自动切换，未修改依赖、测试超时或安全断言。
+- 三文件修复冻结后，未参与实现的两位审查者再次独立复核待交接意图、共享目录恢复、取消/卸载、新选择和旧回调，以及相邻路由/目录/创建调用链，Standards、Spec 最终均为 **no finding**。静态审查与实际执行的测试分别记录，没有把主代理测试或上一轮真实 CLI 证据算作审查者执行。
+- 冻结后的 `pnpm typecheck`、`pnpm lint`、`pnpm format:check` 均退出 0；lint 为 277 条 warning。相对四提交基线涉及的五个后台测试文件和本次三文件补丁另行 `oxfmt --check`，8 文件全部通过；`git diff --check` 通过。源/测试三文件哈希冻结，文档记录更新不改变功能代码。
+- 本次没有新增用户文案、持久化结构、权限或原生协议变化，也未修改双端共享控制器、所有权缓存期限、Linux 清理实现、跨 Agent 继续、`handoff.*`、Codex follower、设计文件、依赖或锁文件。没有启动真实 Claude/Codex CLI、沙盒应用或 Android 模拟器，未改系统技能；上一节真实环境通过证据没有重跑，不计为本次新增验收。原生 Linux、Windows、Codex 桌面应用覆盖限制保留。
+- 最终 `pnpm --filter @agentkib/desktop test --maxWorkers=1` 退出 1：372 文件通过、1 文件失败、1 文件跳过；7309 项通过、3 项失败、3 项跳过（374 文件/7315 测试，969.18s）。唯一失败文件为未修改的 `src/features/skills/SkillSyncFlows.integration.test.tsx`，3 项均超过原 5000ms 预算，没有未处理错误；本次新增 10 项导航回归均在完整组合中通过。原 Win32、broker/relay、显式原生桥接套件跳过限制保留，不记作执行通过。
+- 全量结束后，按要求用同一 userconfig、原预算、单文件及单 worker 执行 `vitest run src/features/skills/SkillSyncFlows.integration.test.tsx --maxWorkers=1`，退出 0，12 项全部通过（14.43s）。不改 Skills 实现、断言或超时；该结果确认隔离执行可通过，不宣称已测得组合超时的精确资源根因，也不把这两次结果改写成全量一次通过。原失败及隔离日志分别保留在临时验证日志中。
+- 功能源码及测试三文件的冻结哈希在完整组合和隔离复跑后仍一致；文档更新不影响这些结果。六组约定镜像再次核对通过，`managed-control-copy.ts` 仅保留原 Locale 类型 import 差异，四语对应文案一致。
+- 最后 `pnpm build` 退出 0，随后 `pnpm --filter @agentkib/desktop claude:stage` 退出 0，重建桌面产物和插件目录。测试进程随已结束的测试运行退出，本次没有另外启动需要手动清理的 CLI、应用或 tmux。HEAD 保持 `af0f41987`、暂存区为空；仅三文件导航补丁、会话文档及本记录共五个跟踪文件留在工作区，原四项未跟踪内容保持原状，没有提交或推送。
+
+#### 后续交付授权
+
+用户在复审完成后要求提交本轮 P2 导航交接修复、相关测试及文档/QA，并提交 PR。新提交仅纳入上述五个跟踪文件，原四项未跟踪内容不纳入。前述“不提交或推送”和 HEAD/暂存区记录保留为复审冻结时的快照；本次交付按新授权推进，PR 使用当前会话续接分支的完整已提交改动，以 `main` 为目标，不合并 PR。

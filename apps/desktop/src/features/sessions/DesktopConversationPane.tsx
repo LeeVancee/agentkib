@@ -3,6 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import type { EmbeddedConversationHandle } from "./conversation/conversation";
 import { RefreshCw } from "lucide-react";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
+import type { ConversationSessionSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { useSessionHub } from "./SessionHubContext";
 import { refreshConversationCatalog } from "./conversation-catalog";
@@ -24,10 +25,14 @@ export function DesktopConversationPane({
   create?: boolean;
 }) {
   const { locale, tr, localizeMessage } = useI18n();
-  const { select, selected, selectionVersion, conversationRefreshRevision } = useSessionHub();
+  const { select, selected, sessions, selectionVersion, conversationRefreshRevision } =
+    useSessionHub();
   const [client] = useState(createDesktopConversationClient);
   const [catalogError, setCatalogError] = useState("");
   const navigation = useRef(0);
+  const pendingNavigation = useRef<{ id: string; request: number; intent: number } | undefined>(
+    undefined,
+  );
   const controlsRef = useRef<EmbeddedConversationHandle>(null);
   const requestedPanel = useSessionViewStore((state) => state.requestedPanel);
   const initialPanel =
@@ -45,24 +50,55 @@ export function DesktopConversationPane({
   useEffect(
     () => () => {
       navigation.current += 1;
+      pendingNavigation.current = undefined;
     },
     [sessionId],
   );
   const onCreateClosed = useCallback(() => {
+    navigation.current += 1;
+    pendingNavigation.current = undefined;
     useSessionViewStore.getState().setCreatingConversation(false);
   }, []);
+  const completeNavigation = useCallback(
+    (catalog: ConversationSessionSummary[]) => {
+      const pending = pendingNavigation.current;
+      if (!pending) return;
+      if (pending.request !== navigation.current || pending.intent !== selectionVersion()) {
+        pendingNavigation.current = undefined;
+        return;
+      }
+      const session = catalog.find((item) => item.id === pending.id);
+      if (!session) return;
+      pendingNavigation.current = undefined;
+      useSessionViewStore.getState().revealSession(session);
+      select(pending.id);
+      setCatalogError("");
+    },
+    [select, selectionVersion],
+  );
+  // A busy one-off read can settle through the shared catalog observation later.
+  // Keep its navigation intent until that verified catalog contains the child.
+  useEffect(() => completeNavigation(sessions), [sessions, completeNavigation]);
   const onCatalogChange = useCallback(() => {
+    const request = navigation.current;
+    const intent = selectionVersion();
     void refreshConversationCatalog().then(
-      () => setCatalogError(""),
+      (catalog) => {
+        if (request !== navigation.current || intent !== selectionVersion()) return;
+        completeNavigation(catalog);
+        setCatalogError("");
+      },
       (error: unknown) => {
-        if (!isBusyRead(error)) setCatalogError(localizeMessage(error));
+        if (request === navigation.current && intent === selectionVersion() && !isBusyRead(error))
+          setCatalogError(localizeMessage(error));
       },
     );
-  }, [localizeMessage]);
+  }, [completeNavigation, selectionVersion, localizeMessage]);
   const onSessionChange = useCallback(
     async (id?: string) => {
       const request = ++navigation.current;
       const intent = selectionVersion();
+      pendingNavigation.current = id ? { id, request, intent } : undefined;
       if (!id) {
         useSessionViewStore.getState().setCreatingConversation(false);
         select();
@@ -72,9 +108,7 @@ export function DesktopConversationPane({
       try {
         const sessions = await refreshConversationCatalog();
         if (request !== navigation.current || intent !== selectionVersion()) return;
-        const session = sessions.find((item) => item.id === id);
-        if (session) useSessionViewStore.getState().revealSession(session);
-        select(id);
+        completeNavigation(sessions);
         setCatalogError("");
       } catch (error) {
         // Creation/fork has already succeeded. Keep its conversation mounted and
@@ -83,7 +117,7 @@ export function DesktopConversationPane({
           setCatalogError(localizeMessage(error));
       }
     },
-    [select, selectionVersion, localizeMessage],
+    [select, completeNavigation, selectionVersion, localizeMessage],
   );
   return (
     <div

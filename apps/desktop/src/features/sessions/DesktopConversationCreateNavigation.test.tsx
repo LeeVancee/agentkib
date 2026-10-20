@@ -11,6 +11,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@agentkib/web-client";
 import type { ConversationSessionSummary, RuntimeInfo } from "@/core/types";
 import { useAppStore } from "@/stores/app-store";
 import { SessionHubProvider, useSessionHub } from "./SessionHubContext";
@@ -22,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   subscribed: vi.fn(),
   unsubscribed: vi.fn(),
+  catalogListeners: new Set<() => void>(),
 }));
 vi.mock("@/core/useI18n", () => ({
   useI18n: () => ({ tr: String, localizeMessage: String, locale: "en-US" }),
@@ -46,7 +48,17 @@ vi.mock("./useSessionCatalog", () => ({
   }),
 }));
 vi.mock("./conversation-catalog", () => ({
-  useConversationCatalog: () => ({ sessions: mocks.controlled, ready: true }),
+  useConversationCatalog: () => {
+    const [, setVersion] = useState(0);
+    useEffect(() => {
+      const changed = () => setVersion((value) => value + 1);
+      mocks.catalogListeners.add(changed);
+      return () => {
+        mocks.catalogListeners.delete(changed);
+      };
+    }, []);
+    return { sessions: mocks.controlled, ready: true };
+  },
   refreshConversationCatalog: mocks.refresh,
 }));
 vi.mock("@/features/remote/remote-catalog-store", () => ({
@@ -66,9 +78,11 @@ vi.mock("./conversation/conversation", () => ({
   EmbeddedConversation: ({
     sessionId,
     onSessionChange,
+    onCatalogChange,
   }: {
     sessionId?: string;
     onSessionChange: (id?: string) => void;
+    onCatalogChange: () => void;
   }) => {
     const [internalId, setInternalId] = useState(sessionId);
     const previousExternal = useRef(sessionId);
@@ -92,6 +106,7 @@ vi.mock("./conversation/conversation", () => ({
         >
           Complete native creation
         </button>
+        <button onClick={onCatalogChange}>Retry catalog</button>
         {internalId && <input aria-label="Draft" defaultValue="" />}
       </>
     );
@@ -109,6 +124,7 @@ const session = (id: string): ConversationSessionSummary => ({
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.refresh.mockReset();
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
   mocks.controlled = [session("previous")];
   useAppStore.getState().setRuntime({ session_index_enabled: true } as RuntimeInfo);
@@ -122,6 +138,82 @@ afterEach(() => {
 });
 
 describe("desktop creation selection handoff", () => {
+  it.each([
+    { creating: true, recovery: "busy" },
+    { creating: false, recovery: "busy" },
+    { creating: true, recovery: "missing" },
+    { creating: false, recovery: "missing" },
+    { creating: true, recovery: "error" },
+    { creating: false, recovery: "error" },
+  ])(
+    "finishes deferred catalog navigation without losing the draft or subscription (creating: $creating, recovery: $recovery)",
+    async ({ creating, recovery }) => {
+      useSessionViewStore.getState().setCreatingConversation(creating);
+      if (recovery === "busy")
+        mocks.refresh.mockRejectedValueOnce(new ApiError(409, "operation_busy"));
+      else if (recovery === "error")
+        mocks.refresh.mockRejectedValueOnce(new Error("catalog unavailable"));
+      else mocks.refresh.mockResolvedValueOnce(mocks.controlled);
+      const root = createRootRoute({
+        component: () => (
+          <SessionHubProvider>
+            <Outlet />
+          </SessionHubProvider>
+        ),
+      });
+      const route = createRoute({
+        getParentRoute: () => root,
+        path: "/sessions",
+        validateSearch: (search: Record<string, unknown>): { sessionId?: string } => ({
+          sessionId: typeof search.sessionId === "string" ? search.sessionId : undefined,
+        }),
+        component: SessionHubPage,
+      });
+      const router = createRouter({
+        routeTree: root.addChildren([route]),
+        history: createMemoryHistory({
+          initialEntries: [creating ? "/sessions" : "/sessions?sessionId=previous"],
+        }),
+      });
+      render(<RouterProvider router={router} />);
+      fireEvent.click(await screen.findByText("Complete native creation"));
+      await waitFor(() => expect(mocks.refresh).toHaveBeenCalledOnce());
+      const draft = screen.getByRole("textbox", { name: "Draft" });
+      fireEvent.change(draft, { target: { value: "Keep the first message" } });
+      expect(useSessionViewStore.getState().creatingConversation).toBe(creating);
+      expect(router.state.location.search).toEqual({
+        sessionId: creating ? undefined : "previous",
+      });
+      const settleCatalog = () => {
+        mocks.controlled = [session("previous"), session("created")];
+        for (const changed of mocks.catalogListeners) changed();
+        return mocks.controlled;
+      };
+      if (recovery === "error") {
+        await waitFor(() =>
+          expect(screen.getByText(/sessions\.conversationCatalogError/)).toHaveTextContent(
+            "catalog unavailable",
+          ),
+        );
+        expect(mocks.unsubscribed).not.toHaveBeenCalledWith("created");
+        mocks.refresh.mockImplementationOnce(async () => settleCatalog());
+        fireEvent.click(screen.getByText("Retry catalog"));
+      } else {
+        expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
+        act(() => {
+          settleCatalog();
+        });
+      }
+      await waitFor(() => expect(router.state.location.search).toEqual({ sessionId: "created" }));
+      expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+      expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft);
+      expect(draft).toHaveValue("Keep the first message");
+      expect(mocks.subscribed.mock.calls.filter(([id]) => id === "created")).toHaveLength(1);
+      expect(mocks.unsubscribed).not.toHaveBeenCalledWith("created");
+      expect(mocks.refresh).toHaveBeenCalledTimes(recovery === "error" ? 2 : 1);
+    },
+  );
+
   it("does not let a late creation catalog override a newer pending navigation", async () => {
     mocks.controlled = [session("previous")];
     let finishCatalog!: () => void;

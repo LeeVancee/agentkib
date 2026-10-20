@@ -69,6 +69,12 @@ function host(
     } as unknown as BackendStore,
     {
       verifiedClaudeControlTarget: (id: string) => path.join(f.config, `${id}.jsonl`),
+      verifiedClaudeReadSource: (id: string) => ({
+        nativeId: id,
+        workspaceId: "workspace",
+        workspace: f.workspace,
+        transcript: path.join(f.config, `${id}.jsonl`),
+      }),
       list: async () => ({
         sessions: indexedNativeId ? [{ native_ref: indexedNativeId, sidechain: false }] : [],
       }),

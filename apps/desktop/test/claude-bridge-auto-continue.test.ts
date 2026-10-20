@@ -150,6 +150,12 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
         if (id !== nativeId) throw new Error("unverified-session-identity");
         return transcript;
       },
+      verifiedClaudeReadSource: () => ({
+        nativeId,
+        workspaceId: "workspace",
+        workspace,
+        transcript,
+      }),
       claudeControlWorkspace: () => workspace,
       list: async () => ({ sessions: [{ native_ref: nativeId, sidechain: false }] }),
       document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),

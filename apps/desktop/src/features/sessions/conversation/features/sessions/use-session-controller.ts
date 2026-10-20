@@ -761,40 +761,22 @@ export function useSessionController({
           const delivered = liveDelivery.current;
           const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
           historyScope = { epoch: historyCacheEpoch };
-          const [historyRead, state] = await Promise.all([
-            readHistory(id, g, historyCacheEpoch),
-            client.live(id),
-          ]);
-          if (g !== generation.current || selection.current !== id) return;
-          if (historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch) {
-            // A replaced cache requires a new calibration, never completion
-            // using the old scope's live response or history. Only the refresh
-            // still owning this fence may restart; newer controls remain fenced.
-            if (epoch === readinessEpoch.current)
-              await refreshCurrent(
-                manual,
-                preserveHistory || contention !== readContention.current.version,
-              );
-            return;
-          }
-          // A sibling read saw newer admission contention. Its busy response
-          // cannot cancel recovery, but this older idle projection is not proof
-          // that the command has settled either.
-          if (contention !== readContention.current.version)
-            throw new ApiError(409, "operation_busy");
-          if (!historyRead) return;
-          if (historyRead.type === "busy") throw historyRead.error;
-          if (
-            historyRead.type === "superseded" &&
-            (epoch !== readinessEpoch.current ||
-              !hasAppliedNewerHistory(nativeCoverage.current, historyRead.attempt))
-          )
-            return;
-          if (historyRead.type === "page") {
+          // Render persisted history as soon as it arrives. Ownership and live
+          // reconciliation still fence controls, but cannot delay readable rows.
+          const historyPromise = readHistory(id, g, historyCacheEpoch).then((historyRead) => {
+            if (
+              g !== generation.current ||
+              selection.current !== id ||
+              historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch ||
+              contention !== readContention.current.version ||
+              historyRead?.type !== "page"
+            )
+              return historyRead;
             const { page: history, attempt } = historyRead;
             const coverage = nativeCoverage.current;
             completeHistoryRead(nativeCoverage.current, attempt);
-            setError(!!nativeCoverage.current.historyRecoveryFailed);
+            if (epoch === readinessEpoch.current)
+              setError(!!nativeCoverage.current.historyRecoveryFailed);
             setPage((previous) => {
               // A newer latest read owns its whole projection, not only its
               // cursor. A newer earlier-page read does not supersede this latest.
@@ -859,21 +841,42 @@ export function useSessionController({
                 events: mergeNativeCoverage(result.events, nativeCoverage.current),
               };
             });
+            if (isLan && viewport && anchorId && anchorTop !== undefined)
+              requestAnimationFrame(() => {
+                if (g !== generation.current || selection.current !== id) return;
+                const node = Array.from(
+                  viewport.querySelectorAll<HTMLElement>("[data-event-id]"),
+                ).find((node) => node.dataset.eventId === anchorId);
+                if (node) viewport.scrollTop += node.getBoundingClientRect().top - anchorTop;
+              });
+            return historyRead;
+          });
+          const [historyRead, state] = await Promise.all([historyPromise, client.live(id)]);
+          if (g !== generation.current || selection.current !== id) return;
+          if (historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch) {
+            // A replaced cache requires a new calibration, never completion
+            // using the old scope's live response or history. Only the refresh
+            // still owning this fence may restart; newer controls remain fenced.
+            if (epoch === readinessEpoch.current)
+              await refreshCurrent(
+                manual,
+                preserveHistory || contention !== readContention.current.version,
+              );
+            return;
           }
+          // A sibling read saw newer admission contention. Its busy response
+          // cannot cancel recovery, but this older idle projection is not proof
+          // that the command has settled either.
+          if (contention !== readContention.current.version)
+            throw new ApiError(409, "operation_busy");
+          if (!historyRead) return;
+          if (historyRead.type === "busy") throw historyRead.error;
           if (
-            historyRead.type === "page" &&
-            isLan &&
-            viewport &&
-            anchorId &&
-            anchorTop !== undefined
+            historyRead.type === "superseded" &&
+            (epoch !== readinessEpoch.current ||
+              !hasAppliedNewerHistory(nativeCoverage.current, historyRead.attempt))
           )
-            requestAnimationFrame(() => {
-              if (g !== generation.current || selection.current !== id) return;
-              const node = Array.from(
-                viewport.querySelectorAll<HTMLElement>("[data-event-id]"),
-              ).find((node) => node.dataset.eventId === anchorId);
-              if (node) viewport.scrollTop += node.getBoundingClientRect().top - anchorTop;
-            });
+            return;
           if (delivered === liveDelivery.current) setLive(state);
           if (manual && next.protocolVersion === 2) setStreamEpoch((value) => value + 1);
         }
@@ -1309,43 +1312,57 @@ export function useSessionController({
         const delivered = liveDelivery.current;
         const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
         historyScope = { epoch: historyCacheEpoch };
-        const [historyRead, state] = await Promise.all([
-          readHistory(id, g, historyCacheEpoch),
-          client.live(id),
-        ]);
+        const epoch = readinessEpoch.current;
+        const historyPromise = readHistory(id, g, historyCacheEpoch).then((historyRead) => {
+          if (g !== generation.current || selection.current !== id || historyRead?.type !== "page")
+            return historyRead;
+          const { page: history, attempt } = historyRead;
+          if (historyCacheEpoch === nativeCoverage.current.historyCacheEpoch) {
+            const pagination = (nativeCoverage.current.historyPagination ??=
+              createHistoryPagination());
+            // An older baseline can fill disjoint history, while a newer read
+            // keeps its cursor, warnings and overlapping item contents.
+            const newerHistory = (pagination.latestReadOrder ?? 0) > attempt.id;
+            const nextCursor = recordLatestHistoryPage(pagination, history, attempt.id);
+            completeHistoryRead(nativeCoverage.current, attempt);
+            if (epoch === readinessEpoch.current)
+              setError(!!nativeCoverage.current.historyRecoveryFailed);
+            setPage((previous) => ({
+              ...(newerHistory && previous ? previous : history),
+              next_cursor: nextCursor,
+              events: mergeNativeCoverage(
+                mergeConversationItems(
+                  mergeOrderedPersistedHistory(
+                    previous?.events ?? [],
+                    history.events,
+                    "older",
+                    nativeCoverage.current.preserveItemsOutsideCoverage,
+                  ),
+                  removePersistedOverlays(
+                    previous?.events ?? [],
+                    history.events,
+                    nativeCoverage.current.preserveItemsOutsideCoverage,
+                  ),
+                ),
+                nativeCoverage.current,
+              ),
+            }));
+          }
+          return historyRead;
+        });
+        const [historyRead, state] = await Promise.all([historyPromise, client.live(id)]);
         if (historyRead?.type === "busy") {
           readBusy(wake, g);
           return;
         }
-        if (!historyRead || historyRead.type !== "page" || g !== generation.current) return;
-        const { page: history, attempt } = historyRead;
-        if (historyCacheEpoch === nativeCoverage.current.historyCacheEpoch) {
-          const pagination = (nativeCoverage.current.historyPagination ??=
-            createHistoryPagination());
-          const nextCursor = recordLatestHistoryPage(pagination, history, attempt.id);
-          completeHistoryRead(nativeCoverage.current, attempt);
-          setError(!!nativeCoverage.current.historyRecoveryFailed);
-          setPage((previous) => ({
-            ...history,
-            next_cursor: nextCursor,
-            events: mergeNativeCoverage(
-              mergeConversationItems(
-                mergeOrderedPersistedHistory(
-                  previous?.events ?? [],
-                  history.events,
-                  "older",
-                  nativeCoverage.current.preserveItemsOutsideCoverage,
-                ),
-                removePersistedOverlays(
-                  previous?.events ?? [],
-                  history.events,
-                  nativeCoverage.current.preserveItemsOutsideCoverage,
-                ),
-              ),
-              nativeCoverage.current,
-            ),
-          }));
-        }
+        if (
+          !historyRead ||
+          historyRead.type !== "page" ||
+          g !== generation.current ||
+          historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch ||
+          epoch !== readinessEpoch.current
+        )
+          return;
         if (delivered === liveDelivery.current) setLive(state);
         setOnline(true);
         setControlReady(

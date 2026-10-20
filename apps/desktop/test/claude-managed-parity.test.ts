@@ -144,6 +144,12 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   } as unknown as BackendStore;
   const sessions = {
     verifiedClaudeControlTarget: transcript,
+    verifiedClaudeReadSource: (id: string) => ({
+      nativeId: id,
+      workspaceId: "workspace",
+      workspace,
+      transcript: transcript(id),
+    }),
     claudeControlWorkspace: () => workspace,
     list: async () => ({ sessions: [...indexed.keys()].map((id) => ({ native_ref: id })) }),
     document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),

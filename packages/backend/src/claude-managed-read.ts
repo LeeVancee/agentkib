@@ -3443,7 +3443,9 @@ export class ClaudeManagedReadOwner {
     let record = this.#load(id);
     const version = supportsClaudeManagedRunner() ? await this.#installationVersion() : null;
     if (!record) {
-      const target = await this.#resolveNative(id);
+      // A status observation needs identity, not a complete history document or
+      // a control fingerprint. Mutations retain their fresh #resolveNative proof.
+      const target = this.sessions.verifiedClaudeReadSource(id);
       const reason = !supportsClaudeManagedRunner()
         ? "platform-unsupported"
         : !version
@@ -4172,15 +4174,54 @@ export class ClaudeManagedReadOwner {
         count,
       );
     }
-    const target = await this.#resolveNative(id);
     const count = Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, Number(limit))) : 50;
-    return this.sessions.eventsForNative(
-      "claude-code",
-      target.nativeId,
-      target.workspace,
+    return this.sessions.claudeEventsForSession(
+      id,
       typeof cursor === "string" ? cursor : null,
       count,
     );
+  }
+
+  /** Only invalidates observation projections; never proves ownership or control admission. */
+  async historyVersion(id: string): Promise<string> {
+    const record = this.#load(id);
+    const indexed = this.store.sessions.get(id);
+    const indexedIdentity = indexed
+      ? [
+          indexed.agent,
+          indexed.workspace_id,
+          indexed.sidechain,
+          this.store.workspacePath(indexed.workspace_id),
+        ]
+      : null;
+    let transcript: string;
+    let identity: unknown[];
+    if (record) {
+      this.#validate(record);
+      identity = [
+        record.createdAt,
+        record.nativeId,
+        record.workspaceId,
+        record.workspace,
+        record.home,
+        record.fresh,
+      ];
+      if (record.fresh) return JSON.stringify([id, indexedIdentity, identity, "empty"]);
+      transcript = this.sessions.verifiedClaudeControlTarget(record.nativeId, record.workspace);
+    } else {
+      const source = this.sessions.verifiedClaudeReadSource(id);
+      transcript = source.transcript;
+      identity = [source.nativeId, source.workspaceId, source.workspace];
+    }
+    const stat = lstatSync(transcript, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("invalid-Claude-transcript");
+    return JSON.stringify([
+      id,
+      indexedIdentity,
+      identity,
+      transcript,
+      ...[stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String),
+    ]);
   }
 
   #rememberConfirmedOptions(id: string): void {

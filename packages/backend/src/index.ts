@@ -78,6 +78,7 @@ import {
   type SessionStreamEvent,
 } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "./session-stream";
+import { SessionSnapshotHistory } from "./session-snapshot-history";
 import { BackendStore } from "./store";
 import {
   preferenceSnapshot,
@@ -126,6 +127,7 @@ export class TypeScriptBackend {
   #doctor?: Doctor;
   #sessions?: SessionReaders;
   #sessionStream?: SessionStreamHub;
+  #snapshotHistory?: SessionSnapshotHistory;
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
   #catalogContinuation = new Map<string, string>();
@@ -176,6 +178,8 @@ export class TypeScriptBackend {
   #reset(): void {
     this.#sessionStream?.close();
     this.#sessionStream = undefined;
+    this.#snapshotHistory?.invalidate();
+    this.#snapshotHistory = undefined;
     this.#storage?.cancel();
     this.#storage = undefined;
     this.#quota = undefined;
@@ -521,6 +525,8 @@ export class TypeScriptBackend {
         );
         this.#stopping = false;
         const runtimeBootId = randomUUID();
+        const snapshotHistory = new SessionSnapshotHistory();
+        this.#snapshotHistory = snapshotHistory;
         this.#sessionStream = new SessionStreamHub(
           runtimeBootId,
           async (sessionId) => {
@@ -544,27 +550,61 @@ export class TypeScriptBackend {
               sessionId,
               experimentalEnabled: true,
             });
-            const pageValue = await this.#request(RUNTIME_METHODS.webRequest, {
-              operation: "events",
-              sessionId,
-              cursor: null,
-              limit: 100,
-            });
             const live =
               liveValue && typeof liveValue === "object" && !Array.isArray(liveValue)
                 ? (liveValue as Record<string, unknown>)
                 : { sessionId, status: "unsupported" };
-            const page =
-              pageValue && typeof pageValue === "object" && !Array.isArray(pageValue)
-                ? (pageValue as Record<string, unknown>)
-                : {};
-            const items = Array.isArray(page.events)
-              ? page.events.filter(
-                  (item): item is Record<string, unknown> =>
-                    !!item && typeof item === "object" && !Array.isArray(item),
-                )
-              : [];
-            return { live, items, completeItems: page.next_cursor === null };
+            const readHistory = async () => {
+              const pageValue = await this.#request(RUNTIME_METHODS.webRequest, {
+                operation: "events",
+                sessionId,
+                cursor: null,
+                limit: 100,
+              });
+              const page =
+                pageValue && typeof pageValue === "object" && !Array.isArray(pageValue)
+                  ? (pageValue as Record<string, unknown>)
+                  : {};
+              const items = Array.isArray(page.events)
+                ? page.events.filter(
+                    (item): item is Record<string, unknown> =>
+                      !!item && typeof item === "object" && !Array.isArray(item),
+                  )
+                : [];
+              // Stream snapshots carry history coverage, never a cached pagination cursor.
+              return { items, completeItems: page.next_cursor === null };
+            };
+            const claude = this.#claudeManaged;
+            const index = this.#sessionIndex;
+            const isClaude =
+              this.#store?.sessions.get(sessionId)?.agent === "claude-code" ||
+              claude?.hasManagedSession(sessionId);
+            const history =
+              isClaude && claude && index
+                ? await snapshotHistory.read(
+                    sessionId,
+                    async () => {
+                      const generation = index.generation();
+                      if (
+                        this.#claudeManaged !== claude ||
+                        this.#sessionIndex !== index ||
+                        (!index.enabled() && !claude.hasManagedSession(sessionId))
+                      )
+                        throw new Error("session-unavailable");
+                      const version = await claude.historyVersion(sessionId);
+                      if (
+                        this.#claudeManaged !== claude ||
+                        this.#sessionIndex !== index ||
+                        (!index.enabled() && !claude.hasManagedSession(sessionId)) ||
+                        index.generation() !== generation
+                      )
+                        throw new Error("session-unavailable");
+                      return JSON.stringify([String(generation), version]);
+                    },
+                    readHistory,
+                  )
+                : await readHistory();
+            return { live, ...history };
           },
           (event) => {
             this.notify(SESSION_EVENT_NOTIFICATION, event);
@@ -908,6 +948,7 @@ export class TypeScriptBackend {
       case RUNTIME_METHODS.refreshWorkspaceSessions:
         return this.#sessionIndex!.refresh(params);
       case RUNTIME_METHODS.clearSessionIndex:
+        this.#snapshotHistory?.invalidate();
         this.#sessionIndex!.clear(params);
         return this.#historySearch!.clear().then(() => null);
       case RUNTIME_METHODS.applyChanges: {
@@ -1082,7 +1123,10 @@ export class TypeScriptBackend {
         const aliases = ["value", "enabled", "seen"].filter((key) => key in params);
         if (aliases.length !== 1 || typeof params[aliases[0]!] !== "boolean")
           invalid("Expected exactly one boolean value");
-        if (method === RUNTIME_METHODS.setSessionIndexEnabled) this.#sessionIndex!.invalidate();
+        if (method === RUNTIME_METHODS.setSessionIndexEnabled) {
+          this.#snapshotHistory?.invalidate();
+          this.#sessionIndex!.invalidate();
+        }
         writePreferences(this.#dataDir, {
           [keys[method]!]: params[aliases[0]!],
           ...(method === RUNTIME_METHODS.setQuotaAutoRefresh
@@ -1688,6 +1732,7 @@ export class TypeScriptBackend {
     payload: Record<string, unknown>,
     live?: Record<string, unknown>,
   ) {
+    if (type === "invalidate") this.#snapshotHistory?.invalidate(sessionId || undefined);
     this.#sessionStream?.publish(sessionId, type, payload, live);
     if (sessionId && type === "state") {
       const state = live ?? payload;

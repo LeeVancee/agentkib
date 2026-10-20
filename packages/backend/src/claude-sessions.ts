@@ -6,6 +6,7 @@ import {
   openSync,
   readdirSync,
   readSync,
+  type BigIntStats,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -108,8 +109,46 @@ interface TranscriptScan {
   aiTitles: Map<string, string>;
   firstPrompts: Map<string, string>;
 }
-// Keyed by path; an entry is only reused while mtime and size are unchanged.
-const scans = new Map<string, { mtimeMs: number; size: number; scan: TranscriptScan }>();
+// These caches contain display metadata, never control or ownership evidence.
+// File replacement and in-place writes must invalidate even if size/mtime match.
+const fileVersion = (stat: BigIntStats) =>
+  [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+const scans = new Map<string, { version: string; scan: TranscriptScan }>();
+type HistoryTimes = Map<string, { created: string | null; updated: string | null }>;
+const histories = new Map<
+  string,
+  { version: string; nativeRefs: Set<string>; times: HistoryTimes }
+>();
+function historyTimes(file: string, nativeRefs: Iterable<string>): HistoryTimes {
+  const stat = lstatSync(file, { bigint: true });
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("History must be a regular file");
+  const version = fileVersion(stat),
+    refs = new Set(nativeRefs),
+    cached = histories.get(file);
+  if (
+    cached?.version === version &&
+    cached.nativeRefs.size === refs.size &&
+    [...refs].every((ref) => cached.nativeRefs.has(ref))
+  )
+    return cached.times;
+  const times: HistoryTimes = new Map();
+  for (const { value } of jsonLines(file, { bytes: 256 * 1024 * 1024, rejectOversized: true })) {
+    const row = record(value);
+    if (!row || typeof row.sessionId !== "string" || !refs.has(row.sessionId)) continue;
+    const previous = times.get(row.sessionId),
+      at = parseTime(row.timestamp);
+    times.set(row.sessionId, {
+      created: earliest(previous?.created ?? null, at),
+      updated: latest(previous?.updated ?? null, at),
+    });
+  }
+  histories.delete(file);
+  if (refs.size <= SCAN_CACHE_LIMIT && fileVersion(lstatSync(file, { bigint: true })) === version) {
+    histories.set(file, { version, nativeRefs: refs, times });
+    if (histories.size > 16) histories.delete(histories.keys().next().value as string);
+  }
+  return times;
+}
 /** A title names a session; it is not evidence for changing the transcript's identity. */
 function noteTitle(
   row: Record<string, unknown>,
@@ -159,10 +198,11 @@ function tailTitles(
   }
 }
 function scanTranscript(file: string): TranscriptScan {
-  const stat = lstatSync(file);
+  const stat = lstatSync(file, { bigint: true });
   if (!stat.isFile()) throw new Error("Transcript must be a regular file");
-  const cached = scans.get(file);
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.scan;
+  const version = fileVersion(stat),
+    cached = scans.get(file);
+  if (cached?.version === version) return cached.scan;
   const scan: TranscriptScan = {
     nativeRef: path.basename(file, ".jsonl"),
     cwd: null,
@@ -199,7 +239,8 @@ function scanTranscript(file: string): TranscriptScan {
   // Tail records are newer than anything in the header, so they overwrite it.
   tailTitles(file, scan.customTitles, scan.aiTitles);
   scans.delete(file);
-  scans.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, scan });
+  if (fileVersion(lstatSync(file, { bigint: true })) === version)
+    scans.set(file, { version, scan });
   if (scans.size > SCAN_CACHE_LIMIT) scans.delete(scans.keys().next().value as string);
   return scan;
 }
@@ -355,18 +396,11 @@ export class ClaudeSessions {
     const history = files.history;
     if (isFile(history)) {
       try {
-        for (const { value } of jsonLines(history, {
-          bytes: 256 * 1024 * 1024,
-          rejectOversized: true,
-        })) {
-          const row = record(value);
-          if (!row) continue;
-          const session =
-            typeof row.sessionId === "string" ? sessions.get(row.sessionId) : undefined;
+        for (const [nativeRef, times] of historyTimes(history, sessions.keys())) {
+          const session = sessions.get(nativeRef);
           if (session) {
-            const at = parseTime(row.timestamp);
-            session.session.created_at = earliest(session.session.created_at, at);
-            session.session.updated_at = latest(session.session.updated_at, at);
+            session.session.created_at = earliest(session.session.created_at, times.created);
+            session.session.updated_at = latest(session.session.updated_at, times.updated);
           }
         }
       } catch (error) {

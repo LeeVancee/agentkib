@@ -1,0 +1,231 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionStreamHub } from "../../../packages/backend/src/session-stream";
+
+type Snapshot = {
+  live: Record<string, unknown>;
+  items: Record<string, unknown>[];
+  completeItems: boolean;
+};
+
+const hubs: SessionStreamHub[] = [];
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+function snapshot(sessionId = "session"): Snapshot {
+  return {
+    live: { sessionId, status: "idle" },
+    items: [{ id: "history", content: "saved history" }],
+    completeItems: true,
+  };
+}
+
+function createHub(read: (sessionId: string) => Promise<Snapshot>) {
+  const notify = vi.fn();
+  const observed = vi.fn();
+  const hub = new SessionStreamHub("boot", read, notify, observed);
+  hubs.push(hub);
+  return { hub, notify, observed };
+}
+
+afterEach(() => {
+  for (const hub of hubs.splice(0)) hub.close();
+  vi.useRealTimers();
+});
+
+describe("session stream snapshot reads", () => {
+  it("shares only the in-flight read while keeping concurrent subscriptions independent", async () => {
+    const firstRead = deferred<Snapshot>();
+    const read = vi.fn(() => firstRead.promise);
+    const { hub, notify, observed } = createHub(read);
+    const firstPromise = hub.subscribe("session");
+    const secondPromise = hub.subscribe("session");
+    expect(read).toHaveBeenCalledTimes(1);
+
+    firstRead.resolve(snapshot());
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(first.subscriptionId).not.toBe(second.subscriptionId);
+    expect(first.events[0]?.subscriptionId).toBe(first.subscriptionId);
+    expect(second.events[0]?.subscriptionId).toBe(second.subscriptionId);
+    expect(observed).toHaveBeenCalledTimes(2);
+
+    hub.unsubscribe(first.subscriptionId);
+    hub.publish("session", "state", { status: "running" });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0]?.[0].subscriptionId).toBe(second.subscriptionId);
+
+    await hub.subscribe("session");
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not share reads across different sessions", async () => {
+    const a = deferred<Snapshot>();
+    const b = deferred<Snapshot>();
+    const read = vi.fn((sessionId: string) => (sessionId === "a" ? a.promise : b.promise));
+    const { hub } = createHub(read);
+    const first = hub.subscribe("a");
+    const second = hub.subscribe("b");
+    b.resolve(snapshot("b"));
+    expect((await second).events[0]?.sessionId).toBe("b");
+    a.resolve(snapshot("a"));
+    expect((await first).events[0]?.sessionId).toBe("a");
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("immediately retries a failed shared read without retaining a failed subscription", async () => {
+    const failed = deferred<Snapshot>();
+    const read = vi.fn().mockReturnValueOnce(failed.promise).mockResolvedValue(snapshot());
+    const { hub, observed } = createHub(read);
+    const first = hub.subscribe("session");
+    const second = hub.subscribe("session");
+    const failures = Promise.allSettled([first, second]);
+    failed.reject(new Error("temporary-owner-check-failure"));
+    expect((await failures).map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(hub.hasSubscribers("session")).toBe(false);
+    expect(observed).not.toHaveBeenCalled();
+
+    await hub.subscribe("session");
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(hub.hasSubscribers("session")).toBe(true);
+  });
+
+  it("shares a poll with a concurrent subscription and preserves a newer published item", async () => {
+    vi.useFakeTimers();
+    const delayed = deferred<Snapshot>();
+    const read = vi.fn().mockResolvedValueOnce(snapshot()).mockReturnValue(delayed.promise);
+    const { hub, notify } = createHub(read);
+    const first = await hub.subscribe("session");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(read).toHaveBeenCalledTimes(2);
+    const secondPromise = hub.subscribe("session");
+    hub.publish("session", "item-upsert", { id: "new", content: "newer event" });
+    delayed.resolve(snapshot());
+    const second = await secondPromise;
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(second.events[0]?.payload.items).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "new", content: "newer event" })]),
+    );
+    expect(notify.mock.calls[0]?.[0].subscriptionId).toBe(first.subscriptionId);
+  });
+
+  it("starts a fresh read after the last subscriber leaves instead of reviving its pending poll", async () => {
+    vi.useFakeTimers();
+    const oldPoll = deferred<Snapshot>();
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot())
+      .mockReturnValueOnce(oldPoll.promise)
+      .mockResolvedValueOnce(snapshot("fresh"));
+    const { hub } = createHub(read);
+    const first = await hub.subscribe("session");
+    await vi.advanceTimersByTimeAsync(250);
+    hub.unsubscribe(first.subscriptionId);
+    const next = await hub.subscribe("session");
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(next.events[0]?.payload.live).toEqual(expect.objectContaining({ sessionId: "fresh" }));
+    oldPoll.resolve(snapshot("stale"));
+  });
+
+  it("does not join an older read after a published live state changes its revision", async () => {
+    vi.useFakeTimers();
+    const oldPoll = deferred<Snapshot>();
+    const freshRead = deferred<Snapshot>();
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot())
+      .mockReturnValueOnce(oldPoll.promise)
+      .mockReturnValueOnce(freshRead.promise);
+    const { hub, notify } = createHub(read);
+    await hub.subscribe("session");
+    await vi.advanceTimersByTimeAsync(250);
+    hub.publish("session", "state", { status: "running" }, { status: "running" });
+    const subscriptionPromise = hub.subscribe("session");
+    expect(read).toHaveBeenCalledTimes(3);
+    oldPoll.resolve(snapshot("old"));
+    freshRead.resolve({ ...snapshot(), live: { status: "running", turnId: "active" } });
+    const subscription = await subscriptionPromise;
+    expect(subscription.events[0]?.payload.live).toEqual({ status: "running", turnId: "active" });
+    expect(notify.mock.calls.map(([event]) => event.payload.live?.sessionId)).not.toContain("old");
+  });
+
+  it("replays the same cursor independently for concurrent subscribers", async () => {
+    const secondRead = deferred<Snapshot>();
+    const read = vi.fn().mockResolvedValueOnce(snapshot()).mockReturnValue(secondRead.promise);
+    const { hub, notify } = createHub(read);
+    const first = await hub.subscribe("session");
+    hub.publish("session", "state", { status: "waiting" });
+    const secondPromise = hub.subscribe("session", first.cursor);
+    const thirdPromise = hub.subscribe("session", first.cursor);
+    secondRead.resolve(snapshot());
+    const [second, third] = await Promise.all([secondPromise, thirdPromise]);
+    expect(read).toHaveBeenCalledTimes(2);
+    for (const subscription of [second, third]) {
+      expect(subscription.events).toEqual([
+        expect.objectContaining({
+          type: "state",
+          subscriptionId: subscription.subscriptionId,
+          payload: { status: "waiting" },
+        }),
+      ]);
+    }
+    hub.publish("session", "state", { status: "running" });
+    expect(notify.mock.calls.map(([event]) => event.subscriptionId)).toEqual([
+      first.subscriptionId,
+      first.subscriptionId,
+      second.subscriptionId,
+      third.subscriptionId,
+    ]);
+  });
+
+  it("continues fresh 250 ms polls when history is unchanged and recovers after read failure", async () => {
+    vi.useFakeTimers();
+    const read = vi.fn().mockResolvedValue(snapshot());
+    const { hub, notify } = createHub(read);
+    await hub.subscribe("session");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(read).toHaveBeenCalledTimes(5);
+    expect(notify).not.toHaveBeenCalled();
+    read.mockRejectedValueOnce(new Error("temporary-owner-check-failure"));
+    await vi.advanceTimersByTimeAsync(250);
+    expect(read).toHaveBeenCalledTimes(6);
+    expect(hub.hasSubscribers("session")).toBe(true);
+    read.mockResolvedValue({ ...snapshot(), live: { status: "blocked" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(read).toHaveBeenCalledTimes(7);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0]?.[0].payload.live).toEqual({ status: "blocked" });
+  });
+
+  it("cannot recreate a subscription after the hub closes during a read", async () => {
+    const delayed = deferred<Snapshot>();
+    const { hub, observed } = createHub(() => delayed.promise);
+    const subscription = hub.subscribe("session");
+    const rejection = expect(subscription).rejects.toThrow("session-stream-unavailable");
+    hub.close();
+    delayed.resolve(snapshot());
+    await rejection;
+    expect(hub.hasSubscribers("session")).toBe(false);
+    expect(observed).not.toHaveBeenCalled();
+  });
+
+  it("counts pending subscribers toward the bounded subscription limit", async () => {
+    const delayed = deferred<Snapshot>();
+    const read = vi.fn(() => delayed.promise);
+    const { hub } = createHub(read);
+    const subscriptions = Array.from({ length: 128 }, () => hub.subscribe("session"));
+    const overflow = hub.subscribe("session");
+    const rejection = expect(overflow).rejects.toThrow("session-subscription-limit");
+    delayed.resolve(snapshot());
+    await rejection;
+    await Promise.all(subscriptions);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+});

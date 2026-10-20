@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@agentkib/web-client";
 import type { RequestedConversationPanel } from "./session-view-store";
 import { DesktopConversationPane } from "./DesktopConversationPane";
 
@@ -22,6 +23,7 @@ vi.mock("@/core/conversation-bridge", () => ({ createDesktopConversationClient: 
 vi.mock("./SessionHubContext", () => ({
   useSessionHub: () => ({
     select: mocks.select,
+    selectionVersion: () => 0,
     selected: mocks.selected,
     conversationRefreshRevision: mocks.revision,
   }),
@@ -47,17 +49,20 @@ vi.mock("./conversation/conversation", () => ({
     refreshRevision,
     initialPanel,
     onInitialPanelConsumed,
+    onCatalogChange,
   }: {
     onSessionChange: (id?: string) => void;
     onCreateClosed: () => void;
     refreshRevision?: number;
     initialPanel?: string;
     onInitialPanelConsumed?: () => void;
+    onCatalogChange: () => void;
   }) => (
     <>
       <button onClick={() => onSessionChange("fork")}>Open fork</button>
       <button onClick={() => onSessionChange(undefined)}>Clear selection</button>
       <button onClick={onCreateClosed}>Cancel creation</button>
+      <button onClick={onCatalogChange}>Refresh catalog</button>
       <output>{refreshRevision}</output>
       {initialPanel && <button onClick={onInitialPanelConsumed}>{initialPanel}</button>}
     </>
@@ -65,6 +70,7 @@ vi.mock("./conversation/conversation", () => ({
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.refresh.mockReset();
   mocks.revision = 0;
   mocks.requestedPanel = undefined;
   mocks.selected = undefined;
@@ -72,6 +78,41 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("desktop conversation navigation", () => {
+  it.each(["Refresh catalog", "Open fork"])(
+    "does not report read contention as a catalog failure after %s",
+    async (action) => {
+      mocks.refresh.mockRejectedValue(new ApiError(409, "operation_busy"));
+      render(<DesktopConversationPane sessionId="original" />);
+      const button = await screen.findByText(action);
+      await act(async () => fireEvent.click(button));
+      expect(mocks.refresh).toHaveBeenCalledOnce();
+      expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
+      expect(mocks.select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["Refresh catalog", "Open fork"])(
+    "retains a real failure when the next %s only encounters contention",
+    async (action) => {
+      mocks.refresh
+        .mockRejectedValueOnce(new Error("catalog unavailable"))
+        .mockRejectedValueOnce(new ApiError(409, "operation_busy"))
+        .mockResolvedValueOnce([]);
+      render(<DesktopConversationPane sessionId="original" />);
+      const button = await screen.findByText(action);
+      await act(async () => fireEvent.click(button));
+      expect(screen.getByText(/sessions\.conversationCatalogError/)).toHaveTextContent(
+        "catalog unavailable",
+      );
+      await act(async () => fireEvent.click(button));
+      expect(screen.getByText(/sessions\.conversationCatalogError/)).toHaveTextContent(
+        "catalog unavailable",
+      );
+      await act(async () => fireEvent.click(button));
+      expect(screen.queryByText(/sessions\.conversationCatalogError/)).not.toBeInTheDocument();
+    },
+  );
+
   it("forwards explicit toolbar refreshes to the mounted conversation", async () => {
     mocks.revision = 2;
     const view = render(<DesktopConversationPane sessionId="original" />);

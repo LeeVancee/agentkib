@@ -835,6 +835,239 @@ describe("Codex managed sandbox verification", () => {
 });
 
 describe("Codex automatic CLI continuation", () => {
+  function notifyDuringSend(
+    f: ReturnType<typeof fixture>,
+    notification: (server: EventEmitter, sessionId: string) => void,
+  ) {
+    const start = f.start.getMockImplementation()!;
+    f.start.mockImplementation(async (...args) => {
+      const server = await start(...args);
+      const request = server.request.bind(server);
+      let attached = false;
+      vi.spyOn(server, "request").mockImplementation(async (method, params, dispatch) => {
+        if (method === "model/list" && attached) {
+          attached = false;
+          notification(server, f.summary.id);
+        }
+        const result = await request(method, params, dispatch);
+        if (["thread/start", "thread/resume"].includes(method)) attached = true;
+        return result;
+      });
+      return server;
+    });
+  }
+
+  it.each(["thread-started", "usage", "same-settings", "restored-usage-and-empty-goal"] as const)(
+    "sends a legacy root registration on the first attempt after a late %s observation",
+    async (notification) => {
+      const f = fixture(false, path.parse(process.cwd()).root);
+      const cwd = path.join(f.root, "legacy-project");
+      mkdirSync(cwd);
+      f.setCwd(cwd);
+      saveManagedRecord(f.root, {
+        id: f.summary.id,
+        workspace_id: "workspace",
+        workspace: f.workspace,
+        home: f.home,
+        native_id: nativeId,
+        title: "Legacy adoption",
+        created_at: "2026-10-19T00:00:00Z",
+        adopted: true,
+        released: true,
+        archived: false,
+        model: "model-a",
+        effort: "low",
+        policy_id: "workspace-write-on-request",
+        snapshot: { revision: 15 },
+      });
+      notifyDuringSend(f, (server, id) => {
+        server.emit("notification", {
+          method:
+            notification === "thread-started"
+              ? "thread/started"
+              : notification === "usage" || notification === "restored-usage-and-empty-goal"
+                ? "thread/tokenUsage/updated"
+                : "thread/settings/updated",
+          params:
+            notification === "thread-started"
+              ? { thread: { id: nativeId } }
+              : notification === "usage" || notification === "restored-usage-and-empty-goal"
+                ? { threadId: nativeId, tokenUsage: { total: { totalTokens: 10 } } }
+                : {
+                    threadId: nativeId,
+                    threadSettings: readManagedRecord(f.root, id)!.native_settings,
+                  },
+        });
+        if (notification === "restored-usage-and-empty-goal")
+          server.emit("notification", {
+            method: "thread/goal/cleared",
+            params: { threadId: nativeId },
+          });
+      });
+      const requestId = randomUUID();
+      const result = await f.send({ requestId });
+      expect(result.error ?? result.reason).toBeUndefined();
+      expect(result).toMatchObject({ accepted: true });
+      expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+      expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+      expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+        workspace: f.workspace,
+        cwd,
+      });
+      expect(readControlReceipt(f.root, { requestId, deviceId: "fixture" })).toMatchObject({
+        status: "accepted",
+      });
+    },
+  );
+
+  it.each([
+    "model",
+    "cwd",
+    "sandbox",
+    "effort",
+    "mode",
+    "turn",
+    "goal",
+    "transient-turn",
+    "transient-goal",
+    "transient-model",
+  ] as const)(
+    "still rejects a first send when native %s changes after automatic resume",
+    async (changed) => {
+      const f = fixture();
+      notifyDuringSend(f, (server, id) => {
+        const current = readManagedRecord(f.root, id)!;
+        const kind = changed.startsWith("transient-")
+          ? changed.slice("transient-".length)
+          : changed;
+        server.emit("notification", {
+          method:
+            kind === "turn"
+              ? "turn/started"
+              : kind === "goal"
+                ? "thread/goal/updated"
+                : "thread/settings/updated",
+          params: {
+            threadId: nativeId,
+            ...(!["turn", "goal"].includes(kind)
+              ? {
+                  threadSettings: {
+                    ...(current.native_settings as Record<string, unknown>),
+                    ...(kind === "model"
+                      ? { model: "other-model" }
+                      : kind === "cwd"
+                        ? { cwd: f.home }
+                        : kind === "sandbox"
+                          ? { sandboxPolicy: { type: "dangerFullAccess" } }
+                          : kind === "effort"
+                            ? { effort: "high" }
+                            : { collaborationMode: { mode: "plan" } }),
+                  },
+                }
+              : kind === "turn"
+                ? { turn: { id: "external-turn", status: "inProgress" } }
+                : { goal: { objective: "Changed goal", status: "active" } }),
+          },
+        });
+        if (changed.startsWith("transient-"))
+          server.emit("notification", {
+            method:
+              kind === "turn"
+                ? "turn/completed"
+                : kind === "goal"
+                  ? "thread/goal/cleared"
+                  : "thread/settings/updated",
+            params: {
+              threadId: nativeId,
+              ...(kind === "turn"
+                ? { turn: { id: "external-turn", status: "completed" } }
+                : kind === "model"
+                  ? { threadSettings: current.native_settings }
+                  : {}),
+            },
+          });
+      });
+      expect(await f.send()).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "stale-or-disabled-control",
+      });
+      expect(f.methods).not.toContain("turn/start");
+    },
+  );
+
+  it("sends a newly created session once when its thread-started notification arrives late", async () => {
+    const f = fixture();
+    notifyDuringSend(f, (server) => {
+      server.emit("notification", {
+        method: "thread/started",
+        params: { thread: { id: nativeId } },
+      });
+    });
+    const created = await f.web.managedLifecycle({
+      operation: "create",
+      workspaceId: "workspace",
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      policyId: "workspace-write-on-request",
+      model: "model-a",
+      effort: "low",
+    });
+    const state = await f.web.request({ operation: "live", sessionId: created.sessionId! });
+    expect(
+      await f.web.managedControl({
+        operation: "send",
+        sessionId: created.sessionId!,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: state.runtimeBootId,
+        expectedRevision: state.revision,
+        experimentalEnabled: true,
+        text: "The first message",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(f.methods.filter((method) => method === "thread/start")).toHaveLength(1);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+  });
+
+  it("keeps a simultaneous context reader separate from the single writer used by first send", async () => {
+    const f = fixture();
+    const state = await f.live();
+    const start = f.start.getMockImplementation()!;
+    let entered!: () => void;
+    let finish!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    f.start.mockImplementationOnce(async (...args) => {
+      const server = await start(...args);
+      const request = server.request.bind(server);
+      vi.spyOn(server, "request").mockImplementation(async (method, ...rest) => {
+        if (method === "thread/read") {
+          entered();
+          await gate;
+        }
+        return request(method, ...rest);
+      });
+      return server;
+    });
+    const context = f.web.request({ operation: "context", sessionId: f.summary.id });
+    await reading;
+    expect(await f.sendWithState(state)).toMatchObject({ accepted: true });
+    expect(f.start).toHaveBeenCalledTimes(2);
+    expect(f.servers.every((server) => server.connected)).toBe(true);
+    expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+    finish();
+    expect(await context).toMatchObject({ available: true });
+    expect(f.servers[0]!.closed).toBe(true);
+    expect(f.servers[1]!.connected).toBe(true);
+    expect(f.follower).not.toHaveBeenCalled();
+  });
+
   it.each([path.parse(process.cwd()).root, "home"])(
     "uses the session subdirectory when the registered workspace is %s, including after retirement",
     async (registered) => {

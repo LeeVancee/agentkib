@@ -95,6 +95,7 @@ function defaultHub(): ReturnType<typeof useSessionHub> {
     catalogError: "",
     hiddenSessionNotice: false,
     select: vi.fn(),
+    selectionVersion: () => 0,
     refresh: vi.fn().mockResolvedValue(undefined),
     retryWorkspaces: vi.fn(),
   };

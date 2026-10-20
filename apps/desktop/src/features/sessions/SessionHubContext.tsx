@@ -8,6 +8,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -152,6 +153,8 @@ function useHub(active: boolean) {
   const agent = useSessionViewStore((state) => state.agent);
   const filter = useSessionViewStore((state) => state.filter);
   const host = useSessionViewStore((state) => state.host);
+  const creating = useSessionViewStore((state) => state.creatingConversation);
+  const [creationSelection, setCreationSelection] = useState<string>();
   const filtered = useMemo(
     () =>
       filterSessions(sessions, workspaces, { query: "", agent, filter }).filter(
@@ -169,10 +172,15 @@ function useHub(active: boolean) {
   const selectedWorkspace = selected
     ? workspaces.find((workspace) => workspace.id === selected.workspace_id)
     : undefined;
+  const selectionRevision = useRef(0);
+  const selectionVersion = useCallback(() => selectionRevision.current, []);
   const select = useCallback(
     (id?: string, replace = false) => {
+      selectionRevision.current += 1;
       setHiddenSessionNotice(false);
-      if (id) useSessionViewStore.getState().setCreatingConversation(false);
+      setCreationSelection(
+        id && useSessionViewStore.getState().creatingConversation ? id : undefined,
+      );
       void navigate({
         to: "/sessions",
         replace,
@@ -181,6 +189,19 @@ function useHub(active: boolean) {
     },
     [navigate],
   );
+  useLayoutEffect(() => {
+    if (!creating) {
+      if (creationSelection) setCreationSelection(undefined);
+      return;
+    }
+    // Keep the embedded conversation mounted until its outer route and catalog
+    // agree on the new selection. Clearing creation before navigation commits
+    // briefly selects the old record and drops the new thread's last observer.
+    if (creationSelection && sessionId === creationSelection && selected) {
+      setCreationSelection(undefined);
+      useSessionViewStore.getState().setCreatingConversation(false);
+    }
+  }, [creating, creationSelection, sessionId, selected]);
   useEffect(() => {
     if (enabled && selected && canonicalId !== sessionId) select(canonicalId, true);
   }, [enabled, selected, canonicalId, sessionId, select]);
@@ -260,6 +281,7 @@ function useHub(active: boolean) {
     selected,
     selectedWorkspace,
     select,
+    selectionVersion,
     enabled,
     runtimeReady: runtime !== undefined,
     workspacesLoading: workspaceQuery.isPending && remote.sessions.length === 0,

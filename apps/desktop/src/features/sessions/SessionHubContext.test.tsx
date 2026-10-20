@@ -105,10 +105,102 @@ beforeEach(() => {
   mocks.search = {};
   useAppStore.getState().setRuntime({ session_index_enabled: true } as RuntimeInfo);
   useSessionViewStore.getState().resetFilters();
+  useSessionViewStore.getState().setCreatingConversation(false);
 });
 afterEach(cleanup);
 
 describe("desktop authoritative session directory", () => {
+  it("finishes creation when selecting the already committed conversation", () => {
+    mocks.search = { sessionId: "managed-id" };
+    useSessionViewStore.getState().setCreatingConversation(true);
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+  });
+
+  it("waits for the latest selected creation target to commit", () => {
+    useSessionViewStore.getState().setCreatingConversation(true);
+    const content = (
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>
+    );
+    const view = render(content);
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    fireEvent.click(screen.getByRole("button", { name: "unmanaged" }));
+    mocks.search = { sessionId: "managed-id" };
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(useSessionViewStore.getState().creatingConversation).toBe(true);
+    mocks.search = { sessionId: "unmanaged" };
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+  });
+
+  it("does not finish a later creation from a cancelled selection", () => {
+    useSessionViewStore.getState().setCreatingConversation(true);
+    const view = render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    act(() => useSessionViewStore.getState().setCreatingConversation(false));
+    act(() => useSessionViewStore.getState().setCreatingConversation(true));
+    mocks.search = { sessionId: "managed-id" };
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(useSessionViewStore.getState().creatingConversation).toBe(true);
+  });
+
+  it("preserves a new creation when its entry clears an older pending selection", () => {
+    function NewCreation() {
+      const hub = useSessionHub();
+      return (
+        <button
+          onClick={() => {
+            useSessionViewStore.getState().setCreatingConversation(true);
+            hub.select();
+          }}
+        >
+          Begin another creation
+        </button>
+      );
+    }
+    useSessionViewStore.getState().setCreatingConversation(true);
+    const content = (
+      <SessionHubProvider>
+        <Directory />
+        <NewCreation />
+      </SessionHubProvider>
+    );
+    const view = render(content);
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    fireEvent.click(screen.getByRole("button", { name: "Begin another creation" }));
+    mocks.search = { sessionId: "managed-id" };
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+        <NewCreation />
+      </SessionHubProvider>,
+    );
+    expect(useSessionViewStore.getState().creatingConversation).toBe(true);
+  });
+
   it.each(
     Object.values(SESSION_COLLECTIONS).flatMap((workspaceId) =>
       [true, false].map((bridge) => ({ workspaceId, bridge })),

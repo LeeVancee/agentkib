@@ -1028,6 +1028,10 @@ export class WebReadRequests {
       failureFinalized = true;
     };
     try {
+      // Persist the re-proven execution directory while resume owns the lease,
+      // so later readers keep it separate from the registration boundary.
+      resumed.cwd = this.#managedCwd(resumed);
+      saveManagedRecord(this.dataDir, resumed as unknown as Record<string, unknown>);
       runner = await this.#attachManagedRunner(
         resumed,
         workspace,
@@ -1944,6 +1948,7 @@ export class WebReadRequests {
     if (record && (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId))
       throw new Error("stale-or-disabled-control");
     let runner = this.#managedRunners.get(request.sessionId);
+    let resumedControlState: string | undefined;
     if (!runner?.session.connected || runner.retiring) {
       const inactive = record ?? (await this.#inactiveRecord(request.sessionId));
       const reject = (reason: string) => {
@@ -2019,7 +2024,10 @@ export class WebReadRequests {
         record = readManagedRecords(this.dataDir, this.store).find(
           (item) => item.id === request.sessionId,
         );
-        if (runner) request.expectedRevision = runner.state.revision;
+        if (runner) {
+          request.expectedRevision = runner.state.revision;
+          if (request.operation === "send") resumedControlState = managedControlState(runner.state);
+        }
       } catch (error) {
         return reject(
           codexWriterBusy(error)
@@ -2045,6 +2053,11 @@ export class WebReadRequests {
     const snapshot = await runner.bridge.snapshot(this.#bootId, true);
     if (activityBlocks(snapshot, request.operation))
       return compactingRejection(request, this.#bootId);
+    if (
+      resumedControlState !== undefined &&
+      managedControlState(runner.state) === resumedControlState
+    )
+      request.expectedRevision = Number(snapshot.revision);
     if (snapshot.reason || snapshot.revision !== request.expectedRevision)
       throw new Error("stale-or-disabled-control");
     if (request.operation === "fork")
@@ -2385,6 +2398,14 @@ export class WebReadRequests {
           throw new Error("control-outcome-unconfirmed");
         const currentSnapshot = dispatchRunner.state.snapshot(this.#bootId, true);
         assertActivityAllows(currentSnapshot, request.operation);
+        // The just-resumed send may observe late startup/usage notifications.
+        // Only observation-only revision changes are safe: preserve exact CAS
+        // for identity, native settings, goals, lifecycle and every other field.
+        if (
+          resumedControlState !== undefined &&
+          managedControlState(dispatchRunner.state) === resumedControlState
+        )
+          request.expectedRevision = Number(currentSnapshot.revision);
         if (
           currentSnapshot.reason ||
           currentSnapshot.revision !== request.expectedRevision ||
@@ -4914,6 +4935,19 @@ export class WebReadRequests {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A resume-local guard; public revisions and native settings ACKs stay intact. */
+function managedControlState(state: ManagedCodexState): string {
+  const live = state.snapshot("", true);
+  delete live.revision;
+  delete live.tokenUsage;
+  delete live.usage;
+  delete live.streamText;
+  const record = { ...state.record };
+  delete record.snapshot;
+  delete record.token_usage;
+  return stableJson({ live, record, mutationRevision: state.mutationRevision });
 }
 
 function managedPolicyCatalog() {

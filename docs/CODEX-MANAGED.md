@@ -58,6 +58,8 @@ Web 的模型、服务档位、策略和资源能力取自当前 app-server 的�
 
 没有本机活动 runner 时，发送自动准备并续接同一原生 thread ID；源索引与 rollout 元数据共同验证 ID 和工作区。专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时返回 `codex-owner-busy`，界面提供显式分支或返回 Codex 的选择，保留草稿并重新检查占用；“找不到 owner”不能作为排他证明。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。原生 active goal 等恢复风险及未知结果仍按内部规则阻断，不因省去用户确认而放行。
 
+旧托管记录缺少执行 cwd 时，自动续接在持锁期间重新核实并保存原生工作目录，与登记工作区边界分开。续接后首条发送可接受迟到的纯用量更新及重复通知，不因观察版本变化误报“本次操作未执行”；身份、设置、目标或轮次发生真实变化时仍拒绝派发，即使字段随后恢复原值也不放行。普通控制继续使用原有 revision 校验。
+
 登记工作区仅作为授权边界。接管和分支的执行目录取 UUID 已核实的 rollout `session_meta.cwd`，经 canonical 路径确认仍在登记工作区内后，单独保存为托管记录的 `cwd`，用于 app-server、恢复、分支、下一轮与工作区写入策略的可写根。登记工作区为 `/` 或用户主目录时，也只允许经过核实的安全子目录；会话自身目录为文件系统根或用户主目录时按“仅可查看”处理。目录缺失、不是目录、无法核实或位于授权范围外时给出具体原因，不回退到登记工作区。旧台账没有 `cwd` 时重新核实原生头部，不能把旧 `workspace` 当成执行目录。原有 ID、HOME、锁、版本和策略回包校验继续生效。
 
 Codex 的 `workspace-write` 隐式允许 cwd，原生 `writableRoots` 仅列额外目录，空数组不表示 cwd 不可写。校验启动响应时，顶层与线程 cwd 必须匹配经过核实的执行目录，canonical 后的附加根不得扩大范围。两种工作区写入策略在启动配置和每轮请求中都显式排除 `/tmp` 与环境 `TMPDIR` 的默认额外授权，并要求原生响应的两个排除标记严格为 true；缺失或不确认时拒绝执行。该限制不改变用户显式选择完全访问策略的既有语义。
@@ -78,7 +80,7 @@ Codex 把闲置记录压缩为 `.jsonl.zst`、线程表仍登记原 `.jsonl` 时
 
 会话记录在 thread/start 之前写入；thread/started 通知也会尽早持久化 native ID，所以创建 HTTP 回执丢失后仍可在 catalog 找回任务。发送前先写 dispatched，再向原生 pipe 写入；超时/断开保持 unknown fence，不自动重发。runtime 重启不会自动恢复模型执行；没有未决回执且原生身份安全可恢复时，下次显式发送触发自动续接，有未知结果时仍先查询回执并核对证据。
 
-reconcile 读取原生 thread/read。send/steer/queue-add 必须找到对应 `userMessage.clientId == requestId`；stop 必须找到其目标 turn 的明确终态；审批和问答必须确认原生 `serverRequest/resolved`，单纯轮次结束不能证明对应决定已执行；创建/交接须已获得并重新核实同一个 native ID。通过后才记账并返回 `reconciled:true`，供 Electron 清除不确定结果屏障。无法核对、native ID 缺失、原客户端仍持锁、原生历史未持久化，均返回 false，不允许手工跳过未知发送。实测官方零消息线程（包括 persistExtendedHistory 或设置名称）尚未生成可恢复 rollout；若在首条消息前退出 runtime，会保留可找到的账本任务，但不能恢复这个空 native ID，须 release 后显式新建。
+reconcile 读取原生 thread/read。send/steer/queue-add 必须找到对应 `userMessage.clientId == requestId`；stop 必须找到其目标 turn 的明确终态；审批和问答必须确认原生 `serverRequest/resolved`，单纯轮次结束不能证明对应决定已执行；创建/交接须已获得并重新核实同一个 native ID。通过后才记账并返回 `reconciled:true`，供 Electron 清除不确定结果屏障。无法核对、native ID 缺失、原客户端仍持锁、原生历史未持久化，均返回 false，不允许手工跳过未知发送。实测官方零消息线程（包括 persistExtendedHistory 或设置名称）尚未生成可核实身份的 rollout；Codex 0.155.1 的只读探针仍可能读取或续接这类空线程，但这不能替代 AgentKib 的 rollout 身份校验。若在首条消息前退出 runtime，会保留可找到的账本任务，但 AgentKib 不能恢复这个空 native ID，须 release 后显式新建。
 
 没有足够原生证据的任务会保持只读；不得用新请求 ID 重放猜测已执行的操作。
 

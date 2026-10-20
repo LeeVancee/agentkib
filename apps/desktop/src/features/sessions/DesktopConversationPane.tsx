@@ -1,5 +1,4 @@
 import { isBusyRead } from "./conversation/features/sessions/session-read-retry";
-import { codexReason } from "./conversation/features/sessions/codex-copy";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { EmbeddedConversationHandle } from "./conversation/conversation";
 import { RefreshCw } from "lucide-react";
@@ -25,7 +24,7 @@ export function DesktopConversationPane({
   create?: boolean;
 }) {
   const { locale, tr, localizeMessage } = useI18n();
-  const { select, selected, conversationRefreshRevision } = useSessionHub();
+  const { select, selected, selectionVersion, conversationRefreshRevision } = useSessionHub();
   const [client] = useState(createDesktopConversationClient);
   const [catalogError, setCatalogError] = useState("");
   const navigation = useRef(0);
@@ -55,17 +54,15 @@ export function DesktopConversationPane({
   const onCatalogChange = useCallback(() => {
     void refreshConversationCatalog().then(
       () => setCatalogError(""),
-      (error: unknown) =>
-        setCatalogError(
-          isBusyRead(error)
-            ? codexReason(locale, "session-state-unavailable").text
-            : localizeMessage(error),
-        ),
+      (error: unknown) => {
+        if (!isBusyRead(error)) setCatalogError(localizeMessage(error));
+      },
     );
-  }, [localizeMessage, locale]);
+  }, [localizeMessage]);
   const onSessionChange = useCallback(
     async (id?: string) => {
       const request = ++navigation.current;
+      const intent = selectionVersion();
       if (!id) {
         useSessionViewStore.getState().setCreatingConversation(false);
         select();
@@ -74,24 +71,19 @@ export function DesktopConversationPane({
       }
       try {
         const sessions = await refreshConversationCatalog();
-        if (request !== navigation.current) return;
+        if (request !== navigation.current || intent !== selectionVersion()) return;
         const session = sessions.find((item) => item.id === id);
         if (session) useSessionViewStore.getState().revealSession(session);
-        useSessionViewStore.getState().setCreatingConversation(false);
         select(id);
         setCatalogError("");
       } catch (error) {
         // Creation/fork has already succeeded. Keep its conversation mounted and
         // report catalog refresh separately instead of offering to repeat creation.
-        if (request === navigation.current)
-          setCatalogError(
-            isBusyRead(error)
-              ? codexReason(locale, "session-state-unavailable").text
-              : localizeMessage(error),
-          );
+        if (request === navigation.current && intent === selectionVersion() && !isBusyRead(error))
+          setCatalogError(localizeMessage(error));
       }
     },
-    [select, localizeMessage, locale],
+    [select, selectionVersion, localizeMessage],
   );
   return (
     <div

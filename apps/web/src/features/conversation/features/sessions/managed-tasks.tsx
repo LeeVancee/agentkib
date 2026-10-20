@@ -529,7 +529,7 @@ export function ManagedTasks({
   return (
     <>
       {showTrigger && (
-        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
+        <Button variant="ghost" size="sm" className="min-h-11" onClick={() => setOpen(true)}>
           {create && <Plus size={16} />}
           {managedText(locale, "New task", "新建任务")}
         </Button>

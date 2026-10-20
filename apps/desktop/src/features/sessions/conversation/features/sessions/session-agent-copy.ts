@@ -5,6 +5,7 @@ export const sessionAgentCopy: Record<
   Locale,
   {
     permission: string;
+    permissionUnknown: string;
     queue: string;
     pauseQueue: string;
     resumeQueue: string;
@@ -14,6 +15,7 @@ export const sessionAgentCopy: Record<
 > = {
   "zh-CN": {
     permission: "工具权限",
+    permissionUnknown: "工具权限待确认",
     queue: sessionContinuationCopy("zh-CN").queued,
     pauseQueue: "暂停队列",
     resumeQueue: "恢复队列",
@@ -22,6 +24,7 @@ export const sessionAgentCopy: Record<
   },
   "zh-TW": {
     permission: "工具權限",
+    permissionUnknown: "工具權限待確認",
     queue: sessionContinuationCopy("zh-TW").queued,
     pauseQueue: "暫停佇列",
     resumeQueue: "恢復佇列",
@@ -30,6 +33,7 @@ export const sessionAgentCopy: Record<
   },
   "en-US": {
     permission: "Tool permissions",
+    permissionUnknown: "Tool permissions unconfirmed",
     queue: sessionContinuationCopy("en-US").queued,
     pauseQueue: "Pause queue",
     resumeQueue: "Resume queue",
@@ -39,6 +43,7 @@ export const sessionAgentCopy: Record<
   },
   "ja-JP": {
     permission: "ツール権限",
+    permissionUnknown: "ツール権限は未確認",
     queue: sessionContinuationCopy("ja-JP").queued,
     pauseQueue: "キューを一時停止",
     resumeQueue: "キューを再開",

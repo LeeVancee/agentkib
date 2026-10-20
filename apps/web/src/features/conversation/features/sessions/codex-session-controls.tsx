@@ -76,6 +76,9 @@ export function CodexComposerControls({
     codexAction,
     capabilities,
     usageEpoch,
+    notice,
+    noticeReason,
+    settingsChangedHere,
   } = useSession();
   const copy = codexCopy[locale];
   const isClaude = current?.agent === "claude-code";
@@ -154,6 +157,8 @@ export function CodexComposerControls({
   const [mutationError, setMutationError] = useState("");
   const [resourceWarning, setResourceWarning] = useState("");
   const [saving, setSaving] = useState(false);
+  const [preparingSettings, setPreparingSettings] = useState(false);
+  const settingsPreparation = useRef<symbol | undefined>(undefined);
   const [saved, setSaved] = useState(false);
   const [pendingSettings, setPendingSettings] =
     useState<
@@ -342,6 +347,8 @@ export function CodexComposerControls({
     };
     setDialog(undefined);
     setSaved(false);
+    settingsPreparation.current = undefined;
+    setPreparingSettings(false);
     setPendingSettings(undefined);
     setSettingsError("");
     setGoalError("");
@@ -350,6 +357,7 @@ export function CodexComposerControls({
     setResourceWarning("");
     return () => {
       loadGeneration.current++;
+      settingsPreparation.current = undefined;
       contextGeneration.current++;
       contextAbort.current?.abort();
     };
@@ -516,10 +524,45 @@ export function CodexComposerControls({
   const settingsReadStale = live?.revision !== undefined && settings?.revision !== live.revision;
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
   const openControls = (next: "settings" | "goal") => {
-    // Running revisions deliberately do not auto-read. Opening a stale panel
-    // is an explicit request to refresh its CAS read model, without submitting.
-    if (next === "settings" ? settingsReadStale : goalReadStale) void load();
     setDialog(next);
+    if (
+      next === "settings" &&
+      isClaude &&
+      feature("settings")?.available &&
+      access?.bootId &&
+      selected &&
+      live?.revision !== undefined &&
+      !preparingSettings
+    ) {
+      const generation = loadGeneration.current;
+      const preparation = Symbol("settings-prepare");
+      settingsPreparation.current = preparation;
+      setPreparingSettings(true);
+      setSettingsError("");
+      void client
+        .prepareSessionSettings({
+          sessionId: selected,
+          bootId: access.bootId,
+          expectedRevision: live.revision,
+        })
+        .then((value) => {
+          if (generation === loadGeneration.current) applySettings(value);
+        })
+        .catch((error: unknown) => {
+          if (generation === loadGeneration.current) setSettingsError(unavailable(error));
+        })
+        .finally(() => {
+          // Observation changes invalidate response data, but must still release
+          // this request's busy state. A different visit may own a new request.
+          if (settingsPreparation.current === preparation) {
+            settingsPreparation.current = undefined;
+            setPreparingSettings(false);
+          }
+        });
+      return;
+    }
+    // Ordinary refreshes and opening a running panel only read the cached CAS view.
+    if (next === "settings" ? settingsReadStale : goalReadStale) void load();
   };
   const editSettings = (field?: "model" | "effort" | "permissionMode") => {
     settingsDraftRevision.current ??= settings?.revision;
@@ -532,7 +575,12 @@ export function CodexComposerControls({
     setGoalDirty(true);
   };
   const settingDisabled =
-    disabled || busy || saving || running || feature("settings")?.available !== true;
+    disabled ||
+    busy ||
+    saving ||
+    preparingSettings ||
+    running ||
+    feature("settings")?.available !== true;
   const parsedBudget = tokenBudget ? Number(tokenBudget) : undefined;
   const budgetValid =
     parsedBudget === undefined || (Number.isSafeInteger(parsedBudget) && parsedBudget > 0);
@@ -559,6 +607,25 @@ export function CodexComposerControls({
 
   return (
     <>
+      {!isClaude &&
+        notice === "notDispatched" &&
+        (noticeReason === "unsupported-model" || noticeReason === "unsupported-effort") && (
+          <div role="status" className="space-y-1 px-1 text-xs leading-5 text-muted-foreground">
+            <p>{reason(noticeReason)}</p>
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto min-h-11 whitespace-normal px-0 text-xs"
+              disabled={disabled || !full}
+              onClick={() => {
+                void load();
+                openControls("settings");
+              }}
+            >
+              {copy.changeNextTurnModel}
+            </Button>
+          </div>
+        )}
       <div className="flex min-w-0 items-center gap-1">
         {(!isClaude || resourcesReadable || goalReadable || feature("attachments")?.available) && (
           <Button
@@ -580,12 +647,18 @@ export function CodexComposerControls({
           <Button
             type="button"
             variant="ghost"
-            className="h-11 min-w-0 flex-1 shrink justify-start px-2"
+            className={
+              currentModel
+                ? "h-11 min-w-0 flex-1 shrink justify-start px-2"
+                : "h-11 shrink-0 justify-start px-2"
+            }
             disabled={disabled}
             onClick={() => openControls("settings")}
           >
             <Settings2 className="hidden shrink-0 sm:block" size={16} />
-            <span className="truncate">{currentModel || copy.conversationSettings}</span>
+            <span className={currentModel ? "truncate" : "whitespace-nowrap"}>
+              {currentModel || copy.conversationSettings}
+            </span>
             {displayedSettings?.effort && (
               <span className="shrink-0 text-xs text-muted-foreground">
                 {term(displayedSettings.effort)}
@@ -598,7 +671,7 @@ export function CodexComposerControls({
             {settings?.applicationStatus === "pending" && (
               <span className="shrink-0 text-xs text-muted-foreground">{layout.nextTurn}</span>
             )}
-            {settings?.applicationStatus === "unknown" && (
+            {settingsChangedHere && settings?.applicationStatus === "unknown" && (
               <span className="shrink-0 text-xs text-muted-foreground">
                 {layout.settingsUnknown}
               </span>
@@ -715,6 +788,16 @@ export function CodexComposerControls({
           closeLabel={copy.close}
           onClose={() => setDialog(undefined)}
         >
+          {preparingSettings && (
+            <p role="status" className="mb-3 text-sm text-muted-foreground">
+              {layout.connecting}
+            </p>
+          )}
+          {settings?.available && settingsError && (
+            <p role="status" className="mb-3 text-sm text-muted-foreground">
+              {reason(settingsError)}
+            </p>
+          )}
           {settingsReadStale && (settings?.available || !!settingsError) && (
             <div role="status" className="mb-3 text-xs text-muted-foreground">
               {layout.connecting}
@@ -805,7 +888,7 @@ export function CodexComposerControls({
                       }}
                     >
                       <option value="" disabled>
-                        {layout.modeUnknown}
+                        {agentCopy.permissionUnknown}
                       </option>
                       {settings.options.permissionModes
                         ?.filter((item) => ["default", "plan", "acceptEdits"].includes(item.id))

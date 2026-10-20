@@ -2,7 +2,16 @@
 import "@testing-library/jest-dom/vitest";
 // Warm the real lazy module so this suite measures interaction, not the first transform deadline.
 import "./conversation/conversation";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -26,6 +35,7 @@ import { SessionHubPage } from "./SessionHubPage";
 import { SessionWindowToolbar } from "./SessionWindowToolbar";
 import { useSessionViewStore } from "./session-view-store";
 import { codexCopy } from "./conversation/features/sessions/codex-copy";
+import { useSessionController } from "./conversation/features/sessions/use-session-controller";
 
 const doubles = vi.hoisted(() => ({
   client: undefined as WebClient | undefined,
@@ -170,7 +180,7 @@ function fixture(agent: AgentKind = "codex", files = true, readOnly = false) {
     uploadAttachment: vi.fn(),
   };
   const client = new WebClient(undefined, { type: "same-origin" }, bridge);
-  return { client, request, summary };
+  return { client, request, summary, live };
 }
 function setHub(selected: ConversationSessionSummary | undefined) {
   hub = {
@@ -261,6 +271,21 @@ afterEach(async () => {
 });
 
 describe("desktop direct conversation tools", () => {
+  it("does not replay a prior retirement from another client and shows a new retirement during this visit", async () => {
+    const f = fixture("claude-code");
+    Object.assign(f.live, {
+      continuationNotice: "background-ended",
+      continuationNoticeId: "old-retirement",
+    });
+    const { result } = renderHook(() => useSessionController({ client: f.client }));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    await act(async () => result.current.choose("session"));
+    expect(result.current.live?.continuationNotice).toBeNull();
+    Object.assign(f.live, { continuationNoticeId: "new-retirement" });
+    await act(async () => result.current.refresh());
+    expect(result.current.live?.continuationNotice).toBe("background-ended");
+    expect(result.current.live?.continuationNoticeId).toBe("new-retirement");
+  });
   it.each([
     ["zh-CN", "文件与产物", "会话操作"],
     ["zh-TW", "檔案與產物", "對話操作"],

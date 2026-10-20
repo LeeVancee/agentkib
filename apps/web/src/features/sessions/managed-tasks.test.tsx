@@ -104,6 +104,18 @@ describe("ManagedTasks", () => {
     return view;
   }
 
+  it.each([
+    ["zh-CN", "新建任务"],
+    ["zh-TW", "新增任務"],
+    ["en-US", "New task"],
+    ["ja-JP", "タスクを作成"],
+  ])("keeps the create trigger at touch size in %s", (locale, label) => {
+    session.locale = locale;
+    render(<ManagedTasks create />);
+    expect(screen.getByRole("button", { name: label })).toHaveClass("min-h-11");
+    expect(mutations()).toHaveLength(0);
+  });
+
   it.each(["external", "codex-managed", "claude-managed", "claude-follower"])(
     "hides Codex ownership controls and their obsolete options lookup (%s)",
     (executionMode) => {

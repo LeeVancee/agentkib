@@ -74,6 +74,47 @@ afterEach(() => {
 });
 
 describe("desktop conversation catalog", () => {
+  it("keeps the catalog's verified global CLI floor alongside its controlled rows", async () => {
+    const { bridge } = fixture();
+    vi.mocked(bridge.request).mockResolvedValue({
+      ...catalog("initial"),
+      body: {
+        ...(catalog("initial").body as object),
+        codexRuntimeReason: "codex-cli-version-too-old",
+      },
+    });
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() =>
+      expect(view.result.current.codexRuntimeReason).toBe("codex-cli-version-too-old"),
+    );
+  });
+
+  it("silently retries bounded read contention without replacing the loaded catalog", async () => {
+    const { bridge } = fixture();
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("initial"));
+    vi.mocked(bridge.request)
+      .mockResolvedValueOnce({ status: 409, body: { error: "operation_busy" } })
+      .mockResolvedValueOnce(catalog("recovered"));
+    await act(async () => {
+      await refreshConversationCatalog();
+    });
+    expect(view.result.current.error).toBeUndefined();
+    expect(view.result.current.sessions[0]?.id).toBe("recovered");
+  });
+
+  it("stops after three busy reads and retains the previous rows", async () => {
+    const { bridge } = fixture();
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("initial"));
+    const reads = vi.mocked(bridge.request).mock.calls.length;
+    vi.mocked(bridge.request).mockResolvedValue({ status: 409, body: { error: "operation_busy" } });
+    await act(async () => {
+      await expect(refreshConversationCatalog()).rejects.toMatchObject({ code: "operation_busy" });
+    });
+    expect(bridge.request).toHaveBeenCalledTimes(reads + 3);
+    expect(view.result.current.sessions[0]?.id).toBe("initial");
+  });
   it("shares one observation across consumers and keeps it alive when another consumer is disabled", async () => {
     const { bridge, emit } = fixture();
     const first = renderHook(() => useConversationCatalog(true));

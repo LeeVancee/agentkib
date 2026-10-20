@@ -55,6 +55,28 @@ const sessions = [
 afterEach(cleanup);
 
 describe("SessionCatalog", () => {
+  it("reorders rows after an accepted catalog update without changing selection", () => {
+    const props = { sessions, workspaces, selected: "primary", onSelect: vi.fn() };
+    const view = render(<SessionCatalog {...props} />);
+    const rows = () =>
+      screen
+        .getAllByRole("button", { name: /^(Codex|Claude Code) ·/ })
+        .map((node) => node.getAttribute("aria-label"));
+    expect(rows()[0]).toContain("Newest session");
+    view.rerender(
+      <SessionCatalog
+        {...props}
+        sessions={sessions.map((item) =>
+          item.id === "primary" ? { ...item, updated_at: "2026-10-20T03:00:00Z" } : item,
+        )}
+      />,
+    );
+    expect(rows()[0]).toContain("Primary session");
+    expect(screen.getByRole("button", { name: /Primary session/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
   it("groups duplicate workspace names by path identity and hides auxiliary sessions by default", () => {
     render(
       <SessionCatalog sessions={sessions} workspaces={workspaces} selected="" onSelect={vi.fn()} />,
@@ -156,6 +178,26 @@ describe("SessionCatalog", () => {
         screen.queryByRole("button", { name: /Execution record|Auxiliary record/ }),
       ).toBeNull();
       expect(screen.queryByRole("button", { name: `${kind} · 1` })).toBeNull();
+    },
+  );
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "labels an old Codex runtime as view-only in %s without probing rows",
+    (locale) => {
+      render(
+        <SessionCatalog
+          locale={locale}
+          selected=""
+          onSelect={vi.fn()}
+          workspaces={workspaces}
+          sessions={[
+            {
+              ...sessions[0],
+              continuation: { status: "unsupported", reason: "codex-cli-version-too-old" },
+            },
+          ]}
+        />,
+      );
+      expect(screen.getByText(sessionContinuationCopy(locale).viewOnly)).toBeVisible();
     },
   );
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(

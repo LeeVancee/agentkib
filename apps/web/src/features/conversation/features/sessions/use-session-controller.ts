@@ -20,7 +20,9 @@ import {
 } from "./pending-controls";
 import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopy } from "./context-usage-copy";
+import { retryBusyRead } from "./session-read-retry";
 import { useSessionLive } from "./use-session-live";
+import { capabilityAccessBinding, useSessionCapabilities } from "./use-session-capabilities";
 import {
   useCallback,
   useEffect,
@@ -35,7 +37,6 @@ import {
   WebClient,
   type Access,
   type WebConnection,
-  type CodexCapabilities,
   type SessionAction,
   type SessionActionBody,
   type Approval,
@@ -73,6 +74,35 @@ import {
 } from "./history-pagination";
 import { useAppearance } from "../preferences/use-appearance";
 import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
+type ForkNavigation = {
+  sourceId: string;
+  generation: number;
+  accessBinding: string;
+  runtimeBootId?: string;
+  requestId?: string;
+  childId?: string;
+  resolve: (id: string | undefined) => void;
+  completion?: Promise<string | undefined>;
+};
+type ControlNotice = "accepted" | "uncertain" | "notDispatched";
+type CodexSettingsRecoveryReason =
+  | "unsupported-model"
+  | "unsupported-effort"
+  | "native-model-unconfirmed"
+  | "native-effort-unconfirmed";
+function codexSettingsRecoveryReason(
+  agent: string | undefined,
+  ...reasons: (string | undefined)[]
+): CodexSettingsRecoveryReason | undefined {
+  if (agent !== "codex") return;
+  return reasons.find(
+    (reason): reason is CodexSettingsRecoveryReason =>
+      reason === "unsupported-model" ||
+      reason === "unsupported-effort" ||
+      reason === "native-model-unconfirmed" ||
+      reason === "native-effort-unconfirmed",
+  );
+}
 export function useSessionController({
   origin: legacyOrigin = "",
   connection,
@@ -97,7 +127,6 @@ export function useSessionController({
     historyReferencesValue.current = references;
     publishHistoryReferences(references);
   }, []);
-  const [capabilities, setCapabilities] = useState<CodexCapabilities>();
   const [capabilitiesEpoch, setCapabilitiesEpoch] = useState(0);
   const [client] = useState(
     () => providedClient ?? new WebClient(undefined, connection ?? legacyOrigin),
@@ -107,6 +136,7 @@ export function useSessionController({
   const [liveContentVersion, setLiveContentVersion] = useState(0);
   const [catalogObservationFailed, setCatalogObservationFailed] = useState(false);
   const retryCatalogObservation = useRef<(() => void) | undefined>(undefined);
+  const catalogInvalidationRead = useRef<(() => Promise<void>) | undefined>(undefined);
   const liveDelivery = useRef(0);
   const streamReady = useRef(false);
   const controlReconciliationPending = useRef(false);
@@ -130,21 +160,78 @@ export function useSessionController({
     [workspaces, setWorkspaces] = useState<CatalogWorkspace[]>(),
     [selected, setSelected] = useState(""),
     [page, publishPage] = useState<ConversationEventPage>(),
-    [live, setLive] = useState<Live>(),
-    [online, setOnline] = useState(false),
+    [live, publishLive] = useState<Live>(),
     [controlReady, setControlReady] = useState(false),
     [indexEnabled, setIndexEnabled] = useState(true),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(false),
     [pairingError, setPairingError] = useState<string>(),
     [incompatible, setIncompatible] = useState(false),
-    [notice, setNotice] = useState<"accepted" | "uncertain" | "notDispatched">(),
+    [connectionNotice, setConnectionNotice] = useState<{
+      online: boolean;
+      notice?: ControlNotice;
+      reason?: CodexSettingsRecoveryReason;
+    }>({ online: false }),
     [code, setCode] = useState(""),
     [name, setName] = useState(""),
     [message, setMessage] = useState(""),
     [modal, setModal] = useState<
       "preferences" | "metadata" | ConversationEvent | Approval | UserQuestionRequest
     >();
+  const selectedAgent = sessions.find((item) => item.id === selected)?.agent;
+  const { capabilities, capabilityScope, verifyCapabilities, clearCapabilities } =
+    useSessionCapabilities({
+      client,
+      selected,
+      agent: selectedAgent,
+      access,
+      live,
+      epoch: capabilitiesEpoch,
+    });
+  const [settingsIntentBinding, setSettingsIntentBinding] = useState("");
+  const settingsBinding = capabilityScope;
+  const settingsChangedHere = !!settingsBinding && settingsIntentBinding === settingsBinding;
+  const [actionUnavailable, setActionUnavailable] = useState<{ binding: string; reason: string }>();
+  const actionUnavailableReason =
+    actionUnavailable?.binding === settingsBinding ? actionUnavailable.reason : undefined;
+  const entryNotice = useRef<{ sessionId: string; ignoredId?: string } | undefined>(undefined);
+  const liveValue = useRef<Live | undefined>(undefined);
+  const setLive = useCallback((value: SetStateAction<Live | undefined>) => {
+    let next = typeof value === "function" ? value(liveValue.current) : value;
+    if (!next) entryNotice.current = undefined;
+    else {
+      if (entryNotice.current?.sessionId !== next.sessionId)
+        entryNotice.current = {
+          sessionId: next.sessionId,
+          ...(next.continuationNotice === "background-ended"
+            ? { ignoredId: next.continuationNoticeId ?? "legacy" }
+            : {}),
+        };
+      // Another client may still observe this session. Its earlier retirement notice is
+      // not an event in this visit; a later retirement has a different identity and shows.
+      if (
+        next.continuationNotice === "background-ended" &&
+        entryNotice.current.ignoredId === (next.continuationNoticeId ?? "legacy")
+      )
+        next = { ...next, continuationNotice: null };
+    }
+    liveValue.current = next;
+    publishLive(next);
+  }, []);
+  const { online, notice, reason: noticeReason } = connectionNotice;
+  const setNotice = useCallback((notice?: ControlNotice, reason?: CodexSettingsRecoveryReason) => {
+    setConnectionNotice((value) => ({
+      ...value,
+      notice,
+      reason: notice === "notDispatched" ? reason : undefined,
+    }));
+  }, []);
+  const setOnline = useCallback((next: SetStateAction<boolean>) => {
+    setConnectionNotice((value) => {
+      const online = typeof next === "function" ? next(value.online) : next;
+      return { ...value, online, reason: online ? value.reason : undefined };
+    });
+  }, []);
   const pageValue = useRef<ConversationEventPage | undefined>(undefined);
   const setPage = useCallback((update: SetStateAction<ConversationEventPage | undefined>) => {
     // History and pagination are one accepted projection. Resolve updates once
@@ -204,12 +291,47 @@ export function useSessionController({
     continuationDraft.current = undefined;
     return pending.draft;
   }, []);
-  const continuationCheck = useRef({ sessionId: "", generation: -1, at: 0, pending: false });
+  const continuationCheck = useRef({
+    sessionId: "",
+    generation: -1,
+    at: 0,
+    pending: false,
+    promise: undefined as Promise<void> | undefined,
+  });
   const generation = useRef(0),
     selection = useRef(""),
     accessRef = useRef<Access | undefined>(undefined),
     scroll = useRef<HTMLElement>(null),
     mutating = useRef(false);
+  const forkNavigation = useRef<ForkNavigation | undefined>(undefined);
+  const cancelForkNavigation = useCallback(() => {
+    forkNavigation.current?.resolve(undefined);
+    forkNavigation.current = undefined;
+  }, []);
+  const observeForkNavigation = useCallback(() => {
+    const intent = forkNavigation.current;
+    if (!intent) return;
+    if (
+      intent.sourceId !== selection.current ||
+      intent.generation !== generation.current ||
+      intent.accessBinding !== capabilityAccessBinding(accessRef.current) ||
+      (intent.runtimeBootId !== undefined &&
+        intent.runtimeBootId !== liveValue.current?.runtimeBootId)
+    ) {
+      cancelForkNavigation();
+      return;
+    }
+    if (intent.childId && excludedIds.current.has(intent.childId)) intent.resolve(undefined);
+    else if (
+      intent.childId &&
+      catalogSessions.current.some(
+        (session) => session.id === intent.childId && session.availability === "readable",
+      )
+    )
+      intent.resolve(intent.childId);
+  }, [cancelForkNavigation]);
+  useEffect(observeForkNavigation, [live?.runtimeBootId, observeForkNavigation]);
+  useEffect(() => cancelForkNavigation, [cancelForkNavigation]);
   const durableScope = useRef<string | undefined>(undefined);
   const durablePending = useRef<PendingControl[]>([]);
   const hasDurablePending = useCallback(
@@ -253,6 +375,7 @@ export function useSessionController({
   const accessFlight = useRef<Promise<Access | undefined> | undefined>(undefined);
   useAppearance(locale, theme, accent, !embedded);
   const clear = useCallback(() => {
+    cancelForkNavigation();
     generation.current++;
     readinessEpoch.current++;
     selection.current = "";
@@ -266,7 +389,7 @@ export function useSessionController({
     setWorkspaces(undefined);
     setPage(undefined);
     setLive(undefined);
-    setCapabilities(undefined);
+    clearCapabilities();
     setModal(undefined);
     setMessage("");
     continuationDraft.current = undefined;
@@ -290,8 +413,17 @@ export function useSessionController({
     uncertainOutcomes.current.clear();
     durableScope.current = undefined;
     durablePending.current = [];
-  }, [setPage, setHistoryReferences]);
+  }, [
+    setLive,
+    setPage,
+    setHistoryReferences,
+    setNotice,
+    setOnline,
+    clearCapabilities,
+    cancelForkNavigation,
+  ]);
   const leaveSession = useCallback(() => {
+    cancelForkNavigation();
     // Mounting the directory with no selected conversation must not invalidate
     // its initial catalog read, which may still be waiting on the host.
     if (selection.current) {
@@ -302,15 +434,24 @@ export function useSessionController({
     deferredRefresh.current = undefined;
     streamReady.current = false;
     setSelected("");
+    setNotice(undefined);
     setHistoryReferences([]);
     setHistorySearchOpen(false);
     setPage(undefined);
     setLive(undefined);
-    setCapabilities(undefined);
+    clearCapabilities();
     setModal(undefined);
     setControlReady(false);
     setOnline(false);
-  }, [setPage, setHistoryReferences]);
+  }, [
+    setLive,
+    setPage,
+    setHistoryReferences,
+    setNotice,
+    setOnline,
+    clearCapabilities,
+    cancelForkNavigation,
+  ]);
   const acceptCatalog = useCallback(
     (records: ConversationSessionSummary[]) => {
       const excluded = new Set(
@@ -321,6 +462,7 @@ export function useSessionController({
       // the previous render must not reopen a record the new catalog excludes.
       excludedIds.current = excluded;
       catalogSessions.current = visible;
+      observeForkNavigation();
       setExcludedSessionIds(excluded);
       setSessions(visible);
       setCatalogStatus("ready");
@@ -329,7 +471,7 @@ export function useSessionController({
         setCatalogNotice(true);
       }
     },
-    [leaveSession],
+    [leaveSession, observeForkNavigation],
   );
   const fail = useCallback(
     (e: unknown, g = generation.current) => {
@@ -358,7 +500,7 @@ export function useSessionController({
         setOnline(false);
       }
     },
-    [clear, client, isLan],
+    [clear, client, isLan, setOnline],
   );
   const readHistory = useCallback(
     async (id: string, g: number, historyCacheEpoch: string | undefined, cursor?: string) => {
@@ -439,6 +581,7 @@ export function useSessionController({
           }
         }
         accessRef.current = next;
+        observeForkNavigation();
         if (isLan && next.status === "ended") client.reset();
         setAccess(next);
         return next;
@@ -446,7 +589,7 @@ export function useSessionController({
       accessFlight.current = flight;
       return flight;
     },
-    [clear, client, origin, isLan, setHistoryReferences],
+    [clear, client, origin, isLan, setHistoryReferences, observeForkNavigation],
   );
   const reconcilePending = useCallback(
     async (sessionId?: string) => {
@@ -475,12 +618,42 @@ export function useSessionController({
         )
           continue;
         if (result.status !== "accepted" && result.status !== "not-dispatched") continue;
+        const intent = forkNavigation.current;
+        if (entry.kind === "fork" && result.status === "accepted") {
+          if (
+            isLegacyPreparedReceipt(result, entry.requestId) ||
+            result.ack?.accepted !== true ||
+            result.ack.completed !== true ||
+            result.ack.requestId !== entry.requestId ||
+            typeof result.ack.sessionId !== "string" ||
+            !result.ack.sessionId ||
+            result.ack.sessionId === entry.sessionId ||
+            (intent?.requestId === entry.requestId &&
+              intent.runtimeBootId !== undefined &&
+              result.runtimeBootId !== intent.runtimeBootId)
+          )
+            continue;
+          if (intent?.requestId === entry.requestId) {
+            intent.childId = result.ack.sessionId;
+            observeForkNavigation();
+          }
+        } else if (entry.kind === "fork" && intent?.requestId === entry.requestId)
+          intent.resolve(undefined);
         forgetPending(scope, entry.requestId);
         durablePending.current = readPending(scope);
         uncertainOutcomes.current.delete(entry.sessionId ?? "");
         if (entry.sessionId === selection.current) {
           resolvedSelected = entry.sessionId;
-          setNotice(result.status === "accepted" ? "accepted" : "notDispatched");
+          setNotice(
+            result.status === "accepted" ? "accepted" : "notDispatched",
+            result.status === "not-dispatched" && !isLegacyPreparedReceipt(result, entry.requestId)
+              ? codexSettingsRecoveryReason(
+                  catalogSessions.current.find((session) => session.id === entry.sessionId)?.agent,
+                  result.ack?.reason,
+                  result.ack?.error,
+                )
+              : undefined,
+          );
           // A receipt confirms admission, never resolves or removes native approvals.
           if (result.status === "accepted")
             receipt.current = {
@@ -503,7 +676,7 @@ export function useSessionController({
         );
       }
     },
-    [client, hasDurablePending],
+    [client, hasDurablePending, setNotice, observeForkNavigation],
   );
   const refresh = useCallback(
     async function refreshCurrent(manual = false, preserveHistory = false): Promise<void> {
@@ -549,7 +722,7 @@ export function useSessionController({
         await reconcilePending(selection.current || undefined);
         if (g !== generation.current) return;
         catalogOrder = ++catalogReadOrder.current;
-        const catalog = await client.catalog();
+        const catalog = await retryBusyRead(() => client.catalog());
         if (g !== generation.current) return;
         if (contention !== readContention.current.version)
           throw new ApiError(409, "operation_busy");
@@ -759,7 +932,9 @@ export function useSessionController({
       hasDurablePending,
       readHistory,
       resumeDeferredRefresh,
+      setLive,
       setPage,
+      setOnline,
       acceptCatalog,
     ],
   );
@@ -896,7 +1071,7 @@ export function useSessionController({
             g = generation.current;
             catalogOrder = ++catalogReadOrder.current;
             setCatalogStatus((previous) => (previous === "ready" ? previous : "loading"));
-            const catalog = await client.catalog();
+            const catalog = await retryBusyRead(() => client.catalog());
             if (!active()) break;
             if (g !== generation.current) {
               if (retryInvalidated(g)) continue;
@@ -940,6 +1115,7 @@ export function useSessionController({
         } while (dirty && active());
         flight = false;
       };
+      catalogInvalidationRead.current = update;
       closeStream = client.stream("", {
         open: () => {
           if (!active()) return;
@@ -1041,6 +1217,7 @@ export function useSessionController({
     connect();
     return () => {
       closed = true;
+      catalogInvalidationRead.current = undefined;
       if (retryCatalogObservation.current === retry) retryCatalogObservation.current = undefined;
       closeStream?.();
     };
@@ -1060,6 +1237,9 @@ export function useSessionController({
   useEffect(
     () =>
       subscribeSessionInvalidation(client, (id, domains) => {
+        // A native update can name an unselected row. Refresh its catalog
+        // metadata without reloading history, rescanning or replaying a control.
+        if (id && domains.includes("catalog")) void catalogInvalidationRead.current?.();
         if (id && id !== selection.current) return;
         if (domains.some((domain) => ["capabilities", "settings", "ownership"].includes(domain)))
           setCapabilitiesEpoch((value) => value + 1);
@@ -1106,6 +1286,7 @@ export function useSessionController({
       if (selection.current === id) return;
       if (catalogSessions.current.find((session) => session.id === id)?.availability !== "readable")
         return;
+      cancelForkNavigation();
       generation.current++;
       continuationDraft.current = undefined;
       readinessEpoch.current++;
@@ -1199,9 +1380,13 @@ export function useSessionController({
       hasDurablePending,
       readHistory,
       readBusy,
+      setLive,
       setPage,
       setHistoryReferences,
+      setNotice,
+      setOnline,
       leaveSession,
+      cancelForkNavigation,
     ],
   );
   async function post(path: string, body: unknown) {
@@ -1365,7 +1550,7 @@ export function useSessionController({
       receipt.current = undefined;
       setNotice(undefined);
     }
-  }, [live, selected, notice]);
+  }, [live, selected, notice, setNotice]);
   useEffect(() => {
     if (!online || !controlReady || !live || modal) return;
     const pending = [...live.approvals, ...(live.questions ?? [])].find((request) => {
@@ -1404,54 +1589,6 @@ export function useSessionController({
     setHistoryReferences([]);
     setHistorySearchOpen(false);
   }, [selected, terminalPresent, terminalMode, terminalGeneration, online, setHistoryReferences]);
-  const selectedAgent = sessions.find((item) => item.id === selected)?.agent;
-  const hasSupportedApproval = live?.approvals.some((item) => item.supported) ?? false;
-  const hasSupportedQuestion = live?.questions?.some((item) => item.supported) ?? false;
-  useEffect(() => {
-    setCapabilities(undefined);
-    if (
-      !selected ||
-      access?.status !== "approved" ||
-      (selectedAgent !== "codex" && selectedAgent !== "claude-code")
-    )
-      return;
-    const abort = new AbortController();
-    void client
-      .sessionCapabilities(selected, selectedAgent, abort.signal)
-      .then((result) => {
-        if (!abort.signal.aborted && result.sessionId === selected && result.features)
-          setCapabilities(result);
-      })
-      .catch(() => {
-        /* Older hosts keep their basic text controls; advanced actions fail closed. */
-      });
-    return () => abort.abort();
-  }, [
-    client,
-    selected,
-    selectedAgent,
-    capabilitiesEpoch,
-    access?.bootId,
-    access?.status,
-    access?.experimentalEnabled,
-    access?.device?.id,
-    access?.device?.send,
-    access?.device?.approve,
-    access?.device?.manage,
-    access?.device?.attachments,
-    access?.device?.advancedControl,
-    access?.device?.organize,
-    access?.device?.settings,
-    access?.device?.extendedApproval,
-    live?.status,
-    live?.reason,
-    live?.executionMode,
-    live?.connectionGeneration,
-    live?.sendEnabled,
-    live?.stopEnabled,
-    hasSupportedApproval,
-    hasSupportedQuestion,
-  ]);
   useEffect(() => {
     if (!historyReferences.length) return;
     const abort = new AbortController();
@@ -1511,7 +1648,13 @@ export function useSessionController({
       selection.current !== selected ||
       !access ||
       !live ||
-      (action !== "inspect" && action !== "resume" && (!online || !controlReady)) ||
+      (action !== "inspect" &&
+        (live.status === "outcome-unknown" ||
+          live.reason === "control-outcome-unconfirmed" ||
+          capabilities?.reason === "control-outcome-unconfirmed")) ||
+      (action !== "inspect" &&
+        action !== "resume" &&
+        (!online || (!controlReady && action !== "fork"))) ||
       capabilities?.sessionId !== selected ||
       !capabilities?.features[action]?.available ||
       (live.activity === "compacting" && blockedWhileCompacting(action)) ||
@@ -1524,9 +1667,74 @@ export function useSessionController({
     mutating.current = true;
     setBusy(true);
     setNotice(undefined);
+    setActionUnavailable(undefined);
     const requestId = crypto.randomUUID();
     const id = selected;
     const g = generation.current;
+    const accessBinding = capabilityAccessBinding(access);
+    const forkIntent = action === "fork" ? forkNavigation.current : undefined;
+    if (forkIntent?.sourceId === id && forkIntent.generation === g)
+      forkIntent.requestId = requestId;
+    if (action === "fork" && refreshRequired.current) {
+      const occupancyRead = continuationCheck.current;
+      await (occupancyRead.pending &&
+      occupancyRead.sessionId === id &&
+      occupancyRead.generation === g
+        ? occupancyRead.promise
+        : refresh(false, true));
+    }
+    const checked = await verifyCapabilities();
+    if (
+      g !== generation.current ||
+      selection.current !== id ||
+      capabilityAccessBinding(accessRef.current) !== accessBinding ||
+      liveValue.current?.sessionId !== id ||
+      liveValue.current?.status !== live.status ||
+      (action !== "inspect" &&
+        (liveValue.current?.status === "outcome-unknown" ||
+          liveValue.current?.reason === "control-outcome-unconfirmed" ||
+          checked?.reason === "control-outcome-unconfirmed")) ||
+      (liveValue.current?.activity === "compacting" && blockedWhileCompacting(action)) ||
+      !checked?.features[action]?.available ||
+      (action === "fork" && !accessRef.current?.device?.manage) ||
+      (action !== "inspect" &&
+        (refreshRequired.current ||
+          !streamReady.current ||
+          uncertainOutcomes.current.has(id) ||
+          hasDurablePending(id)))
+    ) {
+      if (g === generation.current && selection.current === id) {
+        const outcomeUnknown =
+          uncertainOutcomes.current.has(id) ||
+          hasDurablePending(id) ||
+          liveValue.current?.status === "outcome-unknown" ||
+          liveValue.current?.reason === "control-outcome-unconfirmed" ||
+          checked?.reason === "control-outcome-unconfirmed";
+        // This fork never dispatched, but a concurrent receipt can still fence
+        // the conversation. Do not replace that outcome with this local refusal.
+        setActionUnavailable(
+          outcomeUnknown
+            ? undefined
+            : {
+                binding: settingsBinding,
+                reason:
+                  checked?.features[action]?.reason ??
+                  checked?.reason ??
+                  "session-state-unavailable",
+              },
+        );
+        if (outcomeUnknown) {
+          refreshRequired.current = true;
+          setControlReady(false);
+        }
+        setNotice(outcomeUnknown ? "uncertain" : "notDispatched");
+      }
+      mutating.current = false;
+      setBusy(false);
+      return;
+    }
+    if (action === "settings" && Object.keys(fields).length)
+      setSettingsIntentBinding(settingsBinding);
     const perform = (body: SessionActionBody) =>
       sessions.find((session) => session.id === id)?.agent === "claude-code"
         ? client.sessionAction(action, body, "claude-code")
@@ -1571,7 +1779,8 @@ export function useSessionController({
       if (generation.current !== g) return;
       setNotice("accepted");
       if (["steer", "queue-add"].includes(action)) setHistoryReferences([]);
-      await refresh(true);
+      if (action === "fork") void refresh(true);
+      else await refresh(true);
       return result;
     } catch (error) {
       if (error instanceof ApiError && error.controlOutcome === "not-dispatched") {
@@ -1583,12 +1792,19 @@ export function useSessionController({
           error instanceof ApiError && error.controlOutcome === "not-dispatched"
             ? "notDispatched"
             : "uncertain",
+          error instanceof ApiError && error.controlOutcome === "not-dispatched"
+            ? codexSettingsRecoveryReason(
+                catalogSessions.current.find((session) => session.id === id)?.agent,
+                error.code,
+              )
+            : undefined,
         );
         setControlReady(false);
         refreshRequired.current = true;
         if (!(error instanceof ApiError) || error.controlOutcome !== "not-dispatched")
           uncertainOutcomes.current.add(id);
-        await refresh(true);
+        if (action === "fork") void refresh(true);
+        else await refresh(true);
       }
       return undefined;
     } finally {
@@ -1693,6 +1909,37 @@ export function useSessionController({
       live.executionMode?.startsWith("codex-");
     const scope = needsDurableReceipt ? durableScope.current : undefined;
     try {
+      if (extra?.attachmentIds?.length || extra?.resourceIds?.length) {
+        const accessBinding = capabilityAccessBinding(access);
+        const checked = await verifyCapabilities();
+        if (
+          g !== generation.current ||
+          selection.current !== id ||
+          capabilityAccessBinding(accessRef.current) !== accessBinding ||
+          refreshRequired.current ||
+          !streamReady.current ||
+          hasDurablePending(id) ||
+          uncertainOutcomes.current.has(id) ||
+          (extra.attachmentIds?.length && !checked?.features.attachments?.available) ||
+          (extra.resourceIds?.length && !checked?.features.context?.available)
+        ) {
+          if (
+            hasDurablePending(id) ||
+            uncertainOutcomes.current.has(id) ||
+            liveValue.current?.status === "outcome-unknown" ||
+            liveValue.current?.reason === "control-outcome-unconfirmed" ||
+            checked?.reason === "control-outcome-unconfirmed"
+          ) {
+            if (g === generation.current && selection.current === id) {
+              refreshRequired.current = true;
+              setControlReady(false);
+              setNotice("uncertain");
+            }
+            return;
+          }
+          throw new ApiError(409, "session-state-unavailable", "not-dispatched");
+        }
+      }
       if (needsDurableReceipt) {
         try {
           if (!scope) throw new Error("missing_device_scope");
@@ -1779,7 +2026,13 @@ export function useSessionController({
           setControlReady(false);
           refreshRequired.current = true;
           if (e instanceof ApiError && e.controlOutcome === "not-dispatched") {
-            setNotice("notDispatched");
+            setNotice(
+              "notDispatched",
+              codexSettingsRecoveryReason(
+                catalogSessions.current.find((session) => session.id === id)?.agent,
+                e.code,
+              ),
+            );
             await refresh();
           } else {
             // A refresh clicked while this request was pending cannot acknowledge
@@ -1818,10 +2071,17 @@ export function useSessionController({
         Date.now() - prior.at < 4000)
     )
       return;
-    const check = { sessionId: id, generation: generation.current, at: Date.now(), pending: true };
+    const check = {
+      sessionId: id,
+      generation: generation.current,
+      at: Date.now(),
+      pending: true,
+      promise: undefined as Promise<void> | undefined,
+    };
     continuationCheck.current = check;
     try {
-      await refresh(false, true);
+      check.promise = refresh(false, true);
+      await check.promise;
     } finally {
       check.pending = false;
     }
@@ -1845,6 +2105,11 @@ export function useSessionController({
     const id = selected,
       g = generation.current,
       draft = message;
+    const accessBinding = capabilityAccessBinding(accessRef.current);
+    const prior = forkNavigation.current;
+    if (prior?.sourceId === id && prior.generation === g && prior.accessBinding === accessBinding)
+      return prior.completion;
+    cancelForkNavigation();
     const historyDraft = [...historyReferencesValue.current];
     const files = [...(composerDraft?.files ?? [])];
     const resources = (composerDraft?.resources ?? []).map((item) => ({ ...item }));
@@ -1854,29 +2119,58 @@ export function useSessionController({
       )
     )
       return;
-    const result = await codexAction("fork");
-    if (
-      g !== generation.current ||
-      selection.current !== id ||
-      !result?.sessionId ||
-      result.sessionId === id
-    )
-      return;
-    // Transfer the draft with selection, before asynchronous history reads can
-    // expose the new composer. A later read must not replace edits made there.
-    const choosing = choose(result.sessionId, draft);
-    const targetGeneration = generation.current;
-    if (selection.current === result.sessionId && targetGeneration !== g) {
+    let resolve!: ForkNavigation["resolve"];
+    const ready = new Promise<string | undefined>((done) => {
+      resolve = done;
+    });
+    const intent: ForkNavigation = {
+      sourceId: id,
+      generation: g,
+      accessBinding,
+      runtimeBootId: liveValue.current?.runtimeBootId,
+      resolve,
+    };
+    forkNavigation.current = intent;
+    intent.completion = (async () => {
+      const result = await codexAction("fork");
+      if (result?.sessionId && result.sessionId !== id) {
+        intent.childId = result.sessionId;
+        observeForkNavigation();
+      } else if (
+        !intent.requestId ||
+        !durablePending.current.some((entry) => entry.requestId === intent.requestId)
+      )
+        intent.resolve(undefined);
+      // A late receipt settles this invocation without replaying its fork. Only
+      // a confirmed child in the readable catalog can complete the navigation.
+      const childId = await ready;
+      if (
+        !childId ||
+        g !== generation.current ||
+        selection.current !== id ||
+        capabilityAccessBinding(accessRef.current) !== accessBinding ||
+        (intent.runtimeBootId !== undefined &&
+          intent.runtimeBootId !== liveValue.current?.runtimeBootId)
+      )
+        return;
+      // Selection starts bounded reads; navigation need not wait for them. Their
+      // selected generation still protects eventual history/live completion.
+      void choose(childId, draft);
+      const targetGeneration = generation.current;
+      if (selection.current !== childId || targetGeneration === g) return;
       continuationDraft.current = {
-        sessionId: result.sessionId,
+        sessionId: childId,
         generation: targetGeneration,
         draft: { files, resources, historyReferences: historyDraft },
       };
       setHistoryReferences(historyDraft);
+      return childId;
+    })();
+    try {
+      return await intent.completion;
+    } finally {
+      if (forkNavigation.current === intent) forkNavigation.current = undefined;
     }
-    await choosing;
-    if (generation.current !== targetGeneration || selection.current !== result.sessionId) return;
-    return result.sessionId;
   }
   const current = sessions.find((s) => s.id === selected);
   const currentWorkspace = workspaces?.find((w) => w.id === current?.workspace_id);
@@ -1907,6 +2201,7 @@ export function useSessionController({
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     live?.stopEnabled === true &&
+    live.executionMode !== "claude-follower" &&
     !!live.turnId;
   const terminalReasonText =
     live?.executionMode === "claude-follower"
@@ -1960,6 +2255,22 @@ export function useSessionController({
     client,
     embedded,
     capabilities,
+    forkCheckAvailable: !!(
+      online &&
+      access?.status === "approved" &&
+      access.experimentalEnabled &&
+      access.device?.manage &&
+      live?.sessionId === selected &&
+      live.status !== "outcome-unknown" &&
+      live.reason !== "control-outcome-unconfirmed" &&
+      capabilities?.reason !== "control-outcome-unconfirmed" &&
+      capabilities?.sessionId === selected &&
+      capabilities.features.fork?.available &&
+      notice !== "uncertain" &&
+      !excludedSessionIds.has(selected)
+    ),
+    settingsChangedHere,
+    actionUnavailableReason,
     codexAction,
     checkContinuation,
     forkContinuation,
@@ -1994,6 +2305,7 @@ export function useSessionController({
     incompatible,
     setIncompatible,
     notice,
+    noticeReason,
     code,
     setCode,
     name,

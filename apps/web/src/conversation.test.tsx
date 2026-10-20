@@ -163,6 +163,24 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function holdCatalogAdmission(client: WebClient) {
+  const nativeRead = client.catalog.bind(client);
+  let held = true;
+  const catalog = vi
+    .spyOn(client, "catalog")
+    .mockImplementation((...args) =>
+      held
+        ? Promise.reject(new ApiError(409, "operation_busy", "not-dispatched"))
+        : nativeRead(...args),
+    );
+  return {
+    catalog,
+    release: () => {
+      held = false;
+    },
+  };
+}
+
 function emitSession(stream: SessionStreamHandlers, seq: number, type: string, payload: unknown) {
   act(() =>
     stream.event(
@@ -1225,14 +1243,15 @@ describe("busy full-refresh recovery", () => {
     await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
     await act(async () => view.result.current.choose("first"));
     await waitFor(() => expect(view.result.current.canSend).toBe(true));
-    vi.spyOn(client, "catalog").mockRejectedValueOnce(
-      new ApiError(409, "operation_busy", "not-dispatched"),
-    );
+    const admission = holdCatalogAdmission(client);
     await act(async () => view.result.current.refresh());
+    expect(admission.catalog).toHaveBeenCalledTimes(3);
+    expect(view.result.current.canSend).toBe(false);
     const history = vi.spyOn(client, "events");
     const live = vi
       .spyOn(client, "live")
       .mockRejectedValueOnce(new ApiError(409, "operation_busy", "not-dispatched"));
+    admission.release();
     await act(async () =>
       streams.get("first")!.event("control-changed", JSON.stringify({ sessionId: "first" })),
     );
@@ -1250,19 +1269,42 @@ describe("busy full-refresh recovery", () => {
     expect(view.result.current.error).toBe(false);
   });
 
+  it("silently recovers one transient busy catalog read without a host event or command replay", async () => {
+    const { client } = fixture();
+    const view = renderHook(() => useSessionController({ client, embedded: true }));
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    await act(async () => view.result.current.choose("first"));
+    await waitFor(() => expect(view.result.current.canSend).toBe(true));
+    const requests = vi.spyOn(client, "request");
+    const catalog = vi
+      .spyOn(client, "catalog")
+      .mockRejectedValueOnce(new ApiError(409, "operation_busy", "not-dispatched"));
+    await act(async () => view.result.current.refresh());
+    expect(catalog).toHaveBeenCalledTimes(2);
+    expect(view.result.current.canSend).toBe(true);
+    expect(view.result.current.error).toBe(false);
+    expect(view.result.current.selected).toBe("first");
+    expect(
+      requests.mock.calls.filter(([path]) =>
+        ["send", "stop", "approve", "answer", "managed/action"].includes(path),
+      ),
+    ).toEqual([]);
+  });
+
   it("recovers from a delayed busy calibration after another conversation wakes a fresh refresh", async () => {
     const { client, streams } = fixture();
     const view = renderHook(() => useSessionController({ client, embedded: true }));
     await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
     await act(async () => view.result.current.choose("first"));
     await waitFor(() => expect(view.result.current.canSend).toBe(true));
-    vi.spyOn(client, "catalog").mockRejectedValueOnce(
-      new ApiError(409, "operation_busy", "not-dispatched"),
-    );
+    const admission = holdCatalogAdmission(client);
     await act(async () => view.result.current.refresh());
+    expect(admission.catalog).toHaveBeenCalledTimes(3);
+    expect(view.result.current.canSend).toBe(false);
     const delayedBusy = deferred<never>();
     const live = vi.spyOn(client, "live").mockReturnValueOnce(delayedBusy.promise);
     const history = vi.spyOn(client, "events");
+    admission.release();
     await act(async () =>
       streams.get("first")!.event("control-changed", JSON.stringify({ sessionId: "first" })),
     );
@@ -1293,10 +1335,10 @@ describe("busy full-refresh recovery", () => {
     await waitFor(() => expect(view.result.current.canSend).toBe(true));
     const access = vi.spyOn(client, "access");
     const history = vi.spyOn(client, "events");
-    vi.spyOn(client, "catalog").mockRejectedValueOnce(
-      new ApiError(409, "operation_busy", "not-dispatched"),
-    );
+    const admission = holdCatalogAdmission(client);
     await act(async () => view.result.current.refresh());
+    expect(admission.catalog).toHaveBeenCalledTimes(3);
+    expect(view.result.current.canSend).toBe(false);
     const nativeLive = client.live.bind(client);
     let nextCommandBusy = true;
     const live = vi
@@ -1311,6 +1353,7 @@ describe("busy full-refresh recovery", () => {
       streams.get("")!.event("control-changed", data);
       streams.get("first")!.event("control-changed", data);
     };
+    admission.release();
     await act(async () => settle());
     await waitFor(() => expect(live).toHaveBeenCalled());
     expect(view.result.current.canSend).toBe(false);
@@ -1424,11 +1467,11 @@ describe("busy full-refresh recovery", () => {
       const access = vi.spyOn(client, "access");
       const history = vi.spyOn(client, "events");
       const live = vi.spyOn(client, "live");
-      vi.spyOn(client, "catalog").mockRejectedValueOnce(
-        new ApiError(409, "operation_busy", "not-dispatched"),
-      );
+      const admission = holdCatalogAdmission(client);
       await act(async () => view.result.current.refresh());
+      expect(admission.catalog).toHaveBeenCalledTimes(3);
       expect(view.result.current.canSend).toBe(false);
+      admission.release();
       act(() => {
         if (trigger === "reconnect") streams.get("")!.open();
         else streams.get("")!.event(trigger, "{}");
@@ -1500,10 +1543,11 @@ describe("busy full-refresh recovery", () => {
       await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
       await act(async () => view.result.current.choose("first"));
       await waitFor(() => expect(view.result.current.canSend).toBe(true));
-      vi.spyOn(client, "catalog").mockRejectedValueOnce(
-        new ApiError(409, "operation_busy", "not-dispatched"),
-      );
+      const admission = holdCatalogAdmission(client);
       await act(async () => view.result.current.refresh(true));
+      expect(admission.catalog).toHaveBeenCalledTimes(3);
+      expect(view.result.current.canSend).toBe(false);
+      admission.release();
       if (replacement === "selection") await act(async () => view.result.current.choose("second"));
       const pending = deferred<Awaited<ReturnType<WebClient["events"]>>>();
       const history = vi.spyOn(client, "events").mockReturnValueOnce(pending.promise);
@@ -1534,13 +1578,14 @@ describe("busy full-refresh recovery", () => {
       await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
       await act(async () => view.result.current.choose("first"));
       await waitFor(() => expect(view.result.current.canSend).toBe(true));
-      vi.spyOn(client, "catalog").mockRejectedValueOnce(
-        new ApiError(409, "operation_busy", "not-dispatched"),
-      );
+      const admission = holdCatalogAdmission(client);
       await act(async () => view.result.current.refresh());
+      expect(admission.catalog).toHaveBeenCalledTimes(3);
+      expect(view.result.current.canSend).toBe(false);
       const access = vi.spyOn(client, "access");
       const history = vi.spyOn(client, "events");
       const oldGlobal = streams.get("")!;
+      admission.release();
       await act(async () => {
         if (change === "revocation") oldGlobal.event("access-ended", "{}");
         else {
@@ -1591,10 +1636,10 @@ describe("busy full-refresh recovery", () => {
       await waitFor(() =>
         expect(requests.mock.calls.filter(([path]) => path === "send")).toHaveLength(1),
       );
-      vi.spyOn(client, "catalog").mockRejectedValueOnce(
-        new ApiError(409, "operation_busy", "not-dispatched"),
-      );
+      const admission = holdCatalogAdmission(client);
       await act(async () => view.result.current.refresh(true));
+      expect(admission.catalog).toHaveBeenCalledTimes(3);
+      expect(view.result.current.canSend).toBe(false);
       await act(async () => {
         sending.reject(new Error("send response lost after manual refresh"));
         await sent;
@@ -1602,6 +1647,7 @@ describe("busy full-refresh recovery", () => {
       expect(view.result.current.notice).toBe("uncertain");
       const pending = readPending(pendingScope("", "local"));
       expect(pending).toHaveLength(durable ? 1 : 0);
+      admission.release();
       await act(async () => {
         streams.get("")!.event("control-changed", JSON.stringify({ sessionId: "first" }));
         streams.get("")!.event("catalog-invalidated", "{}");
@@ -1631,20 +1677,25 @@ describe("busy full-refresh recovery", () => {
       const access = vi.spyOn(client, "access");
       const history = vi.spyOn(client, "events");
       const live = vi.spyOn(client, "live");
-      const catalog = vi.spyOn(client, "catalog");
+      const admission = stage === "catalog" ? holdCatalogAdmission(client) : undefined;
+      const catalog = admission?.catalog ?? vi.spyOn(client, "catalog");
       const blocked = { catalog, live, events: history }[stage];
-      blocked.mockRejectedValueOnce(new ApiError(409, "operation_busy", "not-dispatched"));
+      if (!admission)
+        blocked.mockRejectedValueOnce(new ApiError(409, "operation_busy", "not-dispatched"));
       await act(async () => view.result.current.refresh(manual));
-      expect(blocked).toHaveBeenCalledOnce();
+      const expectedReads = stage === "catalog" ? 3 : 1;
+      expect(blocked).toHaveBeenCalledTimes(expectedReads);
       expect(view.result.current.canSend).toBe(false);
       await act(async () => {});
-      // A busy read must wait for a host event, never spin on the same admission.
-      expect(blocked).toHaveBeenCalledOnce();
+      // Exhausted catalog retries must wait for a host event, never spin on
+      // the same admission. History/live reads retain their event-only recovery.
+      expect(blocked).toHaveBeenCalledTimes(expectedReads);
       const readsBefore = {
         access: access.mock.calls.length,
         history: history.mock.calls.length,
         live: live.mock.calls.length,
       };
+      admission?.release();
       act(() => streams.get("")!.event("control-changed", JSON.stringify({ sessionId: "first" })));
       await waitFor(() => expect(view.result.current.canSend).toBe(true));
       expect(access.mock.calls.length).toBeGreaterThan(readsBefore.access);
@@ -1664,13 +1715,13 @@ describe("event-driven refresh completion", () => {
     await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
     await act(async () => view.result.current.choose("first"));
     await waitFor(() => expect(view.result.current.canSend).toBe(true));
-    const catalog = vi
-      .spyOn(client, "catalog")
-      .mockRejectedValueOnce(new ApiError(409, "operation_busy", "not-dispatched"));
+    const { catalog, release } = holdCatalogAdmission(client);
     act(() => streams.get("")!.event("catalog-invalidated", "{}"));
-    await waitFor(() => expect(catalog).toHaveBeenCalledOnce());
+    await waitFor(() => expect(catalog).toHaveBeenCalledTimes(3));
     await act(async () => {});
+    expect(catalog).toHaveBeenCalledTimes(3);
     sessions.push({ ...sessions[0], id: "created-elsewhere", title: "New conversation" });
+    release();
     await act(async () => {
       streams.get("")!.event("catalog-invalidated", "{}");
       streams.get("first")!.event("control-changed", JSON.stringify({ sessionId: "first" }));
@@ -1680,7 +1731,7 @@ describe("event-driven refresh completion", () => {
     expect(view.result.current.online).toBe(true);
     expect(view.result.current.error).toBe(false);
     expect(view.result.current.canSend).toBe(true);
-    expect(catalog).toHaveBeenCalledTimes(2);
+    expect(catalog).toHaveBeenCalledTimes(4);
   });
 
   it.each([
@@ -1756,13 +1807,13 @@ describe("event-driven refresh completion", () => {
       await act(async () => view.result.current.control("send"));
       expect(view.result.current.notice).toBe("uncertain");
       const pending = readPending(pendingScope("", "local"));
-      const catalog = vi
-        .spyOn(client, "catalog")
-        .mockRejectedValueOnce(new ApiError(409, "operation_busy", "not-dispatched"));
+      const { catalog, release } = holdCatalogAdmission(client);
       act(() => streams.get("")!.event("catalog-invalidated", "{}"));
-      await waitFor(() => expect(catalog).toHaveBeenCalledOnce());
+      await waitFor(() => expect(catalog).toHaveBeenCalledTimes(3));
       await act(async () => {});
+      expect(catalog).toHaveBeenCalledTimes(3);
       sessions[1].title = "Updated elsewhere";
+      release();
       await act(async () => {
         streams.get("")!.event("catalog-invalidated", "{}");
         streams.get("first")!.event("control-changed", JSON.stringify({ sessionId: "first" }));

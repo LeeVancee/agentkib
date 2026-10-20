@@ -6,6 +6,14 @@ import { managedControlCopy } from "@/features/conversation/features/sessions/ma
 
 describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  it.each(locales)("explains unconfirmed fork settings with recovery guidance in %s", (locale) => {
+    for (const reason of ["native-model-unconfirmed", "native-effort-unconfirmed"]) {
+      const explanation = codexReason(locale, reason);
+      expect(explanation.technical).toBeUndefined();
+      expect(explanation.text).not.toBe(codexReason(locale).text);
+      expect(explanation.text).toContain("Codex");
+    }
+  });
   it.each(locales)("explains directory failures and projects view only in %s", (locale) => {
     for (const reason of [
       "codex-session-directory-unsafe",

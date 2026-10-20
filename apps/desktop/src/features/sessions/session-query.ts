@@ -1,3 +1,4 @@
+import { retryBusyRead } from "./conversation/features/sessions/session-read-retry";
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { homeKeys, queryDefaults } from "@/features/home/home-query";
@@ -15,7 +16,7 @@ let active = 0;
 const queue: Array<() => void> = [];
 const pending = new WeakMap<
   QueryClient,
-  Map<string, { signals: Set<AbortSignal>; promise: Promise<unknown> }>
+  Map<string, { promise: Promise<unknown>; addSignal: (signal: AbortSignal) => void }>
 >();
 function drain() {
   while (active < 4 && queue.length) queue.shift()!();
@@ -25,6 +26,7 @@ export function queuedSessionRead<T>(
   key: string,
   signal: AbortSignal,
   read: () => Promise<T>,
+  { retryBusy = false }: { retryBusy?: boolean } = {},
 ): Promise<T> {
   let requests = pending.get(client);
   if (!requests) {
@@ -33,10 +35,27 @@ export function queuedSessionRead<T>(
   }
   let entry = requests.get(key);
   if (!entry) {
-    const signals = new Set([signal]);
+    const signals = new Set<AbortSignal>();
+    const retry = new AbortController();
+    let phase: "queued" | "physical" | "waiting" | "settled" = "queued";
+    const unused = () => [...signals].every((item) => item.aborted);
+    const cancelUnusedWait = () => {
+      // A sent Electron RPC still owns its slot. A reopened observer can reuse
+      // it; only retire an unused entry once the physical call has settled.
+      if (phase !== "waiting" || !unused()) return;
+      if (requests!.get(key) === entry) requests!.delete(key);
+      retry.abort();
+    };
+    const addSignal = (consumer: AbortSignal) => {
+      if (!signals.has(consumer)) {
+        signals.add(consumer);
+        consumer.addEventListener("abort", cancelUnusedWait, { once: true });
+      }
+      cancelUnusedWait();
+    };
     const promise = new Promise<T>((resolve, reject) => {
       queue.push(() => {
-        if ([...signals].every((item) => item.aborted)) {
+        if (unused()) {
           reject(new DOMException("Cancelled", "AbortError"));
           return;
         }
@@ -45,22 +64,40 @@ export function queuedSessionRead<T>(
           active -= 1;
           drain();
         };
+        const call = () => {
+          phase = "physical";
+          const settled = () => {
+            phase = "waiting";
+            cancelUnusedWait();
+          };
+          try {
+            return Promise.resolve(read()).finally(settled);
+          } catch (error) {
+            settled();
+            return Promise.reject(error);
+          }
+        };
         try {
-          void read().then(resolve, reject).finally(finish);
+          // Scans also use this queue and must never replay a mutation.
+          const operation = retryBusy ? retryBusyRead(call, retry.signal) : call();
+          void operation.then(resolve, reject).finally(finish);
         } catch (error) {
           reject(error);
           finish();
         }
       });
     });
-    entry = { signals, promise };
+    entry = { promise, addSignal };
+    addSignal(signal);
     requests.set(key, entry);
     const cleanup = () => {
+      phase = "settled";
+      for (const consumer of signals) consumer.removeEventListener("abort", cancelUnusedWait);
       if (requests!.get(key) === entry) requests!.delete(key);
     };
     void promise.then(cleanup, cleanup);
     drain();
-  } else entry.signals.add(signal);
+  } else entry.addSignal(signal);
   return (entry.promise as Promise<T>).then((value) => {
     signal.throwIfAborted();
     return value;
@@ -74,8 +111,12 @@ export function sessionListOptions(client: QueryClient, id: string) {
     queryKey,
     queryFn: async ({ signal }) => {
       const before = client.getQueryState(queryKey)?.dataUpdateCount;
-      const records = await queuedSessionRead(client, `sessions:${id}`, signal, () =>
-        api.workspaceSessions(id),
+      const records = await queuedSessionRead(
+        client,
+        `sessions:${id}`,
+        signal,
+        () => api.workspaceSessions(id),
+        { retryBusy: true },
       );
       const latest = client.getQueryData<typeof records>(queryKey);
       return client.getQueryState(queryKey)?.dataUpdateCount !== before && latest !== undefined
@@ -89,6 +130,8 @@ export function sessionStatusOptions(client: QueryClient, id: string) {
     ...queryDefaults,
     queryKey: sessionKeys.status(id),
     queryFn: ({ signal }) =>
-      queuedSessionRead(client, `status:${id}`, signal, () => api.workspaceSessionStatus(id)),
+      queuedSessionRead(client, `status:${id}`, signal, () => api.workspaceSessionStatus(id), {
+        retryBusy: true,
+      }),
   });
 }

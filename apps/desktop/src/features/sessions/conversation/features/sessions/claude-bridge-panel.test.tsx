@@ -63,6 +63,24 @@ afterEach(() => {
 });
 
 describe("Claude terminal connection management", () => {
+  it.each([
+    ["zh-CN", "未连接", "仅可查看"],
+    ["zh-TW", "未連線", "僅可查看"],
+    ["en-US", "Not connected", "View only"],
+    ["ja-JP", "未接続", "閲覧のみ"],
+  ] as const)(
+    "labels an unconnected terminal accurately in %s",
+    async (locale, label, oldLabel) => {
+      state.session.locale = locale;
+      render(<ClaudeBridgePanel active />);
+      await screen.findByText("Install isolated plugin");
+      expect(screen.getByText(new RegExp(`^${label} ·`))).toBeVisible();
+      expect(screen.queryByText(new RegExp(`^${oldLabel} ·`))).not.toBeInTheDocument();
+      expect(
+        state.request.mock.calls.every(([request]) => request.operation === "bridge-status"),
+      ).toBe(true);
+    },
+  );
   it("can revoke an offline follower binding without restarting its execution", async () => {
     state.session.live = {
       ...state.session.live!,

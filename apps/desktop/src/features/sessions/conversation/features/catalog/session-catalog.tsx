@@ -1,3 +1,4 @@
+import { sessionContinuationListState, SessionContinuationDot } from "@agentkib/session-ui";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -131,6 +132,7 @@ export function SessionCatalog({
                   </div>
                   {open &&
                     rows.map((s) => {
+                      const runtime = sessionContinuationListState(s, locale);
                       const title = displaySessionTitle(s.title, t.untitled);
                       const fork = s.origin === "interactive" && !!s.forked_from_session_id;
                       const description = `${agentName(s.agent)} · ${title}${s.availability !== "readable" ? ` · ${t.metadataOnly}` : ""}${s.archived ? ` · ${c.archived}` : ""}${fork ? ` · ${c.fork}` : ""}`;
@@ -147,6 +149,16 @@ export function SessionCatalog({
                         >
                           <AgentMark agent={s.agent} />
                           <strong>{title}</strong>
+                          {runtime?.dot && (
+                            <SessionContinuationDot label={runtime.label} active={runtime.active} />
+                          )}
+                          {runtime &&
+                            !runtime.dot &&
+                            s.continuation?.reason === "codex-cli-version-too-old" && (
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {runtime.label}
+                              </span>
+                            )}
                           {pendingSessions[s.id] && (
                             <span
                               aria-label={interactionCopy[locale].pending}

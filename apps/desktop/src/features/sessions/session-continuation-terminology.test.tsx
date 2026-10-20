@@ -7,6 +7,7 @@ import { SessionReader } from "@/features/sessions/conversation/features/session
 import { SessionPanelsContext } from "@/features/sessions/conversation/features/sessions/session-panels";
 import type { SessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
 import { conversationWords } from "@/core/i18n";
+import { claudeConnectionCopy } from "@/features/sessions/conversation/features/sessions/claude-connection-copy";
 
 type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
 let session: SessionController;
@@ -34,6 +35,7 @@ vi.mock("@/features/sessions/conversation/features/history/history-search-contro
 const wording = [
   {
     locale: "zh-CN",
+    draftHint: "草稿已保留，回到这里后会恢复。",
     placeholder: "继续这条会话…",
     terminalHint: "审批和提问在终端中处理",
     choice: "这条会话正在 Claude Code 中使用。为避免两边同时写入，请选择：",
@@ -42,7 +44,8 @@ const wording = [
     back: "回 Claude Code 继续",
     returned: "这条会话在 AgentKib 中只读，Claude Code 那边关闭后会自动恢复",
     watch: "在终端中继续这条会话，这里会同步显示",
-    ended: "已结束后台进程，可以回 Claude Code 继续这条会话",
+    terminalControls: "消息发送和停止请在终端处理，AgentKib 会同步显示。",
+    ended: "后台进程已结束，下次发送时会自动继续",
     conflict: "你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入",
     windows: "Windows 上暂不支持在这里继续 Claude Code 会话",
     oldCodex: "Codex 版本过低，升级后可以在这里继续",
@@ -55,6 +58,7 @@ const wording = [
   },
   {
     locale: "zh-TW",
+    draftHint: "草稿已保留，回到這裡後會恢復。",
     placeholder: "繼續這段對話…",
     terminalHint: "核准和提問在終端中處理",
     choice: "這段對話正在 Claude Code 中使用。為避免兩邊同時寫入，請選擇：",
@@ -63,7 +67,8 @@ const wording = [
     back: "回 Claude Code 繼續",
     returned: "這段對話在 AgentKib 中為唯讀，Claude Code 那邊關閉後會自動恢復",
     watch: "在終端中繼續這段對話，這裡會同步顯示",
-    ended: "已結束背景程序，可以回 Claude Code 繼續這段對話",
+    terminalControls: "訊息傳送和停止請在終端處理，AgentKib 會同步顯示。",
+    ended: "背景程序已結束，下次傳送訊息時會自動繼續",
     conflict: "你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入",
     windows: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
     oldCodex: "Codex 版本過舊，升級後可以在這裡繼續",
@@ -76,6 +81,7 @@ const wording = [
   },
   {
     locale: "en-US",
+    draftHint: "Your draft is kept and will be restored when you return here.",
     placeholder: "Continue this session…",
     terminalHint: "Handle approvals and questions in the terminal",
     choice: "This session is in use in Claude Code. To avoid both sides writing at once, choose:",
@@ -85,7 +91,10 @@ const wording = [
     returned:
       "This session is view only in AgentKib. You can continue here once it's closed in Claude Code.",
     watch: "Continue this session in the terminal. It stays in sync here.",
-    ended: "Background process ended. You can continue this session in Claude Code.",
+    terminalControls:
+      "Send messages and stop turns in the terminal. AgentKib keeps the session in sync.",
+    ended:
+      "The background process ended. It will resume automatically when you send your next message.",
     conflict:
       "You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once.",
     windows: "Continuing Claude Code sessions here isn't supported on Windows yet",
@@ -100,6 +109,7 @@ const wording = [
   },
   {
     locale: "ja-JP",
+    draftHint: "下書きを保存しています。ここに戻ると復元されます。",
     placeholder: "この会話を続ける…",
     terminalHint: "承認と質問はターミナルで対応してください",
     choice: "この会話は Claude Code で使用中です。同時に書き込まれないよう、操作を選んでください：",
@@ -109,7 +119,9 @@ const wording = [
     returned:
       "この会話は AgentKib では閲覧のみです。Claude Code 側で閉じると、ここで続けられるようになります。",
     watch: "この会話はターミナルで続けてください。ここにも同期して表示されます。",
-    ended: "バックグラウンドプロセスを終了しました。Claude Code でこの会話を続けられます。",
+    terminalControls:
+      "メッセージの送信とターンの停止はターミナルで行ってください。AgentKib に同期して表示されます。",
+    ended: "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",
     conflict:
       "Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。",
     windows: "Windows では、ここで Claude Code の会話を続ける機能はまだ使えません",
@@ -250,6 +262,45 @@ afterEach(cleanup);
 
 describe("visible session continuation terminology", () => {
   it.each(wording)(
+    "keeps terminal stopping in the terminal and preserves managed stop in $locale",
+    (expected) => {
+      setLocale(expected.locale);
+      session.canSend = false;
+      // A stale consumer may retain an older canStop projection during a refresh.
+      session.canStop = true;
+      Object.assign(session.live!, {
+        executionMode: "claude-follower",
+        executionLocation: "terminal",
+        status: "running",
+        terminalSend: false,
+        sendEnabled: false,
+        stopEnabled: true,
+        turnId: "terminal-turn",
+      });
+      const view = render(<View snapshot={session} />);
+      expect(screen.getByText(expected.watch)).toBeVisible();
+      expect(screen.queryByRole("button", { name: session.t.stop })).not.toBeInTheDocument();
+      expect(session.control).not.toHaveBeenCalled();
+      expect(claudeConnectionCopy[expected.locale].sendUnverified).toBe(expected.terminalControls);
+      expect(claudeConnectionCopy[expected.locale].releasedInfo).toBe(expected.ended);
+
+      Object.assign(session.live!, { terminalSend: true });
+      redraw(view);
+      expect(screen.getByText(expected.terminalHint)).toBeVisible();
+      expect(screen.queryByRole("button", { name: session.t.stop })).not.toBeInTheDocument();
+      expect(session.control).not.toHaveBeenCalled();
+
+      Object.assign(session.live!, {
+        executionMode: "claude-managed",
+        executionLocation: "agentkib",
+      });
+      redraw(view);
+      fireEvent.click(screen.getByRole("button", { name: session.t.stop }));
+      expect(session.control).toHaveBeenCalledExactlyOnceWith("stop");
+    },
+  );
+
+  it.each(wording)(
     "keeps specification wording through Claude state changes in $locale",
     (expected) => {
       setLocale(expected.locale);
@@ -287,6 +338,7 @@ describe("visible session continuation terminology", () => {
       session.canSend = false;
       redraw(view);
       expect(screen.getByText(expected.choice)).toBeVisible();
+      expect(screen.getByText(expected.draftHint)).toBeVisible();
       expect(screen.getByText(expected.forkHint)).toBeVisible();
       expect(screen.getByRole("button", { name: expected.fork })).toBeVisible();
       expect(screen.getByRole("button", { name: expected.back })).toBeVisible();
@@ -296,6 +348,7 @@ describe("visible session continuation terminology", () => {
       // Going back to the other client only says where to continue; it offers no resume command.
       fireEvent.click(screen.getByRole("button", { name: expected.back }));
       expect(screen.getAllByText(expected.returned)).toHaveLength(1);
+      expect(screen.getByText(expected.draftHint)).toBeVisible();
       expect(screen.queryByText(expected.choice)).not.toBeInTheDocument();
       expect(session.client.claudeResumeCommand).not.toHaveBeenCalled();
 
@@ -321,6 +374,7 @@ describe("visible session continuation terminology", () => {
       redraw(view);
       expect(screen.getAllByText(expected.conflict)).toHaveLength(1);
       expect(screen.getByText(expected.choice)).toBeVisible();
+      expect(screen.getByText(expected.draftHint)).toBeVisible();
       expectNoExecutionHandoff(expected.locale);
     },
   );

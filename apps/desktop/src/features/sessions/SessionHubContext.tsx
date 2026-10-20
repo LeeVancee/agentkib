@@ -1,3 +1,5 @@
+import { isBusyRead } from "./conversation/features/sessions/session-read-retry";
+import { codexReason } from "./conversation/features/sessions/codex-copy";
 import { useI18n } from "@/core/useI18n";
 import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
 import type { WorkspaceSummary } from "@/core/types";
@@ -29,7 +31,7 @@ import {
 const refreshControlledCatalog = () => refreshConversationCatalog().catch(() => undefined);
 
 function useHub(active: boolean) {
-  const { localizeMessage, tr } = useI18n();
+  const { localizeMessage, tr, locale } = useI18n();
   const workspaceQuery = useHomeWorkspaces();
   const runtime = useAppStore((state) => state.runtime);
   const localEnabled = runtime?.session_index_enabled === true;
@@ -61,27 +63,58 @@ function useHub(active: boolean) {
   const controlledCatalog = useConversationCatalog(active && localEnabled);
   const catalogError =
     controlled && active && localEnabled && controlledCatalog.error !== undefined
-      ? localizeMessage(controlledCatalog.error)
+      ? isBusyRead(controlledCatalog.error)
+        ? codexReason(locale, "session-state-unavailable").text
+        : localizeMessage(controlledCatalog.error)
       : "";
   const localSessions = useMemo(() => {
     if (!controlled) return catalog.sessions;
-    const seen = new Set(controlledCatalog.sessions.map((session) => session.id));
+    const identity = (agent: string, id: string) => `${agent}:${id}`;
+    const seen = new Set(
+      controlledCatalog.sessions.flatMap((session) => [
+        identity(session.agent, session.id),
+        // Older hosts normalize their workspace-scoped scalar into this array.
+        // Only the new Codex plural projection proves aliases across collections.
+        ...(session.agent === "codex" && !("indexedSessionId" in session)
+          ? (session.indexedSessionIds ?? []).map((id) => identity(session.agent, id))
+          : []),
+      ]),
+    );
     // Managed aliases belong to the controlled catalog. Conversation-only
     // Codex collections have no filesystem workspace and remain in the index.
     return [
       ...controlledCatalog.sessions,
-      ...catalog.sessions.filter((session) => {
-        if (
-          session.agent !== "codex" ||
-          !sessionCollection(session.workspace_id) ||
-          seen.has(session.id)
-        )
-          return false;
-        seen.add(session.id);
-        return true;
-      }),
+      ...catalog.sessions
+        .filter((session) => {
+          if (
+            session.agent !== "codex" ||
+            !sessionCollection(session.workspace_id) ||
+            seen.has(identity(session.agent, session.id))
+          )
+            return false;
+          seen.add(identity(session.agent, session.id));
+          return true;
+        })
+        .map((session) =>
+          controlledCatalog.codexRuntimeReason && !session.continuation
+            ? {
+                ...session,
+                continuation: {
+                  status: "unsupported",
+                  executionLocation: null,
+                  ownershipReason: null,
+                  reason: controlledCatalog.codexRuntimeReason,
+                },
+              }
+            : session,
+        ),
     ];
-  }, [controlled, controlledCatalog.sessions, catalog.sessions]);
+  }, [
+    controlled,
+    controlledCatalog.sessions,
+    controlledCatalog.codexRuntimeReason,
+    catalog.sessions,
+  ]);
   const workspaces = useMemo(
     () => [...localWorkspaces, ...remote.workspaces],
     [localWorkspaces, remote.workspaces],

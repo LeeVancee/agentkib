@@ -18,6 +18,7 @@ export function HistorySearchTrigger() {
       type="button"
       variant="ghost"
       size="sm"
+      className="min-h-11"
       onClick={() => session.setHistorySearchOpen(true)}
     >
       <Search size={16} />

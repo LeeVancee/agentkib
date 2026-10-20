@@ -226,6 +226,13 @@ export function SessionDirectory({
                         {status?.dot && (
                           <SessionContinuationDot label={status.label} active={status.active} />
                         )}
+                        {status &&
+                          !status.dot &&
+                          session.continuation?.reason === "codex-cli-version-too-old" && (
+                            <span className="shrink-0 text-xs text-muted-foreground">
+                              {status.label}
+                            </span>
+                          )}
                         {isInteractiveFork(session) && (
                           <GitBranch
                             size={12}

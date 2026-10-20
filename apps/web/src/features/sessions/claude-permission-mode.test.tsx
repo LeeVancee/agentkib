@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Access, Live, LivePermission } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
 import { PermissionModeNotice } from "../conversation/features/sessions/permission-mode-notice";
-import { permissionModeCopy } from "../conversation/features/sessions/permission-mode-copy";
+import {
+  permissionModeCopy,
+  permissionModeSummaryCopy,
+} from "../conversation/features/sessions/permission-mode-copy";
 import type { Locale } from "../conversation/i18n";
 
 const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
@@ -40,6 +43,35 @@ const cases: ModeCase[] = [
 
 describe("permission mode notice", () => {
   afterEach(cleanup);
+
+  it.each(locales)(
+    "keeps compact risk labels and expandable complete explanations in %s",
+    (locale) => {
+      for (const mode of ["auto", "dontAsk", "bypassPermissions", null] as const) {
+        const view = render(
+          <PermissionModeNotice
+            locale={locale}
+            permission={{ mode, possiblyAuto: true, ...(mode !== null ? { previous: true } : {}) }}
+            compact
+          />,
+        );
+        const key = mode ?? "possiblyAuto";
+        const summary = view.container.querySelector("summary")!;
+        expect(summary).toHaveTextContent(permissionModeSummaryCopy[locale][key]);
+        expect(summary).toHaveClass("min-h-11");
+        const details = summary.parentElement!;
+        expect(details).not.toHaveAttribute("open");
+        const explanation = screen.getByText(permissionModeCopy[locale][key], { exact: false });
+        expect(explanation).not.toBeVisible();
+        fireEvent.click(summary);
+        expect(details).toHaveAttribute("open");
+        expect(explanation).toBeVisible();
+        if (mode !== null)
+          expect(screen.getByText(permissionModeCopy[locale].previous)).toBeVisible();
+        view.unmount();
+      }
+    },
+  );
 
   it.each(locales)("has complete, distinct copy for %s", (locale) => {
     const own = permissionModeCopy[locale];
@@ -234,7 +266,15 @@ async function openSession() {
   fireEvent.click(await screen.findByRole("button", { name: /Claude permission session/ }));
   await screen.findByText("Claude history");
 }
-// The composer shows the notice as a status line; other status lines never carry these texts.
+// The compact composer keeps the risk visible and lets users open its full status explanation.
+function expandExplanation(text: string) {
+  const status = screen
+    .queryAllByRole("status", { hidden: true })
+    .find((element) => element.textContent?.includes(text));
+  const details = status?.closest("details");
+  if (details && !details.hasAttribute("open")) fireEvent.click(details.querySelector("summary")!);
+}
+// Other status lines never carry these texts.
 const shown = (text: string) =>
   screen.queryAllByRole("status").some((element) => element.textContent?.includes(text));
 
@@ -252,7 +292,11 @@ describe("Web Claude session permission notice", () => {
   it.each(cases)("shows the right notice for $name", async ({ permission, text, follow }) => {
     createHost(permission);
     await openSession();
-    if (text) await waitFor(() => expect(shown(text)).toBe(true));
+    if (text)
+      await waitFor(() => {
+        expandExplanation(text);
+        expect(shown(text)).toBe(true);
+      });
     else await act(async () => {});
     if (follow) expect(shown(follow)).toBe(true);
     // Only the notice that matches the reported state may be on screen.
@@ -266,14 +310,23 @@ describe("Web Claude session permission notice", () => {
     createHost({ mode: null, possiblyAuto: true });
     await openSession();
     const stream = [...ClaudeEventSource.instances][0]!;
-    await waitFor(() => expect(shown(copy.possiblyAuto)).toBe(true));
+    await waitFor(() => {
+      expandExplanation(copy.possiblyAuto);
+      expect(shown(copy.possiblyAuto)).toBe(true);
+    });
 
     act(() => stream.emit("state", { revision: 2, permission: { mode: "auto" } }));
-    await waitFor(() => expect(shown(copy.auto)).toBe(true));
+    await waitFor(() => {
+      expandExplanation(copy.auto);
+      expect(shown(copy.auto)).toBe(true);
+    });
     expect(shown(copy.possiblyAuto)).toBe(false);
 
     act(() => stream.emit("state", { revision: 3, permission: { mode: "bypassPermissions" } }));
-    await waitFor(() => expect(shown(copy.bypassPermissions)).toBe(true));
+    await waitFor(() => {
+      expandExplanation(copy.bypassPermissions);
+      expect(shown(copy.bypassPermissions)).toBe(true);
+    });
     expect(shown(copy.auto)).toBe(false);
 
     act(() => stream.emit("state", { revision: 4, permission: { mode: "default" } }));
@@ -282,7 +335,10 @@ describe("Web Claude session permission notice", () => {
     act(() =>
       stream.emit("state", { revision: 5, permission: { mode: "dontAsk", previous: true } }),
     );
-    await waitFor(() => expect(shown(copy.dontAsk)).toBe(true));
+    await waitFor(() => {
+      expandExplanation(copy.dontAsk);
+      expect(shown(copy.dontAsk)).toBe(true);
+    });
     expect(shown(copy.previous)).toBe(true);
 
     // A release or an unknown state sends an explicit clear; the old notice must not linger.

@@ -1,8 +1,9 @@
-import { ShieldAlert } from "lucide-react";
+import { ChevronDown, ShieldAlert } from "lucide-react";
 import type { LivePermission } from "@agentkib/web-client";
 import type { SupportedLocale as Locale } from "@/core/types";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "../../lib/utils";
-import { permissionModeCopy } from "./permission-mode-copy";
+import { permissionModeCopy, permissionModeSummaryCopy } from "./permission-mode-copy";
 
 /**
  * Tells the user when a Claude session runs where actions are no longer approved one by one
@@ -13,37 +14,68 @@ import { permissionModeCopy } from "./permission-mode-copy";
 export function PermissionModeNotice({
   permission,
   locale,
+  compact = false,
 }: {
   permission?: LivePermission | null;
   locale: Locale;
+  compact?: boolean;
 }) {
   if (!permission) return null;
   const copy = permissionModeCopy[locale];
   const { mode } = permission;
-  const message =
+  const noticeKey =
     mode === "auto" || mode === "dontAsk" || mode === "bypassPermissions"
-      ? copy[mode]
+      ? mode
       : mode === null && permission.possiblyAuto === true
-        ? copy.possiblyAuto
+        ? "possiblyAuto"
         : undefined;
-  if (!message) return null;
+  if (!noticeKey) return null;
+  const message = copy[noticeKey];
+  const content = (
+    <span>
+      {message}
+      {mode !== null && permission.previous === true && (
+        <span className="mt-1 block opacity-80">{copy.previous}</span>
+      )}
+    </span>
+  );
+  const color =
+    mode === "bypassPermissions"
+      ? "border-destructive/40 bg-destructive/10 text-destructive"
+      : "border-amber-500/25 bg-amber-500/5 text-amber-700 dark:text-amber-300";
+  if (compact) {
+    const summary = permissionModeSummaryCopy[locale];
+    return (
+      <Collapsible className={cn("group rounded-lg border text-xs leading-5", color)}>
+        <CollapsibleTrigger className="flex min-h-11 w-full cursor-pointer items-center gap-2 px-2.5 py-2 text-left">
+          <ShieldAlert aria-hidden="true" className="size-4 shrink-0" />
+          <span>
+            {summary[noticeKey]}
+            {permission.previous && mode !== null ? ` · ${summary.previous}` : ""}
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            className="ml-auto size-4 shrink-0 transition-transform group-data-[open]:rotate-180"
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent keepMounted>
+          <p role="status" className="px-2.5 pb-2">
+            {content}
+          </p>
+        </CollapsibleContent>
+      </Collapsible>
+    );
+  }
   return (
     <p
       role="status"
       className={cn(
         "flex items-start gap-2 rounded-lg border px-2.5 py-2 text-xs leading-5",
-        mode === "bypassPermissions"
-          ? "border-destructive/40 bg-destructive/10 text-destructive"
-          : "border-amber-500/25 bg-amber-500/5 text-amber-700 dark:text-amber-300",
+        color,
       )}
     >
       <ShieldAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-      <span>
-        {message}
-        {mode !== null && permission.previous === true && (
-          <span className="mt-1 block opacity-80">{copy.previous}</span>
-        )}
-      </span>
+      {content}
     </p>
   );
 }

@@ -155,6 +155,13 @@ export function SessionCatalog({
                           {runtime?.dot && (
                             <SessionContinuationDot label={runtime.label} active={runtime.active} />
                           )}
+                          {runtime &&
+                            !runtime.dot &&
+                            s.continuation?.reason === "codex-cli-version-too-old" && (
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {runtime.label}
+                              </span>
+                            )}
                           {pendingSessions[s.id] && (
                             <span
                               aria-label={interactionCopy[locale].pending}

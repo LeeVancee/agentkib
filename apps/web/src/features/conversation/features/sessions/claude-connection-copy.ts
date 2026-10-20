@@ -13,7 +13,7 @@ const zh = {
   handoff: "可以继续",
   handoffInfo: "直接输入即可继续这条会话。",
   released: "后台进程已结束",
-  releasedInfo: "已结束后台进程，可以回 Claude Code 继续这条会话",
+  releasedInfo: "后台进程已结束，下次发送时会自动继续",
   lostTitle: "终端连接已断开",
   hostDisconnected: "与主机的连接已中断",
   hostDisconnectedInfo: "暂时无法核实终端状态。请检查与主机的连接，恢复后再操作。",
@@ -37,6 +37,7 @@ const zh = {
   connected: "在终端中运行 · 已连接",
   managed: "在 AgentKib 中运行",
   history: "仅可查看",
+  notConnected: "未连接",
   info: "审批和提问在终端中处理。关闭 AgentKib 不会停止终端。",
   disconnected: "尚未连接终端。请在桌面打开连接指引，并在目标 Claude Code 会话中连接。",
   lost: "终端连接已断开，正在重新检查会话状态。",
@@ -46,7 +47,7 @@ const zh = {
   turnUnconfirmed: "终端正在执行，当前轮次身份尚未核实；暂不能取消，请在终端处理。",
   permissionUnconfirmed: "终端曾请求工具审批，当前授权或执行状态尚未核实，请查看终端。",
   attachments: "终端连接尚未验证附件输入，请在终端添加附件。",
-  sendUnverified: "会话发送尚未开放，请在终端发送；AgentKib 可同步观察并取消当前轮次。",
+  sendUnverified: "消息发送和停止请在终端处理，AgentKib 会同步显示。",
   generate: "生成一次性连接码",
   disconnect: "断开终端连接",
   refresh: "检查连接",
@@ -74,7 +75,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     handoff: "可以繼續",
     handoffInfo: "直接輸入即可繼續這段對話。",
     released: "背景程序已結束",
-    releasedInfo: "已結束背景程序，可以回 Claude Code 繼續這段對話",
+    releasedInfo: "背景程序已結束，下次傳送訊息時會自動繼續",
     lostTitle: "終端連線已中斷",
     hostDisconnected: "與主機的連線已中斷",
     hostDisconnectedInfo: "暫時無法核實終端狀態。請檢查與主機的連線，恢復後再操作。",
@@ -98,6 +99,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     connected: "在終端中執行 · 已連線",
     managed: "在 AgentKib 中執行",
     history: "僅可查看",
+    notConnected: "未連線",
     info: "核准和提問在終端中處理。關閉 AgentKib 不會停止終端。",
     disconnected: "尚未連接終端。請在桌面開啟連線指引，並在目標 Claude Code 對話中連接。",
     lost: "終端連線已中斷，正在重新檢查對話狀態。",
@@ -107,7 +109,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     turnUnconfirmed: "終端正在執行，目前輪次身分尚未核實；暫時無法取消，請在終端處理。",
     permissionUnconfirmed: "終端曾要求工具審批，目前授權或執行狀態尚未核實，請查看終端。",
     attachments: "終端連線尚未驗證附件輸入，請在終端新增附件。",
-    sendUnverified: "對話傳送尚未開放，請在終端傳送；AgentKib 可同步觀察並取消目前輪次。",
+    sendUnverified: "訊息傳送和停止請在終端處理，AgentKib 會同步顯示。",
     generate: "產生一次性連線碼",
     disconnect: "中斷終端連線",
     refresh: "檢查連線",
@@ -139,7 +141,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     handoff: "Ready to continue",
     handoffInfo: "Type a message to continue this session.",
     released: "Background process ended",
-    releasedInfo: "Background process ended. You can continue this session in Claude Code.",
+    releasedInfo:
+      "The background process ended. It will resume automatically when you send your next message.",
     lostTitle: "Terminal disconnected",
     hostDisconnected: "Host connection lost",
     hostDisconnectedInfo:
@@ -165,6 +168,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     connected: "Running in terminal · Connected",
     managed: "Running in AgentKib",
     history: "View only",
+    notConnected: "Not connected",
     info: "Handle approvals and questions in the terminal. Closing AgentKib does not stop the terminal.",
     disconnected:
       "The terminal is not connected. Open the desktop connection guide and connect from the target Claude Code session.",
@@ -179,7 +183,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     attachments:
       "Attachment input is not verified for terminal connections. Add attachments in the terminal.",
     sendUnverified:
-      "Sending to the session is not enabled. Send in the terminal; AgentKib can observe and cancel the current turn.",
+      "Send messages and stop turns in the terminal. AgentKib keeps the session in sync.",
     generate: "Generate one-time connection code",
     disconnect: "Disconnect terminal",
     refresh: "Check connection",
@@ -213,7 +217,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     handoff: "続行可能",
     handoffInfo: "メッセージを入力すると、この会話を続けられます。",
     released: "バックグラウンドプロセスを終了",
-    releasedInfo: "バックグラウンドプロセスを終了しました。Claude Code でこの会話を続けられます。",
+    releasedInfo:
+      "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",
     lostTitle: "ターミナルとの接続が切断",
     hostDisconnected: "ホストとの接続が切れました",
     hostDisconnectedInfo:
@@ -240,6 +245,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     connected: "ターミナルで実行中 · 接続済み",
     managed: "AgentKib で実行中",
     history: "閲覧のみ",
+    notConnected: "未接続",
     info: "承認と質問はターミナルで対応してください。AgentKib を閉じてもターミナルは停止しません。",
     disconnected:
       "ターミナルに未接続です。デスクトップの接続ガイドを開き、対象の Claude Code 会話から接続してください。",
@@ -253,7 +259,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "ターミナルでツール承認が要求されました。現在の承認・実行状態は未確認です。ターミナルを確認してください。",
     attachments: "ターミナル接続の添付入力は未検証です。ターミナルで追加してください。",
     sendUnverified:
-      "会話への送信は未対応です。ターミナルから送信してください。AgentKib では同期表示と現在のターンのキャンセルができます。",
+      "メッセージの送信とターンの停止はターミナルで行ってください。AgentKib に同期して表示されます。",
     generate: "一回限りの接続コードを生成",
     disconnect: "ターミナルとの接続を解除",
     refresh: "接続を確認",

@@ -524,6 +524,18 @@ describe("SessionDirectory", () => {
     });
   });
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "labels a verified old Codex runtime in the actual sidebar in %s",
+    (locale) => {
+      initializeI18n(locale);
+      hub.sessions = [
+        { ...first, continuation: { status: "unsupported", reason: "codex-cli-version-too-old" } },
+      ];
+      render(<SessionDirectory />);
+      expect(screen.getByText(sessionContinuationCopy(locale).viewOnly)).toBeVisible();
+      initializeI18n("en-US");
+    },
+  );
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "shows runtime status in recent sessions and distinct sidebar dots in %s",
     (locale) => {
       initializeI18n(locale);

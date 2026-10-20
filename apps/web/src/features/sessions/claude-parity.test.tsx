@@ -183,6 +183,7 @@ function createHost({
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     const path = url.pathname.replace("/api/web/v1/", "");
+    if (path === "managed/settings-prepare") return Response.json(state.settings);
     if (init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       state.mutations.push({ path, ...body });
@@ -304,6 +305,10 @@ async function openSession() {
   await screen.findByText("Claude history");
   await waitFor(() => expect(screen.getByRole("button", { name: "会话操作" })).toBeEnabled());
 }
+async function openSettings() {
+  fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+  await waitFor(() => expect(screen.getByLabelText(copy.model)).toBeEnabled());
+}
 beforeEach(() => {
   sessionStorage.clear();
   vi.stubGlobal("scrollTo", vi.fn());
@@ -312,6 +317,49 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("idle Claude settings and retirement", () => {
+  it("prepares native settings only when the user opens the settings panel", async () => {
+    const { fetcher } = createHost();
+    await openSession();
+    expect(
+      fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
+    ).toHaveLength(0);
+    await openSettings();
+    await waitFor(() =>
+      expect(
+        fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
+      ).toHaveLength(1),
+    );
+    const call = fetcher.mock.calls.find(([url]) =>
+      String(url).endsWith("/managed/settings-prepare"),
+    )!;
+    expect(JSON.parse(String(call[1]?.body))).toEqual({
+      sessionId: "session",
+      bootId: "boot",
+      expectedRevision: 1,
+    });
+  });
+
+  it("does not replay another client's old retirement notice but shows the next retirement in this visit", async () => {
+    const { state } = createHost();
+    state.live = {
+      ...state.live,
+      continuationNotice: "background-ended",
+      continuationNoticeId: "old-client-retirement",
+    };
+    const { result } = renderHook(() => useSessionController({}));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    await act(async () => result.current.choose("session"));
+    expect(result.current.live?.continuationNotice).toBeNull();
+    state.live = { ...state.live, continuationNoticeId: "new-retirement" };
+    act(() => {
+      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+    });
+    await waitFor(() => expect(result.current.live?.continuationNotice).toBe("background-ended"));
+    expect(result.current.live?.continuationNoticeId).toBe("new-retirement");
+  });
 });
 
 describe("Claude history continuation", () => {
@@ -401,7 +449,7 @@ describe("original Claude terminal over Web", () => {
     expect(state.mutations).toEqual([]);
   });
 
-  it("keeps stopping a terminal turn available while following it", async () => {
+  it("observes a terminal turn without offering an unverified stop", async () => {
     const { state } = createHost({ follower: true });
     state.live = {
       ...state.live,
@@ -415,9 +463,8 @@ describe("original Claude terminal over Web", () => {
     await openSession();
     expect(await screen.findByText("在终端中继续这条会话，这里会同步显示")).toBeVisible();
     expect(screen.queryByRole("textbox", { name: "发送消息" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "停止当前轮次" }));
-    await waitFor(() => expect(state.mutations).toHaveLength(1));
-    expect(state.mutations[0]).toMatchObject({ path: "stop", sessionId: "session" });
+    expect(screen.queryByRole("button", { name: "停止当前轮次" })).not.toBeInTheDocument();
+    expect(state.mutations).toEqual([]);
   });
 
   it("invalidates the old form when the terminal binding changes and keeps unsent text", async () => {
@@ -521,7 +568,7 @@ describe("Claude Remote parity", () => {
     const host = createHost({ staleSettingsAfterMutation: true });
     host.state.settings.selected = {};
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
@@ -578,7 +625,7 @@ describe("Claude Remote parity", () => {
       host.state.settings.options.models[1]!.efforts = ["low"];
       host.state.settings.options.models[1]!.defaultEffort = defaultEffort;
       await openSession();
-      fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+      await openSettings();
       fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
       fireEvent.click(screen.getByRole("button", { name: copy.apply }));
       await waitFor(() => expect(host.state.mutations).toHaveLength(1));
@@ -597,7 +644,7 @@ describe("Claude Remote parity", () => {
     host.state.settings.current.effort = "high";
     host.state.settings.current.permissionMode = "plan";
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
@@ -629,7 +676,7 @@ describe("Claude Remote parity", () => {
       resolvedModel: "claude-sonnet-fixture",
     });
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     expect(screen.getByLabelText(copy.model)).toHaveValue("sonnet");
     fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "high" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
@@ -653,7 +700,7 @@ describe("Claude Remote parity", () => {
       serviceTierIds: [],
     });
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "sonnet" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await screen.findByText(composerLayoutCopy["zh-CN"].settingsPending);
@@ -682,7 +729,7 @@ describe("Claude Remote parity", () => {
       const host = createHost();
       host.state.settings.options.models[1]!.efforts = ["medium", "high"];
       await openSession();
-      fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+      await openSettings();
       fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
       fireEvent.click(screen.getByRole("button", { name: copy.apply }));
       await screen.findByText(composerLayoutCopy["zh-CN"].settingsPending);
@@ -711,7 +758,7 @@ describe("Claude Remote parity", () => {
       host.state.settings.defaults = {};
       host.state.settings.options.models[1]!.efforts = ["medium", "high"];
       await openSession();
-      fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+      await openSettings();
       expect(screen.getByLabelText("工具权限")).toHaveValue(permissionMode ?? "");
       fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
       fireEvent.click(screen.getByRole("button", { name: copy.apply }));
@@ -733,7 +780,7 @@ describe("Claude Remote parity", () => {
     host.state.settings.selected = { permissionMode: "plan" };
     host.state.settings.current.permissionMode = "plan";
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "high" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
@@ -745,7 +792,7 @@ describe("Claude Remote parity", () => {
   it("clears submitted fields before the next settings edit", async () => {
     const host = createHost();
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText("工具权限"), { target: { value: "plan" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() => expect(host.state.settings.selected?.permissionMode).toBe("plan"));
@@ -761,7 +808,7 @@ describe("Claude Remote parity", () => {
   it("applies discovered settings through the generic action and keeps the previous current settings pending", async () => {
     const host = createHost();
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     expect(screen.queryByLabelText(copy.executionPolicy)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });

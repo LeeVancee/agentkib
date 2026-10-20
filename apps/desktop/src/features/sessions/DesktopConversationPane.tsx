@@ -1,3 +1,5 @@
+import { isBusyRead } from "./conversation/features/sessions/session-read-retry";
+import { codexReason } from "./conversation/features/sessions/codex-copy";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { EmbeddedConversationHandle } from "./conversation/conversation";
 import { RefreshCw } from "lucide-react";
@@ -53,9 +55,14 @@ export function DesktopConversationPane({
   const onCatalogChange = useCallback(() => {
     void refreshConversationCatalog().then(
       () => setCatalogError(""),
-      (error: unknown) => setCatalogError(localizeMessage(error)),
+      (error: unknown) =>
+        setCatalogError(
+          isBusyRead(error)
+            ? codexReason(locale, "session-state-unavailable").text
+            : localizeMessage(error),
+        ),
     );
-  }, [localizeMessage]);
+  }, [localizeMessage, locale]);
   const onSessionChange = useCallback(
     async (id?: string) => {
       const request = ++navigation.current;
@@ -76,10 +83,15 @@ export function DesktopConversationPane({
       } catch (error) {
         // Creation/fork has already succeeded. Keep its conversation mounted and
         // report catalog refresh separately instead of offering to repeat creation.
-        if (request === navigation.current) setCatalogError(localizeMessage(error));
+        if (request === navigation.current)
+          setCatalogError(
+            isBusyRead(error)
+              ? codexReason(locale, "session-state-unavailable").text
+              : localizeMessage(error),
+          );
       }
     },
-    [select, localizeMessage],
+    [select, localizeMessage, locale],
   );
   return (
     <div

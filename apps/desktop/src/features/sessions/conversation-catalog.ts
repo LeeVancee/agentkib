@@ -1,3 +1,4 @@
+import { retryBusyRead } from "./conversation/features/sessions/session-read-retry";
 import { useEffect } from "react";
 import { create } from "zustand";
 import type { ConversationCatalog } from "@agentkib/web-client";
@@ -13,6 +14,7 @@ interface ConversationCatalogState {
   sessions: ConversationSessionSummary[];
   ready: boolean;
   error?: unknown;
+  codexRuntimeReason?: ConversationCatalog["codexRuntimeReason"];
 }
 
 const useConversationCatalogStore = create<ConversationCatalogState>(() => ({
@@ -33,11 +35,12 @@ function resetConversationCatalog() {
   pending = undefined;
   observationError = undefined;
   const current = useConversationCatalogStore.getState();
-  if (current.sessions.length || current.error)
+  if (current.sessions.length || current.error || current.codexRuntimeReason)
     useConversationCatalogStore.setState({
       sessions: emptySessions,
       ready: true,
       error: undefined,
+      codexRuntimeReason: undefined,
     });
 }
 
@@ -50,7 +53,9 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
   const task = (async () => {
     while (true) {
       const version = invalidation;
-      const catalog = await desktopConversationRequest<ConversationCatalog>("catalog");
+      const catalog = await retryBusyRead(() =>
+        desktopConversationRequest<ConversationCatalog>("catalog"),
+      );
       const sessions: ConversationSessionSummary[] = catalog.sessions.map((session) => ({
         ...session,
         indexedSessionIds:
@@ -64,7 +69,12 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
       if (generation !== request) return sessions;
       if (version === invalidation) {
         // A successful one-off read does not prove the live subscription recovered.
-        useConversationCatalogStore.setState({ sessions, ready: true, error: observationError });
+        useConversationCatalogStore.setState({
+          sessions,
+          ready: true,
+          error: observationError,
+          codexRuntimeReason: catalog.codexRuntimeReason,
+        });
         return sessions;
       }
       // A create/fork or invalidation arrived during this fetch. Its caller must

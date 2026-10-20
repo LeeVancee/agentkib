@@ -59,6 +59,16 @@ describe("useSessionCatalog", () => {
   });
   afterEach(cleanup);
 
+  it("never retries an indexing mutation and localizes its admission contention", async () => {
+    const { wrapper } = setup();
+    vi.mocked(api.refreshWorkspaceSessions).mockRejectedValue(new Error("operation_busy"));
+    const { result } = renderHook(() => useSessionCatalog([workspace("one")], true), { wrapper });
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledOnce();
+    expect(result.current.errors.one).toBeTruthy();
+    expect(result.current.errors.one).not.toContain("operation_busy");
+  });
+
   it("does not read or refresh sessions while indexing is disabled, even with cached records", () => {
     const { wrapper, client } = setup();
     client.setQueryData(homeKeys.continuations("one"), [session("one")]);

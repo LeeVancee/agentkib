@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmbeddedConversation } from "./conversation/conversation";
 import { WebClient, type Access, type Live } from "@agentkib/web-client";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
-import { permissionModeCopy } from "./conversation/features/sessions/permission-mode-copy";
+import {
+  permissionModeCopy,
+  permissionModeSummaryCopy,
+} from "./conversation/features/sessions/permission-mode-copy";
 import { claudeConnectionCopy } from "./conversation/features/sessions/claude-connection-copy";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import {
@@ -218,7 +221,8 @@ describe("desktop embedded conversation", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(mutations()).toEqual([]);
     expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue("保留桌面草稿");
-    expect(screen.getByText(claudeConnectionCopy["zh-CN"].connectionUnconfirmed)).toBeVisible();
+    expect(screen.getByText(claudeConnectionCopy["zh-CN"].managedUnconfirmed)).toBeVisible();
+    expect(screen.queryByText(claudeConnectionCopy["zh-CN"].connectionUnconfirmed)).toBeNull();
     state.live = {
       ...state.live,
       revision: 3,
@@ -796,8 +800,13 @@ describe("desktop embedded conversation", () => {
           />,
         );
         expect(
-          await screen.findByText(claudeConnectionCopy["zh-CN"].connectionUnconfirmed),
+          await screen.findByText(claudeConnectionCopy["zh-CN"].managedUnconfirmed),
         ).toBeVisible();
+        expect(screen.queryByText(claudeConnectionCopy["zh-CN"].connectionUnconfirmed)).toBeNull();
+        expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+        expect(
+          vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined),
+        ).toEqual([]);
         expect(screen.queryByRole("dialog", { name: "连接终端" })).toBeNull();
         expect(consumed).not.toHaveBeenCalled();
         patch({ revision: 2, status: "idle", sendEnabled: true, reason: "" });
@@ -1006,7 +1015,15 @@ describe("desktop embedded conversation", () => {
       async (locale, key, permission) => {
         await open(live(permission), locale);
         const copy = permissionModeCopy[locale];
+        const trigger = await screen.findByRole("button", {
+          name: permissionModeSummaryCopy[locale][key],
+        });
+        expect(trigger).toHaveAttribute("aria-expanded", "false");
+        expect(screen.getByText(copy[key])).not.toBeVisible();
+        fireEvent.click(trigger);
+        await waitFor(() => expect(trigger).toHaveAttribute("aria-expanded", "true"));
         await waitFor(() => expect(shown(copy[key])).toBe(true));
+        expect(screen.getByText(copy[key])).toBeVisible();
         for (const other of [
           "auto",
           "dontAsk",
@@ -1015,6 +1032,9 @@ describe("desktop embedded conversation", () => {
           "previous",
         ] as const)
           if (other !== key) expect(shown(copy[other])).toBe(false);
+        fireEvent.click(trigger);
+        await waitFor(() => expect(trigger).toHaveAttribute("aria-expanded", "false"));
+        expect(screen.getByText(copy[key])).not.toBeVisible();
       },
     );
 
@@ -1038,12 +1058,26 @@ describe("desktop embedded conversation", () => {
     it("updates from native patches and shows the previous-mode suffix", async () => {
       const fixture = await open(live({ mode: null, possiblyAuto: true }), "en-US");
       const copy = permissionModeCopy["en-US"];
+      const summary = permissionModeSummaryCopy["en-US"];
+      const trigger = await screen.findByRole("button", { name: summary.possiblyAuto });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(trigger);
+      await waitFor(() => expect(trigger).toHaveAttribute("aria-expanded", "true"));
       await waitFor(() => expect(shown(copy.possiblyAuto)).toBe(true));
       fixture.patch({ revision: 2, permission: { mode: "auto" } });
       await waitFor(() => expect(shown(copy.auto)).toBe(true));
+      expect(screen.getByRole("button", { name: summary.auto })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+      expect(screen.getByText(copy.auto)).toBeVisible();
       expect(shown(copy.possiblyAuto)).toBe(false);
       fixture.patch({ revision: 3, permission: { mode: "auto", previous: true } });
       await waitFor(() => expect(shown(copy.previous)).toBe(true));
+      expect(
+        screen.getByRole("button", { name: `${summary.auto} · ${summary.previous}` }),
+      ).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText(copy.previous)).toBeVisible();
       fixture.patch({ revision: 4, permission: { mode: null } });
       await waitFor(() => expect(shown(copy.auto)).toBe(false));
       expect(shown(copy.previous)).toBe(false);

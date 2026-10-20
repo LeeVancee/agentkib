@@ -27,6 +27,7 @@ const zh = {
   fork: "分支会话",
   name: "会话名称",
   settings: "下一轮设置",
+  changeNextTurnModel: "更改下一轮模型",
   model: "模型",
   effort: "思考强度",
   mode: "协作模式",
@@ -120,6 +121,7 @@ export const codexCopy: Record<Locale, Copy> = {
     fork: "分支對話",
     name: "對話名稱",
     settings: "下一輪設定",
+    changeNextTurnModel: "變更下一輪模型",
     model: "模型",
     effort: "思考強度",
     mode: "協作模式",
@@ -212,6 +214,7 @@ export const codexCopy: Record<Locale, Copy> = {
     fork: "Fork session",
     name: "Session name",
     settings: "Next-turn settings",
+    changeNextTurnModel: "Change next-turn model",
     model: "Model",
     effort: "Reasoning effort",
     mode: "Collaboration mode",
@@ -306,6 +309,7 @@ export const codexCopy: Record<Locale, Copy> = {
     fork: "会話を分岐",
     name: "会話名",
     settings: "次のターンの設定",
+    changeNextTurnModel: "次のターンのモデルを変更",
     model: "モデル",
     effort: "推論の強度",
     mode: "協調モード",
@@ -374,6 +378,14 @@ export const codexCopy: Record<Locale, Copy> = {
 
 const reasons: Record<Locale, Record<string, string>> = {
   "zh-CN": {
+    "unsupported-model":
+      "当前模型不在主机已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
+    "native-model-unconfirmed":
+      "无法确认源会话的模型，本次分支尚未创建。请先在 Codex 中明确源会话的模型和思考强度，再刷新重试。",
+    "native-effort-unconfirmed":
+      "无法确认源会话的思考强度，本次分支尚未创建。请先在 Codex 中明确源会话的模型和思考强度，再刷新重试。",
+    "unsupported-effort":
+      "当前模型不支持所选思考强度，本次消息尚未发送。请调整下一轮模型或思考强度后再发送。",
     "codex-session-directory-unsafe":
       "会话目录是文件系统根目录或用户主目录，为保护文件，目前仅可查看。请在具体项目目录中使用 Codex 新建会话。",
     "codex-session-directory-missing": "会话目录已不存在，目前仅可查看。请恢复该目录后刷新重试。",
@@ -428,6 +440,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "此浏览器尚未获得对应权限，请在桌面授权。",
   },
   "zh-TW": {
+    "unsupported-model":
+      "目前模型不在主機已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
+    "native-model-unconfirmed":
+      "無法確認來源對話的模型，本次分支尚未建立。請先在 Codex 中明確設定來源對話的模型和思考強度，再重新整理後重試。",
+    "native-effort-unconfirmed":
+      "無法確認來源對話的思考強度，本次分支尚未建立。請先在 Codex 中明確設定來源對話的模型和思考強度，再重新整理後重試。",
+    "unsupported-effort":
+      "目前模型不支援所選思考強度，本次訊息尚未傳送。請調整下一輪模型或思考強度後再傳送。",
     "codex-session-directory-unsafe":
       "對話目錄是檔案系統根目錄或使用者主目錄，為保護檔案，目前僅可查看。請在具體專案目錄中使用 Codex 建立新對話。",
     "codex-session-directory-missing":
@@ -483,6 +503,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "此瀏覽器尚未取得對應權限，請在桌面授權。",
   },
   "en-US": {
+    "unsupported-model":
+      "The current model is not in the host's verified model list. This message was not sent. Change the next-turn model before sending again.",
+    "native-model-unconfirmed":
+      "The source session's model could not be confirmed. No branch was created. Set the source session's model and reasoning effort in Codex, then refresh to retry.",
+    "native-effort-unconfirmed":
+      "The source session's reasoning effort could not be confirmed. No branch was created. Set the source session's model and reasoning effort in Codex, then refresh to retry.",
+    "unsupported-effort":
+      "The current model does not support the selected reasoning effort. This message was not sent. Adjust the next-turn model or reasoning effort before sending again.",
     "codex-session-directory-unsafe":
       "The session directory is a filesystem root or your home directory. This session is view only to protect your files. Start a new Codex session from a specific project directory.",
     "codex-session-directory-missing":
@@ -547,6 +575,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "This browser needs the corresponding desktop permission.",
   },
   "ja-JP": {
+    "unsupported-model":
+      "現在のモデルはホストで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
+    "native-model-unconfirmed":
+      "元の会話のモデルを確認できないため、分岐は作成されていません。Codex で元の会話のモデルと思考強度を明示してから、再読み込みしてお試しください。",
+    "native-effort-unconfirmed":
+      "元の会話の思考強度を確認できないため、分岐は作成されていません。Codex で元の会話のモデルと思考強度を明示してから、再読み込みしてお試しください。",
+    "unsupported-effort":
+      "現在のモデルは選択した思考強度に対応していません。このメッセージは送信されていません。次のターンのモデルまたは思考強度を調整してから送信してください。",
     "codex-session-directory-unsafe":
       "会話のディレクトリがファイルシステムのルートまたはホームディレクトリのため、ファイルを保護するために閲覧のみになっています。個別のプロジェクトディレクトリで Codex の新しい会話を開始してください。",
     "codex-session-directory-missing":

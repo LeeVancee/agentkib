@@ -1277,12 +1277,21 @@ export function ClaudeSessionPanel({
                   catalog?.sessions.find((item) => item.id === sessionId)?.title || "Claude Code"
                 }
                 disabled={busy || !!pending || storageBlocked}
+                hasDraft={Boolean(
+                  draft.trim() || attachments.length || unuploadedAttachments.length,
+                )}
                 forkDisabled={blocked || !capabilities?.features.fork?.available}
                 onFork={() => void forkContinuation()}
                 onReturn={() => setReturnedToClient(true)}
               />
             ) : ownerBusy ? (
-              <SessionContinuationReturned locale={locale} agent="Claude Code" />
+              <SessionContinuationReturned
+                locale={locale}
+                agent="Claude Code"
+                hasDraft={Boolean(
+                  draft.trim() || attachments.length || unuploadedAttachments.length,
+                )}
+              />
             ) : viewOnly ? (
               <SessionContinuationReadOnly
                 key={sessionId}
@@ -1296,18 +1305,7 @@ export function ClaudeSessionPanel({
                 }
               />
             ) : terminalWatch ? (
-              <SessionContinuationTerminal
-                locale={locale}
-                stop={
-                  live?.stopEnabled && live.turnId
-                    ? {
-                        label: text("停止", "Stop", "停止", "停止"),
-                        onStop: () => void mutate("stop", { turnId: live.turnId }),
-                        disabled: blocked,
-                      }
-                    : undefined
-                }
-              />
+              <SessionContinuationTerminal locale={locale} />
             ) : (
               <>
                 {terminalConnected && (
@@ -1426,15 +1424,17 @@ export function ClaudeSessionPanel({
                   >
                     {text("发送", "Send", "傳送", "送信")}
                   </Button>
-                  {live?.stopEnabled && live.turnId && (
-                    <Button
-                      variant="outline"
-                      disabled={blocked}
-                      onClick={() => void mutate("stop", { turnId: live.turnId })}
-                    >
-                      {text("停止", "Stop", "停止", "停止")}
-                    </Button>
-                  )}
+                  {live?.executionMode !== "claude-follower" &&
+                    live?.stopEnabled &&
+                    live.turnId && (
+                      <Button
+                        variant="outline"
+                        disabled={blocked}
+                        onClick={() => void mutate("stop", { turnId: live.turnId })}
+                      >
+                        {text("停止", "Stop", "停止", "停止")}
+                      </Button>
+                    )}
                 </div>
               </>
             )}

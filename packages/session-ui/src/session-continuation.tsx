@@ -20,6 +20,7 @@ export type SessionContinuationCopy = {
   installPlugin: string;
   codexQuit: string;
   backgroundEnded: string;
+  draftPreserved: string;
   ownerOpenedElsewhere: string;
   claudeWindowsUnsupported: string;
   codexVersionTooOld: string;
@@ -56,7 +57,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     returned: (agent) => `这条会话在 AgentKib 中只读，${agent} 那边关闭后会自动恢复`,
     installPlugin: "安装连接插件，以后自动连接",
     codexQuit: "只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续",
-    backgroundEnded: "已结束后台进程，可以回 Claude Code 继续这条会话",
+    backgroundEnded: "后台进程已结束，下次发送时会自动继续",
+    draftPreserved: "草稿已保留，回到这里后会恢复。",
     ownerOpenedElsewhere: "你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入",
     claudeWindowsUnsupported: "Windows 上暂不支持在这里继续 Claude Code 会话",
     codexVersionTooOld: "Codex 版本过低，升级后可以在这里继续",
@@ -93,7 +95,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     returned: (agent) => `這段對話在 AgentKib 中為唯讀，${agent} 那邊關閉後會自動恢復`,
     installPlugin: "安裝連線外掛，以後自動連線",
     codexQuit: "只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續",
-    backgroundEnded: "已結束背景程序，可以回 Claude Code 繼續這段對話",
+    backgroundEnded: "背景程序已結束，下次傳送訊息時會自動繼續",
+    draftPreserved: "草稿已保留，回到這裡後會恢復。",
     ownerOpenedElsewhere: "你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入",
     claudeWindowsUnsupported: "Windows 上暫不支援在這裡繼續 Claude Code 對話",
     codexVersionTooOld: "Codex 版本過舊，升級後可以在這裡繼續",
@@ -135,7 +138,8 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     codexQuit:
       "Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。",
     backgroundEnded:
-      "バックグラウンドプロセスを終了しました。Claude Code でこの会話を続けられます。",
+      "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",
+    draftPreserved: "下書きを保存しています。ここに戻ると復元されます。",
     ownerOpenedElsewhere:
       "Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。",
     claudeWindowsUnsupported: "Windows では、ここで Claude Code の会話を続ける機能はまだ使えません",
@@ -177,7 +181,9 @@ const continuationCopy: Record<string, SessionContinuationCopy> = {
     installPlugin: "Install the connection plugin to connect automatically",
     codexQuit:
       "Closing the Codex window may not be enough. Quit the app completely to continue here.",
-    backgroundEnded: "Background process ended. You can continue this session in Claude Code.",
+    backgroundEnded:
+      "The background process ended. It will resume automatically when you send your next message.",
+    draftPreserved: "Your draft is kept and will be restored when you return here.",
     ownerOpenedElsewhere:
       "You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once.",
     claudeWindowsUnsupported: "Continuing Claude Code sessions here isn't supported on Windows yet",
@@ -221,6 +227,7 @@ export type SessionContinuationChoiceProps = {
   onReturn: SessionContinuationAction;
   disabled?: boolean;
   forkDisabled?: boolean;
+  hasDraft?: boolean;
   /** Offer only once a connected terminal accepts messages sent from AgentKib. */
   pluginAction?: SessionContinuationAction;
 };
@@ -236,6 +243,7 @@ export function SessionContinuationChoice({
   onReturn,
   disabled,
   forkDisabled,
+  hasDraft,
   pluginAction,
 }: SessionContinuationChoiceProps) {
   const copy = sessionContinuationCopy(locale);
@@ -284,6 +292,11 @@ export function SessionContinuationChoice({
           </button>
         ) : null}
       </div>
+      {hasDraft ? (
+        <p role="status" className="text-xs leading-5 text-muted-foreground">
+          {copy.draftPreserved}
+        </p>
+      ) : null}
       {agent === "Codex" ? (
         <p className="text-xs leading-5 text-muted-foreground">{copy.codexQuit}</p>
       ) : null}
@@ -328,9 +341,11 @@ export function SessionContinuationStatus({
 export function SessionContinuationReturned({
   locale,
   agent,
+  hasDraft,
 }: {
   locale: string;
   agent: SessionContinuationAgent;
+  hasDraft?: boolean;
 }) {
   const copy = sessionContinuationCopy(locale);
   return (
@@ -339,6 +354,11 @@ export function SessionContinuationReturned({
       className="min-w-0 space-y-1.5 rounded-xl border border-border bg-muted/30 p-4"
     >
       <p className="text-sm leading-6 text-foreground">{copy.returned(agent)}</p>
+      {hasDraft ? (
+        <p role="status" className="text-xs leading-5 text-muted-foreground">
+          {copy.draftPreserved}
+        </p>
+      ) : null}
       {agent === "Codex" ? (
         <p className="text-xs leading-5 text-muted-foreground">{copy.codexQuit}</p>
       ) : null}

@@ -73,6 +73,28 @@ const localizedChoices = [
 afterEach(cleanup);
 
 describe("shared session continuation choice", () => {
+  it.each([
+    ["zh-CN", "草稿已保留，回到这里后会恢复。"],
+    ["zh-TW", "草稿已保留，回到這裡後會恢復。"],
+    ["en-US", "Your draft is kept and will be restored when you return here."],
+    ["ja-JP", "下書きを保存しています。ここに戻ると復元されます。"],
+  ])("shows the retained draft only when present in %s", (locale, hint) => {
+    const props = {
+      locale,
+      agent: "Codex" as const,
+      title: "Project",
+      onFork: vi.fn(),
+      onReturn: vi.fn(),
+    };
+    const view = render(<SessionContinuationChoice {...props} />);
+    expect(screen.queryByText(hint)).not.toBeInTheDocument();
+    view.rerender(<SessionContinuationChoice {...props} hasDraft />);
+    expect(screen.getByRole("status")).toHaveTextContent(hint);
+    view.rerender(<SessionContinuationReturned locale={locale} agent="Codex" hasDraft />);
+    expect(screen.getByText(hint)).toBeVisible();
+    expect(props.onFork).not.toHaveBeenCalled();
+    expect(props.onReturn).not.toHaveBeenCalled();
+  });
   it.each(localizedChoices)("renders usable choices in $locale", async (copy) => {
     const onFork = vi.fn(async () => {});
     const onReturn = vi.fn();

@@ -935,34 +935,61 @@ describe("Claude local owner panel", () => {
       expect(calls("release")).toHaveLength(0);
     },
   );
-  it.each(["send", "stop"] as const)(
-    "retains the connected terminal's verified %s capability",
-    async (operation) => {
+  it("retains the connected terminal's verified send capability", async () => {
+    live = {
+      ...live,
+      executionMode: "claude-follower",
+      executionLocation: "terminal",
+      status: "idle",
+      sendEnabled: true,
+      stopEnabled: false,
+    };
+    mount();
+    await screen.findByText(sessionContinuationCopy("en-US").terminalHint);
+    await enterMessage("continue in terminal");
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Send" })));
+    await waitFor(() => expect(calls("send")).toHaveLength(1));
+    expect(calls("send")[0][0]).toMatchObject({ sessionId: "session" });
+    expect(calls("adopt")).toHaveLength(0);
+    expect(calls("release")).toHaveLength(0);
+  });
+  it.each(
+    (["zh-CN", "zh-TW", "en-US", "ja-JP"] as const).flatMap((language) =>
+      [false, true].map((terminalSend) => ({ language, terminalSend })),
+    ),
+  )(
+    "hides follower stop and preserves managed stop in $language with terminalSend=$terminalSend",
+    async ({ language, terminalSend }) => {
+      locale = language;
+      const stopLabel = language === "en-US" ? "Stop" : "停止";
       live = {
         ...live,
         executionMode: "claude-follower",
         executionLocation: "terminal",
-        status: operation === "send" ? "idle" : "running",
-        sendEnabled: operation === "send",
-        stopEnabled: operation === "stop",
-        turnId: operation === "stop" ? "native-turn" : undefined,
+        status: "running",
+        terminalSend,
+        sendEnabled: false,
+        stopEnabled: true,
+        turnId: "native-turn",
       };
       mount();
-      if (operation === "send") {
-        await screen.findByText(sessionContinuationCopy("en-US").terminalHint);
-        await enterMessage("continue in terminal");
-      } else {
-        // The released plugin takes no messages from here: the terminal is followed, stop remains.
-        await screen.findByText(sessionContinuationCopy("en-US").terminalWatch);
-        expect(screen.queryByLabelText("Message")).not.toBeInTheDocument();
-      }
-      fireEvent.click(
-        await enabled(screen.getByRole("button", { name: operation === "send" ? "Send" : "Stop" })),
-      );
-      await waitFor(() => expect(calls(operation)).toHaveLength(1));
-      expect(calls(operation)[0][0]).toMatchObject({
+      const copy = sessionContinuationCopy(language);
+      await screen.findByText(terminalSend ? copy.terminalHint : copy.terminalWatch);
+      expect(screen.queryByRole("button", { name: stopLabel })).not.toBeInTheDocument();
+      expect(calls("stop")).toHaveLength(0);
+
+      live = {
+        ...live,
+        executionMode: "claude-managed",
+        executionLocation: "agentkib",
+        revision: 2,
+      };
+      act(() => emitNative(1, "state", { ...live }));
+      fireEvent.click(await enabled(await screen.findByRole("button", { name: stopLabel })));
+      await waitFor(() => expect(calls("stop")).toHaveLength(1));
+      expect(calls("stop")[0][0]).toMatchObject({
         sessionId: "session",
-        ...(operation === "stop" ? { turnId: "native-turn" } : {}),
+        turnId: "native-turn",
       });
       expect(calls("adopt")).toHaveLength(0);
       expect(calls("release")).toHaveLength(0);
@@ -1376,6 +1403,7 @@ describe("Claude local owner panel", () => {
     expect(
       await screen.findByText(sessionContinuationCopy("en-US").returned("Claude Code")),
     ).toBeVisible();
+    expect(screen.getByText(sessionContinuationCopy("en-US").draftPreserved)).toBeVisible();
     expect(
       screen.queryByRole("button", { name: sessionContinuationCopy("en-US").copyCommand }),
     ).not.toBeInTheDocument();

@@ -1,4 +1,5 @@
 import { catalogCopy } from "../catalog/catalog-copy";
+import { codexReason } from "./codex-copy";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { claudeSessionBanner } from "./claude-session-banner";
 import { HistoryReferenceChips } from "../history/history-search-controls";
@@ -36,6 +37,7 @@ export function SessionReader() {
     locale,
     live,
     notice,
+    noticeReason,
     canSend,
     canStop,
     message,
@@ -149,6 +151,9 @@ export function SessionReader() {
               <SessionTranscript
                 key={selected}
                 events={page.events}
+                pendingMessage={
+                  session.pendingSend?.sessionId === selected ? session.pendingSend : undefined
+                }
                 streamText={!hasNativeReply ? liveStreamText : undefined}
                 streamTextTruncated={live?.streamTextTruncated}
                 liveTurnId={live?.turnId}
@@ -164,30 +169,6 @@ export function SessionReader() {
                   await earlier();
                 }}
               />
-              {session.pendingSend?.sessionId === selected &&
-                !page.events
-                  .slice(
-                    Math.max(
-                      0,
-                      page.events.findIndex(
-                        (item) => item.id === session.pendingSend?.afterEventId,
-                      ) + 1,
-                    ),
-                  )
-                  .some(
-                    (item) =>
-                      item.kind === "user-message" &&
-                      item.content?.trim() === session.pendingSend?.text,
-                  ) && (
-                  <div
-                    data-message-role="user"
-                    className="mx-auto flex w-full max-w-3xl justify-end px-1 py-3"
-                  >
-                    <p className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-primary px-4 py-2 text-sm text-primary-foreground">
-                      {session.pendingSend.text}
-                    </p>
-                  </div>
-                )}
             </>
           )}
         </section>
@@ -249,14 +230,24 @@ export function SessionReader() {
                 </Button>
               ))}
             </div>
-            {notice && !(current?.agent === "claude-code" && banner && notice === "uncertain") && (
-              <p
-                role="status"
-                className="mx-auto w-full max-w-3xl px-5 py-2 text-xs leading-6 text-muted-foreground"
-              >
-                {t[notice]}
-              </p>
-            )}
+            {notice &&
+              !(
+                current?.agent === "codex" &&
+                notice === "notDispatched" &&
+                (noticeReason === "unsupported-model" || noticeReason === "unsupported-effort")
+              ) &&
+              !(current?.agent === "claude-code" && banner && notice === "uncertain") && (
+                <p
+                  role="status"
+                  className="mx-auto w-full max-w-3xl px-5 py-2 text-xs leading-6 text-muted-foreground"
+                >
+                  {notice === "notDispatched" && session.actionUnavailableReason
+                    ? codexReason(locale, session.actionUnavailableReason).text
+                    : current?.agent === "codex" && notice === "notDispatched" && noticeReason
+                      ? codexReason(locale, noticeReason).text
+                      : t[notice]}
+                </p>
+              )}
             {(current?.agent === "codex" ||
               current?.agent === "claude-code" ||
               current?.agent === "antigravity") &&

@@ -340,26 +340,27 @@ export function SessionComposer({
   }, [connectionFailure, connectionToastId, display.reason, selected]);
   const canSubmit = online && controlReady && canSend;
   const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
-  const primaryAction = canStop ? (
-    <Button
-      type="button"
-      variant="outline"
-      className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
-      aria-label={t.stop}
-      onClick={() => void control("stop")}
-    >
-      <Square size={17} />
-    </Button>
-  ) : (
-    <Button
-      type="submit"
-      className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
-      aria-label={t.send}
-      disabled={!canSubmit || compacting || !valid || submitted}
-    >
-      <ArrowUp size={20} />
-    </Button>
-  );
+  const primaryAction =
+    canStop && live?.executionMode !== "claude-follower" ? (
+      <Button
+        type="button"
+        variant="outline"
+        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
+        aria-label={t.stop}
+        onClick={() => void control("stop")}
+      >
+        <Square size={17} />
+      </Button>
+    ) : (
+      <Button
+        type="submit"
+        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
+        aria-label={t.send}
+        disabled={!canSubmit || compacting || !valid || submitted}
+      >
+        <ArrowUp size={20} />
+      </Button>
+    );
   const advancedActions =
     (running || compacting) &&
     (!isClaude ||
@@ -412,7 +413,13 @@ export function SessionComposer({
   if ((isCodex || isClaude) && display.continuation === "busy")
     return returnedFor === returnKey ? (
       <div className="w-full max-w-3xl self-center">
-        <SessionContinuationReturned locale={locale} agent={isClaude ? "Claude Code" : "Codex"} />
+        <SessionContinuationReturned
+          locale={locale}
+          agent={isClaude ? "Claude Code" : "Codex"}
+          hasDraft={Boolean(
+            message.trim() || uploads.length || resources.length || historyReferences.length,
+          )}
+        />
       </div>
     ) : (
       <SessionBusyChoice
@@ -428,10 +435,7 @@ export function SessionComposer({
   if (isClaude && display.continuation === "terminal-watch")
     return (
       <div className="w-full max-w-3xl shrink-0 self-center">
-        <SessionContinuationTerminal
-          locale={locale}
-          stop={canStop ? { label: t.stop, onStop: () => void control("stop") } : undefined}
-        />
+        <SessionContinuationTerminal locale={locale} />
       </div>
     );
   return (
@@ -446,7 +450,7 @@ export function SessionComposer({
           if (canSubmit && !compacting) void send("send");
         }}
       >
-        {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} />}
+        {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
         <label className="sr-only" htmlFor="message">
           {t.message}
         </label>

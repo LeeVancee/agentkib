@@ -5,6 +5,7 @@ import { dictionaries } from "@/features/conversation/i18n";
 import { SessionReader } from "@/features/conversation/features/sessions/session-reader";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
+import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: vi.fn(),
@@ -55,6 +56,73 @@ function moveTo(top: number) {
 }
 
 describe("conversation reading position", () => {
+  it("anchors a pending user before a reply that arrives ahead of native persistence", () => {
+    state.pendingSend = { sessionId: "first", text: "next question", afterEventId: "tail" };
+    state.page!.events.push(message("new-answer", "New answer"));
+    const view = render(<SessionReader />);
+    const roles = [...view.container.querySelectorAll("[data-message-role]")];
+    expect(roles.map((node) => node.textContent)).toEqual([
+      "First answer",
+      "next question",
+      "New answer",
+    ]);
+  });
+
+  it("keeps a repeated pending prompt until its native user arrives after the anchor", () => {
+    state.page!.events = [
+      { ...message("old-user", "repeat"), kind: "user-message" },
+      message("anchor", "old reply"),
+      message("reply", "new reply"),
+    ];
+    state.pendingSend = { sessionId: "first", text: "repeat", afterEventId: "anchor" };
+    const view = render(<SessionReader />);
+    expect(view.container.querySelectorAll('[data-message-role="user"]')).toHaveLength(2);
+    const nativeUser = { ...message("new-user", "repeat"), kind: "user-message" as const };
+    state.page = {
+      ...state.page!,
+      events: [state.page!.events[0], state.page!.events[1], nativeUser, state.page!.events[2]],
+    };
+    view.rerender(<SessionReader />);
+    expect(view.container.querySelectorAll('[data-message-role="user"]')).toHaveLength(2);
+    expect(view.container.querySelector('[data-event-id="session-pending:user"]')).toBeNull();
+  });
+
+  it("places an empty-history pending user before the live stream fallback", () => {
+    state.page = { events: [], warnings: [] };
+    state.pendingSend = { sessionId: "first", text: "question" };
+    state.live = {
+      sessionId: "first",
+      status: "running",
+      revision: 1,
+      sendEnabled: false,
+      turnId: "turn",
+      streamText: "answer",
+      approvals: [],
+    };
+    const view = render(<SessionReader />);
+    const roles = [...view.container.querySelectorAll("[data-message-role]")].map((node) =>
+      node.getAttribute("data-message-role"),
+    );
+    expect(roles).toEqual(["user", "assistant"]);
+  });
+  it.each(["native-model-unconfirmed", "native-effort-unconfirmed"] as const)(
+    "shows the source-settings recovery instruction for %s even without a composer",
+    (reason) => {
+      state = { ...state, notice: "notDispatched", noticeReason: reason };
+      render(<SessionReader />);
+      expect(screen.getByText(codexReason("zh-CN", reason).text)).toBeVisible();
+      expect(screen.queryByText(dictionaries["zh-CN"].notDispatched)).not.toBeInTheDocument();
+    },
+  );
+  it("does not repeat the generic rejection beside Codex settings recovery", () => {
+    state = { ...state, notice: "notDispatched", noticeReason: "unsupported-model" };
+    const view = render(<SessionReader />);
+    expect(screen.queryByText(dictionaries["zh-CN"].notDispatched)).not.toBeInTheDocument();
+    state = { ...state, noticeReason: undefined };
+    view.rerender(<SessionReader />);
+    expect(screen.getByText(dictionaries["zh-CN"].notDispatched)).toBeVisible();
+  });
+
   it("uses the same live usage gauge for an ACP composer without settings", () => {
     state = {
       ...state,

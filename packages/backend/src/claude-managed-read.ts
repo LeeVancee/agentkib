@@ -46,6 +46,7 @@ import {
   ClaudeUndispatchedError,
   type ClaudeObservedPermissionMode,
   type ClaudeRunnerSnapshot,
+  type ClaudeStartupCleanupProof,
   validateClaudeContent,
 } from "./claude-managed-runner";
 import {
@@ -96,6 +97,13 @@ const isObject = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const sessionIdPattern = /^[A-Za-z0-9-]{1,128}$/;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const startupFailureCodes = new Set([
+  "initialize-timeout",
+  "initialize-write-failed",
+  "process-start-failed",
+  "process-exited",
+  "stream-closed",
+]);
 
 const supportsClaudeManagedRunner = () =>
   process.platform === "darwin" || process.platform === "linux";
@@ -827,6 +835,215 @@ export class ClaudeManagedReadOwner {
     }
   }
 
+  #recordStartupCleanup(record: ClaudeRecord, proof: ClaudeStartupCleanupProof): void {
+    const current = this.#load(record.id);
+    if (
+      !current ||
+      current.released ||
+      current.nativeId !== record.nativeId ||
+      current.createdAt !== record.createdAt ||
+      current.workspace !== record.workspace ||
+      current.home !== record.home ||
+      current.snapshot.status !== "outcome-unknown" ||
+      current.snapshot.revision !== proof.failedRevision ||
+      current.snapshot.turnId !== proof.requestId
+    )
+      throw new Error("Claude startup cleanup identity unconfirmed");
+    this.#validate(current);
+    const database = openManagedLedger(this.dataDir);
+    if (!database) throw new Error("session-unavailable");
+    try {
+      database.exec("BEGIN IMMEDIATE");
+      const other = database
+        .prepare(
+          "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND request_id<>? AND phase<>'resolved') AS found",
+        )
+        .get(record.id, proof.requestId) as { found: number };
+      const row = database
+        .prepare(
+          "SELECT evidence FROM managed_commands WHERE request_id=? AND session_id=? AND phase='prepared' AND result IS NULL",
+        )
+        .get(proof.requestId, record.id) as { evidence: string | null } | undefined;
+      const evidence: unknown = row?.evidence ? JSON.parse(row.evidence) : null;
+      if (
+        other.found ||
+        !isObject(evidence) ||
+        evidence.operation !== "send" ||
+        evidence.executionMode !== "claude-managed" ||
+        evidence.runtimeBootId !== this.bootId ||
+        evidence.workspaceId !== record.workspaceId
+      )
+        throw new Error("Claude startup dispatch state unconfirmed");
+      database
+        .prepare("UPDATE managed_commands SET evidence=? WHERE request_id=? AND phase='prepared'")
+        .run(
+          JSON.stringify({
+            ...evidence,
+            startupCleanup: {
+              version: 1,
+              nativeId: record.nativeId,
+              recordCreatedAt: record.createdAt,
+              workspace: record.workspace,
+              home: record.home,
+              userDispatched: false,
+              cleanupConfirmed: true,
+              code: proof.code,
+              failedRevision: proof.failedRevision,
+              checkpoint: proof.checkpoint,
+            },
+          }),
+          proof.requestId,
+        );
+      database.exec("COMMIT");
+    } catch (error) {
+      try {
+        database.exec("ROLLBACK");
+      } catch {
+        // Preserve the original proof write failure.
+      }
+      throw error;
+    } finally {
+      database.close();
+    }
+  }
+
+  /** Only a durable, identity-bound receipt may settle an interrupted startup. Old reasons
+   * and an absent runner cannot prove that a detached MCP child has stopped. */
+  #recoverStartupCleanup(record: ClaudeRecord): ClaudeRecord {
+    if (this.#runners.has(record.id) || record.released) return record;
+    const release = this.#ownerLocks.has(record.id) ? null : this.#tryLock(record.id);
+    if (!release && !this.#ownerLocks.has(record.id)) return record;
+    try {
+      const current = this.#load(record.id);
+      if (!current) throw new Error("session-unavailable");
+      this.#validate(current);
+      // Acquiring a lease does not make a snapshot read before that lease current.
+      // Another runtime may have completed and released it in that interval.
+      if (
+        current.nativeId !== record.nativeId ||
+        current.createdAt !== record.createdAt ||
+        current.workspace !== record.workspace ||
+        current.home !== record.home ||
+        current.released !== record.released ||
+        current.snapshot.revision !== record.snapshot.revision ||
+        current.snapshot.status !== record.snapshot.status ||
+        current.snapshot.turnId !== record.snapshot.turnId
+      )
+        return current;
+      record = current;
+      const database = openManagedLedger(this.dataDir);
+      if (!database) return record;
+      try {
+        const rows = database
+          .prepare(
+            "SELECT request_id,phase,evidence,result FROM managed_commands WHERE session_id=? AND json_extract(evidence,'$.startupCleanup.cleanupConfirmed')=1",
+          )
+          .all(record.id) as Array<{
+          request_id: string;
+          phase: string;
+          evidence: string;
+          result: string | null;
+        }>;
+        for (const row of rows) {
+          const evidence: unknown = JSON.parse(row.evidence);
+          const result: unknown = row.result ? JSON.parse(row.result) : null;
+          if (!isObject(evidence)) continue;
+          const proof = evidence.startupCleanup;
+          if (
+            !isObject(proof) ||
+            proof.version !== 1 ||
+            proof.cleanupConfirmed !== true ||
+            proof.userDispatched !== false ||
+            proof.nativeId !== record.nativeId ||
+            proof.recordCreatedAt !== record.createdAt ||
+            proof.workspace !== record.workspace ||
+            proof.home !== record.home ||
+            evidence.workspaceId !== record.workspaceId ||
+            evidence.operation !== "send" ||
+            evidence.executionMode !== "claude-managed" ||
+            !startupFailureCodes.has(proof.code) ||
+            !Number.isSafeInteger(proof.failedRevision) ||
+            proof.failedRevision >= Number.MAX_SAFE_INTEGER ||
+            !isObject(proof.checkpoint) ||
+            !Number.isSafeInteger(proof.checkpoint.revision) ||
+            proof.checkpoint.revision < 0 ||
+            proof.checkpoint.revision >= proof.failedRevision ||
+            (proof.checkpoint.turnId !== "" &&
+              (typeof proof.checkpoint.turnId !== "string" ||
+                !uuidPattern.test(proof.checkpoint.turnId))) ||
+            !(
+              (row.phase === "prepared" && row.result === null) ||
+              (row.phase === "resolved" &&
+                isObject(result) &&
+                result.accepted === false &&
+                result.controlOutcome === "not-dispatched")
+            )
+          )
+            continue;
+          const failed =
+            record.snapshot.status === "outcome-unknown" &&
+            record.snapshot.revision === proof.failedRevision &&
+            record.snapshot.turnId === row.request_id;
+          const restored =
+            record.snapshot.status === "idle" &&
+            record.snapshot.revision === proof.failedRevision + 1 &&
+            record.snapshot.turnId === proof.checkpoint.turnId;
+          if (!failed && !restored) continue;
+          const other = database
+            .prepare(
+              "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE session_id=? AND request_id<>? AND phase<>'resolved') AS found",
+            )
+            .get(record.id, row.request_id) as { found: number };
+          if (other.found) return record;
+          const reason = failed
+            ? record.snapshot.reason
+            : isObject(result) && typeof result.error === "string"
+              ? result.error
+              : record.snapshot.reason;
+          const rejected = {
+            accepted: false,
+            completed: false,
+            requestId: row.request_id,
+            sessionId: record.id,
+            runtimeBootId: evidence.runtimeBootId,
+            controlOutcome: "not-dispatched",
+            error: reason,
+            ...(typeof evidence.publicInputHash === "string"
+              ? { publicInputHash: evidence.publicInputHash }
+              : {}),
+          };
+          // Save the outcome first. If the metadata write is interrupted, the same receipt
+          // still restores the matching failed revision on the next read.
+          if (row.phase === "prepared")
+            finishManagedCommand(this.dataDir, row.request_id, rejected);
+          if (failed) {
+            record.snapshot = {
+              ...record.snapshot,
+              status: "idle",
+              revision: proof.failedRevision + 1,
+              turnId: proof.checkpoint.turnId,
+              sendEnabled: true,
+              stopEnabled: false,
+              approvals: [],
+              questions: [],
+              streamText: "",
+              terminalResult: null,
+              reason,
+            };
+            this.#save(record);
+            this.#catalogChanged?.();
+          }
+          return record;
+        }
+      } finally {
+        database.close();
+      }
+    } finally {
+      release?.();
+    }
+    return record;
+  }
+
   #newRunner(
     record: ClaudeRecord,
     options: { mcpConfig?: Record<string, unknown> } = {},
@@ -906,6 +1123,7 @@ export class ClaudeManagedReadOwner {
           ? { forkSourceNativeId: record.forkSourceNativeId, forkCutoff: record.forkCutoff }
           : {}),
         ...options,
+        onUndispatchedStartup: (proof) => this.#recordStartupCleanup(record, proof),
         beforeStart: () => this.#beforeRunnerStart(id),
         ...(this.#version?.value ? { cliVersion: this.#version.value } : {}),
         onResult: (result) => {
@@ -3071,7 +3289,7 @@ export class ClaudeManagedReadOwner {
   }
 
   async #live(id: string, controls: boolean): Promise<Record<string, unknown>> {
-    const record = this.#load(id);
+    let record = this.#load(id);
     const version = supportsClaudeManagedRunner() ? await this.#installationVersion() : null;
     if (!record) {
       const target = await this.#resolveNative(id);
@@ -3105,6 +3323,7 @@ export class ClaudeManagedReadOwner {
       };
     }
     this.#validate(record);
+    record = this.#recoverStartupCleanup(record);
     this.#recoverCompletions(record);
     const runner = this.#runners.get(id);
     if (runner) {

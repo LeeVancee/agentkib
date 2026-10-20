@@ -17,7 +17,9 @@ export function claudeSessionBanner({
     live?.status === "outcome-unknown" ||
     live?.reason === "control-outcome-unconfirmed"
   )
-    return { title: t.controlUnconfirmed, body: copy.connectionUnconfirmed };
+    return live?.executionMode === "claude-managed"
+      ? { title: "", body: copy.managedUnconfirmed }
+      : { title: t.controlUnconfirmed, body: copy.connectionUnconfirmed };
   if (!online && live?.executionMode === "claude-follower")
     return { title: copy.hostDisconnected, body: copy.hostDisconnectedInfo };
   if (live?.continuationNotice === "owner-opened-elsewhere")

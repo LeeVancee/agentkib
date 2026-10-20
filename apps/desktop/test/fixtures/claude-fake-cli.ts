@@ -9,10 +9,11 @@ import path from "node:path";
  * plays back a plan the test writes. No real Claude session or user configuration is involved, and
  * that a real CLI emits any of these frames in this form is NOT verified.
  *
- * Plan items (`afterInitialize` after the initialize response, `onUser` on each user frame, then
- * the ordinary assistant and result frames unless `noResult`):
+ * Plan items (`beforeInitialize` before answering initialize, `afterInitialize` after its
+ * response, `onUser` on each user frame, then ordinary assistant/result unless `noResult`):
  *  - a frame object, sent as is;
  *  - `{ __exit: true }`: the process ends, like a CLI that dies mid-turn;
+ *  - `{ __closeOutput: true }`: closes stdout while the root process stays alive;
  *  - `{ __spawn: "name", detached?: true }`: starts a child that keeps running and records its PID;
  *  - `{ __huge: true }`: writes more than the 25 MiB frame limit without a line break;
  *  - `{ __raw: "text" }`: writes the text and a line break as is, JSON or not;
@@ -20,6 +21,7 @@ import path from "node:path";
  *    control_response for that request, so a test can prove the answer arrived before the result.
  */
 export type FakeClaudePlan = {
+  beforeInitialize?: unknown[];
   afterInitialize?: unknown[];
   onUser?: unknown[];
   noResult?: boolean;
@@ -55,6 +57,7 @@ const run = () => {
   while (queue.length) {
     const item = queue.shift();
     if (item.__exit) { process.stdout.end(() => process.exit(0)); return; }
+    if (item.__closeOutput) { process.stdout.end(); continue; }
     if (item.__spawn) {
       const started = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],
         {stdio: 'ignore', detached: !!item.detached});
@@ -75,6 +78,7 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
   }
   if (frame.type === 'control_request') {
     const initialize = frame.request.subtype === 'initialize';
+    if (initialize) { queue = (plan().beforeInitialize || []).slice(); run(); }
     if (initialize && plan().silentInitialize) return;
     send({type: 'control_response', response: {
       subtype: 'success', request_id: frame.request_id,

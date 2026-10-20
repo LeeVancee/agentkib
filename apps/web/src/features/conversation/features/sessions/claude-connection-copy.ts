@@ -1,4 +1,4 @@
-import type { Locale } from "../../i18n";
+type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
 
 const zh = {
   disconnectBeforeCode: "若要生成新的连接码，请先断开当前终端连接。",
@@ -6,6 +6,7 @@ const zh = {
   versionMismatch: "Claude Code 或插件版本不匹配。请按安装指引更新后重新连接。",
   identityMismatch: "目标终端与所选会话不匹配。请在所选会话的终端重新连接。",
   connectionUnconfirmed: "上次操作结果尚未确认。请先核对终端状态，再重新连接。",
+  managedUnconfirmed: "上次操作及后台进程状态尚未确认。请在主机核对后刷新；不会自动重发消息。",
   connectionLimit: "终端连接数量已达上限。请先断开不再使用的连接，再重试。",
   connectionRejected: "连接请求被拒绝。请检查终端与主机状态后重新连接。",
 
@@ -65,6 +66,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     versionMismatch: "Claude Code 或外掛版本不符。請依安裝指引更新後重新連接。",
     identityMismatch: "目標終端與所選對話不符。請在所選對話的終端重新連接。",
     connectionUnconfirmed: "上次操作結果尚未確認。請先核對終端狀態，再重新連接。",
+    managedUnconfirmed:
+      "上次操作及背景程序狀態尚未確認。請在主機核對後重新整理；不會自動重送訊息。",
     connectionLimit: "終端連線數量已達上限。請先中斷不再使用的連線，再重試。",
     connectionRejected: "連線要求遭拒。請檢查終端與主機狀態後重新連接。",
 
@@ -126,6 +129,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "The terminal does not match the selected session. Reconnect from that session’s terminal.",
     connectionUnconfirmed:
       "The previous outcome is unconfirmed. Check the terminal state before reconnecting.",
+    managedUnconfirmed:
+      "The previous operation and background process state are unconfirmed. Check them on the host, then refresh. Messages will not be resent automatically.",
     connectionLimit:
       "The terminal connection limit was reached. Disconnect unused connections and retry.",
     connectionRejected:
@@ -198,6 +203,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "ターミナルが選択した会話と一致しません。その会話のターミナルから再接続してください。",
     connectionUnconfirmed:
       "前回の操作結果が未確認です。ターミナルの状態を確認してから再接続してください。",
+    managedUnconfirmed:
+      "前の操作結果とバックグラウンドプロセスの状態を確認できていません。ホスト側で確認してから更新してください。メッセージは自動で再送されません。",
     connectionLimit:
       "ターミナルの接続数が上限に達しました。未使用の接続を切断して再試行してください。",
     connectionRejected:

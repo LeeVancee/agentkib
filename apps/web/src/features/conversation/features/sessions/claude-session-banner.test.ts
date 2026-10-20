@@ -47,6 +47,16 @@ describe("Claude execution and terminal connection presentation", () => {
         label: continuation.running,
         continuation: "running",
       });
+      for (const unconfirmed of [
+        fixture(locale, "claude-managed", "outcome-unknown", "control-outcome-unconfirmed"),
+        { ...managed, notice: "uncertain" as const },
+      ]) {
+        expect(claudeSessionBanner(unconfirmed)).toEqual({
+          title: "",
+          body: copy.managedUnconfirmed,
+        });
+        expect(copy.managedUnconfirmed).not.toBe(copy.connectionUnconfirmed);
+      }
       const ended = {
         ...idle,
         live: { ...idle.live!, continuationNotice: "background-ended" as const },

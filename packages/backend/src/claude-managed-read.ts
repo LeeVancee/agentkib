@@ -104,6 +104,8 @@ const startupFailureCodes = new Set([
   "process-exited",
   "stream-closed",
 ]);
+const supportedStartupCleanupKind = (kind: unknown) =>
+  kind === "not-started" || (kind === "mac-owned-process-tree" && process.platform === "darwin");
 
 const supportsClaudeManagedRunner = () =>
   process.platform === "darwin" || process.platform === "linux";
@@ -840,6 +842,8 @@ export class ClaudeManagedReadOwner {
   }
 
   #recordStartupCleanup(record: ClaudeRecord, proof: ClaudeStartupCleanupProof): void {
+    if (!supportedStartupCleanupKind(proof.cleanupKind))
+      throw new Error("Claude startup cleanup method unconfirmed");
     const current = this.#load(record.id);
     if (
       !current ||
@@ -884,13 +888,14 @@ export class ClaudeManagedReadOwner {
           JSON.stringify({
             ...evidence,
             startupCleanup: {
-              version: 1,
+              version: 2,
               nativeId: record.nativeId,
               recordCreatedAt: record.createdAt,
               workspace: record.workspace,
               home: record.home,
               userDispatched: false,
               cleanupConfirmed: true,
+              cleanupKind: proof.cleanupKind,
               code: proof.code,
               failedRevision: proof.failedRevision,
               checkpoint: proof.checkpoint,
@@ -913,10 +918,11 @@ export class ClaudeManagedReadOwner {
 
   /** Only a durable, identity-bound receipt may settle an interrupted startup. Old reasons
    * and an absent runner cannot prove that a detached MCP child has stopped. */
-  #recoverStartupCleanup(record: ClaudeRecord): ClaudeRecord {
-    if (this.#runners.has(record.id) || record.released) return record;
-    const release = this.#ownerLocks.has(record.id) ? null : this.#tryLock(record.id);
-    if (!release && !this.#ownerLocks.has(record.id)) return record;
+  #recoverStartupCleanup(record: ClaudeRecord, ownerLeaseHeld = false): ClaudeRecord {
+    if (this.#runners.has(record.id)) return record;
+    const held = ownerLeaseHeld || this.#ownerLocks.has(record.id);
+    const release = held ? null : this.#tryLock(record.id);
+    if (!release && !held) return record;
     try {
       const current = this.#load(record.id);
       if (!current) throw new Error("session-unavailable");
@@ -955,7 +961,7 @@ export class ClaudeManagedReadOwner {
           const proof = evidence.startupCleanup;
           if (
             !isObject(proof) ||
-            proof.version !== 1 ||
+            (proof.version !== 1 && proof.version !== 2) ||
             proof.cleanupConfirmed !== true ||
             proof.userDispatched !== false ||
             proof.nativeId !== record.nativeId ||
@@ -999,6 +1005,29 @@ export class ClaudeManagedReadOwner {
             )
             .get(record.id, row.request_id) as { found: number };
           if (other.found) return record;
+          if (proof.version !== 2 || !supportedStartupCleanupKind(proof.cleanupKind)) {
+            if (restored) {
+              // Older group-only cleanup may already have saved idle and settled its command.
+              // Quarantine only that exact restoration, never a later owner's progressed state.
+              record.snapshot = {
+                ...record.snapshot,
+                status: "outcome-unknown",
+                revision: Math.min(proof.failedRevision + 2, Number.MAX_SAFE_INTEGER),
+                sendEnabled: false,
+                stopEnabled: false,
+                approvals: [],
+                questions: [],
+                streamText: "",
+                terminalResult: null,
+                reason: "Claude process cleanup unconfirmed",
+              };
+              this.#save(record);
+              this.#catalogChanged?.();
+              return record;
+            }
+            continue;
+          }
+          if (record.released) return record;
           const reason = failed
             ? record.snapshot.reason
             : isObject(result) && typeof result.error === "string"
@@ -2421,7 +2450,12 @@ export class ClaudeManagedReadOwner {
     if (!release) throw new Error("session-managed-by-another-runtime");
     let retainLock = false;
     try {
-      const existing = this.#load(id);
+      let existing = this.#load(id);
+      if (existing?.released) {
+        existing = this.#recoverStartupCleanup(existing, true);
+        if (existing.snapshot.status === "outcome-unknown")
+          throw new Error("control-outcome-unconfirmed");
+      }
       if (existing?.snapshot.activity === "compacting") throw new Error("session-compacting");
       if (managedSessionHasUnknownCommands(this.dataDir, id))
         throw new Error("control-outcome-unconfirmed");
@@ -2456,6 +2490,7 @@ export class ClaudeManagedReadOwner {
         fresh = false;
       }
 
+      this.#assertNativeAliasesConfirmed(id, nativeId, workspace);
       const evidence = {
         operation: "adopt",
         workspaceId,
@@ -2712,6 +2747,38 @@ export class ClaudeManagedReadOwner {
       );
   }
 
+  #assertNativeAliasesConfirmed(id: string, nativeId: string, workspace: string): void {
+    const home = this.#home();
+    for (const alias of this.#listRecords()) {
+      if (
+        alias.id === id ||
+        alias.nativeId !== nativeId ||
+        alias.workspace !== workspace ||
+        alias.home !== home
+      )
+        continue;
+      const held = this.#ownerLocks.has(alias.id);
+      const release = held ? null : this.#tryLock(alias.id);
+      if (!release && !held) throw new Error("session-managed-by-another-runtime");
+      try {
+        const current = this.#recoverStartupCleanup(alias, true);
+        if (
+          current.nativeId !== nativeId ||
+          current.workspace !== workspace ||
+          current.home !== home
+        )
+          continue;
+        if (
+          current.snapshot.status !== "idle" ||
+          managedSessionHasUnknownCommands(this.dataDir, current.id)
+        )
+          throw new Error("control-outcome-unconfirmed");
+      } finally {
+        release?.();
+      }
+    }
+  }
+
   async #refreshIdleHistory(record: ClaudeRecord): Promise<void> {
     this.#validate(record);
     if (record.fresh) return;
@@ -2779,6 +2846,7 @@ export class ClaudeManagedReadOwner {
     if (this.#shuttingDown || this.#runners.get(id) !== runner)
       throw new Error("session-unavailable");
     if (this.#isSessionBridged(record)) throw new Error("session-already-bridged");
+    this.#assertNativeAliasesConfirmed(id, record.nativeId, record.workspace);
     this.#ownershipReasons.set(id, { at: Date.now(), reason: null });
     this.#continuationNotices.delete(id);
     this.#continuationNoticeIds.delete(id);

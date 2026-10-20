@@ -365,7 +365,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     });
 
     it.each([false, true])(
-      "publishes recovered idle after failed settings startup without replacing the startup error (publicationFails=%s)",
+      "publishes the safe state after failed settings startup without replacing the startup error (publicationFails=%s)",
       async (publicationFails) => {
         const states: Array<Record<string, unknown>> = [];
         const f = fixture("2.1.286", 0, "close-initialize", (state) => {
@@ -379,10 +379,14 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         );
         expect(states.some((state) => state.status === "starting")).toBe(true);
         expect(states.at(-1)).toMatchObject({
-          status: "idle",
-          sendEnabled: true,
+          status: process.platform === "darwin" ? "idle" : "outcome-unknown",
+          sendEnabled: process.platform === "darwin",
           executionLocation: null,
         });
+        if (process.platform !== "darwin")
+          expect(
+            states.some((state) => state.status === "idle" && state.sendEnabled === true),
+          ).toBe(false);
         expect(f.frames().filter((frame) => frame.type === "control_request")).toHaveLength(1);
         expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
       },

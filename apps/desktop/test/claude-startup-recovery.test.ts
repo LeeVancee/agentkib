@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import childProcesses, { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { syncBuiltinESMExports } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeManagedRunnerProcess,
@@ -23,6 +25,7 @@ import { processAlive, type FakeClaudePlan } from "./fixtures/claude-fake-cli";
 import { createStartupClaude } from "./fixtures/claude-startup-cli";
 
 const cleanups: Array<() => void | Promise<void>> = [];
+const confirmsOwnedTree = process.platform === "darwin";
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -47,14 +50,25 @@ function fixture(plan: FakeClaudePlan) {
   return { ...f, runner };
 }
 
-function host(f: ReturnType<typeof fixture>) {
+function host(f: ReturnType<typeof fixture>, indexedNativeId?: string) {
   const owner = new ClaudeManagedReadOwner(
     {
       workspacePath: () => f.workspace,
-      sessions: { id: (_agent: string, id: string) => id },
+      sessions: {
+        id: (_agent: string, id: string) => id,
+        get: (id: string) =>
+          indexedNativeId && id === indexedNativeId
+            ? { agent: "claude-code", workspace_id: "workspace", sidechain: false }
+            : undefined,
+      },
     } as unknown as BackendStore,
     {
       verifiedClaudeControlTarget: (id: string) => path.join(f.config, `${id}.jsonl`),
+      list: async () => ({
+        sessions: indexedNativeId ? [{ native_ref: indexedNativeId, sidechain: false }] : [],
+      }),
+      document: async () => ({ source: { agent: "claude-code", workspace_id: "workspace" } }),
+      claudeControlWorkspace: () => f.workspace,
     } as unknown as SessionReaders,
     {
       run: vi.fn(async (command: string, args: string[]) => ({
@@ -97,13 +111,129 @@ async function send(owner: ClaudeManagedReadOwner, id: string, requestId = rando
 }
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup recovery", () => {
+  it.each(["send", "prepare"] as const)(
+    "keeps a Linux %s startup unknown when process-group cleanup leaves a detached child alive",
+    async (operation) => {
+      const f = fixture({ silentInitialize: true });
+      const childPidFile = path.join(f.root, "detached-child-pid");
+      const identities = new Map<number, string>();
+      const identity = (pid: number) => {
+        try {
+          return execFileSync("/bin/ps", ["-p", String(pid), "-o", "pgid=,lstart="], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }).trim();
+        } catch {
+          return "";
+        }
+      };
+      const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      const proof = vi.fn();
+      const actualSpawn = childProcesses.spawn;
+      let childReady = false;
+      const spawning = vi
+        .spyOn(childProcesses, "spawn")
+        .mockImplementation((...args: Parameters<typeof childProcesses.spawn>) => {
+          const child = actualSpawn(...args);
+          if (args[0] === f.executable) {
+            // Establish the real detached-child fixture before the runner starts its unchanged
+            // 300 ms initialize deadline. Always return the child, even if readiness fails.
+            const deadline = Date.now() + 2000;
+            while (!existsSync(childPidFile) && Date.now() < deadline)
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+            childReady = existsSync(childPidFile);
+          }
+          return child;
+        });
+      syncBuiltinESMExports();
+      let runner: ClaudeManagedRunnerProcess | undefined;
+      writeFileSync(
+        f.executable,
+        `#!/bin/bash
+set -m
+(while :; do :; done) < /dev/null > /dev/null 2>&1 &
+printf '%s' "$!" > "$TEST_CHILD_PID"
+while IFS= read -r frame; do printf '%s\\n' "$frame" >> "$FAKE_LOG"; done
+`,
+        { mode: 0o700 },
+      );
+      try {
+        // Warm the actual host's flock binding before exercising the Linux POSIX group branch.
+        leases.acquirePortableFileLease(path.join(f.root, "platform-bootstrap.lock"))();
+        Object.defineProperty(process, "platform", { value: "linux" });
+        runner = new ClaudeManagedRunnerProcess(
+          f.workspace,
+          randomUUID(),
+          true,
+          0,
+          { ...f.environment, TEST_CHILD_PID: childPidFile },
+          () => undefined,
+          true,
+          undefined,
+          { controlTimeoutMs: 300, onUndispatchedStartup: proof },
+        );
+        const pending = (
+          operation === "send"
+            ? runner.send(f.executable, "synthetic draft", randomUUID(), 0)
+            : runner.prepare(f.executable)
+        ).catch((error: unknown) => error);
+        const rootPid = runner.processId!;
+        identities.set(rootPid, identity(rootPid));
+        const error = await pending;
+        expect(childReady).toBe(true);
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(ClaudeUndispatchedError);
+        expect(error).toMatchObject({ message: "Claude initialize timed out" });
+        expect(runner.snapshot()).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+        expect(proof).not.toHaveBeenCalled();
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+        expect(existsSync(childPidFile)).toBe(true);
+        const childPid = Number(readFileSync(childPidFile, "utf8"));
+        const childIdentity = identity(childPid);
+        identities.set(childPid, childIdentity);
+        expect(childIdentity).toMatch(new RegExp(`^${childPid}\\s`));
+        expect(childPid).not.toBe(rootPid);
+      } finally {
+        await runner?.shutdown().catch(() => undefined);
+        if (existsSync(childPidFile)) {
+          const pid = Number(readFileSync(childPidFile, "utf8"));
+          if (!identities.has(pid)) identities.set(pid, identity(pid));
+        }
+        for (const [pid, started] of identities) {
+          if (!started || identity(pid) !== started) continue;
+          try {
+            process.kill(-pid, "SIGKILL");
+          } catch {
+            // This exact test process group already exited.
+          }
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // The group signal already ended this exact test process.
+          }
+        }
+        Object.defineProperty(process, "platform", originalPlatform);
+        spawning.mockRestore();
+        syncBuiltinESMExports();
+      }
+    },
+    30_000,
+  );
+
   it("restores an explicit settings initialize timeout after confirmed cleanup without a user frame", async () => {
     const f = fixture({ silentInitialize: true });
     await expect(f.runner.prepare(f.executable)).rejects.toThrow("Claude initialize timed out");
     expect(f.runner.hasWorker).toBe(false);
-    expect(f.runner.snapshot()).toMatchObject({ status: "idle", sendEnabled: true });
+    expect(f.runner.snapshot()).toMatchObject({
+      status: confirmsOwnedTree ? "idle" : "outcome-unknown",
+      sendEnabled: confirmsOwnedTree,
+    });
     expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
     f.setPlan({});
+    if (!confirmsOwnedTree) {
+      await expect(f.runner.prepare(f.executable)).rejects.toThrow("busy");
+      return;
+    }
     await expect(f.runner.prepare(f.executable)).resolves.toMatchObject({
       settingsAcknowledged: true,
     });
@@ -119,18 +249,27 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
   it("restores an undispatched initialize timeout after confirming worker cleanup, then permits a new send", async () => {
     const f = fixture({ silentInitialize: true });
     const dispatched = vi.fn();
+    const proof = vi.fn();
+    f.runner.options.onUndispatchedStartup = proof;
     await expect(
       f.runner.send(f.executable, "synthetic draft", randomUUID(), 0, dispatched),
-    ).rejects.toBeInstanceOf(ClaudeUndispatchedError);
+    ).rejects.toBeInstanceOf(confirmsOwnedTree ? ClaudeUndispatchedError : Error);
     expect(dispatched).not.toHaveBeenCalled();
     expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
     expect(f.runner.hasWorker).toBe(false);
     expect(f.runner.snapshot()).toMatchObject({
-      status: "idle",
-      sendEnabled: true,
-      turnId: "",
+      status: confirmsOwnedTree ? "idle" : "outcome-unknown",
+      sendEnabled: confirmsOwnedTree,
+      ...(confirmsOwnedTree ? { turnId: "" } : {}),
       reason: "Claude initialize timed out",
     });
+    if (!confirmsOwnedTree) {
+      expect(proof).not.toHaveBeenCalled();
+      return;
+    }
+    expect(proof).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanupKind: "mac-owned-process-tree" }),
+    );
     f.setPlan({});
     await f.runner.send(
       f.executable,
@@ -168,11 +307,13 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
         operation === "send"
           ? f.runner.send(f.executable, "synthetic draft", randomUUID(), 0)
           : f.runner.prepare(f.executable),
-      ).rejects.toBeInstanceOf(operation === "send" ? ClaudeUndispatchedError : Error);
+      ).rejects.toBeInstanceOf(
+        operation === "send" && confirmsOwnedTree ? ClaudeUndispatchedError : Error,
+      );
       writing.mockRestore();
       expect(f.runner.hasWorker).toBe(false);
       expect(f.runner.snapshot()).toMatchObject({
-        status: "idle",
+        status: confirmsOwnedTree ? "idle" : "outcome-unknown",
         reason: "synthetic initialize write failure",
       });
       expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
@@ -213,6 +354,9 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
 
   it("keeps a failed durable proof write unknown even when physical cleanup succeeded", async () => {
     const f = fixture({ silentInitialize: true });
+    const proof = vi.fn(() => {
+      throw new Error("synthetic proof write failure");
+    });
     const runner = new ClaudeManagedRunnerProcess(
       f.workspace,
       randomUUID(),
@@ -224,15 +368,14 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
       undefined,
       {
         controlTimeoutMs: 300,
-        onUndispatchedStartup: () => {
-          throw new Error("synthetic proof write failure");
-        },
+        onUndispatchedStartup: proof,
       },
     );
     cleanups.push(() => runner.shutdown().catch(() => undefined));
     await expect(runner.send(f.executable, "synthetic draft", randomUUID(), 0)).rejects.toThrow(
-      "synthetic proof write failure",
+      confirmsOwnedTree ? "synthetic proof write failure" : "Claude initialize timed out",
     );
+    expect(proof).toHaveBeenCalledTimes(confirmsOwnedTree ? 1 : 0);
     expect(runner.hasWorker).toBe(false);
     expect(runner.snapshot().status).toBe("outcome-unknown");
   }, 30_000);
@@ -286,25 +429,40 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
     const requestId = randomUUID();
     expect(await send(owner, sessionId, requestId)).toMatchObject({
       accepted: false,
-      controlOutcome: "not-dispatched",
+      controlOutcome: confirmsOwnedTree ? "not-dispatched" : "unknown",
     });
-    expect(await owner.live(sessionId, true)).toMatchObject({ status: "idle", sendEnabled: true });
+    expect(await owner.live(sessionId, true)).toMatchObject({
+      status: confirmsOwnedTree ? "idle" : "outcome-unknown",
+      sendEnabled: confirmsOwnedTree,
+    });
     const database = openManagedLedger(f.root)!;
     try {
       const row = database
-        .prepare("SELECT phase,result FROM managed_commands WHERE request_id=?")
-        .get(requestId) as { phase: string; result: string };
-      expect(row.phase).toBe("resolved");
-      expect(JSON.parse(row.result)).toMatchObject({ controlOutcome: "not-dispatched" });
+        .prepare("SELECT phase,result,evidence FROM managed_commands WHERE request_id=?")
+        .get(requestId) as { phase: string; result: string; evidence: string };
+      expect(row.phase).toBe(confirmsOwnedTree ? "resolved" : "prepared");
+      if (confirmsOwnedTree) {
+        expect(JSON.parse(row.result)).toMatchObject({ controlOutcome: "not-dispatched" });
+        expect(JSON.parse(row.evidence)).toMatchObject({
+          startupCleanup: { version: 2, cleanupKind: "mac-owned-process-tree" },
+        });
+      } else {
+        expect(row.result).toBeNull();
+        expect(JSON.parse(row.evidence)).not.toHaveProperty("startupCleanup");
+      }
     } finally {
       database.close();
     }
     await owner.shutdown();
     const restarted = host(f);
     expect(await restarted.live(sessionId, true)).toMatchObject({
-      status: "idle",
-      sendEnabled: true,
+      status: confirmsOwnedTree ? "idle" : "outcome-unknown",
+      sendEnabled: confirmsOwnedTree,
     });
+    if (!confirmsOwnedTree) {
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      return;
+    }
     f.setPlan({});
     expect(await send(restarted, sessionId)).toMatchObject({ accepted: true });
     await expect.poll(async () => (await restarted.live(sessionId, true)).status).toBe("idle");
@@ -322,6 +480,26 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
     "user-dispatched",
     "other-command",
     "new-owner-completed",
+    "legacy-proof",
+    "invalid-kind",
+    "missing-kind",
+    "foreign-mac-kind",
+    "not-started-linux",
+    "legacy-restored",
+    "legacy-restored-unrelated-native",
+    "legacy-restored-later-revision",
+    "legacy-restored-later-turn",
+    "legacy-restored-max-revision",
+    "legacy-restored-released-send",
+    "legacy-restored-released-adopt",
+    "legacy-restored-indexed-alias-send",
+    "legacy-restored-indexed-alias-adopt",
+    "legacy-restored-indexed-alias-unseen-send",
+    "legacy-restored-indexed-alias-unseen-adopt",
+    "legacy-restored-indexed-alias-unseen-locked-adopt",
+    "ordinary-idle-no-legacy-proof",
+    "foreign-mac-restored",
+    "missing-kind-restored",
   ] as const)(
     "recovers an interrupted durable startup only with matching cleanup proof: %s",
     async (kind) => {
@@ -329,14 +507,34 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
       const owner = host(f);
       const { sessionId } = await create(owner);
       const requestId = randomUUID();
-      expect(await send(owner, sessionId, requestId)).toMatchObject({
+      // A missing interpreter proves no PID started on both supported Unix platforms.
+      writeFileSync(f.executable, "#!/agentkib-nonexistent-interpreter\n", { mode: 0o700 });
+      const failed = (await send(owner, sessionId, requestId)) as { error: string };
+      expect(failed).toMatchObject({
         controlOutcome: "not-dispatched",
       });
       await owner.shutdown();
       const database = openManagedLedger(f.root)!;
       const file = path.join(f.root, "claude-managed", `${sessionId}.json`);
       const record = JSON.parse(readFileSync(file, "utf8"));
-      const recoverable = ["valid", "resolved-outcome", "restored-metadata"].includes(kind);
+      const recoverable = [
+        "valid",
+        "resolved-outcome",
+        "restored-metadata",
+        "not-started-linux",
+      ].includes(kind);
+      const legacyRestored = kind.startsWith("legacy-restored");
+      const releasedLegacy = kind.startsWith("legacy-restored-released-");
+      const aliasLegacy = kind.startsWith("legacy-restored-indexed-alias-");
+      let previousCommandCount = 0;
+      let previousHostRevision = 0;
+      const unsupportedRestored = ["foreign-mac-restored", "missing-kind-restored"].includes(kind);
+      const untouchedIdle = [
+        "legacy-restored-unrelated-native",
+        "legacy-restored-later-revision",
+        "legacy-restored-later-turn",
+        "ordinary-idle-no-legacy-proof",
+      ].includes(kind);
       try {
         const row = database
           .prepare("SELECT evidence,result FROM managed_commands WHERE request_id=?")
@@ -344,8 +542,18 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
         expect(row.evidence).not.toContain("synthetic draft");
         const evidence = JSON.parse(row.evidence);
         const proof = evidence.startupCleanup;
-        expect(proof).toMatchObject({ cleanupConfirmed: true, userDispatched: false });
-        if (kind !== "restored-metadata") {
+        expect(proof).toMatchObject({
+          version: 2,
+          cleanupKind: "not-started",
+          cleanupConfirmed: true,
+          userDispatched: false,
+        });
+        if (
+          kind !== "restored-metadata" &&
+          !legacyRestored &&
+          !unsupportedRestored &&
+          kind !== "ordinary-idle-no-legacy-proof"
+        ) {
           record.snapshot.status = "outcome-unknown";
           record.snapshot.revision = proof.failedRevision;
           record.snapshot.turnId = requestId;
@@ -355,15 +563,45 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
         if (kind === "revision") record.snapshot.revision++;
         if (kind === "cleanup") proof.cleanupConfirmed = false;
         if (kind === "user-dispatched") proof.userDispatched = true;
+        if (kind === "legacy-proof") proof.version = 1;
+        if (kind === "invalid-kind") proof.cleanupKind = "unix-process-group";
+        if (["missing-kind", "missing-kind-restored"].includes(kind)) delete proof.cleanupKind;
+        if (["foreign-mac-kind", "foreign-mac-restored"].includes(kind))
+          proof.cleanupKind = "mac-owned-process-tree";
+        if (legacyRestored) {
+          proof.version = 1;
+          delete proof.cleanupKind;
+        }
+        if (kind === "legacy-restored-unrelated-native") proof.nativeId = randomUUID();
+        if (kind === "legacy-restored-later-revision") record.snapshot.revision++;
+        if (kind === "legacy-restored-later-turn") record.snapshot.turnId = randomUUID();
+        if (kind === "legacy-restored-max-revision") {
+          proof.failedRevision = Number.MAX_SAFE_INTEGER - 1;
+          record.snapshot.revision = Number.MAX_SAFE_INTEGER;
+        }
+        if (releasedLegacy || aliasLegacy) {
+          if (releasedLegacy) record.released = true;
+          previousCommandCount = (
+            database.prepare("SELECT COUNT(*) AS count FROM managed_commands").get() as {
+              count: number;
+            }
+          ).count;
+          const hostRow = database
+            .prepare("SELECT record FROM claude_host_states WHERE session_id=?")
+            .get(sessionId) as { record: string };
+          previousHostRevision = JSON.parse(hostRow.record).revision;
+        }
+        if (kind === "ordinary-idle-no-legacy-proof") delete evidence.startupCleanup;
+        const resolved =
+          kind === "resolved-outcome" ||
+          legacyRestored ||
+          unsupportedRestored ||
+          kind === "ordinary-idle-no-legacy-proof";
         database
           .prepare("UPDATE managed_commands SET phase=?,result=?,evidence=? WHERE request_id=?")
           .run(
-            kind === "resolved-outcome"
-              ? "resolved"
-              : kind === "dispatched"
-                ? "dispatched"
-                : "prepared",
-            kind === "resolved-outcome" ? row.result : null,
+            resolved ? "resolved" : kind === "dispatched" ? "dispatched" : "prepared",
+            resolved ? row.result : null,
             JSON.stringify(evidence),
             requestId,
           );
@@ -383,7 +621,130 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
         );
         dispatchManagedCommand(f.root, other);
       }
-      const restarted = host(f);
+      if (aliasLegacy)
+        writeFileSync(
+          path.join(f.config, `${record.nativeId}.jsonl`),
+          `${JSON.stringify({
+            type: "user",
+            sessionId: record.nativeId,
+            uuid: randomUUID(),
+            cwd: f.workspace,
+            message: { role: "user", content: "synthetic native history" },
+          })}\n`,
+          { mode: 0o600 },
+        );
+      const restarted = host(f, aliasLegacy ? record.nativeId : undefined);
+      if (releasedLegacy) {
+        const actionRequestId = randomUUID();
+        await expect(
+          restarted.request(
+            kind === "legacy-restored-released-send"
+              ? {
+                  operation: "send",
+                  sessionId,
+                  requestId: actionRequestId,
+                  deviceId: "browser-device",
+                  runtimeBootId: restarted.bootId,
+                  // The new host boot advances its own revision exactly once on first read.
+                  expectedRevision: record.snapshot.revision + previousHostRevision + 1,
+                  experimentalEnabled: true,
+                  text: "synthetic blocked retry",
+                }
+              : {
+                  operation: "adopt",
+                  sessionId,
+                  requestId: actionRequestId,
+                  deviceId: "browser-device",
+                },
+          ),
+        ).rejects.toThrow("control-outcome-unconfirmed");
+        expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
+          createdAt: record.createdAt,
+          nativeId: record.nativeId,
+          released: true,
+          snapshot: { status: "outcome-unknown", sendEnabled: false },
+        });
+        const ledger = openManagedLedger(f.root)!;
+        try {
+          expect(ledger.prepare("SELECT COUNT(*) AS count FROM managed_commands").get()).toEqual({
+            count: previousCommandCount,
+          });
+        } finally {
+          ledger.close();
+        }
+      }
+      if (aliasLegacy) {
+        if (!kind.includes("-unseen-"))
+          expect(await restarted.live(sessionId, true)).toMatchObject({
+            status: "outcome-unknown",
+            sendEnabled: false,
+          });
+        if (kind.includes("-locked-")) {
+          const previousRecord = readFileSync(file, "utf8");
+          const release = leases.acquirePortableFileLease(file.replace(/\.json$/, ".lock"));
+          try {
+            await expect(
+              restarted.request({
+                operation: "adopt",
+                sessionId: record.nativeId,
+                requestId: randomUUID(),
+                deviceId: "browser-device",
+              }),
+            ).rejects.toThrow("session-managed-by-another-runtime");
+            expect(readFileSync(file, "utf8")).toBe(previousRecord);
+            expect(existsSync(path.join(f.root, "claude-managed", `${record.nativeId}.json`))).toBe(
+              false,
+            );
+            const ledger = openManagedLedger(f.root)!;
+            try {
+              expect(
+                ledger.prepare("SELECT COUNT(*) AS count FROM managed_commands").get(),
+              ).toEqual({ count: previousCommandCount });
+            } finally {
+              ledger.close();
+            }
+          } finally {
+            release();
+          }
+        }
+        const actionRequestId = randomUUID();
+        await expect(
+          restarted.request(
+            kind.endsWith("-send")
+              ? {
+                  operation: "send",
+                  sessionId: record.nativeId,
+                  requestId: actionRequestId,
+                  deviceId: "browser-device",
+                  runtimeBootId: restarted.bootId,
+                  expectedRevision: 0,
+                  experimentalEnabled: true,
+                  text: "synthetic blocked alias retry",
+                }
+              : {
+                  operation: "adopt",
+                  sessionId: record.nativeId,
+                  requestId: actionRequestId,
+                  deviceId: "browser-device",
+                },
+          ),
+        ).rejects.toThrow("control-outcome-unconfirmed");
+        expect(existsSync(path.join(f.root, "claude-managed", `${record.nativeId}.json`))).toBe(
+          false,
+        );
+        expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
+          createdAt: record.createdAt,
+          snapshot: { status: "outcome-unknown", sendEnabled: false },
+        });
+        const ledger = openManagedLedger(f.root)!;
+        try {
+          expect(ledger.prepare("SELECT COUNT(*) AS count FROM managed_commands").get()).toEqual({
+            count: previousCommandCount,
+          });
+        } finally {
+          ledger.close();
+        }
+      }
       const laterTurnId = randomUUID();
       if (kind === "new-owner-completed") {
         const acquire = leases.acquirePortableFileLease;
@@ -412,18 +773,47 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
           return acquire(lock);
         });
       }
-      expect(await restarted.live(sessionId, true)).toMatchObject(
-        kind === "new-owner-completed"
-          ? { status: "idle", sendEnabled: true, turnId: laterTurnId }
-          : recoverable
-            ? { status: "idle", sendEnabled: true, turnId: "", reason: "Claude stream closed" }
-            : { status: "outcome-unknown", sendEnabled: false },
-      );
+      const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      try {
+        if (["foreign-mac-kind", "foreign-mac-restored", "not-started-linux"].includes(kind))
+          Object.defineProperty(process, "platform", { value: "linux" });
+        expect(await restarted.live(sessionId, true)).toMatchObject(
+          kind === "new-owner-completed"
+            ? { status: "idle", sendEnabled: true, turnId: laterTurnId }
+            : untouchedIdle
+              ? { status: "idle", sendEnabled: true, turnId: record.snapshot.turnId }
+              : recoverable
+                ? { status: "idle", sendEnabled: true, turnId: "", reason: failed.error }
+                : { status: "outcome-unknown", sendEnabled: false },
+        );
+      } finally {
+        Object.defineProperty(process, "platform", originalPlatform);
+      }
       if (kind === "new-owner-completed") {
         expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
           title: "Later owner title",
           snapshot: { turnId: laterTurnId, revision: record.snapshot.revision + 10 },
         });
+      }
+      if (untouchedIdle) {
+        expect(JSON.parse(readFileSync(file, "utf8")).snapshot).toMatchObject({
+          status: "idle",
+          revision: record.snapshot.revision,
+          turnId: record.snapshot.turnId,
+        });
+      }
+      if (
+        kind === "legacy-restored" ||
+        kind === "legacy-restored-max-revision" ||
+        releasedLegacy ||
+        aliasLegacy ||
+        unsupportedRestored
+      ) {
+        const quarantined = JSON.parse(readFileSync(file, "utf8")).snapshot;
+        expect(quarantined).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+        if (kind === "legacy-restored-max-revision")
+          expect(quarantined.revision).toBe(Number.MAX_SAFE_INTEGER);
+        else expect(quarantined.revision).toBeGreaterThan(record.snapshot.revision);
       }
       expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
       if (recoverable) {

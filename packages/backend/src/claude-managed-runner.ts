@@ -119,9 +119,11 @@ export type ClaudeStartupFailureCode =
   | "process-start-failed"
   | "process-exited"
   | "stream-closed";
+export type ClaudeStartupCleanupKind = "not-started" | "mac-owned-process-tree";
 export type ClaudeStartupCleanupProof = {
   requestId: string;
   code: ClaudeStartupFailureCode;
+  cleanupKind: ClaudeStartupCleanupKind;
   failedRevision: number;
   checkpoint: { revision: number; turnId: string };
 };
@@ -1178,6 +1180,7 @@ export class ClaudeManagedRunnerProcess {
   #pendingDispatch?: () => void;
   #startupFailure?: { code: ClaudeStartupFailureCode; reason: string };
   #startupRecoveryBlocked = false;
+  #startupCleanupKind?: ClaudeStartupCleanupKind;
   #toolItems = new Map<string, Record<string, unknown>>();
   #controls = new Map<
     string,
@@ -1320,6 +1323,7 @@ export class ClaudeManagedRunnerProcess {
           await this.#terminate();
           if (this.processId || this.#cleanupError)
             throw new Error("Claude process cleanup unconfirmed");
+          if (this.#startupCleanupKind !== "mac-owned-process-tree") throw error;
           this.state.restoreStartup(checkpoint, failure.reason);
           this.#notify();
         } catch (cleanupError) {
@@ -1543,16 +1547,21 @@ export class ClaudeManagedRunnerProcess {
         (!started?.pid && !this.processId && !this.#cleanupError
           ? { code: "process-start-failed" as const, reason: errorMessage(error) }
           : undefined);
+      // Capture this before cleanup: an absent root afterward cannot prove no process started.
+      const neverStarted = !started?.pid && !this.processId && !this.#cleanupError;
       if (!dispatched && failure && !this.#startupRecoveryBlocked) {
         try {
           if (this.state.status !== "outcome-unknown")
             this.#fail(failure.reason, undefined, failure.code);
           await this.#terminate();
+          const cleanupKind = neverStarted ? "not-started" : this.#startupCleanupKind;
           if (this.#child || this.#cleanupError)
             throw new Error("Claude process cleanup unconfirmed");
+          if (!cleanupKind) throw error;
           this.options.onUndispatchedStartup?.({
             requestId,
             code: failure.code,
+            cleanupKind,
             failedRevision: this.state.revision,
             checkpoint: { revision: checkpoint.revision, turnId: checkpoint.turnId },
           });
@@ -1612,6 +1621,7 @@ export class ClaudeManagedRunnerProcess {
     if (this.#child) throw new Error("Claude runner already started");
     this.#startupFailure = undefined;
     this.#startupRecoveryBlocked = false;
+    this.#startupCleanupKind = undefined;
     this.#acquireLease();
     this.#effectiveSettings = { model: null, effort: null, permissionMode: null };
     this.#observedPermissionMode = null;
@@ -2320,6 +2330,10 @@ export class ClaudeManagedRunnerProcess {
     this.#rejectInitialization?.(new Error("Claude worker stopped before initialization"));
     try {
       await tree.terminate(child);
+      // A Unix process-group signal does not cover children that created another group.
+      // Only the owned-tree supervisor confirms all captured descendants have ended.
+      this.#startupCleanupKind =
+        tree instanceof MacOwnedProcessTree ? "mac-owned-process-tree" : undefined;
       this.#child = undefined;
       this.#tree = undefined;
       this.#fragments = [];

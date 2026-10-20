@@ -49,12 +49,16 @@ describe("Claude execution and terminal connection presentation", () => {
       });
       for (const unconfirmed of [
         fixture(locale, "claude-managed", "outcome-unknown", "control-outcome-unconfirmed"),
+        fixture(locale, "claude-managed", "outcome-unknown", "Claude process cleanup unconfirmed"),
+        fixture(locale, "claude-managed", "outcome-unknown", "Claude initialize timed out"),
         { ...managed, notice: "uncertain" as const },
       ]) {
         expect(claudeSessionBanner(unconfirmed)).toEqual({
           title: "",
           body: copy.managedUnconfirmed,
         });
+        expect(sessionDisplayState(unconfirmed).continuation).not.toBe("idle");
+        expect(copy.managedUnconfirmed).not.toContain("Claude process cleanup unconfirmed");
         expect(copy.managedUnconfirmed).not.toBe(copy.connectionUnconfirmed);
       }
       const ended = {

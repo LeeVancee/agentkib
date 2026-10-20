@@ -415,6 +415,45 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(2);
     });
 
+    it.each(["send", "prepare"] as const)(
+      "rejects an unconfirmed native alias before a retained runner restarts for %s",
+      async (operation) => {
+        const f = fixture();
+        const session = f.create();
+        await f.dispatch(session.id);
+        const retained = f.runner(session.nativeId);
+        await expect(retained.retireIfInactive()).resolves.toBe(true);
+        const before = f.frames();
+        const directory = path.join(f.root, "claude-managed");
+        const alias = JSON.parse(readFileSync(path.join(directory, `${session.id}.json`), "utf8"));
+        alias.id = randomUUID();
+        alias.snapshot = {
+          ...alias.snapshot,
+          status: "outcome-unknown",
+          sendEnabled: false,
+          reason: "Claude process cleanup unconfirmed",
+        };
+        writeFileSync(path.join(directory, `${alias.id}.json`), JSON.stringify(alias), {
+          mode: 0o600,
+        });
+
+        const executable = path.join(f.root, "bin", "claude");
+        await expect(
+          operation === "send"
+            ? retained.send(
+                executable,
+                "must remain undispatched",
+                randomUUID(),
+                retained.snapshot().revision,
+              )
+            : retained.prepare(executable),
+        ).rejects.toThrow("control-outcome-unconfirmed");
+        expect(retained.hasWorker).toBe(false);
+        expect(retained.snapshot()).toMatchObject({ status: "idle" });
+        expect(f.frames()).toEqual(before);
+      },
+    );
+
     it("also rejects external ownership before the first worker starts", async () => {
       const f = fixture();
       const session = f.create();

@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { createRootRoute, Outlet, useMatches, useSearch } from "@tanstack/react-router";
+import { Toaster } from "sonner";
 import { useI18n } from "@/core/useI18n";
 import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog";
 import { AppNavigationProvider } from "@/features/app/AppNavigationContext";
@@ -18,6 +19,7 @@ import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { useAppStore } from "@/stores/app-store";
 
 function RootLayout() {
+  const { tr } = useI18n();
   const matches = useMatches();
   const route = useMemo(() => routeFromMatches(matches), [matches]);
   const app = useAppNavigation(route);
@@ -74,6 +76,20 @@ function RootLayout() {
             onSessionSettings={() => app.openSettings("privacy")}
           />
           <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
+          <Toaster
+            position="top-right"
+            offset={{ top: "calc(var(--window-toolbar-height, 0px) + 16px)" }}
+            closeButton
+            duration={5000}
+            style={
+              {
+                "--normal-bg": "var(--card)",
+                "--normal-text": "var(--card-foreground)",
+                "--normal-border": "var(--border)",
+              } as CSSProperties
+            }
+            toastOptions={{ closeButtonAriaLabel: tr("common.close") }}
+          />
         </ShortcutHelpProvider>
       </AppNavigationProvider>
     </TooltipProvider>

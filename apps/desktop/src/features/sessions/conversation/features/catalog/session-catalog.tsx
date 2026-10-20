@@ -141,8 +141,8 @@ export function SessionCatalog({
                           variant="ghost"
                           key={s.id}
                           className={`h-auto min-h-11 w-full justify-start gap-2.5 rounded-lg px-3 py-2.5 text-left [&>strong]:min-w-0 [&>strong]:flex-1 [&>strong]:truncate [&>strong]:text-[13px] [&>strong]:font-normal ${s.id === selected ? "selected bg-accent text-accent-foreground shadow-xs ring-1 ring-border" : "text-muted-foreground"}`}
-                          aria-label={description}
-                          title={description}
+                          aria-label={`${description}${runtime ? ` · ${runtime.label}` : ""}`}
+                          title={`${description}${runtime ? ` · ${runtime.label}` : ""}`}
                           aria-current={s.id === selected ? "page" : undefined}
                           disabled={s.availability !== "readable"}
                           onClick={() => onSelect(s.id)}

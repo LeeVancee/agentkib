@@ -355,9 +355,7 @@ export function SessionContinuationReturned({
     >
       <p className="text-sm leading-6 text-foreground">{copy.returned(agent)}</p>
       {hasDraft ? (
-        <p role="status" className="text-xs leading-5 text-muted-foreground">
-          {copy.draftPreserved}
-        </p>
+        <p className="text-xs leading-5 text-muted-foreground">{copy.draftPreserved}</p>
       ) : null}
       {agent === "Codex" ? (
         <p className="text-xs leading-5 text-muted-foreground">{copy.codexQuit}</p>
@@ -397,6 +395,7 @@ export type SessionContinuationReadOnlyProps = {
   locale: string;
   reason?: string | null;
   loadCommand: (signal: AbortSignal) => Promise<string>;
+  onCopied?: () => void;
   /** The viewer is on the computer that runs AgentKib, so the help need not name it. */
   local?: boolean;
 };
@@ -412,6 +411,7 @@ export function SessionContinuationReadOnly({
   locale,
   reason,
   loadCommand,
+  onCopied,
   local,
 }: SessionContinuationReadOnlyProps) {
   const copy = sessionContinuationCopy(locale);
@@ -470,7 +470,10 @@ export function SessionContinuationReadOnly({
         return;
       }
       await navigator.clipboard.writeText(command);
-      if (current()) setFeedback({ source, status: "copied" });
+      if (current()) {
+        setFeedback({ source, status: "copied" });
+        onCopied?.();
+      }
     } catch {
       if (current()) setFeedback({ source, status: "manual" });
     } finally {
@@ -484,7 +487,9 @@ export function SessionContinuationReadOnly({
       : copying
         ? copy.commandCopying
         : outcome === "copied"
-          ? copy.commandCopied
+          ? onCopied
+            ? undefined
+            : copy.commandCopied
           : outcome === "manual"
             ? copy.manualCopy
             : undefined;
@@ -597,11 +602,13 @@ export function sessionContinuationListState(
 
 export function SessionContinuationDot({ label, active }: { label: string; active?: boolean }) {
   return (
-    <i
-      role="status"
-      aria-label={label}
-      title={label}
-      className={`inline-block size-1.5 shrink-0 rounded-full ${active ? "bg-primary" : "bg-muted-foreground"}`}
-    />
+    <>
+      <i
+        aria-hidden="true"
+        title={label}
+        className={`inline-block size-1.5 shrink-0 rounded-full ${active ? "bg-primary" : "bg-muted-foreground"}`}
+      />
+      <span className="sr-only">{label}</span>
+    </>
   );
 }

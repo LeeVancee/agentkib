@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
@@ -581,8 +581,10 @@ describe("SessionDirectory", () => {
       expect(overview.container.querySelectorAll('[role="status"]')).toHaveLength(3);
       overview.unmount();
       render(<SessionDirectory />);
-      expect(screen.getByRole("status", { name: copy.running })).toHaveClass("bg-primary");
-      expect(screen.getByRole("status", { name: copy.terminalBadge })).toHaveClass(
+      const runningSession = screen.getByRole("button", { name: /^Running/ });
+      expect(within(runningSession).getByTitle(copy.running)).toHaveClass("bg-primary");
+      const terminalSession = screen.getByRole("button", { name: /^Connected/ });
+      expect(within(terminalSession).getByTitle(copy.terminalBadge)).toHaveClass(
         "bg-muted-foreground",
       );
       expect(screen.queryByRole("status", { name: copy.busy("Claude Code") })).toBeNull();

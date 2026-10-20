@@ -72,9 +72,10 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
         {compact ? <Bell size={18} /> : copy.pending}
         {pendingIds.size > 0 && (
           <span
+            aria-hidden="true"
             className={
               compact
-                ? "absolute right-0 top-0 rounded-full bg-primary px-1 text-xs text-primary-foreground"
+                ? "absolute -top-0.5 -right-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-background bg-primary px-0.5 text-[10px] leading-none font-semibold tabular-nums text-primary-foreground shadow-sm"
                 : ""
             }
           >

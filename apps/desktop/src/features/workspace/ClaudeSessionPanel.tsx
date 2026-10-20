@@ -17,6 +17,7 @@ import {
 } from "@/features/sessions/conversation/features/sessions/context-usage";
 import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
 import { ApiError, WebClient } from "@agentkib/web-client";
+import { toast } from "sonner";
 import {
   SessionContinuationChoice,
   SessionContinuationReadOnly,
@@ -1297,6 +1298,7 @@ export function ClaudeSessionPanel({
                 key={sessionId}
                 locale={locale}
                 loadCommand={loadResumeCommand}
+                onCopied={() => toast.success(continuationCopy.commandCopied)}
                 local
                 reason={
                   live?.reason === "platform-unsupported"

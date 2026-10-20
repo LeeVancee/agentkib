@@ -17,6 +17,7 @@ import { interactionCopy } from "../interactions/question-form";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
+import { ArtifactWorkspace } from "./artifact-panel";
 import { useLayoutEffect, useRef, useState } from "react";
 import { webLayoutCopy } from "./web-layout-copy";
 import { approvalSummary } from "./approval-summary";
@@ -92,7 +93,16 @@ export function SessionReader() {
   }, [selected, page?.events, live?.streamText, liveContentVersion, scroll]);
   if (!access || !selected) return null;
   return (
-    <div className="flex min-h-0 flex-1">
+    <ArtifactWorkspace
+      browser={
+        <ArtifactBrowser
+          key={selected}
+          open={panels?.filesOpen ?? false}
+          onOpenChange={(open) => panels?.setFilesOpen(open)}
+          showTrigger={false}
+        />
+      }
+    >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <SessionOperations
           key={`operations-${selected}`}
@@ -374,12 +384,6 @@ export function SessionReader() {
           </div>
         </div>
       </div>
-      <ArtifactBrowser
-        key={selected}
-        open={panels?.filesOpen ?? false}
-        onOpenChange={(open) => panels?.setFilesOpen(open)}
-        showTrigger={false}
-      />
-    </div>
+    </ArtifactWorkspace>
   );
 }

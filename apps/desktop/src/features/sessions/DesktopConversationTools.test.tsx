@@ -271,7 +271,7 @@ afterEach(async () => {
   await changeLocale("en-US");
 });
 
-describe("desktop direct conversation tools", () => {
+describe("desktop window conversation tools", () => {
   it("does not replay a prior retirement from another client and shows a new retirement during this visit", async () => {
     const f = fixture("claude-code");
     Object.assign(f.live, {
@@ -293,7 +293,7 @@ describe("desktop direct conversation tools", () => {
     ["en-US", "Files & artifacts", "Session actions"],
     ["ja-JP", "ファイルと成果物", "会話の操作"],
   ] as const)(
-    "opens both real panels directly with keyboard at narrow width in %s and retains the draft",
+    "opens files in the window toolbar and actions in its menu with keyboard in %s while retaining the draft",
     async (locale, filesName, actionsName) => {
       await changeLocale(locale);
       viewport(390);
@@ -301,16 +301,17 @@ describe("desktop direct conversation tools", () => {
       await mount(f);
       await screen.findByText("Loaded session body");
       expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
-      expect(document.querySelectorAll("[data-conversation-toolbar]")).toHaveLength(1);
-      const files = screen.getByRole("button", { name: filesName });
-      const actions = screen.getByRole("button", { name: actionsName });
+      expect(document.querySelector("[data-conversation-toolbar]")).toBeNull();
+      const files = await screen.findByRole("button", { name: filesName });
+      const more = screen.getByRole("button", { name: tr("common.moreActions") });
       expect(files).toBeVisible();
-      expect(actions).toBeVisible();
-      expect(files.closest(".desktop-conversation")?.className).not.toMatch(
-        /data-conversation-toolbar.*(?:hidden|h-0)/,
+      expect(files.closest("[data-session-window-files-slot]")).not.toBeNull();
+      expect(files.closest("[data-session-window-session]")).toHaveAttribute(
+        "data-session-window-session",
+        "session",
       );
       expect(screen.getAllByRole("button", { name: filesName })).toHaveLength(1);
-      expect(screen.getAllByRole("button", { name: actionsName })).toHaveLength(1);
+      expect(screen.queryByRole("button", { name: actionsName })).toBeNull();
       const draft = screen.getByRole("textbox", { name: tr("conversation.message") });
       fireEvent.change(draft, { target: { value: "Keep this draft" } });
       const user = userEvent.setup();
@@ -324,29 +325,30 @@ describe("desktop direct conversation tools", () => {
       await user.keyboard("{Escape}");
       await waitFor(() => expect(files).toHaveFocus());
       expect(files).toHaveAttribute("aria-expanded", "false");
-      await user.tab();
-      expect(actions).toHaveFocus();
-      await user.keyboard(" ");
-      expect(await screen.findByRole("dialog", { name: actionsName })).toBeVisible();
-      expect(actions).toHaveAttribute("aria-expanded", "true");
-      await user.keyboard("{Escape}");
-      await waitFor(() => expect(actions).toHaveFocus());
-      expect(draft).toHaveValue("Keep this draft");
-      await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
+      more.focus();
+      await user.keyboard("{Enter}");
       const menu = await screen.findByRole("menu");
       expect(within(menu).queryByRole("menuitem", { name: filesName })).toBeNull();
-      expect(within(menu).queryByRole("menuitem", { name: actionsName })).toBeNull();
+      const actions = within(menu).getByRole("menuitem", { name: actionsName });
+      actions.focus();
+      await user.keyboard("{Enter}");
+      expect(await screen.findByRole("dialog", { name: actionsName })).toBeVisible();
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(more).toHaveFocus());
+      expect(draft).toHaveValue("Keep this draft");
       expect(mutations(f)).toEqual([]);
     },
   );
   it.each(["claude-code", "antigravity"] as const)(
-    "keeps the existing %s action panel reachable directly",
+    "opens the existing %s action panel from the window menu",
     async (agent) => {
       viewport(1440);
       const f = fixture(agent);
       await mount(f);
       await screen.findByText("Loaded session body");
-      await userEvent.setup().click(screen.getByRole("button", { name: "Session actions" }));
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
+      await user.click(await screen.findByRole("menuitem", { name: "Session actions" }));
       expect(await screen.findByRole("dialog", { name: "Session actions" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Details" })).toBeVisible();
       expect(mutations(f)).toEqual([]);
@@ -358,7 +360,9 @@ describe("desktop direct conversation tools", () => {
     await mount(f);
     await screen.findByText("Loaded session body");
     expect(screen.queryByRole("button", { name: "Files & artifacts" })).toBeNull();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Session actions" }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: tr("common.moreActions") }));
+    await user.click(await screen.findByRole("menuitem", { name: "Session actions" }));
     const dialog = await screen.findByRole("dialog", { name: "Session actions" });
     fireEvent.change(within(dialog).getByLabelText(codexCopy["en-US"].name), {
       target: { value: "Changed title" },
@@ -399,6 +403,13 @@ describe("desktop direct conversation tools", () => {
       expect(screen.queryByRole("button", { name: "Session actions" })).toBeNull();
       expect(document.querySelector("[data-conversation-toolbar]")).toBeNull();
       expect(f.request).not.toHaveBeenCalled();
+      if (selected) {
+        await userEvent
+          .setup()
+          .click(screen.getByRole("button", { name: tr("common.moreActions") }));
+        const menu = await screen.findByRole("menu");
+        expect(within(menu).queryByRole("menuitem", { name: "Session actions" })).toBeNull();
+      }
     },
   );
 });

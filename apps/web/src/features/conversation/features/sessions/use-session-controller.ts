@@ -139,6 +139,9 @@ export function useSessionController({
   const catalogInvalidationRead = useRef<(() => Promise<void>) | undefined>(undefined);
   const liveDelivery = useRef(0);
   const streamReady = useRef(false);
+  const activeSends = useRef(
+    new Map<string, { scope: string; generation: number; bootId?: string }>(),
+  );
   const controlReconciliationPending = useRef(false);
   const nativeCoverage = useRef<NativeCoverage>({
     items: [],
@@ -604,7 +607,18 @@ export function useSessionController({
           (!sessionId || entry.sessionId === sessionId),
       );
       let resolvedSelected: string | undefined;
+      const inFlight = (requestId: string) => {
+        const active = activeSends.current.get(requestId);
+        return (
+          active?.scope === scope &&
+          active.generation === generation.current &&
+          active.bootId === accessRef.current?.bootId
+        );
+      };
       for (const entry of pending) {
+        // An awaited send is still in progress. Reconcile it after its response is lost,
+        // or after its visit/runtime changes, rather than blocking on its own receipt.
+        if (inFlight(entry.requestId)) continue;
         const result = await client.receipt(entry.requestId);
         if (scope !== durableScope.current) return;
         if (
@@ -664,7 +678,12 @@ export function useSessionController({
             };
         }
       }
-      if (hasDurablePending(selection.current)) setNotice("uncertain");
+      if (
+        durablePending.current.some(
+          (entry) => entry.sessionId === selection.current && !inFlight(entry.requestId),
+        )
+      )
+        setNotice("uncertain");
       else if (
         resolvedSelected === selection.current &&
         epoch === readinessEpoch.current &&
@@ -1943,6 +1962,8 @@ export function useSessionController({
       if (needsDurableReceipt) {
         try {
           if (!scope) throw new Error("missing_device_scope");
+          if (kind === "send")
+            activeSends.current.set(requestId, { scope, generation: g, bootId: access.bootId });
           rememberPending(scope, { requestId, sessionId: id, kind });
           durablePending.current = readPending(scope);
         } catch {
@@ -2046,6 +2067,7 @@ export function useSessionController({
         }
       }
     } finally {
+      activeSends.current.delete(requestId);
       if (g === generation.current) setPendingSend(undefined);
       mutating.current = false;
       setBusy(false);

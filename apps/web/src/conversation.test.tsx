@@ -200,6 +200,51 @@ function emitSession(stream: SessionStreamHandlers, seq: number, type: string, p
   );
 }
 
+describe("active control receipt ownership", () => {
+  it("keeps a pending send distinct from an unknown receipt", async () => {
+    const { client } = fixture();
+    const pending = deferred<unknown>();
+    const request = client.request.bind(client);
+    const sending = vi
+      .spyOn(client, "request")
+      .mockImplementation((path, body, signal) =>
+        path === "send" ? pending.promise : request(path, body, signal),
+      );
+    const receipts = vi.spyOn(client, "receipt").mockImplementation(async (requestId) => ({
+      found: true,
+      requestId,
+      sessionId: "first",
+      operation: "send",
+      status: "unknown",
+      completionObserved: false,
+    }));
+    const view = renderHook(() => useSessionController({ client, embedded: true }));
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    await act(async () => view.result.current.choose("first"));
+    act(() => view.result.current.setMessage("Keep this startup draft"));
+    let control!: Promise<boolean | undefined>;
+    act(() => {
+      control = view.result.current.control("send");
+    });
+    await waitFor(() => expect(sending.mock.calls.some(([path]) => path === "send")).toBe(true));
+    const own = readPending(pendingScope("", "local"))[0];
+    expect(own).toBeDefined();
+    await act(async () => view.result.current.refresh());
+    expect(view.result.current.notice).toBeUndefined();
+    expect(receipts.mock.calls.some(([id]) => id === own.requestId)).toBe(false);
+    expect(view.result.current.error).toBe(false);
+    expect(view.result.current.canSend).toBe(false);
+    await act(async () => {
+      pending.reject(new ApiError(409, "startup_failed", "not-dispatched"));
+      await control;
+    });
+    expect(view.result.current.notice).toBe("notDispatched");
+    expect(view.result.current.message).toBe("Keep this startup draft");
+    expect(view.result.current.canSend).toBe(true);
+    expect(sending.mock.calls.filter(([path]) => path === "send")).toHaveLength(1);
+  });
+});
+
 describe("ordinary conversation directory", () => {
   it.each(["auxiliary", "execution"] as const)(
     "rejects a saved %s selection before reading or observing it",

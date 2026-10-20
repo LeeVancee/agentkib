@@ -134,6 +134,46 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("active send receipt ownership", () => {
+  it("keeps a pending send distinct from an unknown receipt", async () => {
+    const host = baseFixture(baseIdle("original", "claude-code"), "claude-code");
+    let reject!: (error: unknown) => void;
+    const pending = new Promise<never>((_resolve, fail) => {
+      reject = fail;
+    });
+    host.request.mockImplementation(async () => pending);
+    host.receipt.mockImplementation(async (requestId) => ({
+      found: true,
+      requestId,
+      sessionId: "original",
+      operation: "send",
+      status: "unknown",
+      completionObserved: false,
+    }));
+    const view = await open(host);
+    act(() => view.result.current.setMessage("Keep this startup draft"));
+    let sending!: Promise<boolean | undefined>;
+    act(() => {
+      sending = view.result.current.control("send");
+    });
+    await act(async () => {});
+    expect(host.request).toHaveBeenCalledOnce();
+    await act(async () => view.result.current.refresh());
+    expect(view.result.current.notice).toBeUndefined();
+    expect(host.receipt).not.toHaveBeenCalled();
+    expect(view.result.current.error).toBe(false);
+    expect(view.result.current.canSend).toBe(false);
+    await act(async () => {
+      reject(new ApiError(409, "startup_failed", "not-dispatched"));
+      await sending;
+    });
+    expect(view.result.current.notice).toBe("notDispatched");
+    expect(view.result.current.message).toBe("Keep this startup draft");
+    expect(view.result.current.canSend).toBe(true);
+    expect(host.request).toHaveBeenCalledOnce();
+  });
+});
+
 describe.each(["codex", "claude-code"] as const)("%s completed fork navigation", (agent) => {
   const fixture = () =>
     baseFixture({ ...baseOccupied("original", agent), runtimeBootId: "runtime" }, agent);

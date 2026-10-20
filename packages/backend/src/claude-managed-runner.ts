@@ -1180,6 +1180,8 @@ export class ClaudeManagedRunnerProcess {
   #pendingDispatch?: () => void;
   #startupFailure?: { code: ClaudeStartupFailureCode; reason: string };
   #startupRecoveryBlocked = false;
+  #startupAttempt = false;
+  #startupDispatched = false;
   #startupCleanupKind?: ClaudeStartupCleanupKind;
   #toolItems = new Map<string, Record<string, unknown>>();
   #controls = new Map<
@@ -1283,6 +1285,11 @@ export class ClaudeManagedRunnerProcess {
     return this.#observedPermissionMode;
   }
 
+  /** Presentation only. Internal snapshots and the ledger remain fenced during cleanup. */
+  get startupPending(): boolean {
+    return this.#startupAttempt && !this.#startupDispatched && !this.#startupRecoveryBlocked;
+  }
+
   /** Discover capabilities with initialize only: never enqueue a user/model turn. */
   async prepare(executable: string): Promise<ClaudeRunnerOptionsSnapshot> {
     if (this.#retiring || this.state.status !== "idle" || this.#configuring)
@@ -1301,6 +1308,7 @@ export class ClaudeManagedRunnerProcess {
     const checkpoint = this.state.checkpoint();
     const init = this.state.initialize();
     let started: ChildProcess | undefined;
+    this.#startupAttempt = true;
     try {
       started = this.#start(executable);
       try {
@@ -1332,6 +1340,8 @@ export class ClaudeManagedRunnerProcess {
         }
       } else this.#fail(errorMessage(error));
       throw error;
+    } finally {
+      this.#startupAttempt = false;
     }
   }
 
@@ -1506,6 +1516,7 @@ export class ClaudeManagedRunnerProcess {
     this.#pendingDispatch = () => {
       beforeDispatch?.();
       dispatched = true;
+      this.#startupDispatched = true;
     };
     if (this.#child) {
       try {
@@ -1525,6 +1536,7 @@ export class ClaudeManagedRunnerProcess {
     }
     const init = this.state.initialize(user);
     let started: ChildProcess | undefined;
+    this.#startupAttempt = true;
     try {
       started = this.#start(executable);
       try {
@@ -1577,6 +1589,8 @@ export class ClaudeManagedRunnerProcess {
         this.#fail(errorMessage(error));
       }
       throw error;
+    } finally {
+      this.#startupAttempt = false;
     }
   }
 
@@ -1621,6 +1635,7 @@ export class ClaudeManagedRunnerProcess {
     if (this.#child) throw new Error("Claude runner already started");
     this.#startupFailure = undefined;
     this.#startupRecoveryBlocked = false;
+    this.#startupDispatched = false;
     this.#startupCleanupKind = undefined;
     this.#acquireLease();
     this.#effectiveSettings = { model: null, effort: null, permissionMode: null };

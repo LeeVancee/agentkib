@@ -10,6 +10,7 @@ import {
   ClaudeUndispatchedError,
 } from "../../../packages/backend/src/claude-managed-runner";
 import { ClaudeManagedReadOwner } from "../../../packages/backend/src/claude-managed-read";
+import { ClaudeSessionOwnerProbe } from "../../../packages/backend/src/claude-session-owner";
 import { openManagedLedger } from "../../../packages/backend/src/managed-ledger";
 import {
   claimManagedCommand,
@@ -50,7 +51,11 @@ function fixture(plan: FakeClaudePlan) {
   return { ...f, runner };
 }
 
-function host(f: ReturnType<typeof fixture>, indexedNativeId?: string) {
+function host(
+  f: ReturnType<typeof fixture>,
+  indexedNativeId?: string,
+  publish?: (live: Record<string, unknown>) => void,
+) {
   const owner = new ClaudeManagedReadOwner(
     {
       workspacePath: () => f.workspace,
@@ -81,7 +86,7 @@ function host(f: ReturnType<typeof fixture>, indexedNativeId?: string) {
     f.root,
     f.environment,
     randomUUID(),
-    { publish: () => undefined, alias: () => undefined },
+    { publish: (_id, _type, _payload, live) => publish?.(live), alias: () => undefined },
   );
   cleanups.push(() => owner.shutdown());
   return owner;
@@ -111,6 +116,190 @@ async function send(owner: ClaudeManagedReadOwner, id: string, requestId = rando
 }
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup recovery", () => {
+  it.skipIf(process.platform !== "darwin").each(["idle", "external", "replacement"] as const)(
+    "rechecks %s ownership when a live read outlives startup cleanup",
+    async (next) => {
+      const f = fixture({ beforeInitialize: [{ __closeOutput: true }], silentInitialize: true });
+      const owner = host(f);
+      const { sessionId } = await create(owner);
+      const wallNow = Date.now.bind(Date);
+      let clockOffset = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => wallNow() + clockOffset);
+      let activeRunner: ClaudeManagedRunnerProcess | undefined;
+      const runnerSend = ClaudeManagedRunnerProcess.prototype.send;
+      vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send").mockImplementation(function (
+        this: ClaudeManagedRunnerProcess,
+        ...args
+      ) {
+        activeRunner = this;
+        return runnerSend.apply(this, args);
+      });
+      let finishCleanup!: () => void;
+      let cleaning = false;
+      const cleanupGate = new Promise<void>((resolve) => (finishCleanup = resolve));
+      const terminate = MacOwnedProcessTree.prototype.terminate;
+      vi.spyOn(MacOwnedProcessTree.prototype, "terminate").mockImplementation(
+        async function (this: MacOwnedProcessTree, child) {
+          cleaning = true;
+          await cleanupGate;
+          return terminate.call(this, child);
+        },
+      );
+      let release!: () => void;
+      let observed!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const blocked = new Promise<void>((resolve) => (observed = resolve));
+      let armed = false;
+      let held = false;
+      let settled = false;
+      const checkedPids: Array<number | null> = [];
+      const check = ClaudeSessionOwnerProbe.prototype.check;
+      vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check").mockImplementation(async function (
+        this: ClaudeSessionOwnerProbe,
+        nativeId,
+        ownedPid = null,
+        share,
+      ) {
+        if (!armed) return check.call(this, nativeId, ownedPid, share);
+        checkedPids.push(ownedPid);
+        if (!held && ownedPid !== null) {
+          held = true;
+          observed();
+          await gate;
+          return { kind: "idle" };
+        }
+        return settled && next === "external"
+          ? { kind: "interactive", pid: 234567, source: "ps" }
+          : { kind: "idle" };
+      });
+      const pending = send(owner, sessionId);
+      let read: Promise<Record<string, unknown>> | undefined;
+      try {
+        await expect.poll(() => cleaning).toBe(true);
+        expect(activeRunner?.startupPending).toBe(true);
+        const initialPid = activeRunner!.processId;
+        // Expire the ordinary three-second read cache without changing its production TTL.
+        clockOffset += 3001;
+        armed = true;
+        read = owner.live(sessionId, true);
+        await blocked;
+        finishCleanup();
+        expect(await pending).toMatchObject({ controlOutcome: "not-dispatched" });
+        expect(activeRunner?.snapshot().status).toBe("idle");
+        if (next === "replacement") {
+          f.setPlan({});
+          await send(owner, sessionId);
+          await expect.poll(() => activeRunner?.snapshot().status).toBe("idle");
+          expect(activeRunner?.processId).not.toBe(initialPid);
+          expect(activeRunner?.hasWorker).toBe(true);
+        }
+        settled = true;
+        release();
+        expect(await read).toMatchObject({
+          status: "idle",
+          sendEnabled: next !== "external",
+          ownershipReason: next === "external" ? "claude-owner-busy" : null,
+          executionLocation:
+            next === "external" ? "external" : next === "replacement" ? "agentkib" : null,
+        });
+        expect(checkedPids.at(-1)).toBe(next === "replacement" ? activeRunner!.processId : null);
+        expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(
+          next === "replacement" ? 1 : 0,
+        );
+      } finally {
+        finishCleanup();
+        release();
+        await read?.catch(() => undefined);
+        await pending.catch(() => undefined);
+      }
+    },
+    30_000,
+  );
+
+  it("bounds live recovery when record generation keeps changing during owner checks", async () => {
+    const f = fixture({});
+    const owner = host(f);
+    const { sessionId } = await create(owner);
+    const file = path.join(f.root, "claude-managed", `${sessionId}.json`);
+    const wallNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => wallNow() + 3001);
+    let checks = 0;
+    let latestCreatedAt = "";
+    vi.spyOn(ClaudeSessionOwnerProbe.prototype, "check").mockImplementation(async () => {
+      const record = JSON.parse(readFileSync(file, "utf8"));
+      latestCreatedAt = new Date(Date.parse(record.createdAt) + 1).toISOString();
+      record.createdAt = latestCreatedAt;
+      writeFileSync(file, JSON.stringify(record));
+      checks++;
+      return { kind: "idle" };
+    });
+    await expect(owner.live(sessionId, true)).rejects.toThrow("claude-owner-check-unavailable");
+    expect(checks).toBe(2);
+    expect(JSON.parse(readFileSync(file, "utf8")).createdAt).toBe(latestCreatedAt);
+    expect(f.frames()).toEqual([]);
+  });
+
+  it.each(["protocol", "dispatched"] as const)(
+    "keeps a %s failure visibly unknown instead of restarting its presentation",
+    async (kind) => {
+      const f = fixture(
+        kind === "protocol"
+          ? { beforeInitialize: [{ __raw: "invalid frame" }], silentInitialize: true }
+          : { onUser: [{ __closeOutput: true }], noResult: true },
+      );
+      const states: Array<Record<string, unknown>> = [];
+      const owner = host(f, undefined, (live) => states.push(live));
+      const { sessionId } = await create(owner);
+      await send(owner, sessionId);
+      await expect.poll(() => states.at(-1)?.status).toBe("outcome-unknown");
+      const first = states.findIndex((live) => live.status === "outcome-unknown");
+      expect(states.slice(first).some((live) => live.status === "starting")).toBe(false);
+      expect(states.at(-1)).toMatchObject({ sendEnabled: false });
+      expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(
+        kind === "protocol" ? 0 : 1,
+      );
+    },
+    30_000,
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "publishes a single starting state until undispatched cleanup settles",
+    async () => {
+      const f = fixture({ beforeInitialize: [{ __closeOutput: true }], silentInitialize: true });
+      const states: Array<Record<string, unknown>> = [];
+      const owner = host(f, undefined, (live) => states.push(live));
+      const { sessionId } = await create(owner);
+      let resolve!: () => void;
+      const gate = new Promise<void>((done) => {
+        resolve = done;
+      });
+      let cleaning = false;
+      const terminate = MacOwnedProcessTree.prototype.terminate;
+      vi.spyOn(MacOwnedProcessTree.prototype, "terminate").mockImplementation(
+        async function (this: MacOwnedProcessTree, child) {
+          cleaning = true;
+          await gate;
+          return terminate.call(this, child);
+        },
+      );
+      const pending = send(owner, sessionId);
+      try {
+        await expect.poll(() => cleaning).toBe(true);
+        expect(states.at(-1)).toMatchObject({ status: "starting", sendEnabled: false });
+        const record = JSON.parse(
+          readFileSync(path.join(f.root, "claude-managed", `${sessionId}.json`), "utf8"),
+        );
+        expect(record.snapshot.status).toBe("outcome-unknown");
+      } finally {
+        resolve();
+      }
+      expect(await pending).toMatchObject({ controlOutcome: "not-dispatched" });
+      expect(states.at(-1)).toMatchObject({ status: "idle", sendEnabled: true });
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+    },
+    30_000,
+  );
+
   it.each(["send", "prepare"] as const)(
     "keeps a Linux %s startup unknown when process-group cleanup leaves a detached child alive",
     async (operation) => {

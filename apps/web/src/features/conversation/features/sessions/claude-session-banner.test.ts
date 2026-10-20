@@ -35,6 +35,10 @@ describe("Claude execution and terminal connection presentation", () => {
     "keeps ownership, connection and failure states distinct in %s",
     (locale) => {
       const copy = claudeConnectionCopy[locale];
+      expect(copy.managedUnconfirmed).toContain("Claude Code");
+      expect(copy.managedUnconfirmed).not.toMatch(
+        /主机|主機|\bhost\b|ホスト|刷新|重新整理|refresh/i,
+      );
       const continuation = sessionContinuationCopy(locale);
       const idle = fixture(locale, "claude-managed", "idle");
       idle.canSend = true;

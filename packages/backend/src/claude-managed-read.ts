@@ -832,6 +832,12 @@ export class ClaudeManagedReadOwner {
           ...(value.publicInputHash ? { publicInputHash: value.publicInputHash } : {}),
         };
         if (!unknown) finishManagedCommand(this.dataDir, requestId, result);
+        const terminal = this.#streamLive(id, runner.snapshot(), current);
+        try {
+          this.#publishConversationEvent?.(id, "state", terminal, terminal);
+        } catch {
+          // The durable result is authoritative; a later read can recover this projection.
+        }
         return result;
       }
     } finally {
@@ -3422,7 +3428,11 @@ export class ClaudeManagedReadOwner {
     };
   }
 
-  async #live(id: string, controls: boolean): Promise<Record<string, unknown>> {
+  async #live(
+    id: string,
+    controls: boolean,
+    ownershipReadAttempt = 0,
+  ): Promise<Record<string, unknown>> {
     if (
       this.#continuationNotices.get(id) === "background-ended" &&
       this.continuation.isSessionObserved?.(id) !== true
@@ -3439,6 +3449,11 @@ export class ClaudeManagedReadOwner {
         : !version
           ? "claude-cli-unavailable"
           : await this.#ownershipReason(id, target.nativeId, null);
+      if (this.#load(id)) {
+        this.#ownershipReasons.delete(id);
+        if (ownershipReadAttempt > 0) throw new Error("claude-owner-check-unavailable");
+        return this.#live(id, controls, ownershipReadAttempt + 1);
+      }
       return {
         sessionId: id,
         workspaceId: target.workspaceId,
@@ -3464,9 +3479,41 @@ export class ClaudeManagedReadOwner {
       };
     }
     this.#validate(record);
+    const ownershipRunner = this.#runners.get(id);
+    const ownedPid = ownershipRunner?.hasWorker ? ownershipRunner.processId : null;
+    const starting = this.#starting.has(id);
+    const startupPending = ownershipRunner?.startupPending === true;
+    const ownershipReason = !supportsClaudeManagedRunner()
+      ? "platform-unsupported"
+      : !version
+        ? "claude-cli-unavailable"
+        : await this.#ownershipReason(id, record.nativeId, ownedPid);
+    const current = this.#load(id);
+    if (!current) throw new Error("session-unavailable");
+    const runner = this.#runners.get(id);
+    if (
+      current.createdAt !== record.createdAt ||
+      current.nativeId !== record.nativeId ||
+      current.home !== record.home ||
+      current.workspaceId !== record.workspaceId ||
+      current.workspace !== record.workspace ||
+      current.released !== record.released ||
+      runner !== ownershipRunner ||
+      (runner?.hasWorker ? runner.processId : null) !== ownedPid ||
+      (runner?.startupPending === true) !== startupPending ||
+      this.#starting.has(id) !== starting
+    ) {
+      // The observation excluded the previous worker. A replacement or completed
+      // startup needs a fresh check, never the old worker's cached idle result.
+      this.#ownershipReasons.delete(id);
+      if (ownershipReadAttempt > 0) throw new Error("claude-owner-check-unavailable");
+      return this.#live(id, controls, ownershipReadAttempt + 1);
+    }
+    // No later await may let a captured starting snapshot outlive cleanup/retirement.
+    record = current;
+    this.#validate(record);
     record = this.#recoverStartupCleanup(record);
     this.#recoverCompletions(record);
-    const runner = this.#runners.get(id);
     if (runner) {
       const snapshot = runner.snapshot();
       const turnId = snapshot.turnId;
@@ -3536,22 +3583,15 @@ export class ClaudeManagedReadOwner {
         Number(live.revision),
       );
     live.executionLocation = runner?.hasWorker ? "agentkib" : null;
-    const ownershipReason = !supportsClaudeManagedRunner()
-      ? "platform-unsupported"
-      : !version
-        ? "claude-cli-unavailable"
-        : await this.#ownershipReason(
-            id,
-            record.nativeId,
-            runner?.hasWorker ? runner.processId : null,
-          );
     live.ownershipReason = ownershipReason;
     live.continuationNotice = this.#continuationNotices.get(id) ?? null;
     live.continuationNoticeId = this.#continuationNoticeIds.get(id) ?? null;
-    if (this.#starting.has(id) && live.status !== "outcome-unknown") {
+    if (this.#starting.has(id) && (live.status !== "outcome-unknown" || runner?.startupPending)) {
       live.status = "starting";
       live.executionLocation = "agentkib";
       live.sendEnabled = false;
+      live.stopEnabled = false;
+      if (runner?.startupPending) live.reason = null;
     }
     if (ownershipReason) {
       live.sendEnabled = false;
@@ -3626,10 +3666,16 @@ export class ClaudeManagedReadOwner {
     // Same version source as #live: the cached value, never a fresh probe per CLI frame.
     const version = this.#version?.value ?? null;
     const permission = this.#permissionView(id, version, () => host.settings.permissionMode);
+    const pendingStartup = this.#runners.get(id)?.startupPending;
     return {
       ...snapshot,
-      ...(this.#starting.has(id) && snapshot.status !== "outcome-unknown"
-        ? { status: "starting", sendEnabled: false, stopEnabled: false }
+      ...(this.#starting.has(id) && (snapshot.status !== "outcome-unknown" || pendingStartup)
+        ? {
+            status: "starting",
+            sendEnabled: false,
+            stopEnabled: false,
+            ...(pendingStartup ? { reason: null } : {}),
+          }
         : {}),
       revision: snapshot.revision + host.revision,
       sessionId: id,

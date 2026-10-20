@@ -1,11 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { codexCopy, codexReason } from "@/features/conversation/features/sessions/codex-copy";
-import { sessionContinuationCopy } from "@agentkib/session-ui";
+import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
 import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
 
 describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  it.each(locales)("explains directory failures and projects view only in %s", (locale) => {
+    for (const reason of [
+      "codex-session-directory-unsafe",
+      "codex-session-directory-missing",
+      "codex-session-directory-not-directory",
+      "codex-session-directory-unavailable",
+      "codex-session-directory-unverified",
+      "codex-context-outside-workspace",
+      "codex-workspace-mismatch",
+      "codex-sandbox-mismatch",
+    ]) {
+      expect(codexReason(locale, reason).technical).toBeUndefined();
+      expect(codexReason(locale, reason).text).not.toBe(codexReason(locale).text);
+      expect(
+        sessionContinuationListState(
+          { agent: "codex", continuation: { status: "unsupported", reason } },
+          locale,
+        ),
+      ).toEqual({ label: sessionContinuationCopy(locale).viewOnly });
+    }
+  });
   it.each(locales)("explains ownership, version and installation failures in %s", (locale) => {
     const continuation = sessionContinuationCopy(locale);
     expect(codexReason(locale, "codex-owner-busy")).toEqual({

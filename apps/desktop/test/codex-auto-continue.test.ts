@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
@@ -44,13 +52,14 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function fixture(compressedHistory = false) {
+function fixture(compressedHistory = false, registeredRoot?: string) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-codex-auto-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
-    workspace = path.join(root, "project");
+    workspace = registeredRoot === "home" ? root : (registeredRoot ?? path.join(root, "project"));
   mkdirSync(home);
-  mkdirSync(workspace);
+  mkdirSync(workspace, { recursive: true });
+  let executionCwd = workspace;
   const bin = path.join(root, "bin");
   mkdirSync(bin);
   const executable = path.join(bin, process.platform === "win32" ? "codex.exe" : "codex");
@@ -98,7 +107,7 @@ function fixture(compressedHistory = false) {
     } finally {
       nativeDb.close();
     }
-    const environment = { CODEX_HOME: home, PATH: bin };
+    const environment = { CODEX_HOME: home, HOME: root, PATH: bin };
     const listing = new CodexSessions(environment).list(workspace);
     store.sessions.sync(
       "workspace",
@@ -122,6 +131,7 @@ function fixture(compressedHistory = false) {
         workspace,
       })),
       verifiedCodexControlIds: () => new Set([nativeId]),
+      verifiedCodexControlDirectory: () => ({ id: nativeId, cwd: executionCwd }),
     } as unknown as SessionReaders;
   }
   const version = vi
@@ -132,6 +142,10 @@ function fixture(compressedHistory = false) {
     .mockRejectedValue(new Error("must-not-follow-desktop"));
   let nativeFailure: unknown;
   const methods: string[] = [];
+  const requests: Array<{ method: string; params: unknown }> = [];
+  let broadSandbox = false;
+  let readCwd: string | undefined;
+  let wrongReplyCwd: "top" | "thread" | undefined;
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
     connected = true;
@@ -140,6 +154,7 @@ function fixture(compressedHistory = false) {
     async request(method: string, params: unknown, dispatch?: () => void): Promise<unknown> {
       dispatch?.();
       methods.push(method);
+      requests.push({ method, params });
       if (method === "thread/resume" && nativeFailure) throw nativeFailure;
       if (method === "model/list")
         return { data: [{ model: "model-a", isDefault: true, supportedReasoningEfforts: [] }] };
@@ -149,7 +164,7 @@ function fixture(compressedHistory = false) {
         return {
           thread: {
             id: nativeId,
-            cwd: workspace,
+            cwd: readCwd ?? executionCwd,
             status: { type: "idle" },
             turns: [{ id: "finished-turn", status: "completed", items: [] }],
           },
@@ -168,17 +183,21 @@ function fixture(compressedHistory = false) {
         return {
           thread: {
             id: method === "thread/fork" ? forkId : nativeId,
-            cwd: workspace,
+            cwd: wrongReplyCwd === "thread" ? workspace : executionCwd,
             status: { type: "idle" },
             turns: [],
           },
-          cwd: workspace,
+          cwd: wrongReplyCwd === "top" ? workspace : executionCwd,
           model: "model-a",
           reasoningEffort: null,
           serviceTier: null,
           approvalPolicy: "on-request",
           approvalsReviewer: "user",
-          sandbox: { type: "workspaceWrite", writableRoots: [workspace], networkAccess: false },
+          sandbox: {
+            type: "workspaceWrite",
+            writableRoots: [broadSandbox ? workspace : executionCwd],
+            networkAccess: false,
+          },
         };
       throw new Error(`unexpected-native-method:${method}`);
     }
@@ -218,7 +237,7 @@ function fixture(compressedHistory = false) {
     readers,
     root,
     () => 0n,
-    { CODEX_HOME: home, PATH: bin },
+    { CODEX_HOME: home, HOME: root, PATH: bin },
     undefined,
     () => observed,
   );
@@ -244,6 +263,7 @@ function fixture(compressedHistory = false) {
   return {
     root,
     home,
+    bin,
     workspace,
     summary,
     store,
@@ -255,10 +275,23 @@ function fixture(compressedHistory = false) {
     send,
     sendWithState,
     methods,
+    requests,
     servers,
     version,
     follower,
     start,
+    setCwd: (cwd: string) => {
+      executionCwd = cwd;
+    },
+    setReadCwd: (cwd: string) => {
+      readCwd = cwd;
+    },
+    mismatchReply: (field: "top" | "thread") => {
+      wrongReplyCwd = field;
+    },
+    widenSandbox: () => {
+      broadSandbox = true;
+    },
     setFailure: (error: unknown) => {
       nativeFailure = error;
     },
@@ -272,6 +305,239 @@ function fixture(compressedHistory = false) {
 }
 
 describe("Codex automatic CLI continuation", () => {
+  it.each([path.parse(process.cwd()).root, "home"])(
+    "uses the session subdirectory when the registered workspace is %s, including after retirement",
+    async (registered) => {
+      vi.useFakeTimers();
+      const f = fixture(false, registered);
+      const cwd = path.join(f.root, "session-project");
+      mkdirSync(cwd);
+      f.setCwd(cwd);
+      expect(await f.send()).toMatchObject({ accepted: true });
+      expect(readManagedRecord(f.root, f.summary.id)).toMatchObject({
+        workspace: f.workspace,
+        cwd,
+      });
+      f.servers[0]!.complete();
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(await f.send()).toMatchObject({ accepted: true });
+      for (const request of f.requests.filter(({ method }) =>
+        ["thread/resume", "turn/start"].includes(method),
+      ))
+        expect(request.params).toMatchObject({ cwd, sandboxPolicy: { writableRoots: [cwd] } });
+      expect(f.start.mock.calls.every((call) => call[1] === cwd)).toBe(true);
+    },
+  );
+
+  it.each(["root", "home", "real-home", "missing", "file", "outside", "relative", "symlink"])(
+    "keeps an unsafe session directory view only without starting Codex: %s",
+    async (kind) => {
+      const f = fixture();
+      let cwd = f.workspace;
+      let reason = "codex-session-directory-unsafe";
+      if (kind === "root") cwd = path.parse(f.root).root;
+      if (kind === "home") cwd = f.root;
+      if (kind === "real-home") cwd = homedir();
+      if (kind === "missing") {
+        cwd = path.join(f.workspace, "removed");
+        reason = "codex-session-directory-missing";
+      }
+      if (kind === "file") {
+        cwd = path.join(f.workspace, "file");
+        writeFileSync(cwd, "file");
+        reason = "codex-session-directory-not-directory";
+      }
+      if (kind === "outside") {
+        cwd = f.home;
+        reason = "codex-context-outside-workspace";
+      }
+      if (kind === "relative") {
+        cwd = "project";
+        reason = "codex-session-directory-unverified";
+      }
+      if (kind === "symlink") {
+        cwd = path.join(f.workspace, "linked");
+        symlinkSync(f.home, cwd);
+        reason = "codex-context-outside-workspace";
+      }
+      f.setCwd(cwd);
+      expect(await f.live()).toMatchObject({ status: "unsupported", sendEnabled: false, reason });
+      expect(await f.send()).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        reason,
+      });
+      expect(f.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it("forks with the source session directory and keeps the registered authorization root", async () => {
+    const f = fixture(false, path.parse(process.cwd()).root);
+    const cwd = path.join(f.root, "source-project");
+    mkdirSync(cwd);
+    f.setCwd(cwd);
+    f.setReadCwd(f.workspace);
+    const state = await f.live();
+    const result = await f.web.managedControl({
+      operation: "fork",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+    });
+    expect(result).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "thread/fork")?.params).toMatchObject({
+      cwd,
+      sandboxPolicy: { writableRoots: [cwd] },
+    });
+    expect(readManagedRecord(f.root, result.sessionId!)).toMatchObject({
+      workspace: f.workspace,
+      cwd,
+    });
+  });
+
+  it.each(["sandbox", "top", "thread"] as const)(
+    "rejects a %s reply that widens the session directory to the registered root",
+    async (field) => {
+      const f = fixture();
+      const cwd = path.join(f.workspace, "session-project");
+      mkdirSync(cwd);
+      f.setCwd(cwd);
+      if (field === "sandbox") f.widenSandbox();
+      else f.mismatchReply(field);
+      expect(await f.send()).toMatchObject({ accepted: false });
+      expect(f.methods).not.toContain("turn/start");
+    },
+  );
+
+  it("uses the verified rollout directory when an earlier resume broadened SQLite cwd", async () => {
+    const f = fixture(true, path.parse(process.cwd()).root);
+    const cwd = path.join(f.root, "original-project");
+    mkdirSync(cwd);
+    const rows = f.history
+      .trim()
+      .split("\n")
+      .map((row) => JSON.parse(row));
+    rows[0].payload.cwd = cwd;
+    writeFileSync(
+      f.compressedTranscript,
+      zstdCompressSync(rows.map((row) => JSON.stringify(row)).join("\n") + "\n"),
+    );
+    f.setCwd(cwd);
+    expect(f.readers.verifiedCodexResumeIdentity(nativeId)).toBeUndefined();
+    expect(f.readers.verifiedCodexControlDirectory(nativeId)).toEqual({ id: nativeId, cwd });
+    saveManagedRecord(f.root, {
+      id: f.summary.id,
+      workspace_id: "workspace",
+      workspace: f.workspace,
+      home: f.home,
+      native_id: nativeId,
+      title: "Legacy adoption",
+      created_at: "2026-10-19T00:00:00Z",
+      adopted: true,
+      released: true,
+      archived: false,
+      policy_id: "workspace-write-on-request",
+      snapshot: { revision: 0 },
+    });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "thread/resume")?.params).toMatchObject({
+      cwd,
+      sandboxPolicy: { writableRoots: [cwd] },
+    });
+  });
+
+  it.each([true, false])(
+    "revalidates a legacy adopted ledger without cwd after restart (native proof: %s)",
+    async (proof) => {
+      const f = fixture(false, path.parse(process.cwd()).root);
+      const cwd = path.join(f.root, "legacy-project");
+      mkdirSync(cwd);
+      f.setCwd(cwd);
+      expect(await f.send()).toMatchObject({ accepted: true });
+      f.servers[0]!.complete();
+      await f.live();
+      await f.web.closeAsync();
+      const legacy = readManagedRecord(f.root, f.summary.id)!;
+      delete legacy.cwd;
+      legacy.released = true;
+      saveManagedRecord(f.root, legacy);
+      if (!proof) vi.spyOn(f.readers, "verifiedCodexControlDirectory").mockReturnValue(undefined);
+      const restarted = new WebReadRequests(f.store, f.readers, f.root, () => 0n, {
+        CODEX_HOME: f.home,
+        HOME: f.root,
+        PATH: f.bin,
+      });
+      cleanups.push(() => restarted.closeAsync());
+      const live = await restarted.request({
+        operation: "live",
+        sessionId: f.summary.id,
+        experimentalEnabled: true,
+      });
+      expect(live).toMatchObject({
+        sendEnabled: proof,
+        reason: proof ? null : "codex-session-directory-unverified",
+      });
+      const result = await restarted.managedControl({
+        operation: "send",
+        sessionId: f.summary.id,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        text: "Continue after restart",
+      });
+      expect(result).toMatchObject({ accepted: proof });
+      if (proof)
+        expect(
+          f.requests.filter(({ method }) => method === "thread/resume").at(-1)?.params,
+        ).toMatchObject({ cwd, sandboxPolicy: { writableRoots: [cwd] } });
+      else expect(f.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+    },
+  );
+
+  it.each(["root", "home"])(
+    "projects an unsafe %s native collection view only without granting collection controls",
+    async (kind) => {
+      const f = fixture(true, kind === "root" ? path.parse(process.cwd()).root : "home");
+      f.summary.workspace_id = "session-collection:codex:unclassified";
+      f.store.sessions.sync(
+        f.summary.workspace_id,
+        "codex",
+        new CodexSessions({ CODEX_HOME: f.home, HOME: f.root })
+          .list(null)
+          .sessions.map((source) => source.session),
+      );
+      expect(await f.live()).toMatchObject({
+        status: "unsupported",
+        sendEnabled: false,
+        reason: "codex-session-directory-unsafe",
+      });
+      await expect(f.send()).rejects.toThrow("Workspace does not exist");
+      expect(readManagedRecord(f.root, f.summary.id)).toBeNull();
+      expect(f.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not replace an unverified native identity with an unsafe-directory projection", async () => {
+    const f = fixture(true, path.parse(process.cwd()).root);
+    f.summary.workspace_id = "session-collection:codex:unclassified";
+    f.store.sessions.sync(
+      f.summary.workspace_id,
+      "codex",
+      new CodexSessions({ CODEX_HOME: f.home, HOME: f.root })
+        .list(null)
+        .sessions.map((source) => source.session),
+    );
+    writeFileSync(f.compressedTranscript, zstdCompressSync(f.history.replace(nativeId, forkId)));
+    await expect(f.live()).rejects.toThrow("unverified-session-identity");
+    expect(f.start).not.toHaveBeenCalled();
+    expect(readManagedRecord(f.root, f.summary.id)).toBeNull();
+  });
+
   it("reads a compressed native history and continues automatically through the CLI", async () => {
     const f = fixture(true);
     expect((await f.readers.resolve(f.summary.id)).transcript).toBe(f.compressedTranscript);

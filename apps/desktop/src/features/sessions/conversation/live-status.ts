@@ -1,4 +1,11 @@
-import type { ConversationWords as Words } from "@/core/i18n";
+import { conversationWords, type ConversationWords as Words } from "@/core/i18n";
+
+export function localizedUnavailableReasonText(
+  reason: string,
+  locale: Parameters<typeof conversationWords>[0],
+): string {
+  return unavailableReasonText(reason, conversationWords(locale));
+}
 
 /** Only known reason codes get specific advice; never render raw runtime errors. */
 export function unavailableReasonText(reason: string, words: Words): string {

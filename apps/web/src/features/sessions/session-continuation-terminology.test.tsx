@@ -7,6 +7,7 @@ import { SessionReader } from "@/features/conversation/features/sessions/session
 import { SessionPanelsContext } from "@/features/conversation/features/sessions/session-panels";
 import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
 import { dictionaries } from "@/features/conversation/i18n";
+import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 
 type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
 let session: SessionController;
@@ -349,6 +350,26 @@ describe("visible session continuation terminology", () => {
       expect(screen.getAllByText(expected.oldCodex)).toHaveLength(1);
       expect(screen.queryByText(expected.windows)).not.toBeInTheDocument();
       expectNoExecutionHandoff(expected.locale);
+    },
+  );
+
+  it.each(wording)(
+    "shows unsafe Codex directories view only with one reason in $locale",
+    (expected) => {
+      setLocale(expected.locale);
+      session.current = { ...session.current!, agent: "codex" };
+      session.canSend = false;
+      Object.assign(session.live!, {
+        executionMode: "codex-managed",
+        status: "unsupported",
+        reason: "codex-session-directory-unsafe",
+        sendEnabled: false,
+      });
+      render(<View snapshot={session} />);
+      expect(
+        screen.getAllByText(codexReason(expected.locale, "codex-session-directory-unsafe").text),
+      ).toHaveLength(1);
+      expect(screen.queryByRole("textbox", { name: session.t.message })).not.toBeInTheDocument();
     },
   );
 

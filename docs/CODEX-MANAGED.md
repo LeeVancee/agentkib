@@ -54,6 +54,8 @@ Web 的模型、服务档位、策略和资源能力取自当前 app-server 的�
 
 没有本机活动 runner 时，发送自动准备并续接同一原生 thread ID；源索引与 rollout 元数据共同验证 ID 和工作区。专用 app-server 在同一 canonical CODEX_HOME 上调用官方 thread/resume，由 Codex 自己原子获取每线程 writer lock。原 writer 未退出时返回 `codex-owner-busy`，界面提供显式分支或返回 Codex 的选择，保留草稿并重新检查占用；“找不到 owner”不能作为排他证明。AgentKib 不停止共享 daemon、不删除 native lock、不复制 CODEX_HOME，也不默认 fork。原生 active goal 等恢复风险及未知结果仍按内部规则阻断，不因省去用户确认而放行。
 
+登记工作区仅作为授权边界。接管和分支的执行目录取 UUID 已核实的 rollout `session_meta.cwd`，经 canonical 路径确认仍在登记工作区内后，单独保存为托管记录的 `cwd`，用于 app-server、恢复、分支、下一轮与工作区写入策略的可写根。登记工作区为 `/` 或用户主目录时，也只允许经过核实的安全子目录；会话自身目录为文件系统根或用户主目录时按“仅可查看”处理。目录缺失、不是目录、无法核实或位于授权范围外时给出具体原因，不回退到登记工作区。旧台账没有 `cwd` 时重新核实原生头部，不能把旧 `workspace` 当成执行目录。原有 ID、HOME、锁、版本和策略回包校验继续生效。
+
 自动回收和兼容 release 路径只关闭本服务创建的子进程组，必要时终止，并等待实际退出后释放 lease 与原生锁。正常轮次完成后空闲约 1 分钟回收；最后订阅者离开时等待当前轮次完成后回收。关闭失败或存在未知回执时保留相应保护，不把超时当作已安全退出。回收后保留历史和原生身份，下次发送自动重新校验、启动，不回到 follower。退出 AgentKib/runtime 会关闭专用子进程，没有独立常驻 daemon 或新增 goal 调度器。
 
 Codex 把闲置记录压缩为 `.jsonl.zst`、线程表仍登记原 `.jsonl` 时，原文件缺失才尝试压缩同名文件；直接登记 `.zst` 也支持。有限头部用于原生身份校验，私有解压副本供历史分页和文档读取，索引流式解压；不修改原始记录或源索引。单份副本上限 2 GiB，缓存按 4 GiB 目标淘汰旧副本，15 分钟内近期使用的副本保留以保护游标，因此总量可能暂时超过目标。缓存命中不改变副本 mtime，并发首次发布不替换已发布 inode；文件安全、头部和解压上限不放宽。
@@ -62,7 +64,7 @@ Codex 把闲置记录压缩为 `.jsonl.zst`、线程表仍登记原 `.jsonl` 时
 
 账本在 `agentkib_store::default_data_dir()/codex-managed/executions.sqlite`，与可重建 conversation index 分离。专属目录权限 0700、主 DB 0600，WAL 文件在同一受限目录。SQLite WAL 和 3 秒 busy timeout；初始化在 IMMEDIATE 事务中建表，并按 table_info 对缺失的 evidence 列做添加式迁移，不删除旧行。
 
-- `managed_sessions(id PRIMARY KEY,record)`：工作区映射、canonical HOME、原生 ID、选择的模型/effort、release 标记、最后快照。
+- `managed_sessions(id PRIMARY KEY,record)`：工作区授权映射、经核实的执行 `cwd`、canonical HOME、原生 ID、选择的模型/effort、release 标记、最后快照。
 - `managed_commands(request_id PRIMARY KEY,session_id,fingerprint,phase,result,evidence)`：请求 SHA256、prepared/dispatched/resolved 状态、回执与最小原生证据。不会持久化完整原始控制请求。
 - `managed_events(sequence PRIMARY KEY,session_id,event_id,event)`：显示历史，按 `(session_id,event_id)` 去重。
 

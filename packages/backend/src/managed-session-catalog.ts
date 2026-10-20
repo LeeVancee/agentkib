@@ -3,6 +3,7 @@ import { z } from "zod";
 import { CodexSessions } from "./codex-sessions";
 import { readManagedCatalogSnapshot } from "./managed-ledger";
 import { canonicalize, pathIdentity } from "./paths";
+import { within } from "./files";
 import type { SessionReaders } from "./session-readers";
 import type { BackendStore } from "./store";
 
@@ -10,6 +11,7 @@ export const managedRecordSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   workspace: z.string(),
+  cwd: z.string().optional(),
   home: z.string(),
   native_id: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
@@ -133,7 +135,18 @@ export async function managedCatalogAliases(
     return aliases;
   for (const { native, ref, record } of candidates) {
     const verified = identities.get(native);
-    if (!verified || pathIdentity(verified.cwd) !== pathIdentity(record.workspace)) continue;
+    const executionDirectory = record.cwd ?? record.workspace;
+    try {
+      if (
+        !verified ||
+        !path.isAbsolute(executionDirectory) ||
+        pathIdentity(verified.cwd) !== pathIdentity(executionDirectory) ||
+        !within(canonicalize(verified.cwd), canonicalize(record.workspace))
+      )
+        continue;
+    } catch {
+      continue;
+    }
     let owned = aliases.get(record.id);
     if (!owned) aliases.set(record.id, (owned = new Set()));
     owned.add(store.sessions.id("codex", ref));

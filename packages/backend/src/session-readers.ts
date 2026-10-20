@@ -85,6 +85,9 @@ export class SessionReaders {
     if (!this.#codex.verifiedControlIds([nativeRef]).has(nativeRef.toLowerCase())) return;
     return this.#codex.verifiedIndexedIdentities([nativeRef]).get(nativeRef.toLowerCase());
   }
+  verifiedCodexControlDirectory(nativeRef: string): { id: string; cwd: string } | undefined {
+    return this.#codex.verifiedControlDirectories([nativeRef]).get(nativeRef.toLowerCase());
+  }
   antigravityControlExecutable(): string {
     return this.#antigravity.controlExecutable();
   }

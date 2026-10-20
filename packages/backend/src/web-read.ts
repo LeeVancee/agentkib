@@ -530,12 +530,18 @@ export class WebReadRequests {
       release?.();
       throw new Error("session-unavailable");
     }
-    const workspace = canonicalize(this.store.workspacePath(current.workspace_id));
-    if (pathIdentity(workspace) !== pathIdentity(canonicalize(current.workspace))) {
+    let workspace: string;
+    let home: string;
+    try {
+      workspace = canonicalize(this.store.workspacePath(current.workspace_id));
+      if (pathIdentity(workspace) !== pathIdentity(canonicalize(current.workspace)))
+        throw new Error("session-workspace-mismatch");
+      home = this.#assertManagedHome(current);
+      this.#managedCwd(current);
+    } catch (error) {
       release?.();
-      throw new Error("session-workspace-mismatch");
+      throw error;
     }
-    const home = this.#assertManagedHome(current);
     const nativeId = current.native_id;
     if (!nativeId) {
       release?.();
@@ -801,9 +807,6 @@ export class WebReadRequests {
       adopted = true;
     }
 
-    openManagedLedger(this.dataDir, true)?.close();
-    let release: (() => void) | undefined = acquireManagedSessionLease(this.dataDir, id);
-
     const workspace = canonicalize(this.store.workspacePath(workspaceId));
     const home = canonicalize(this.sessions.codexHome());
     const workspaceRow = (this.store.listWorkspaces() as Array<{ id: string; path: string }>).find(
@@ -813,7 +816,6 @@ export class WebReadRequests {
       !workspaceRow ||
       pathIdentity(canonicalize(workspaceRow.path)) !== pathIdentity(workspace)
     ) {
-      release();
       throw new Error("session-workspace-mismatch");
     }
     const record: ManagedRecord = {
@@ -841,6 +843,9 @@ export class WebReadRequests {
       goal: null,
       snapshot: { status: "starting", revision: 0 },
     };
+    record.cwd = this.#managedCwd(record);
+    openManagedLedger(this.dataDir, true)?.close();
+    let release: (() => void) | undefined = acquireManagedSessionLease(this.dataDir, id);
     const evidence = {
       operation: request.operation,
       workspaceId,
@@ -1093,6 +1098,7 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     this.#assertManagedHome(record);
+    const cwd = this.#managedCwd(record);
     if (!record.native_id) throw new Error("native-session-unconfirmed");
     let runner = this.#managedRunners.get(request.sessionId);
     if (runner && !runner.session.connected) {
@@ -1127,7 +1133,7 @@ export class WebReadRequests {
       this.#assertOpen();
       session = await CodexAppServerSession.start(
         executable,
-        workspace,
+        cwd,
         home,
         { ...process.env, ...this.environment },
         undefined,
@@ -1179,6 +1185,7 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     const home = this.#assertManagedHome(record);
+    const cwd = this.#managedCwd(record);
     let release: (() => void) | undefined = acquireManagedSessionLease(
       this.dataDir,
       request.sessionId,
@@ -1216,7 +1223,7 @@ export class WebReadRequests {
       this.#assertOpen();
       session = await CodexAppServerSession.start(
         executable,
-        workspace,
+        cwd,
         home,
         { ...process.env, ...this.environment },
         undefined,
@@ -1327,7 +1334,7 @@ export class WebReadRequests {
       const models = projectManagedModels(
         await this.#codex.request(
           checked.executable,
-          canonicalize(record.workspace),
+          this.#managedCwd(record),
           this.#assertManagedHome(record),
           "model/list",
           { limit: 100 },
@@ -1367,6 +1374,7 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     this.#assertManagedHome(record);
+    this.#managedCwd(record);
     const models = projectManagedModels(await runner.session.request("model/list", { limit: 100 }));
     let collaborationModes: Array<{ id: string; name: string }> = [];
     let modeWritable: Record<string, unknown> = {
@@ -1512,6 +1520,7 @@ export class WebReadRequests {
           controls &&
           !checked.reason &&
           !source.archived &&
+          (live.reason === null || live.reason === "codex-owner-busy") &&
           !managedSessionHasUnknownCommands(this.dataDir, source.id) &&
           !!source.native_id &&
           !this.#managedRunners.get(source.id)?.retiring;
@@ -1759,10 +1768,13 @@ export class WebReadRequests {
       workspace = canonicalize(resolved.workspace);
       home = canonicalize(this.sessions.codexHome());
     }
+    const executionCwd = this.#managedCwd(
+      record ?? (await this.#inactiveRecord(request.sessionId)),
+    );
     const executable = resolveCommand("codex", this.environment);
     if (!executable) throw new Error("codex-cli-unavailable");
     const readRevision = this.#managedRunners.get(request.sessionId)?.state.revision;
-    const response = await this.#codex.request(executable, workspace, home, "thread/read", {
+    const response = await this.#codex.request(executable, executionCwd, home, "thread/read", {
       threadId: nativeId,
       includeTurns: true,
     });
@@ -1788,7 +1800,7 @@ export class WebReadRequests {
             this.#assertOpen();
             queueSession = await CodexAppServerSession.start(
               executable,
-              workspace,
+              executionCwd,
               home,
               { ...process.env, ...this.environment },
               undefined,
@@ -2028,6 +2040,7 @@ export class WebReadRequests {
     this.#assertManagedHome(record);
     if (!record.native_id || record.native_id !== runner.state.nativeId)
       throw new Error("native-session-unconfirmed");
+    const cwd = this.#managedCwd(record);
     const snapshot = await runner.bridge.snapshot(this.#bootId, true);
     if (activityBlocks(snapshot, request.operation))
       return compactingRejection(request, this.#bootId);
@@ -2098,7 +2111,7 @@ export class WebReadRequests {
           threadId: record.native_id,
           clientUserMessageId: request.requestId,
           input,
-          ...managedTurnSettings(record, workspace),
+          ...managedTurnSettings(record, cwd),
         };
         method = "turn/start";
       } else if (request.operation === "stop") {
@@ -2353,6 +2366,8 @@ export class WebReadRequests {
         )
           throw new Error("session-unavailable");
         this.#assertManagedHome(latest);
+        if (pathIdentity(this.#managedCwd(latest)) !== pathIdentity(cwd))
+          throw new Error("codex-workspace-mismatch");
         if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
           throw new Error("control-outcome-unconfirmed");
         const currentSnapshot = dispatchRunner.state.snapshot(this.#bootId, true);
@@ -2853,12 +2868,13 @@ export class WebReadRequests {
     }
     const nativeId = source.native_id;
     if (!nativeId) throw new Error("native-session-unconfirmed");
+    const cwd = this.#managedCwd(source);
     const params = { threadId: nativeId, includeTurns: true };
     const history = sourceRunner
       ? await sourceRunner.session.request("thread/read", params)
       : await this.#codex.request(
           (await this.#preflight.check()).executable!,
-          canonicalize(source.workspace),
+          cwd,
           this.#assertManagedHome(source),
           "thread/read",
           params,
@@ -3014,6 +3030,7 @@ export class WebReadRequests {
     let textBytes = 0;
     const result: Record<string, unknown>[] = [];
     const workspace = canonicalize(record.workspace);
+    const cwd = this.#managedCwd(record);
     for (const value of rows) {
       if (!isObject(value)) throw new Error("unsupported-input-type");
       if (value.type === "text") {
@@ -3064,14 +3081,14 @@ export class WebReadRequests {
       } else if (value.type === "skill") {
         if (typeof value.id !== "string") throw new Error("invalid-skill-id");
         const listed = await runner.session.request("skills/list", {
-          cwds: [workspace],
+          cwds: [cwd],
           forceReload: false,
         });
         const data = isObject(listed) && Array.isArray(listed.data) ? listed.data : [];
         let match: { name: string; path: string } | undefined;
         for (const entry of data) {
           if (!isObject(entry) || typeof entry.cwd !== "string") continue;
-          if (pathIdentity(canonicalize(entry.cwd)) !== pathIdentity(workspace)) continue;
+          if (pathIdentity(canonicalize(entry.cwd)) !== pathIdentity(cwd)) continue;
           if (!Array.isArray(entry.skills)) continue;
           for (const skill of entry.skills) {
             if (!isObject(skill) || typeof skill.path !== "string") continue;
@@ -3176,6 +3193,9 @@ export class WebReadRequests {
     fork?: { nativeId: string; lastTurnId: string },
     onFailure?: (error: unknown, ownsLease: boolean) => void,
   ): Promise<ManagedRunner> {
+    if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
+      throw new Error("session-workspace-mismatch");
+    const cwd = this.#managedCwd(record);
     // Startup can outlive the last subscriber; retain the observation before any await.
     const observedAtStart =
       this.#controlSessions.get(record.id)?.observed === true ||
@@ -3243,7 +3263,7 @@ export class WebReadRequests {
     try {
       const session = await CodexAppServerSession.start(
         executable,
-        workspace,
+        cwd,
         home,
         { ...process.env, ...this.environment },
         undefined,
@@ -3275,7 +3295,7 @@ export class WebReadRequests {
         if (goal?.status === "active") throw new Error("pause-original-goal-before-handoff");
       }
 
-      const params = managedResumeParams(record, workspace);
+      const params = managedResumeParams(record, cwd);
       if (requestedModel) params.model = requestedModel;
       if (requestedEffort)
         (params.config as Record<string, unknown>).model_reasoning_effort = requestedEffort;
@@ -3287,6 +3307,8 @@ export class WebReadRequests {
       } else if (nativeId) params.threadId = nativeId;
       const beforeDispatch = () => {
         this.#assertOpen();
+        if (pathIdentity(this.#managedCwd(record)) !== pathIdentity(cwd))
+          throw new Error("codex-workspace-mismatch");
         dispatch?.();
       };
       const readRevision = state.revision;
@@ -3309,7 +3331,9 @@ export class WebReadRequests {
       (state.record as ManagedRecord).native_id = attachedId;
       if (
         typeof response.cwd !== "string" ||
-        pathIdentity(canonicalize(response.cwd)) !== pathIdentity(workspace)
+        pathIdentity(canonicalize(response.cwd)) !== pathIdentity(cwd) ||
+        typeof nativeThread.cwd !== "string" ||
+        pathIdentity(canonicalize(nativeThread.cwd)) !== pathIdentity(cwd)
       )
         throw new Error("codex-workspace-mismatch");
       verifyManagedPolicy(record, response);
@@ -3642,6 +3666,7 @@ export class WebReadRequests {
       id: sessionId,
       workspace_id: summary.workspace_id,
       workspace,
+      cwd: this.sessions.verifiedCodexControlDirectory(nativeId)?.cwd,
       home: canonicalize(this.sessions.codexHome()),
       native_id: nativeId,
       title: summary.title ?? "Codex",
@@ -3657,6 +3682,11 @@ export class WebReadRequests {
   async #inactiveLive(record: ManagedRecord, controls: boolean): Promise<Record<string, unknown>> {
     const checked = await this.#preflight.check();
     let reason = checked.reason;
+    try {
+      this.#managedCwd(record);
+    } catch (error) {
+      reason = error instanceof Error ? error.message : "codex-session-directory-unverified";
+    }
     if (!reason && record.native_id) {
       let ownership = this.#ownership.get(record.id);
       if (!ownership || Date.now() - ownership.checkedAt >= 4000) {
@@ -3848,8 +3878,51 @@ export class WebReadRequests {
     const managed = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
     );
-    if (!managed)
-      return this.#inactiveLive(await this.#inactiveRecord(sessionId), experimentalEnabled);
+    if (!managed) {
+      try {
+        return await this.#inactiveLive(await this.#inactiveRecord(sessionId), experimentalEnabled);
+      } catch (error) {
+        // Root/home sessions can live in an unregistered native collection.
+        // Explain the proven directory failure without granting collection controls.
+        const summary = this.store.sessions.get(sessionId);
+        if (summary?.agent === "codex" && !summary.sidechain) {
+          const source = await this.sessions.resolve(sessionId);
+          const nativeId = source.native.native_ref;
+          const identity = this.sessions.verifiedCodexControlDirectory(nativeId);
+          if (
+            source.native.agent === "codex" &&
+            this.sessions.verifiedCodexControlIds([nativeId]).has(nativeId.toLowerCase()) &&
+            identity?.id === nativeId.toLowerCase()
+          ) {
+            let reason: string | undefined;
+            try {
+              this.#checkedCodexDirectory(identity.cwd);
+            } catch (directoryError) {
+              if (directoryError instanceof Error) reason = directoryError.message;
+            }
+            if (reason && !managedSessionHasUnknownCommands(this.dataDir, sessionId)) {
+              this.#catalogObservations.set(sessionId, {
+                at: Date.now(),
+                status: "unsupported",
+                reason,
+              });
+              return {
+                ...new ManagedCodexState({
+                  id: sessionId,
+                  workspace_id: summary.workspace_id,
+                  workspace: source.workspace,
+                }).snapshot(this.#bootId, false),
+                status: "unsupported",
+                executionLocation: null,
+                sendEnabled: false,
+                reason,
+              };
+            }
+          }
+        }
+        throw error;
+      }
+    }
     const liveWorkspace = canonicalize(this.store.workspacePath(managed.workspace_id));
     if (pathIdentity(liveWorkspace) !== pathIdentity(canonicalize(managed.workspace)))
       throw new Error("session-workspace-mismatch");
@@ -4426,6 +4499,7 @@ export class WebReadRequests {
         throw new Error("unverified-session-identity");
     }
     if (!nativeId) return { available: false, reason: "native-session-unverified" };
+    const executionCwd = this.#managedCwd(managed ?? (await this.#inactiveRecord(sessionId)));
     const executable = resolveCommand("codex", this.environment);
     if (!executable) throw new Error("codex-cli-unavailable");
     let codexHome: string;
@@ -4434,7 +4508,7 @@ export class WebReadRequests {
     } catch {
       throw new Error("codex-home-unavailable");
     }
-    const response = await this.#codex.readThread(executable, workspace, codexHome, nativeId);
+    const response = await this.#codex.readThread(executable, executionCwd, codexHome, nativeId);
     const thread = isObject(response) ? response.thread : null;
     if (!isObject(thread) || thread.id !== nativeId) throw new Error("thread-identity-mismatch");
     if (
@@ -4466,10 +4540,11 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(managed.workspace)))
       throw new Error("session-workspace-mismatch");
     const codexHome = this.#assertManagedHome(managed);
+    const executionCwd = this.#managedCwd(managed);
     const executable = resolveCommand("codex", this.environment);
     if (!executable) throw new Error("codex-cli-unavailable");
-    const result = await this.#codex.request(executable, workspace, codexHome, "skills/list", {
-      cwds: [workspace],
+    const result = await this.#codex.request(executable, executionCwd, codexHome, "skills/list", {
+      cwds: [executionCwd],
       forceReload: false,
     });
     const latest = readManagedRecords(this.dataDir, this.store).find(
@@ -4494,7 +4569,8 @@ export class WebReadRequests {
       } catch {
         continue;
       }
-      if (pathIdentity(cwd) !== pathIdentity(workspace) || !Array.isArray(entry.skills)) continue;
+      if (pathIdentity(cwd) !== pathIdentity(executionCwd) || !Array.isArray(entry.skills))
+        continue;
       for (const skill of entry.skills.slice(0, 256)) {
         if (!isObject(skill) || typeof skill.path !== "string") continue;
         let skillPath: string;
@@ -4544,6 +4620,7 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(managed.workspace)))
       throw new Error("session-workspace-mismatch");
     const home = this.#assertManagedHome(managed);
+    const executionCwd = this.#managedCwd(managed);
     const storedGoal = isObject(managed.goal) ? managed.goal : null;
     const storedRevision = managed.snapshot?.revision ?? null;
     if (!managed.native_id)
@@ -4565,7 +4642,7 @@ export class WebReadRequests {
       try {
         result = await this.#codex.readThreadGoal(
           executable,
-          workspace,
+          executionCwd,
           home,
           managed.native_id,
           (thread) => {
@@ -4663,6 +4740,54 @@ export class WebReadRequests {
     }
     if (pathIdentity(home) !== pathIdentity(recordedHome)) throw new Error("codex-home-changed");
     return home;
+  }
+
+  #managedCwd(record: ManagedRecord): string {
+    const workspace = canonicalize(this.store.workspacePath(record.workspace_id));
+    if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
+      throw new Error("session-workspace-mismatch");
+    let value = record.cwd;
+    if (value === undefined && record.native_id) {
+      // Older ledgers stored only the registration root. Re-prove the native
+      // directory instead of treating that broad root as execution authority.
+      const identity = this.sessions.verifiedCodexControlDirectory(record.native_id);
+      if (!identity || identity.id !== record.native_id.toLowerCase())
+        throw new Error("codex-session-directory-unverified");
+      value = identity.cwd;
+    } else if (value === undefined && !record.adopted) {
+      value = record.workspace;
+    }
+    const cwd = this.#checkedCodexDirectory(value);
+    if (!within(cwd, workspace)) throw new Error("codex-context-outside-workspace");
+    record.cwd = cwd;
+    return cwd;
+  }
+
+  #checkedCodexDirectory(value: string | undefined): string {
+    if (!value || !path.isAbsolute(value)) throw new Error("codex-session-directory-unverified");
+    let cwd: string;
+    try {
+      cwd = canonicalize(value);
+      if (!statSync(cwd).isDirectory()) throw new Error("codex-session-directory-not-directory");
+    } catch (error) {
+      if (error instanceof Error && error.message === "codex-session-directory-not-directory")
+        throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      throw new Error(
+        code === "ENOENT" || code === "ENOTDIR"
+          ? "codex-session-directory-missing"
+          : "codex-session-directory-unavailable",
+      );
+    }
+    const userHomes = [homedir(), this.environment.HOME, this.environment.USERPROFILE].filter(
+      (home): home is string => typeof home === "string" && path.isAbsolute(home),
+    );
+    if (
+      pathIdentity(cwd) === pathIdentity(path.parse(cwd).root) ||
+      userHomes.some((home) => pathIdentity(cwd) === pathIdentity(home))
+    )
+      throw new Error("codex-session-directory-unsafe");
+    return cwd;
   }
 }
 
@@ -4776,7 +4901,7 @@ function managedResumeParams(record: ManagedRecord, workspace: string): Record<s
 
 function managedTurnSettings(record: ManagedRecord, workspace: string): Record<string, unknown> {
   const config: Record<string, unknown> = {};
-  const params: Record<string, unknown> = { config };
+  const params: Record<string, unknown> = { cwd: workspace, config };
   switch (record.policy_id ?? "workspace-write-on-request") {
     case "workspace-write-on-request":
       params.approvalPolicy = "on-request";
@@ -5039,7 +5164,8 @@ function verifyManagedPolicy(record: ManagedRecord, response: Record<string, unk
     !full &&
     (sandbox.networkAccess !== false ||
       !Array.isArray(sandbox.writableRoots) ||
-      sandbox.writableRoots.some((root) => root !== record.workspace))
+      sandbox.writableRoots.length !== 1 ||
+      sandbox.writableRoots.some((root) => root !== record.cwd))
   )
     throw new Error("codex-sandbox-mismatch");
   if (record.service_tier && response.serviceTier !== record.service_tier)

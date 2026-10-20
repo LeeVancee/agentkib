@@ -258,6 +258,25 @@ function fixture() {
 }
 
 describe("managed directory ownership", () => {
+  it("matches a verified execution subdirectory while preserving its registered workspace owner", async () => {
+    const f = fixture();
+    const cwd = path.join(f.workspace, "subproject");
+    mkdirSync(cwd);
+    const file = f.addNative(f.owner.native_id!);
+    const header = JSON.parse(readFileSync(file, "utf8"));
+    header.payload.cwd = cwd;
+    writeFileSync(file, JSON.stringify(header) + "\n");
+    f.nativeDatabase.prepare("UPDATE threads SET cwd=? WHERE id=?").run(cwd, f.owner.native_id!);
+    f.sync();
+    f.saveOwners([{ ...f.owner, cwd }]);
+    expect(
+      (await f.localCatalog()).sessions.find((record) => record.id === f.owner.id)
+        ?.indexedSessionIds,
+    ).toHaveLength(1);
+    expect((await f.pairedCatalog())[0].origin).toBe("interactive");
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
   it("does not assign a persisted usage generation to the current backend without an observer", async () => {
     const f = fixture();
     f.saveOwners([

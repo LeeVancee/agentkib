@@ -1,8 +1,7 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "./claude-connection-copy";
-import { conversationWords } from "@/core/i18n";
-import type { SupportedLocale as Locale } from "@/core/types";
-import { unavailableReasonText } from "../../live-status";
+import { localizedUnavailableReasonText } from "../../live-status";
+type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
 const zh = {
   composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入待发队列。队列消息将自动执行。",
   queueTooLarge: "待发队列超过 100 条，此处暂不允许编辑或排序。",
@@ -375,6 +374,21 @@ export const codexCopy: Record<Locale, Copy> = {
 
 const reasons: Record<Locale, Record<string, string>> = {
   "zh-CN": {
+    "codex-session-directory-unsafe":
+      "会话目录是文件系统根目录或用户主目录，为保护文件，目前仅可查看。请在具体项目目录中使用 Codex 新建会话。",
+    "codex-session-directory-missing": "会话目录已不存在，目前仅可查看。请恢复该目录后刷新重试。",
+    "codex-session-directory-not-directory":
+      "会话路径不是目录，目前仅可查看。请在主机上检查该路径。",
+    "codex-session-directory-unavailable":
+      "无法读取会话目录，目前仅可查看。请检查主机上的目录权限后重试。",
+    "codex-session-directory-unverified":
+      "无法确认这条会话自己的目录，目前仅可查看。请在 Codex 中检查会话后刷新重试。",
+    "codex-context-outside-workspace":
+      "会话目录不在已登记的工作区内，目前仅可查看。请在主机上检查工作区与会话目录。",
+    "codex-workspace-mismatch":
+      "Codex 返回的工作目录与会话目录不一致，已停止本次操作。请检查会话状态后重试。",
+    "codex-sandbox-mismatch":
+      "Codex 返回的可写范围与会话目录不一致，已停止本次操作。请检查会话状态后重试。",
     "codex-cli-version-unavailable":
       "无法确认 Codex 版本，目前仅可查看。请检查 Codex CLI 后刷新重试。",
     "codex-owner-check-unavailable":
@@ -414,6 +428,22 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "此浏览器尚未获得对应权限，请在桌面授权。",
   },
   "zh-TW": {
+    "codex-session-directory-unsafe":
+      "對話目錄是檔案系統根目錄或使用者主目錄，為保護檔案，目前僅可查看。請在具體專案目錄中使用 Codex 建立新對話。",
+    "codex-session-directory-missing":
+      "對話目錄已不存在，目前僅可查看。請還原該目錄後重新整理再試。",
+    "codex-session-directory-not-directory":
+      "對話路徑不是目錄，目前僅可查看。請在主機上檢查該路徑。",
+    "codex-session-directory-unavailable":
+      "無法讀取對話目錄，目前僅可查看。請檢查主機上的目錄權限後重試。",
+    "codex-session-directory-unverified":
+      "無法確認這段對話自己的目錄，目前僅可查看。請在 Codex 中檢查對話後重新整理再試。",
+    "codex-context-outside-workspace":
+      "對話目錄不在已登記的工作區內，目前僅可查看。請在主機上檢查工作區與對話目錄。",
+    "codex-workspace-mismatch":
+      "Codex 傳回的工作目錄與對話目錄不一致，已停止本次操作。請檢查對話狀態後重試。",
+    "codex-sandbox-mismatch":
+      "Codex 傳回的可寫範圍與對話目錄不一致，已停止本次操作。請檢查對話狀態後重試。",
     "codex-cli-version-unavailable":
       "無法確認 Codex 版本，目前僅可查看。請檢查 Codex CLI 後重新整理再試。",
     "codex-owner-check-unavailable":
@@ -453,6 +483,22 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "此瀏覽器尚未取得對應權限，請在桌面授權。",
   },
   "en-US": {
+    "codex-session-directory-unsafe":
+      "The session directory is a filesystem root or your home directory. This session is view only to protect your files. Start a new Codex session from a specific project directory.",
+    "codex-session-directory-missing":
+      "The session directory no longer exists. This session is view only. Restore the directory, then refresh to retry.",
+    "codex-session-directory-not-directory":
+      "The session path is not a directory. This session is view only. Check that path on the host.",
+    "codex-session-directory-unavailable":
+      "The session directory could not be read. This session is view only. Check its permissions on the host, then retry.",
+    "codex-session-directory-unverified":
+      "The session's own directory could not be verified. This session is view only. Check the session in Codex, then refresh to retry.",
+    "codex-context-outside-workspace":
+      "The session directory is outside the registered workspace. This session is view only. Check the workspace and session directory on the host.",
+    "codex-workspace-mismatch":
+      "Codex returned a working directory that differs from the session directory. The operation was stopped. Check the session state, then retry.",
+    "codex-sandbox-mismatch":
+      "Codex returned a writable scope that differs from the session directory. The operation was stopped. Check the session state, then retry.",
     "codex-cli-version-unavailable":
       "The Codex version could not be confirmed. This session is view only. Check Codex CLI, then refresh to retry.",
     "codex-owner-check-unavailable":
@@ -501,6 +547,22 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "This browser needs the corresponding desktop permission.",
   },
   "ja-JP": {
+    "codex-session-directory-unsafe":
+      "会話のディレクトリがファイルシステムのルートまたはホームディレクトリのため、ファイルを保護するために閲覧のみになっています。個別のプロジェクトディレクトリで Codex の新しい会話を開始してください。",
+    "codex-session-directory-missing":
+      "会話のディレクトリが存在しないため、閲覧のみです。ディレクトリを復元してから再読み込みしてください。",
+    "codex-session-directory-not-directory":
+      "会話のパスがディレクトリではないため、閲覧のみです。ホスト上の該当パスを確認してください。",
+    "codex-session-directory-unavailable":
+      "会話のディレクトリを読み取れないため、閲覧のみです。ホスト上のアクセス権を確認してから再試行してください。",
+    "codex-session-directory-unverified":
+      "この会話自体のディレクトリを確認できないため、閲覧のみです。Codex で会話を確認してから再読み込みしてください。",
+    "codex-context-outside-workspace":
+      "会話のディレクトリが登録済みワークスペースの外にあるため、閲覧のみです。ホスト上のワークスペースと会話のディレクトリを確認してください。",
+    "codex-workspace-mismatch":
+      "Codex が返した作業ディレクトリが会話のディレクトリと一致しないため、操作を停止しました。会話の状態を確認してから再試行してください。",
+    "codex-sandbox-mismatch":
+      "Codex が返した書き込み可能範囲が会話のディレクトリと一致しないため、操作を停止しました。会話の状態を確認してから再試行してください。",
     "codex-cli-version-unavailable":
       "Codex のバージョンを確認できないため、この会話は閲覧のみです。Codex CLI を確認してから再読み込みしてください。",
     "codex-owner-check-unavailable":
@@ -564,7 +626,7 @@ export function codexReason(locale: Locale, reason?: string): { text: string; te
     reason === "open-in-original-client" ||
     reason === "handoff-required"
   ) {
-    return { text: unavailableReasonText(reason, conversationWords(locale)) };
+    return { text: localizedUnavailableReasonText(reason, locale) };
   }
   // A stopped Claude session stores `<code>: <detail>`; the code is explained, the detail is
   // shown as the technical text.

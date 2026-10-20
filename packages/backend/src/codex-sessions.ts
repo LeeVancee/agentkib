@@ -265,6 +265,26 @@ export class CodexSessions {
       ).keys(),
     );
   }
+  /** Control uses the native creation directory even when an older resume changed SQLite cwd. */
+  verifiedControlDirectories(
+    nativeRefs: Iterable<string>,
+  ): Map<string, { id: string; cwd: string }> {
+    return this.#verifyIndexed(
+      nativeRefs,
+      [],
+      (_row, transcript, id) => {
+        const payload = headerPayload(transcript, 64 * 1024);
+        const cwd = nonempty(payload?.cwd);
+        return typeof payload?.id === "string" &&
+          uuid(payload.id) === id &&
+          cwd &&
+          path.isAbsolute(cwd)
+          ? { id, cwd }
+          : null;
+      },
+      { consistent: (a, b) => pathIdentity(a.cwd) === pathIdentity(b.cwd) },
+    );
+  }
   /** Display ownership requires the indexed UUID and absolute cwd to match the native header. */
   verifiedIndexedIdentities(
     nativeRefs: Iterable<string>,

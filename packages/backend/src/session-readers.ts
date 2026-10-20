@@ -110,6 +110,39 @@ export class SessionReaders {
     const { session } = this.#verifiedClaudeControlSource(nativeRef, workspace, share);
     return { title: session.title, created_at: session.created_at, updated_at: session.updated_at };
   }
+  /** Read-only resolution checks the indexed identity without parsing or hashing its history. */
+  verifiedClaudeReadSource(id: string) {
+    const summary = this.store.get(id);
+    if (!summary) throw new Error("session-unavailable");
+    if (summary.agent !== "claude-code" || summary.sidechain)
+      throw new Error("session-not-controllable");
+    const root = canonicalize(this.store.workspacePath(summary.workspace_id));
+    const listing = this.#claude.list(root);
+    const source = listing.sessions.find(
+      (candidate) => this.store.id("claude-code", candidate.session.native_ref) === id,
+    );
+    if (!source) throw new Error("session-unavailable");
+    const workspace = canonicalize(source.cwd);
+    if (!within(workspace, root)) throw new Error("session-workspace-mismatch");
+    const verified = this.#verifiedClaudeControlSource(source.session.native_ref, workspace, {
+      current: listing,
+    });
+    return {
+      workspaceId: summary.workspace_id,
+      workspace,
+      nativeId: verified.session.native_ref,
+      transcript: verified.transcript,
+      native: verified.session,
+    };
+  }
+  async claudeEventsForSession(
+    id: string,
+    cursor: string | null,
+    count: number,
+  ): Promise<ConversationEventPage> {
+    const source = this.verifiedClaudeReadSource(id);
+    return this.#readEvents(source.native, source.workspace, cursor, count, source.transcript);
+  }
   #verifiedClaudeControlSource(
     nativeRef: string,
     workspace: string,
@@ -330,6 +363,10 @@ export class SessionReaders {
       );
       verify();
       return page;
+    }
+    if (agent === "claude-code") {
+      const source = this.#verifiedClaudeControlSource(nativeRef, workspace);
+      return this.#readEvents(source.session, workspace, cursor, limit, source.transcript);
     }
     const listing = await this.list(agent, workspace);
     const native = listing.sessions.find(

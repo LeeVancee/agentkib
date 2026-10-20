@@ -47,6 +47,11 @@ interface Subscription {
 export class SessionStreamHub {
   #sources = new Map<string, Source>();
   #subscriptions = new Map<string, Subscription>();
+  #snapshotReads = new Map<
+    string,
+    { source: Source | undefined; historyRevision: number | undefined; promise: Promise<Snapshot> }
+  >();
+  #pendingSubscriptions = 0;
   #timer: ReturnType<typeof setInterval>;
   #polling = false;
   #closed = false;
@@ -64,12 +69,22 @@ export class SessionStreamHub {
   async subscribe(sessionId: string, afterCursor?: string): Promise<SessionSubscription> {
     if (this.#closed) throw new Error("session-stream-unavailable");
     if (sessionId.length > 256) throw new Error("invalid-session-id");
-    if (this.#subscriptions.size >= MAX_SUBSCRIPTIONS)
+    if (this.#subscriptions.size + this.#pendingSubscriptions >= MAX_SUBSCRIPTIONS)
       throw new Error("session-subscription-limit");
 
+    this.#pendingSubscriptions += 1;
+    try {
+      return await this.#subscribe(sessionId, afterCursor);
+    } finally {
+      this.#pendingSubscriptions -= 1;
+    }
+  }
+
+  async #subscribe(sessionId: string, afterCursor?: string): Promise<SessionSubscription> {
     const previousSource = this.#sources.get(sessionId);
     const previousHistoryRevision = previousSource?.historyRevision;
-    const snapshot = await this.readSnapshot(sessionId);
+    const snapshot = await this.#readSnapshot(sessionId, previousSource);
+    if (this.#closed) throw new Error("session-stream-unavailable");
     let source = this.#sources.get(sessionId);
     if (!source) {
       const initialItems = [...snapshot.items];
@@ -282,6 +297,24 @@ export class SessionStreamHub {
       if (source.pendingText) clearTimeout(source.pendingText.timer);
     this.#subscriptions.clear();
     this.#sources.clear();
+    this.#snapshotReads.clear();
+  }
+
+  #readSnapshot(sessionId: string, source: Source | undefined): Promise<Snapshot> {
+    const historyRevision = source?.historyRevision;
+    const pending = this.#snapshotReads.get(sessionId);
+    if (pending && pending.source === source && pending.historyRevision === historyRevision)
+      return pending.promise;
+
+    // Share overlapping reads only. A published update or retired source must
+    // start a fresh read; reusing its older result could undo a newer event.
+    const read = { source, historyRevision, promise: this.readSnapshot(sessionId) };
+    this.#snapshotReads.set(sessionId, read);
+    const release = () => {
+      if (this.#snapshotReads.get(sessionId) === read) this.#snapshotReads.delete(sessionId);
+    };
+    void read.promise.then(release, release);
+    return read.promise;
   }
 
   async #poll(): Promise<void> {
@@ -296,7 +329,7 @@ export class SessionStreamHub {
         source.nextPollAt = Date.now() + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000);
         try {
           const historyRevision = source.historyRevision;
-          const read = await this.readSnapshot(sessionId);
+          const read = await this.#readSnapshot(sessionId, source);
           if (this.#sources.get(sessionId) !== source) continue;
           if (source.historyRevision !== historyRevision) {
             source.nextPollAt = Date.now();

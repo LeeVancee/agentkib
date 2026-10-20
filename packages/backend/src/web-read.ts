@@ -4,20 +4,23 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
 import { historyReferenceSchema, validHistoryControl } from "./history-control-schema";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
 import {
   hasManagedCatalogWorkspace,
-  managedCatalogAliases,
+  managedCatalogProjection,
   managedRecordSchema,
   readManagedCatalog,
 } from "./managed-session-catalog";
 import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { resolveCommand } from "./command-resolution";
-import { CodexAppServerReader, CodexAppServerSession } from "./codex-app-server";
+import { CodexAppServerReader, CodexAppServerSession, codexWriterBusy } from "./codex-app-server";
+import { CodexRuntimePreflight } from "./codex-runtime-preflight";
+import { codexResumeCommand } from "./codex-resume-command";
 import { CodexFollowerBridge } from "./codex-follower-bridge";
 import type { CodexFollowerState } from "./codex-follower-state";
 import { AntigravityManagedRunner } from "./antigravity-managed-runner";
@@ -25,7 +28,7 @@ import { ManagedCodexState } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
 import { projectContextUsage } from "./context-usage";
 import { activityBlocks, assertActivityAllows } from "./session-activity";
-import { acquireManagedSessionLease } from "./managed-session-lock";
+import { acquireManagedSessionLease, existingFileLeaseBusy } from "./managed-session-lock";
 import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
 import {
   claimManagedCommand,
@@ -44,6 +47,9 @@ import {
 const requestSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("catalog") }).strict(),
   z.object({ operation: z.literal("context"), sessionId: z.string().min(1).max(256) }).strict(),
+  z
+    .object({ operation: z.literal("resume-command"), sessionId: z.string().min(1).max(256) })
+    .strict(),
   z.object({ operation: z.literal("usage"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("goal"), sessionId: z.string().min(1).max(256) }).strict(),
   z.object({ operation: z.literal("resources"), sessionId: z.string().min(1).max(256) }).strict(),
@@ -90,7 +96,7 @@ const managedResumeSchema = z
     runtimeBootId: z.string().min(1).max(256),
     expectedRevision: z.number().int().nonnegative().optional(),
     experimentalEnabled: z.boolean(),
-    handoffConfirmed: z.literal(true),
+    handoffConfirmed: z.boolean().optional(),
   })
   .strict();
 
@@ -166,7 +172,7 @@ const managedLifecycleSchema = z.discriminatedUnion("operation", [
         .max(256)
         .regex(/^[A-Za-z0-9_:-]+$/),
       sessionId: z.string().min(1).max(256),
-      handoffConfirmed: z.literal(true),
+      handoffConfirmed: z.boolean().optional(),
     })
     .strict(),
   z
@@ -268,6 +274,11 @@ type ManagedRunner = {
   persist: ReturnType<typeof createManagedSnapshotWriter>;
   release: () => void;
   planVerified: boolean;
+  idleSince: number | null;
+  observed: boolean;
+  retiring?: boolean;
+  retirementFailed?: boolean;
+  leaseReleased?: boolean;
 };
 
 type CodexFollowerRecord = {
@@ -297,9 +308,19 @@ type ManagedModelOption = {
 
 export class WebReadRequests {
   #codex: CodexAppServerReader;
+  #preflight: CodexRuntimePreflight;
+  #ownership = new Map<string, { checkedAt: number; reason: string | null }>();
+  #catalogObservations = new Map<string, { at: number; status: string; reason: string | null }>();
+  #retirementTimer: ReturnType<typeof setInterval>;
+  #retiring = false;
+  #controlSessions = new Map<string, { count: number; observed: boolean }>();
   #closing?: Promise<void>;
+  #shuttingDown = false;
+  #operations = new Set<Promise<unknown>>();
   #bootId = randomUUID();
   #managedRunners = new Map<string, ManagedRunner>();
+  #startingRunners = new Map<string, ManagedRunner>();
+  #transientSessions = new Set<CodexAppServerSession>();
   #codexFollowers = new Map<string, CodexFollowerRecord>();
   #codexFollowerFlights = new Map<string, Promise<CodexFollowerRecord>>();
   #antigravityRunners = new Map<string, AntigravityRunnerRecord>();
@@ -319,8 +340,12 @@ export class WebReadRequests {
     ) => void,
     readonly isSessionObserved?: (sessionId: string) => boolean,
     readonly sessionIndex?: SessionIndex,
+    readonly catalogChanged?: () => void,
   ) {
     this.#codex = new CodexAppServerReader(environment);
+    this.#preflight = new CodexRuntimePreflight(environment);
+    this.#retirementTimer = setInterval(() => void this.#retireIdleRunners(), 1000);
+    this.#retirementTimer.unref();
   }
 
   close(): void {
@@ -329,32 +354,88 @@ export class WebReadRequests {
 
   closeAsync(): Promise<void> {
     if (this.#closing) return this.#closing;
+    this.#shuttingDown = true;
+    clearInterval(this.#retirementTimer);
+    this.#preflight.close();
+    return (this.#closing = this.#close());
+  }
+
+  async #close(): Promise<void> {
     const pending = [this.#codex.closeAsync()];
     for (const record of this.#antigravityRunners.values()) record.runner.close();
     this.#antigravityRunners.clear();
     for (const follower of this.#codexFollowers.values()) follower.bridge.close();
     this.#codexFollowers.clear();
-    for (const runner of this.#managedRunners.values()) {
-      runner.state.fail("codex-disconnected");
-      try {
-        runner.persist(runner.state);
-      } catch {
-        // Do not replace the persisted snapshot if another process changed it.
+    const closeRunners = () => {
+      for (const session of this.#transientSessions) pending.push(session.close());
+      for (const [id, runner] of new Map([...this.#startingRunners, ...this.#managedRunners])) {
+        runner.state.fail("codex-disconnected");
+        try {
+          runner.persist(runner.state);
+        } catch {
+          // Do not replace the persisted snapshot if another process changed it.
+        }
+        pending.push(this.#closeManagedRunner(id, runner));
       }
-      pending.push(runner.bridge.close().finally(runner.release));
-    }
-    this.#managedRunners.clear();
-    this.#closing = Promise.allSettled(pending).then((results) => {
-      const failed = results.find((result) => result.status === "rejected");
-      if (failed?.status === "rejected") throw failed.reason;
-    });
-    return this.#closing;
+    };
+    closeRunners();
+    const initialClose = Promise.allSettled(pending);
+    // Keep the store and ledger alive until cancelled startups and controls have
+    // recorded their real dispatch outcomes. Admission is fenced synchronously.
+    await Promise.allSettled([...this.#operations]);
+    // A startup can finish between returning its runner and its caller registering
+    // it. The operation drain covers that microtask boundary before this last sweep.
+    pending.length = 0;
+    closeRunners();
+    const results = [...(await initialClose), ...(await Promise.allSettled(pending))];
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   }
 
-  async managedOptions() {
-    const executable = resolveCommand("codex", this.environment);
-    if (!executable)
-      return { available: false, reason: "codex-cli-unavailable", models: [], policies: [] };
+  #assertOpen(): void {
+    if (this.#shuttingDown) throw new Error("backend-closing");
+  }
+
+  #trackTransientSession(session: CodexAppServerSession, release?: () => void): void {
+    this.#transientSessions.add(session);
+    session.once("close", () => {
+      this.#transientSessions.delete(session);
+      release?.();
+    });
+  }
+
+  #runOperation<T>(run: () => Promise<T>): Promise<T> {
+    if (this.#shuttingDown) return Promise.reject(new Error("backend-closing"));
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (error: unknown) => void;
+    const pending = new Promise<T>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    // Track before calling the operation, while preserving synchronous admission
+    // so a subscription installed immediately after this call cannot be missed.
+    this.#operations.add(pending);
+    void pending.then(
+      () => this.#operations.delete(pending),
+      () => this.#operations.delete(pending),
+    );
+    try {
+      resolve(run());
+    } catch (error) {
+      reject(error);
+    }
+    return pending;
+  }
+
+  managedOptions() {
+    return this.#runOperation(() => this.#managedOptions());
+  }
+
+  async #managedOptions() {
+    const checked = await this.#preflight.check();
+    const executable = checked.executable;
+    if (!executable || checked.reason)
+      return { available: false, reason: checked.reason, models: [], policies: [] };
     try {
       const home = canonicalize(
         this.environment.CODEX_HOME ?? path.join(this.environment.HOME ?? homedir(), ".codex"),
@@ -410,11 +491,20 @@ export class WebReadRequests {
     }
   }
 
-  async managedReconcile(value: unknown) {
+  managedReconcile(value: unknown) {
+    return this.#runOperation(() => this.#managedReconcile(value));
+  }
+
+  async #managedReconcile(value: unknown) {
     const request = managedReconcileSchema.parse(value);
     const records = readManagedRecords(this.dataDir, this.store);
     const record = records.find((item) => item.id === request.sessionId);
-    if (!record) return this.#reconcileCodexFollower(request);
+    if (!record || !this.#managedRunners.get(request.sessionId)?.session.connected)
+      return this.managedQuery({
+        operation: "inspect",
+        sessionId: request.sessionId,
+        deviceId: request.deviceId,
+      });
 
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -422,12 +512,7 @@ export class WebReadRequests {
 
     let runner = this.#managedRunners.get(request.sessionId);
     if (runner && !runner.session.connected) {
-      this.#managedRunners.delete(request.sessionId);
-      try {
-        await runner.bridge.close();
-      } finally {
-        runner.release();
-      }
+      await this.#closeManagedRunner(request.sessionId, runner);
       runner = undefined;
     }
     let release: (() => void) | undefined;
@@ -446,12 +531,18 @@ export class WebReadRequests {
       release?.();
       throw new Error("session-unavailable");
     }
-    const workspace = canonicalize(this.store.workspacePath(current.workspace_id));
-    if (pathIdentity(workspace) !== pathIdentity(canonicalize(current.workspace))) {
+    let workspace: string;
+    let home: string;
+    try {
+      workspace = canonicalize(this.store.workspacePath(current.workspace_id));
+      if (pathIdentity(workspace) !== pathIdentity(canonicalize(current.workspace)))
+        throw new Error("session-workspace-mismatch");
+      home = this.#assertManagedHome(current);
+      this.#managedCwd(current);
+    } catch (error) {
       release?.();
-      throw new Error("session-workspace-mismatch");
+      throw error;
     }
-    const home = this.#assertManagedHome(current);
     const nativeId = current.native_id;
     if (!nativeId) {
       release?.();
@@ -529,7 +620,7 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
-      if (release) release();
+      if (release && !this.#managedRunners.has(current.id)) release();
       const existing = this.#managedRunners.get(current.id);
       if (!existing) {
         const result = {
@@ -544,7 +635,11 @@ export class WebReadRequests {
     }
   }
 
-  async managedLifecycle(value: unknown, fingerprintOverride?: string) {
+  managedLifecycle(value: unknown, fingerprintOverride?: string) {
+    return this.#runOperation(() => this.#managedLifecycle(value, fingerprintOverride));
+  }
+
+  async #managedLifecycle(value: unknown, fingerprintOverride?: string) {
     const request = managedLifecycleSchema.parse(value);
     const fingerprint =
       fingerprintOverride ?? createHash("sha256").update(stableJson(value)).digest("hex");
@@ -615,7 +710,6 @@ export class WebReadRequests {
         },
       );
       if (claimed) return claimed;
-      let dispatched = false;
       try {
         await runner.bridge.flush();
         if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
@@ -625,22 +719,20 @@ export class WebReadRequests {
         if (current.reason || current.status !== "idle" || current.revision !== live.revision)
           throw new Error("session-busy");
         dispatchManagedCommand(this.dataDir, request.requestId);
-        dispatched = true;
-        this.#managedRunners.delete(request.sessionId);
-        await runner.bridge.close();
-        runner.release();
-        const latest = readManagedRecords(this.dataDir, this.store).find(
-          (item) => item.id === request.sessionId,
-        );
-        if (!latest || latest.native_id !== record.native_id)
-          throw new Error("session-unavailable");
-        latest.released = true;
-        latest.snapshot = {
-          ...(isObject(latest.snapshot) ? latest.snapshot : {}),
-          status: "released",
-          sendEnabled: false,
-        };
-        saveManagedRecord(this.dataDir, latest as unknown as Record<string, unknown>);
+        await this.#closeManagedRunner(request.sessionId, runner, () => {
+          const latest = readManagedRecords(this.dataDir, this.store).find(
+            (item) => item.id === request.sessionId,
+          );
+          if (!latest || latest.native_id !== record.native_id)
+            throw new Error("session-unavailable");
+          latest.released = true;
+          latest.snapshot = {
+            ...(isObject(latest.snapshot) ? latest.snapshot : {}),
+            status: "released",
+            sendEnabled: false,
+          };
+          saveManagedRecord(this.dataDir, latest as unknown as Record<string, unknown>);
+        });
         const result = {
           sessionId: request.sessionId,
           released: true,
@@ -652,7 +744,6 @@ export class WebReadRequests {
         finishManagedCommand(this.dataDir, request.requestId, result);
         return result;
       } catch (error) {
-        if (dispatched) runner.release();
         if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
           return {
             sessionId: request.sessionId,
@@ -715,16 +806,7 @@ export class WebReadRequests {
       workspaceId = summary.workspace_id;
       title = summary.title ?? "Codex";
       adopted = true;
-      const observer = this.#codexFollowers.get(id);
-      if (observer) {
-        const observed = await observer.bridge.observeLive();
-        if (activityBlocks(observed.live(false), "adopt"))
-          return compactingRejection(request, this.#bootId);
-      }
     }
-
-    openManagedLedger(this.dataDir, true)?.close();
-    let release: (() => void) | undefined = acquireManagedSessionLease(this.dataDir, id);
 
     const workspace = canonicalize(this.store.workspacePath(workspaceId));
     const home = canonicalize(this.sessions.codexHome());
@@ -735,7 +817,6 @@ export class WebReadRequests {
       !workspaceRow ||
       pathIdentity(canonicalize(workspaceRow.path)) !== pathIdentity(workspace)
     ) {
-      release();
       throw new Error("session-workspace-mismatch");
     }
     const record: ManagedRecord = {
@@ -763,6 +844,9 @@ export class WebReadRequests {
       goal: null,
       snapshot: { status: "starting", revision: 0 },
     };
+    record.cwd = this.#managedCwd(record);
+    openManagedLedger(this.dataDir, true)?.close();
+    let release: (() => void) | undefined = acquireManagedSessionLease(this.dataDir, id);
     const evidence = {
       operation: request.operation,
       workspaceId,
@@ -787,11 +871,26 @@ export class WebReadRequests {
 
     saveManagedRecord(this.dataDir, record);
     let dispatched = false;
+    let failureFinalized = false;
+    let runner: ManagedRunner | undefined;
+    const finalizeFailure = (error: unknown, ownsLease: boolean) => {
+      if (failureFinalized) return;
+      if (ownsLease) this.#recordStartupFailure(id, error, dispatched, "unsupported");
+      failureFinalized = true;
+    };
     try {
-      const runner = await this.#attachManagedRunner(record, workspace, home, release, () => {
-        dispatchManagedCommand(this.dataDir, request.requestId);
-        dispatched = true;
-      });
+      runner = await this.#attachManagedRunner(
+        record,
+        workspace,
+        home,
+        release,
+        () => {
+          dispatchManagedCommand(this.dataDir, request.requestId);
+          dispatched = true;
+        },
+        undefined,
+        finalizeFailure,
+      );
       release = undefined;
       this.#managedRunners.set(id, runner);
       const live = await runner.bridge.snapshot(this.#bootId, true);
@@ -806,22 +905,15 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
-      release?.();
-      const definite = !dispatched;
-      const current = readManagedRecords(this.dataDir, this.store).find((item) => item.id === id);
-      if (current) {
-        current.snapshot = {
-          ...(isObject(current.snapshot) ? current.snapshot : {}),
-          status: definite ? "unsupported" : "outcome-unknown",
-          reason: definite
-            ? error instanceof Error
-              ? error.message
-              : "codex-app-server-unavailable"
-            : "control-outcome-unconfirmed",
-        };
-        if (definite) current.released = true;
-        saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
-      }
+      finalizeFailure(
+        error,
+        release !== undefined ||
+          (runner !== undefined &&
+            this.#managedRunners.get(id) === runner &&
+            !runner.leaseReleased),
+      );
+      if (!this.#managedRunners.has(id)) release?.();
+      const definite = !dispatched || codexWriterBusy(error);
       const result = {
         sessionId: id,
         accepted: false,
@@ -830,9 +922,11 @@ export class WebReadRequests {
         runtimeBootId: this.#bootId,
         controlOutcome: definite ? "not-dispatched" : "unknown",
         reason: definite
-          ? error instanceof Error
-            ? error.message
-            : "codex-app-server-unavailable"
+          ? codexWriterBusy(error)
+            ? "codex-owner-busy"
+            : error instanceof Error
+              ? error.message
+              : "codex-app-server-unavailable"
           : "control-outcome-unconfirmed",
       };
       if (definite) finishManagedCommand(this.dataDir, request.requestId, result);
@@ -840,7 +934,11 @@ export class WebReadRequests {
     }
   }
 
-  async managedResume(value: unknown) {
+  managedResume(value: unknown, automatic = false) {
+    return this.#runOperation(() => this.#managedResume(value, automatic));
+  }
+
+  async #managedResume(value: unknown, automatic = false) {
     const request = managedResumeSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -862,7 +960,7 @@ export class WebReadRequests {
         fingerprint,
       );
     }
-    if (!record.released) throw new Error("session-not-released");
+    if (!record.released && !automatic) throw new Error("session-not-released");
     if (record.archived) throw new Error("session-archived");
     if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
       throw new Error("stale-or-disabled-control");
@@ -873,12 +971,6 @@ export class WebReadRequests {
       throw new Error("session-workspace-mismatch");
     const home = this.#assertManagedHome(record);
     if (!record.native_id) throw new Error("native-session-unconfirmed");
-    const observer = this.#codexFollowers.get(request.sessionId);
-    if (observer) {
-      const observed = await observer.bridge.observeLive();
-      if (activityBlocks(observed.live(false), "resume"))
-        return compactingRejection(request, this.#bootId);
-    }
     let release: (() => void) | undefined = acquireManagedSessionLease(
       this.dataDir,
       request.sessionId,
@@ -886,7 +978,17 @@ export class WebReadRequests {
     const latest = readManagedRecords(this.dataDir, this.store, true).find(
       (item) => item.id === request.sessionId,
     );
-    if (!latest || !latest.released || latest.archived || latest.native_id !== record.native_id) {
+    if (
+      !latest ||
+      (!latest.released && !automatic) ||
+      latest.archived ||
+      latest.native_id !== record.native_id ||
+      latest.workspace_id !== record.workspace_id ||
+      pathIdentity(canonicalize(latest.workspace)) !== pathIdentity(workspace) ||
+      pathIdentity(canonicalize(latest.home)) !== pathIdentity(home) ||
+      (request.expectedRevision !== undefined &&
+        (latest.snapshot?.revision ?? 0) !== request.expectedRevision)
+    ) {
       release();
       throw new Error("session-unavailable");
     }
@@ -918,11 +1020,30 @@ export class WebReadRequests {
     };
     saveManagedRecord(this.dataDir, resumed as unknown as Record<string, unknown>);
     let dispatched = false;
+    let failureFinalized = false;
+    let runner: ManagedRunner | undefined;
+    const finalizeFailure = (error: unknown, ownsLease: boolean) => {
+      if (failureFinalized) return;
+      if (ownsLease) this.#recordStartupFailure(request.sessionId, error, dispatched, "released");
+      failureFinalized = true;
+    };
     try {
-      const runner = await this.#attachManagedRunner(resumed, workspace, home, release, () => {
-        dispatchManagedCommand(this.dataDir, request.requestId);
-        dispatched = true;
-      });
+      // Persist the re-proven execution directory while resume owns the lease,
+      // so later readers keep it separate from the registration boundary.
+      resumed.cwd = this.#managedCwd(resumed);
+      saveManagedRecord(this.dataDir, resumed as unknown as Record<string, unknown>);
+      runner = await this.#attachManagedRunner(
+        resumed,
+        workspace,
+        home,
+        release,
+        () => {
+          dispatchManagedCommand(this.dataDir, request.requestId);
+          dispatched = true;
+        },
+        undefined,
+        finalizeFailure,
+      );
       release = undefined;
       this.#managedRunners.set(request.sessionId, runner);
       const live = await runner.bridge.snapshot(this.#bootId, true);
@@ -937,24 +1058,15 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
-      release?.();
-      const definite = !dispatched;
-      const current = readManagedRecords(this.dataDir, this.store).find(
-        (item) => item.id === request.sessionId,
+      finalizeFailure(
+        error,
+        release !== undefined ||
+          (runner !== undefined &&
+            this.#managedRunners.get(request.sessionId) === runner &&
+            !runner.leaseReleased),
       );
-      if (current) {
-        current.snapshot = {
-          ...(isObject(current.snapshot) ? current.snapshot : {}),
-          status: definite ? "released" : "outcome-unknown",
-          reason: definite
-            ? error instanceof Error
-              ? error.message
-              : "codex-app-server-unavailable"
-            : "control-outcome-unconfirmed",
-        };
-        if (definite) current.released = true;
-        saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
-      }
+      if (!this.#managedRunners.has(request.sessionId)) release?.();
+      const definite = !dispatched || codexWriterBusy(error);
       const result = {
         sessionId: request.sessionId,
         accepted: false,
@@ -963,9 +1075,11 @@ export class WebReadRequests {
         runtimeBootId: this.#bootId,
         controlOutcome: definite ? "not-dispatched" : "unknown",
         reason: definite
-          ? error instanceof Error
-            ? error.message
-            : "codex-app-server-unavailable"
+          ? codexWriterBusy(error)
+            ? "codex-owner-busy"
+            : error instanceof Error
+              ? error.message
+              : "codex-app-server-unavailable"
           : "control-outcome-unconfirmed",
       };
       if (definite) finishManagedCommand(this.dataDir, request.requestId, result);
@@ -973,7 +1087,11 @@ export class WebReadRequests {
     }
   }
 
-  async managedQueueList(value: unknown) {
+  managedQueueList(value: unknown) {
+    return this.#runOperation(() => this.#managedQueueList(value));
+  }
+
+  async #managedQueueList(value: unknown) {
     const request = managedQueueSchema.parse(value);
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
@@ -985,15 +1103,11 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     this.#assertManagedHome(record);
+    const cwd = this.#managedCwd(record);
     if (!record.native_id) throw new Error("native-session-unconfirmed");
     let runner = this.#managedRunners.get(request.sessionId);
     if (runner && !runner.session.connected) {
-      this.#managedRunners.delete(request.sessionId);
-      try {
-        await runner.bridge.close();
-      } finally {
-        runner.release();
-      }
+      await this.#closeManagedRunner(request.sessionId, runner);
       runner = undefined;
     }
     if (runner?.session.connected) {
@@ -1021,10 +1135,19 @@ export class WebReadRequests {
       const executable = resolveCommand("codex", this.environment);
       if (!executable) throw new Error("codex-cli-unavailable");
       const home = this.#assertManagedHome(latest);
-      session = await CodexAppServerSession.start(executable, workspace, home, {
-        ...process.env,
-        ...this.environment,
-      });
+      this.#assertOpen();
+      session = await CodexAppServerSession.start(
+        executable,
+        cwd,
+        home,
+        { ...process.env, ...this.environment },
+        undefined,
+        (started) => {
+          session = started;
+          this.#trackTransientSession(started, release);
+        },
+      );
+      this.#assertOpen();
       const response = await session.request("thread/read", {
         threadId: latest.native_id,
         includeTurns: false,
@@ -1039,12 +1162,16 @@ export class WebReadRequests {
       try {
         await session?.close();
       } finally {
-        release?.();
+        if (!session || session.closed) release?.();
       }
     }
   }
 
-  async managedUnarchive(value: unknown) {
+  managedUnarchive(value: unknown) {
+    return this.#runOperation(() => this.#managedUnarchive(value));
+  }
+
+  async #managedUnarchive(value: unknown) {
     const request = managedUnarchiveSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -1063,6 +1190,7 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     const home = this.#assertManagedHome(record);
+    const cwd = this.#managedCwd(record);
     let release: (() => void) | undefined = acquireManagedSessionLease(
       this.dataDir,
       request.sessionId,
@@ -1097,14 +1225,25 @@ export class WebReadRequests {
         throw new Error("session-unavailable");
       const executable = resolveCommand("codex", this.environment);
       if (!executable) throw new Error("codex-cli-unavailable");
-      session = await CodexAppServerSession.start(executable, workspace, home, {
-        ...process.env,
-        ...this.environment,
-      });
+      this.#assertOpen();
+      session = await CodexAppServerSession.start(
+        executable,
+        cwd,
+        home,
+        { ...process.env, ...this.environment },
+        undefined,
+        (started) => {
+          session = started;
+          // Unarchive still has a durable state change to finish after native close.
+          this.#trackTransientSession(started);
+        },
+      );
+      this.#assertOpen();
       const response = await session.request(
         "thread/unarchive",
         { threadId: latest.native_id },
         () => {
+          this.#assertOpen();
           dispatchManagedCommand(this.dataDir, request.requestId);
           dispatched = true;
         },
@@ -1116,9 +1255,6 @@ export class WebReadRequests {
       )
         throw new Error("native-session-unconfirmed");
       await session.close();
-      session = undefined;
-      release();
-      release = undefined;
       latest.archived = false;
       latest.released = true;
       latest.snapshot = {
@@ -1139,41 +1275,44 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
-      await session?.close();
-      release?.();
-      const definite = !dispatched;
+      const definite = !dispatched || codexWriterBusy(error);
       const result = {
         sessionId: request.sessionId,
         accepted: false,
         completed: false,
         controlOutcome: definite ? "not-dispatched" : "unknown",
         reason: definite
-          ? error instanceof Error
-            ? error.message
-            : "control-preflight-rejected"
+          ? codexWriterBusy(error)
+            ? "codex-owner-busy"
+            : error instanceof Error
+              ? error.message
+              : "control-preflight-rejected"
           : "control-outcome-unconfirmed",
         requestId: request.requestId,
         runtimeBootId: this.#bootId,
       };
       if (definite) finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
+    } finally {
+      try {
+        await session?.close();
+      } finally {
+        if (!session || session.closed) release?.();
+        else session.once("close", () => release?.());
+      }
     }
   }
 
-  async managedSettingsState(value: unknown) {
+  managedSettingsState(value: unknown) {
+    return this.#runOperation(() => this.#managedSettingsState(value));
+  }
+
+  async #managedSettingsState(value: unknown) {
     const request = managedSettingsStateSchema.parse(value);
-    const record = readManagedRecords(this.dataDir, this.store).find(
+    const stored = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
-    if (!record) {
-      try {
-        const follower = await this.#codexFollower(request.sessionId);
-        const state = await follower.bridge.observeLive();
-        return state.settingsState(follower.bridge.supportsThreadSettings);
-      } catch (error) {
-        return followerUnavailable(error);
-      }
-    }
+    const record = stored ?? (await this.#inactiveRecord(request.sessionId));
     const ownerSnapshot = await this.#managedLive(request.sessionId);
     const settings = new ManagedCodexState(record, record.snapshot?.revision ?? 0).snapshot(
       this.#bootId,
@@ -1181,7 +1320,52 @@ export class WebReadRequests {
     ).settings;
     const settingsObject = isObject(settings) ? settings : {};
     const runner = this.#managedRunners.get(request.sessionId);
-    if (!runner?.session.connected || record.released || record.archived)
+    if (!runner?.session.connected) {
+      if (ownerSnapshot.reason)
+        return {
+          available: false,
+          executionMode: "codex-managed",
+          reason: ownerSnapshot.reason,
+          settings: settingsObject,
+        };
+      const checked = await this.#preflight.check();
+      if (!checked.executable || checked.reason)
+        return {
+          available: false,
+          executionMode: "codex-managed",
+          reason: checked.reason,
+          settings: settingsObject,
+        };
+      const models = projectManagedModels(
+        await this.#codex.request(
+          checked.executable,
+          this.#managedCwd(record),
+          this.#assertManagedHome(record),
+          "model/list",
+          { limit: 100 },
+        ),
+      );
+      return {
+        available: true,
+        executionMode: "codex-managed",
+        models,
+        policies: managedPolicyCatalog(),
+        collaborationModes: [],
+        revision: record.snapshot?.revision ?? 0,
+        runtimeBootId: this.#bootId,
+        settings: {
+          ...settingsObject,
+          writable: {
+            model: true,
+            effort: true,
+            mode: { available: false, reason: "native-collaboration-modes-unavailable" },
+            serviceTier: true,
+            policy: true,
+          },
+        },
+      };
+    }
+    if (record.archived)
       return {
         available: false,
         executionMode: "codex-managed",
@@ -1195,6 +1379,7 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     this.#assertManagedHome(record);
+    this.#managedCwd(record);
     const models = projectManagedModels(await runner.session.request("model/list", { limit: 100 }));
     let collaborationModes: Array<{ id: string; name: string }> = [];
     let modeWritable: Record<string, unknown> = {
@@ -1238,7 +1423,11 @@ export class WebReadRequests {
     };
   }
 
-  async managedQuery(value: unknown) {
+  managedQuery(value: unknown) {
+    return this.#runOperation(() => this.#managedQuery(value));
+  }
+
+  async #managedQuery(value: unknown) {
     const request = managedQuerySchema.parse(value);
     if (this.store.sessions.get(request.sessionId)?.agent === "antigravity") {
       let runner: AntigravityRunnerRecord;
@@ -1324,51 +1513,98 @@ export class WebReadRequests {
       (item) => item.id === request.sessionId,
     );
     if (request.operation === "capabilities") {
-      if (!record)
-        return this.#followerCapabilities(request.sessionId, request.experimentalEnabled === true);
-      if (record.released && record.adopted)
+      if (!record || !this.#managedRunners.get(request.sessionId)?.session.connected) {
+        const source = record ?? (await this.#inactiveRecord(request.sessionId));
+        const live = await this.#inactiveLive(source, request.experimentalEnabled === true);
+        const checked = await this.#preflight.check();
+        const controls = request.experimentalEnabled === true;
+        const unavailableReason =
+          typeof live.reason === "string" ? live.reason : "session-not-running";
+        const allowed = controls && live.reason === null;
+        const forkAllowed =
+          controls &&
+          !checked.reason &&
+          !source.archived &&
+          (live.reason === null || live.reason === "codex-owner-busy") &&
+          !managedSessionHasUnknownCommands(this.dataDir, source.id) &&
+          !!source.native_id &&
+          !this.#managedRunners.get(source.id)?.retiring;
+        const features: Record<string, { available: boolean; reason?: string }> = {};
+        for (const operation of [
+          "send",
+          "stop",
+          "approve",
+          "answer",
+          "resume",
+          "steer",
+          "queue-list",
+          "queue-add",
+          "queue-update",
+          "queue-delete",
+          "queue-reorder",
+          "queue-start",
+          "rename",
+          "archive",
+          "unarchive",
+          "fork",
+          "settings",
+          "settings-state",
+          "goal",
+          "goal-set",
+          "goal-pause",
+          "goal-resume",
+          "goal-clear",
+          "resources",
+          "attachments",
+          "worktree-create",
+          "branch-switch",
+          "usage",
+        ])
+          features[operation] = { available: false, reason: unavailableReason };
+        features.send = allowed
+          ? { available: true }
+          : {
+              available: false,
+              reason:
+                unavailableReason === "session-not-running"
+                  ? "control-disabled"
+                  : unavailableReason,
+            };
+        features.fork = forkAllowed
+          ? { available: true }
+          : {
+              available: false,
+              reason:
+                unavailableReason === "session-not-running"
+                  ? "control-disabled"
+                  : unavailableReason,
+            };
+        features.inspect = { available: !!checked.executable, reason: checked.reason ?? undefined };
+        for (const operation of ["settings-state", "goal", "resources"])
+          features[operation] = checked.reason
+            ? { available: false, reason: checked.reason }
+            : { available: true };
+        features.unarchive =
+          controls &&
+          !checked.reason &&
+          source.archived &&
+          !managedSessionHasUnknownCommands(this.dataDir, source.id)
+            ? { available: true }
+            : { available: false, reason: checked.reason ?? "session-not-archived" };
+        // Settings can be applied before the first turn by starting our own runner.
+        for (const operation of ["settings", "rename", "archive"])
+          features[operation] = allowed ? { available: true } : features.send!;
         return {
-          sessionId: request.sessionId,
-          executionMode: "codex-follower",
-          status: "native-host-required",
-          reason: "follower-capabilities-required",
-          features: Object.fromEntries(
-            [
-              "send",
-              "stop",
-              "approve",
-              "answer",
-              "inspect",
-              "resume",
-              "steer",
-              "queue-list",
-              "queue-add",
-              "queue-update",
-              "queue-delete",
-              "queue-reorder",
-              "queue-start",
-              "rename",
-              "archive",
-              "unarchive",
-              "fork",
-              "settings",
-              "settings-state",
-              "usage",
-              "goal",
-              "goal-set",
-              "goal-pause",
-              "goal-resume",
-              "goal-clear",
-              "resources",
-              "attachments",
-              "worktree-create",
-              "branch-switch",
-            ].map((operation) => [
-              operation,
-              { available: false, reason: "follower-operation-unverified" },
-            ]),
-          ),
+          sessionId: source.id,
+          executionMode: "codex-managed",
+          runtimeBootId: this.#bootId,
+          status: live.status,
+          reason: live.reason,
+          executionLocation: live.executionLocation,
+          ownershipReason: live.ownershipReason,
+          features,
         };
+      }
       const live = await this.#managedLive(request.sessionId, request.experimentalEnabled === true);
       if (!isObject(live)) throw new Error("session-state-unavailable");
       const controls = request.experimentalEnabled === true;
@@ -1377,13 +1613,13 @@ export class WebReadRequests {
       const running = live.status === "running";
       const compacting = live.activity === "compacting";
       const runner = this.#managedRunners.get(request.sessionId);
-      const verified = resolveCommand("codex", this.environment) !== null;
+      const verified = (await this.#preflight.check()).reason === null;
       const unknown = managedSessionHasUnknownCommands(this.dataDir, request.sessionId);
       const features: Record<string, Record<string, unknown>> = {};
       const set = (operation: string, available: boolean, reason = "session-state-unavailable") => {
         features[operation] = available ? { available: true } : { available: false, reason };
       };
-      const managed = !record.released || !record.adopted;
+      const managed = true;
       const hasNative = typeof record.native_id === "string";
       const runnerConnected = Boolean(runner?.session.connected);
       const controlReason = !verified
@@ -1514,6 +1750,8 @@ export class WebReadRequests {
       };
     }
 
+    this.#ownership.delete(request.sessionId);
+
     let workspace: string;
     let nativeId: string;
     let home: string;
@@ -1535,10 +1773,13 @@ export class WebReadRequests {
       workspace = canonicalize(resolved.workspace);
       home = canonicalize(this.sessions.codexHome());
     }
+    const executionCwd = this.#managedCwd(
+      record ?? (await this.#inactiveRecord(request.sessionId)),
+    );
     const executable = resolveCommand("codex", this.environment);
     if (!executable) throw new Error("codex-cli-unavailable");
     const readRevision = this.#managedRunners.get(request.sessionId)?.state.revision;
-    const response = await this.#codex.request(executable, workspace, home, "thread/read", {
+    const response = await this.#codex.request(executable, executionCwd, home, "thread/read", {
       threadId: nativeId,
       includeTurns: true,
     });
@@ -1560,10 +1801,21 @@ export class WebReadRequests {
         let queueSession = runner?.session.connected ? runner.session : undefined;
         const ownsQueueSession = !queueSession;
         try {
-          queueSession ??= await CodexAppServerSession.start(executable, workspace, home, {
-            ...process.env,
-            ...this.environment,
-          });
+          if (!queueSession) {
+            this.#assertOpen();
+            queueSession = await CodexAppServerSession.start(
+              executable,
+              executionCwd,
+              home,
+              { ...process.env, ...this.environment },
+              undefined,
+              (started) => {
+                queueSession = started;
+                this.#trackTransientSession(started);
+              },
+            );
+            this.#assertOpen();
+          }
           queue = await readManagedQueue(queueSession, nativeId, 100);
         } catch {
           queue = null;
@@ -1600,6 +1852,21 @@ export class WebReadRequests {
             sessionId: record.id,
           });
       }
+    } else {
+      // Older Desktop-follower receipts still need a conservative, read-only
+      // reconciliation path after that transport leaves the main flow.
+      for (const unknown of readUnknownManagedCommands(this.dataDir, request.sessionId)) {
+        if (managedCommandReconciles(unknown.requestId, unknown.evidence, thread))
+          finishManagedCommand(this.dataDir, unknown.requestId, {
+            accepted: true,
+            completed: false,
+            reconciled: true,
+            requestId: unknown.requestId,
+            runtimeBootId: this.#bootId,
+            sessionId: request.sessionId,
+          });
+        else unresolvedCount += 1;
+      }
     }
     const context = await this.#context(request.sessionId);
     const runner = this.#managedRunners.get(request.sessionId);
@@ -1610,10 +1877,13 @@ export class WebReadRequests {
         runner.persist(runner.state, hydrated.events);
       } else if (runner.state.restoreReconciledTurn()) runner.persist(runner.state);
     }
+    const ownership = await this.#managedLive(request.sessionId);
     return {
       sessionId: request.sessionId,
       reconciled: unresolvedCount === 0,
-      reason: unresolvedCount === 0 ? null : "control-outcome-unconfirmed",
+      reason: unresolvedCount === 0 ? ownership.reason : "control-outcome-unconfirmed",
+      executionLocation: ownership.executionLocation,
+      ownershipReason: ownership.ownershipReason,
       unresolvedCount,
       context,
       nativeStatus: thread.status ?? null,
@@ -1621,7 +1891,38 @@ export class WebReadRequests {
     };
   }
 
-  async managedControl(value: unknown) {
+  managedControl(value: unknown) {
+    return this.#runOperation(() => this.#managedControlAdmission(value));
+  }
+
+  async #managedControlAdmission(value: unknown) {
+    const request = managedControlSchema.parse(value);
+    const id = request.sessionId;
+    const admission = this.#controlSessions.get(id) ?? { count: 0, observed: false };
+    admission.count += 1;
+    admission.observed ||= this.isSessionObserved?.(id) === true;
+    this.#controlSessions.set(id, admission);
+    const runner = this.#managedRunners.get(id);
+    if (runner && admission.observed) runner.observed = true;
+    try {
+      return await this.#managedControl(value);
+    } finally {
+      const current = this.#managedRunners.get(id);
+      if (current && admission.observed) current.observed = true;
+      admission.count -= 1;
+      if (admission.count === 0) this.#controlSessions.delete(id);
+    }
+  }
+
+  /** A short-lived subscription must be recorded even between retirement timer ticks. */
+  observeSession(sessionId: string): void {
+    const runner = this.#managedRunners.get(sessionId);
+    if (runner) runner.observed = true;
+    const admission = this.#controlSessions.get(sessionId);
+    if (admission) admission.observed = true;
+  }
+
+  async #managedControl(value: unknown) {
     const request = managedControlSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -1629,37 +1930,113 @@ export class WebReadRequests {
     if (this.store.sessions.get(request.sessionId)?.agent === "antigravity")
       return this.#antigravityControl(request, fingerprint);
 
-    const record = readManagedRecords(this.dataDir, this.store).find(
+    let record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
-    if (!record && ["send", "stop", "approve", "answer", "settings"].includes(request.operation))
-      return this.#codexFollowerControl(request, fingerprint);
-    if (record?.released) throw new Error("session-released");
+    if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
+      throw new Error("stale-or-disabled-control");
+    if (
+      !this.#managedRunners.get(request.sessionId)?.session.connected &&
+      request.operation === "fork"
+    )
+      return this.#inactiveFork(
+        request,
+        await this.#inactiveRecord(request.sessionId),
+        fingerprint,
+      );
     if (record?.archived) throw new Error("session-archived");
     if (record && (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId))
       throw new Error("stale-or-disabled-control");
     let runner = this.#managedRunners.get(request.sessionId);
-    if (record && !runner?.session.connected) {
-      const recovery = (await this.managedReconcile({
-        operation: "reconcile",
-        requestId: randomUUID(),
-        deviceId: request.deviceId ?? "agentkib-local-owner",
-        sessionId: request.sessionId,
-      })) as Record<string, unknown>;
-      if (!isObject(recovery) || recovery.reconciled !== true)
-        return {
+    let resumedControlState: string | undefined;
+    if (!runner?.session.connected || runner.retiring) {
+      const inactive = record ?? (await this.#inactiveRecord(request.sessionId));
+      const reject = (reason: string) => {
+        const result = {
           accepted: false,
           completed: false,
           controlOutcome: "not-dispatched",
-          reason:
-            isObject(recovery) && typeof recovery.reason === "string"
-              ? recovery.reason
-              : "recovery-required",
+          reason,
           sessionId: request.sessionId,
           requestId: request.requestId,
           runtimeBootId: this.#bootId,
         };
-      runner = this.#managedRunners.get(request.sessionId);
+        // This acknowledgement may itself be lost between the backend, host and
+        // browser. Give the unsent parent operation a device-bound receipt too;
+        // never overwrite a concurrent claim or the child's unknown resume.
+        const claimed = claimManagedCommand(
+          this.dataDir,
+          request.requestId,
+          request.sessionId,
+          fingerprint,
+          request.deviceId ?? null,
+          {
+            operation: request.operation,
+            workspaceId: inactive.workspace_id,
+            runtimeBootId: request.runtimeBootId,
+            expectedRevision: request.expectedRevision,
+            executionMode: "codex-managed",
+            turnId: null,
+            nativeRequestId: null,
+            ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
+          },
+        );
+        if (claimed) return claimed;
+        finishManagedCommand(this.dataDir, request.requestId, result);
+        return result;
+      };
+      if (runner?.retiring || managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
+        return reject("control-outcome-unconfirmed");
+      if (request.expectedRevision !== (inactive.snapshot?.revision ?? 0))
+        return reject("stale-or-disabled-control");
+      if (!["send", "settings", "rename", "archive"].includes(request.operation))
+        return reject("session-not-running");
+      const checked = await this.#preflight.check();
+      if (checked.reason) return reject(checked.reason);
+      // Only resume is authoritative: the earlier focus probe can race another client.
+      try {
+        const resumed: unknown = await this.managedResume(
+          {
+            operation: "resume",
+            sessionId: request.sessionId,
+            requestId: randomUUID(),
+            deviceId: request.deviceId ?? "agentkib-local-owner",
+            runtimeBootId: this.#bootId,
+            expectedRevision: request.expectedRevision,
+            experimentalEnabled: true,
+          },
+          true,
+        );
+        if (!isObject(resumed) || resumed.accepted !== true) {
+          const reason =
+            isObject(resumed) && typeof resumed.reason === "string"
+              ? resumed.reason
+              : "recovery-required";
+          if (reason === "codex-owner-busy")
+            this.#ownership.set(request.sessionId, { checkedAt: Date.now(), reason });
+          // The native resume has its own durable receipt. Even if its reply is
+          // lost, this user operation has not reached turn/start (or another
+          // user mutation). Keep the child uncertainty as the session fence,
+          // while allowing the caller to clear this unsent message's receipt.
+          return reject(reason);
+        }
+        runner = this.#managedRunners.get(request.sessionId);
+        record = readManagedRecords(this.dataDir, this.store).find(
+          (item) => item.id === request.sessionId,
+        );
+        if (runner) {
+          request.expectedRevision = runner.state.revision;
+          if (request.operation === "send") resumedControlState = managedControlState(runner.state);
+        }
+      } catch (error) {
+        return reject(
+          codexWriterBusy(error)
+            ? "codex-owner-busy"
+            : error instanceof Error
+              ? error.message
+              : "recovery-required",
+        );
+      }
     }
     if (!record) throw new Error("session-unavailable");
     if (!runner || !runner.session.connected) throw new Error("session-runner-unavailable");
@@ -1672,9 +2049,15 @@ export class WebReadRequests {
     this.#assertManagedHome(record);
     if (!record.native_id || record.native_id !== runner.state.nativeId)
       throw new Error("native-session-unconfirmed");
+    const cwd = this.#managedCwd(record);
     const snapshot = await runner.bridge.snapshot(this.#bootId, true);
     if (activityBlocks(snapshot, request.operation))
       return compactingRejection(request, this.#bootId);
+    if (
+      resumedControlState !== undefined &&
+      managedControlState(runner.state) === resumedControlState
+    )
+      request.expectedRevision = Number(snapshot.revision);
     if (snapshot.reason || snapshot.revision !== request.expectedRevision)
       throw new Error("stale-or-disabled-control");
     if (request.operation === "fork")
@@ -1706,6 +2089,18 @@ export class WebReadRequests {
     if (claimed) return claimed;
 
     try {
+      // Fork/resume can retain a native model outside the current picker so the
+      // user can inspect it or change next-turn settings without running it.
+      // Operations that can request inference still validate before dispatch.
+      if (
+        ["send", "steer", "queue-add", "queue-start", "goal-set", "goal-resume"].includes(
+          request.operation,
+        )
+      )
+        validateManagedModelSelection(
+          record,
+          projectManagedModels(await runner.session.request("model/list", { limit: 100 })),
+        );
       let method: string;
       let params: unknown;
       let responseId: unknown;
@@ -1742,7 +2137,7 @@ export class WebReadRequests {
           threadId: record.native_id,
           clientUserMessageId: request.requestId,
           input,
-          ...managedTurnSettings(record, workspace),
+          ...managedTurnSettings(record, cwd),
         };
         method = "turn/start";
       } else if (request.operation === "stop") {
@@ -1981,6 +2376,7 @@ export class WebReadRequests {
       // Read the live state synchronously at the write boundary; an awaited snapshot can
       // become stale before its caller resumes. Rejected writes must remain undispatched.
       const beforeDispatch = () => {
+        this.#assertOpen();
         const latest = readManagedRecords(this.dataDir, this.store).find(
           (item) => item.id === request.sessionId,
         );
@@ -1996,10 +2392,20 @@ export class WebReadRequests {
         )
           throw new Error("session-unavailable");
         this.#assertManagedHome(latest);
+        if (pathIdentity(this.#managedCwd(latest)) !== pathIdentity(cwd))
+          throw new Error("codex-workspace-mismatch");
         if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
           throw new Error("control-outcome-unconfirmed");
         const currentSnapshot = dispatchRunner.state.snapshot(this.#bootId, true);
         assertActivityAllows(currentSnapshot, request.operation);
+        // The just-resumed send may observe late startup/usage notifications.
+        // Only observation-only revision changes are safe: preserve exact CAS
+        // for identity, native settings, goals, lifecycle and every other field.
+        if (
+          resumedControlState !== undefined &&
+          managedControlState(dispatchRunner.state) === resumedControlState
+        )
+          request.expectedRevision = Number(currentSnapshot.revision);
         if (
           currentSnapshot.reason ||
           currentSnapshot.revision !== request.expectedRevision ||
@@ -2079,12 +2485,7 @@ export class WebReadRequests {
       if (request.operation === "archive") {
         runner.state.commitManagedMutation({ archived: true }, "archived");
         runner.persist(runner.state);
-        this.#managedRunners.delete(request.sessionId);
-        try {
-          await runner.bridge.close();
-        } finally {
-          runner.release();
-        }
+        await this.#closeManagedRunner(request.sessionId, runner);
       }
       if (["goal-set", "goal-pause", "goal-resume"].includes(request.operation)) {
         if (!isObject(response) || !isObject(response.goal))
@@ -2151,6 +2552,8 @@ export class WebReadRequests {
     }
   }
 
+  // Retained for the separately approved Desktop-follower cleanup.
+  // oxlint-disable-next-line no-unused-private-class-members
   async #reconcileCodexFollower(
     request: z.infer<typeof managedReconcileSchema>,
   ): Promise<Record<string, unknown>> {
@@ -2246,6 +2649,8 @@ export class WebReadRequests {
     };
   }
 
+  // Retained for the separately approved Desktop-follower cleanup.
+  // oxlint-disable-next-line no-unused-private-class-members
   async #codexFollowerControl(
     request: z.infer<typeof managedControlSchema>,
     fingerprint: string,
@@ -2453,29 +2858,114 @@ export class WebReadRequests {
     }
   }
 
+  async #inactiveFork(
+    request: z.infer<typeof managedControlSchema>,
+    source: ManagedRecord,
+    fingerprint: string,
+  ) {
+    const checked = await this.#preflight.check();
+    const reason =
+      checked.reason ??
+      (this.#managedRunners.get(source.id)?.retiring ? "control-outcome-unconfirmed" : null) ??
+      (source.archived
+        ? "session-archived"
+        : managedSessionHasUnknownCommands(this.dataDir, source.id)
+          ? "control-outcome-unconfirmed"
+          : request.expectedRevision !== (source.snapshot?.revision ?? 0)
+            ? "stale-or-disabled-control"
+            : null);
+    if (reason)
+      return {
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason,
+        requestId: request.requestId,
+        sessionId: source.id,
+        runtimeBootId: this.#bootId,
+      };
+    return this.#managedFork(request, source, undefined, fingerprint);
+  }
+
   async #managedFork(
     request: z.infer<typeof managedControlSchema>,
     source: ManagedRecord,
-    sourceRunner: ManagedRunner,
+    sourceRunner: ManagedRunner | undefined,
     fingerprint: string,
   ) {
     if (this.#managedRunners.size >= 8) throw new Error("managed-session-limit");
-    const sourceSnapshot = await sourceRunner.bridge.snapshot(this.#bootId, true);
-    assertActivityAllows(sourceSnapshot, "fork");
-    if (sourceSnapshot.status !== "idle" || sourceSnapshot.reason) throw new Error("session-busy");
+    if (sourceRunner) {
+      const sourceSnapshot = await sourceRunner.bridge.snapshot(this.#bootId, true);
+      assertActivityAllows(sourceSnapshot, "fork");
+      if (sourceSnapshot.status !== "idle" || sourceSnapshot.reason)
+        throw new Error("session-busy");
+    }
     const nativeId = source.native_id;
     if (!nativeId) throw new Error("native-session-unconfirmed");
-    const history = await sourceRunner.session.request("thread/read", {
-      threadId: nativeId,
-      includeTurns: true,
-    });
+    const cwd = this.#managedCwd(source);
+    const params = { threadId: nativeId, includeTurns: true };
+    const history = sourceRunner
+      ? await sourceRunner.session.request("thread/read", params)
+      : await this.#codex.request(
+          (await this.#preflight.check()).executable!,
+          cwd,
+          this.#assertManagedHome(source),
+          "thread/read",
+          params,
+        );
     if (!isObject(history) || !isObject(history.thread) || history.thread.id !== nativeId)
       throw new Error("thread-identity-mismatch");
     const turns = Array.isArray(history.thread.turns) ? history.thread.turns.filter(isObject) : [];
-    const last = turns.at(-1);
-    if (!last || !["completed", "interrupted", "failed"].includes(String(last.status)))
-      throw new Error("no-completed-turn");
+    if (
+      typeof history.thread.cwd !== "string" ||
+      !within(canonicalize(history.thread.cwd), canonicalize(source.workspace))
+    )
+      throw new Error("codex-context-outside-workspace");
+    const last = turns
+      .filter((turn) => ["completed", "interrupted", "failed"].includes(String(turn.status)))
+      .at(-1);
+    if (!last) throw new Error("no-completed-turn");
     if (typeof last.id !== "string") throw new Error("no-completed-turn");
+    const rejectSourceSettings = (reason: string) => {
+      const claimed = claimManagedCommand(
+        this.dataDir,
+        request.requestId,
+        source.id,
+        fingerprint,
+        request.deviceId ?? null,
+        {
+          operation: "fork",
+          turnId: null,
+          nativeRequestId: null,
+          runtimeBootId: request.runtimeBootId,
+          expectedRevision: request.expectedRevision,
+          executionMode: "codex-managed",
+          workspaceId: source.workspace_id,
+        },
+      );
+      if (claimed) return claimed;
+      const result = {
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason,
+        sessionId: source.id,
+        requestId: request.requestId,
+        runtimeBootId: this.#bootId,
+      };
+      finishManagedCommand(this.dataDir, request.requestId, result);
+      return result;
+    };
+    const sourceModel = boundedText(history.thread.model, 256) ?? boundedText(source.model, 256);
+    if (!sourceModel) return rejectSourceSettings("native-model-unconfirmed");
+    const nativeSettings = isObject(source.native_settings) ? source.native_settings : {};
+    // Native null means unset or unavailable, and app-server cannot accept a null
+    // config override. Only a matching source selection can safely fill that gap.
+    const sourceEffort =
+      boundedText(history.thread.reasoningEffort, 64) ??
+      (source.model === sourceModel ? boundedText(source.effort, 64) : null) ??
+      (nativeSettings.model === sourceModel ? boundedText(nativeSettings.effort, 64) : null);
+    if (!sourceEffort) return rejectSourceSettings("native-effort-unconfirmed");
     const childId = createHash("sha256").update(`managed-fork:${request.requestId}`).digest("hex");
     openManagedLedger(this.dataDir, true)?.close();
     let release: (() => void) | undefined = acquireManagedSessionLease(this.dataDir, childId);
@@ -2504,6 +2994,8 @@ export class WebReadRequests {
       id: childId,
       source_session_id: source.id,
       native_id: null,
+      model: sourceModel,
+      effort: sourceEffort,
       adopted: false,
       released: false,
       archived: false,
@@ -2512,20 +3004,31 @@ export class WebReadRequests {
     };
     saveManagedRecord(this.dataDir, child as unknown as Record<string, unknown>);
     let dispatched = false;
+    let failureFinalized = false;
+    let runner: ManagedRunner | undefined;
+    const finalizeFailure = (error: unknown, ownsLease: boolean) => {
+      if (failureFinalized) return;
+      if (ownsLease) this.#recordStartupFailure(childId, error, dispatched, "unsupported");
+      failureFinalized = true;
+    };
     try {
-      const runner = await this.#attachManagedRunner(
+      runner = await this.#attachManagedRunner(
         child,
         canonicalize(source.workspace),
         this.#assertManagedHome(source),
         release,
         () => {
-          const current = sourceRunner.state.snapshot(this.#bootId, true);
-          assertActivityAllows(current, "fork");
-          if (current.status !== "idle" || current.reason) throw new Error("session-busy");
+          if (sourceRunner) {
+            const current = sourceRunner.state.snapshot(this.#bootId, true);
+            assertActivityAllows(current, "fork");
+            if (current.status !== "idle" || current.reason) throw new Error("session-busy");
+          } else if (managedSessionHasUnknownCommands(this.dataDir, source.id))
+            throw new Error("control-outcome-unconfirmed");
           dispatchManagedCommand(this.dataDir, request.requestId);
           dispatched = true;
         },
         { nativeId, lastTurnId: last.id },
+        finalizeFailure,
       );
       release = undefined;
       this.#managedRunners.set(childId, runner);
@@ -2542,24 +3045,15 @@ export class WebReadRequests {
       finishManagedCommand(this.dataDir, request.requestId, result);
       return result;
     } catch (error) {
-      release?.();
-      const definite = !dispatched;
-      const current = readManagedRecords(this.dataDir, this.store).find(
-        (item) => item.id === childId,
+      finalizeFailure(
+        error,
+        release !== undefined ||
+          (runner !== undefined &&
+            this.#managedRunners.get(childId) === runner &&
+            !runner.leaseReleased),
       );
-      if (current) {
-        current.snapshot = {
-          ...(isObject(current.snapshot) ? current.snapshot : {}),
-          status: definite ? "unsupported" : "outcome-unknown",
-          reason: definite
-            ? error instanceof Error
-              ? error.message
-              : "codex-app-server-unavailable"
-            : "control-outcome-unconfirmed",
-        };
-        if (definite) current.released = true;
-        saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
-      }
+      if (!this.#managedRunners.has(childId)) release?.();
+      const definite = !dispatched || codexWriterBusy(error);
       const result = {
         sessionId: childId,
         sourceSessionId: source.id,
@@ -2569,9 +3063,11 @@ export class WebReadRequests {
         runtimeBootId: this.#bootId,
         controlOutcome: definite ? "not-dispatched" : "unknown",
         reason: definite
-          ? error instanceof Error
-            ? error.message
-            : "codex-app-server-unavailable"
+          ? codexWriterBusy(error)
+            ? "codex-owner-busy"
+            : error instanceof Error
+              ? error.message
+              : "codex-app-server-unavailable"
           : "control-outcome-unconfirmed",
       };
       if (definite) finishManagedCommand(this.dataDir, request.requestId, result);
@@ -2610,6 +3106,7 @@ export class WebReadRequests {
     let textBytes = 0;
     const result: Record<string, unknown>[] = [];
     const workspace = canonicalize(record.workspace);
+    const cwd = this.#managedCwd(record);
     for (const value of rows) {
       if (!isObject(value)) throw new Error("unsupported-input-type");
       if (value.type === "text") {
@@ -2660,14 +3157,14 @@ export class WebReadRequests {
       } else if (value.type === "skill") {
         if (typeof value.id !== "string") throw new Error("invalid-skill-id");
         const listed = await runner.session.request("skills/list", {
-          cwds: [workspace],
+          cwds: [cwd],
           forceReload: false,
         });
         const data = isObject(listed) && Array.isArray(listed.data) ? listed.data : [];
         let match: { name: string; path: string } | undefined;
         for (const entry of data) {
           if (!isObject(entry) || typeof entry.cwd !== "string") continue;
-          if (pathIdentity(canonicalize(entry.cwd)) !== pathIdentity(workspace)) continue;
+          if (pathIdentity(canonicalize(entry.cwd)) !== pathIdentity(cwd)) continue;
           if (!Array.isArray(entry.skills)) continue;
           for (const skill of entry.skills) {
             if (!isObject(skill) || typeof skill.path !== "string") continue;
@@ -2685,6 +3182,84 @@ export class WebReadRequests {
     return result;
   }
 
+  // Retained without callers until removal of Desktop following is separately approved.
+  // oxlint-disable-next-line no-unused-private-class-members
+  async #legacyCodexOwnershipPreflight(
+    request: { sessionId: string; requestId: string },
+    operation: "adopt" | "resume",
+  ) {
+    const observer = this.#codexFollowers.get(request.sessionId);
+    if (observer) {
+      const observed = await observer.bridge.observeLive();
+      if (activityBlocks(observed.live(false), operation))
+        return compactingRejection(request, this.#bootId);
+    }
+  }
+
+  // Legacy Desktop observation and its final write-boundary recheck are kept
+  // intact for that cleanup review; native writer locks now govern the main path.
+  // oxlint-disable-next-line no-unused-private-class-members
+  async #legacyCodexOwnershipDispatch(
+    record: ManagedRecord,
+    nativeId: string | null,
+    fork: { nativeId: string; lastTurnId: string } | undefined,
+    dispatch?: () => void,
+  ): Promise<() => void> {
+    const ownershipObserver = nativeId && !fork ? this.#codexFollowers.get(record.id) : undefined;
+    let observedOwnershipState: CodexFollowerState | undefined;
+    if (ownershipObserver) {
+      const observed = await ownershipObserver.bridge.observeLive();
+      assertActivityAllows(observed.live(false), record.adopted ? "adopt" : "resume");
+      observedOwnershipState = observed;
+    }
+    return () => {
+      if (ownershipObserver) {
+        const selected = ownershipObserver.bridge.selectedState;
+        if (
+          this.#codexFollowers.get(record.id) !== ownershipObserver ||
+          !ownershipObserver.bridge.connected ||
+          !selected ||
+          selected !== observedOwnershipState ||
+          selected.conversationId !== nativeId ||
+          selected.revision === null
+        )
+          throw new Error("recovery-required");
+        assertActivityAllows(selected.live(false), record.adopted ? "adopt" : "resume");
+        if (
+          ["waiting-for-snapshot", "unsupported", "disconnected", "outcome-unknown"].includes(
+            selected.status,
+          )
+        )
+          throw new Error("recovery-required");
+      }
+      dispatch?.();
+    };
+  }
+
+  #recordStartupFailure(
+    id: string,
+    error: unknown,
+    dispatched: boolean,
+    definiteStatus: "released" | "unsupported",
+  ): void {
+    const definite = !dispatched || codexWriterBusy(error);
+    const current = readManagedRecords(this.dataDir, this.store).find((item) => item.id === id);
+    if (!current) return;
+    current.snapshot = {
+      ...(isObject(current.snapshot) ? current.snapshot : {}),
+      status: definite ? definiteStatus : "outcome-unknown",
+      reason: definite
+        ? codexWriterBusy(error)
+          ? "codex-owner-busy"
+          : error instanceof Error
+            ? error.message
+            : "codex-app-server-unavailable"
+        : "control-outcome-unconfirmed",
+    };
+    if (definite) current.released = true;
+    saveManagedRecord(this.dataDir, current as unknown as Record<string, unknown>);
+  }
+
   async #attachManagedRunner(
     record: ManagedRecord,
     workspace: string,
@@ -2692,69 +3267,97 @@ export class WebReadRequests {
     release: (() => void) | undefined,
     dispatch?: () => void,
     fork?: { nativeId: string; lastTurnId: string },
+    onFailure?: (error: unknown, ownsLease: boolean) => void,
   ): Promise<ManagedRunner> {
-    const executable = resolveCommand("codex", this.environment);
-    if (!executable) throw new Error("codex-cli-unavailable");
+    if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
+      throw new Error("session-workspace-mismatch");
+    const cwd = this.#managedCwd(record);
+    // Startup can outlive the last subscriber; retain the observation before any await.
+    const observedAtStart =
+      this.#controlSessions.get(record.id)?.observed === true ||
+      this.isSessionObserved?.(record.id) === true;
+    const checked = await this.#preflight.check();
+    const executable = checked.executable;
+    if (!executable || checked.reason) throw new Error(checked.reason ?? "codex-cli-unavailable");
+    this.#assertOpen();
     const nativeId = record.native_id ?? null;
-    const session = await CodexAppServerSession.start(executable, workspace, home, {
-      ...process.env,
-      ...this.environment,
-    });
     const state = new ManagedCodexState(record, record.snapshot?.revision ?? 0);
     const persist = createManagedSnapshotWriter(this.dataDir, record);
     let previousStreamText = "";
-    const bridge = new ManagedCodexEventBridge(
-      session,
-      state,
-      persist,
-      (value, result, current) => {
-        const live = current.snapshot(this.#bootId, session.connected);
-        const envelope = isObject(value) ? value : {};
-        const method = typeof envelope.method === "string" ? envelope.method : "";
-        const params = isObject(envelope.params) ? envelope.params : {};
-        if (method === "item/agentMessage/delta" || method === "item/plan/delta") {
-          const delta = typeof params.delta === "string" ? params.delta : "";
-          const streamText = typeof live.streamText === "string" ? live.streamText : "";
-          if (delta && streamText === previousStreamText + delta) {
-            this.publishConversationEvent?.(
-              record.id,
-              "text-delta",
-              {
-                text: delta,
-                offset: previousStreamText.length,
-                ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
-                ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
-                ephemeral: true,
-              },
-              live,
-            );
+    let startingRunner: ManagedRunner | undefined;
+    const captureRunner = (session: CodexAppServerSession) => {
+      if (startingRunner) return;
+      const bridge = new ManagedCodexEventBridge(
+        session,
+        state,
+        persist,
+        (value, result, current) => {
+          const live = current.snapshot(this.#bootId, session.connected);
+          const envelope = isObject(value) ? value : {};
+          const method = typeof envelope.method === "string" ? envelope.method : "";
+          const params = isObject(envelope.params) ? envelope.params : {};
+          if (method === "item/agentMessage/delta" || method === "item/plan/delta") {
+            const delta = typeof params.delta === "string" ? params.delta : "";
+            const streamText = typeof live.streamText === "string" ? live.streamText : "";
+            if (delta && streamText === previousStreamText + delta) {
+              this.publishConversationEvent?.(
+                record.id,
+                "text-delta",
+                {
+                  text: delta,
+                  offset: previousStreamText.length,
+                  ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+                  ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
+                  ephemeral: true,
+                },
+                live,
+              );
+            }
+            previousStreamText = streamText;
+            return;
           }
-          previousStreamText = streamText;
-          return;
-        }
-        previousStreamText = typeof live.streamText === "string" ? live.streamText : "";
-        if (result.event) {
-          this.publishConversationEvent?.(record.id, "item-upsert", result.event, live);
-          return;
-        }
-        this.publishConversationEvent?.(record.id, "state", live, live);
-      },
-    );
+          previousStreamText = typeof live.streamText === "string" ? live.streamText : "";
+          if (result.event) {
+            this.publishConversationEvent?.(record.id, "item-upsert", result.event, live);
+            return;
+          }
+          this.publishConversationEvent?.(record.id, "state", live, live);
+        },
+      );
+      startingRunner = {
+        session,
+        state,
+        bridge,
+        persist,
+        release: release ?? (() => {}),
+        planVerified: false,
+        idleSince: null,
+        observed: observedAtStart,
+      };
+      this.#startingRunners.set(record.id, startingRunner);
+    };
     try {
+      const session = await CodexAppServerSession.start(
+        executable,
+        cwd,
+        home,
+        { ...process.env, ...this.environment },
+        undefined,
+        captureRunner,
+      );
+      captureRunner(session);
+      const runner = startingRunner!;
+      const bridge = runner.bridge;
+      this.#assertOpen();
       const modelsResult = await session.request("model/list", { limit: 100 });
       const models = projectManagedModels(modelsResult);
       const requestedModel = record.model ?? null;
       const requestedEffort = record.effort ?? null;
-      const selected = requestedModel
-        ? models.find((model) => model.id === requestedModel)
-        : models.find((model) => model.isDefault === true);
-      if (requestedModel && !selected) throw new Error("unsupported-model");
-      if (requestedEffort && !requestedModel) throw new Error("effort-requires-model");
-      if (requestedEffort && !selected?.efforts.includes(requestedEffort))
-        throw new Error("unsupported-effort");
+      // Creating a new thread is an explicit model choice. Attaching an existing
+      // thread or its fork must also work when its inherited model left the picker;
+      // send and explicit settings changes validate their own model selection.
+      if (!nativeId && !fork) validateManagedModelSelection(record, models);
       const tier = record.service_tier ?? null;
-      if (tier && !selected?.serviceTiers.includes(tier))
-        throw new Error("unsupported-service-tier");
 
       let goal: Record<string, unknown> | null = null;
       if (nativeId) {
@@ -2763,7 +3366,7 @@ export class WebReadRequests {
         if (goal?.status === "active") throw new Error("pause-original-goal-before-handoff");
       }
 
-      const params = managedResumeParams(record, workspace);
+      const params = managedResumeParams(record, cwd);
       if (requestedModel) params.model = requestedModel;
       if (requestedEffort)
         (params.config as Record<string, unknown>).model_reasoning_effort = requestedEffort;
@@ -2773,35 +3376,10 @@ export class WebReadRequests {
         params.lastTurnId = fork.lastTurnId;
         params.deferGoalContinuation = true;
       } else if (nativeId) params.threadId = nativeId;
-      // An already-observed Desktop owner may begin a manual compaction while
-      // the model/goal reads above are in flight. Recheck without changing ownership.
-      const ownershipObserver = nativeId && !fork ? this.#codexFollowers.get(record.id) : undefined;
-      let observedOwnershipState: CodexFollowerState | undefined;
-      if (ownershipObserver) {
-        const observed = await ownershipObserver.bridge.observeLive();
-        assertActivityAllows(observed.live(false), record.adopted ? "adopt" : "resume");
-        observedOwnershipState = observed;
-      }
       const beforeDispatch = () => {
-        if (ownershipObserver) {
-          const selected = ownershipObserver.bridge.selectedState;
-          if (
-            this.#codexFollowers.get(record.id) !== ownershipObserver ||
-            !ownershipObserver.bridge.connected ||
-            !selected ||
-            selected !== observedOwnershipState ||
-            selected.conversationId !== nativeId ||
-            selected.revision === null
-          )
-            throw new Error("recovery-required");
-          assertActivityAllows(selected.live(false), record.adopted ? "adopt" : "resume");
-          if (
-            ["waiting-for-snapshot", "unsupported", "disconnected", "outcome-unknown"].includes(
-              selected.status,
-            )
-          )
-            throw new Error("recovery-required");
-        }
+        this.#assertOpen();
+        if (pathIdentity(this.#managedCwd(record)) !== pathIdentity(cwd))
+          throw new Error("codex-workspace-mismatch");
         dispatch?.();
       };
       const readRevision = state.revision;
@@ -2824,7 +3402,9 @@ export class WebReadRequests {
       (state.record as ManagedRecord).native_id = attachedId;
       if (
         typeof response.cwd !== "string" ||
-        pathIdentity(canonicalize(response.cwd)) !== pathIdentity(workspace)
+        pathIdentity(canonicalize(response.cwd)) !== pathIdentity(cwd) ||
+        typeof nativeThread.cwd !== "string" ||
+        pathIdentity(canonicalize(nativeThread.cwd)) !== pathIdentity(cwd)
       )
         throw new Error("codex-workspace-mismatch");
       verifyManagedPolicy(record, response);
@@ -2866,27 +3446,42 @@ export class WebReadRequests {
       mutableRecord.default_effort = defaultModel?.defaultEffort ?? null;
       mutableRecord.default_service_tier = defaultModel?.defaultServiceTier ?? null;
       await bridge.flush();
+      this.#assertOpen();
       const hydrated = state.hydrate(nativeThread, true, readRevision);
       persist(state, hydrated.events);
-      return {
-        session,
-        state,
-        bridge,
-        persist,
-        release: release ?? (() => {}),
-        planVerified: false,
-      };
+      runner.idleSince = Date.now();
+      runner.observed =
+        observedAtStart ||
+        this.#controlSessions.get(record.id)?.observed === true ||
+        this.isSessionObserved?.(record.id) === true;
+      this.#startingRunners.delete(record.id);
+      return runner;
     } catch (error) {
-      try {
-        await bridge.close();
-      } finally {
-        release?.();
+      if (startingRunner) {
+        // Shutdown may already have closed and transferred this generation's lease.
+        // Its delayed startup failure must not rewrite a successor's durable state.
+        if (startingRunner.leaseReleased) {
+          onFailure?.(error, false);
+          throw error;
+        }
+        this.#managedRunners.set(record.id, startingRunner);
+        this.#startingRunners.delete(record.id);
+        try {
+          await this.#closeManagedRunner(record.id, startingRunner, () => onFailure?.(error, true));
+        } catch {
+          /* Preserve the original native failure and retain the closing runner. */
+        }
+        if (startingRunner.leaseReleased) onFailure?.(error, false);
       }
       throw error;
     }
   }
 
-  async request(value: unknown) {
+  request(value: unknown) {
+    return this.#runOperation(() => this.#request(value));
+  }
+
+  async #request(value: unknown) {
     const request = requestSchema.parse(value);
     if (request.operation === "live") {
       const session = this.store.sessions.get(request.sessionId);
@@ -2908,6 +3503,7 @@ export class WebReadRequests {
       return this.#managedLive(request.sessionId, request.experimentalEnabled === true);
     }
     if (request.operation === "context") return this.#context(request.sessionId);
+    if (request.operation === "resume-command") return this.#resumeCommand(request.sessionId);
     if (request.operation === "usage") {
       const live =
         this.store.sessions.get(request.sessionId)?.agent === "antigravity"
@@ -2929,16 +3525,52 @@ export class WebReadRequests {
       );
       if (managed) {
         this.#assertManagedHome(managed);
-        const events = readManagedEvents(
-          this.dataDir,
-          request.sessionId,
-          request.cursor,
-          request.limit,
-        );
+        const nativeHistory =
+          !!managed.native_id && !this.#managedRunners.get(managed.id)?.session.connected;
+        const nativePrefix = "codex-native-v1:";
+        if (request.cursor && nativeHistory !== request.cursor.startsWith(nativePrefix))
+          throw new Error("TRANSCRIPT_CURSOR_STALE");
+        let events;
+        if (nativeHistory) {
+          const identity = this.sessions.verifiedCodexControlDirectory(managed.native_id!);
+          if (!identity || identity.id !== managed.native_id!.toLowerCase())
+            throw new Error("unverified-session-identity");
+          const cwd = canonicalize(managed.cwd ?? identity.cwd);
+          const workspace = canonicalize(this.store.workspacePath(managed.workspace_id));
+          if (
+            !within(cwd, workspace) ||
+            pathIdentity(canonicalize(identity.cwd)) !== pathIdentity(cwd)
+          )
+            throw new Error("session-workspace-mismatch");
+          const page = await this.sessions.eventsForNative(
+            "codex",
+            managed.native_id!,
+            workspace,
+            request.cursor?.slice(nativePrefix.length) ?? null,
+            request.limit,
+            { codexDirectory: cwd },
+          );
+          events = {
+            ...page,
+            next_cursor: page.next_cursor ? nativePrefix + page.next_cursor : null,
+          };
+        } else {
+          events = readManagedEvents(
+            this.dataDir,
+            request.sessionId,
+            request.cursor,
+            request.limit,
+          );
+        }
         const latest = readManagedRecords(this.dataDir, this.store).find(
           (record) => record.id === request.sessionId,
         );
-        if (!latest || latest.workspace_id !== managed.workspace_id)
+        if (
+          !latest ||
+          latest.workspace_id !== managed.workspace_id ||
+          latest.native_id !== managed.native_id ||
+          latest.cwd !== managed.cwd
+        )
           throw new Error("session-unavailable");
         this.#assertManagedHome(latest);
         return events;
@@ -2980,7 +3612,11 @@ export class WebReadRequests {
       const workspaces = allWorkspaces.filter(
         (workspace) => enabled || managedWorkspaceIds.has(workspace.id),
       );
-      const aliasesByOwner = await managedCatalogAliases(this.store, this.sessions, catalog);
+      const { aliases: aliasesByOwner, nativeByOwner } = await managedCatalogProjection(
+        this.store,
+        this.sessions,
+        catalog,
+      );
       const aliases = new Set([...aliasesByOwner.values()].flatMap((owned) => [...owned]));
       const sessions = sessionRows.filter((session) => {
         if (!isSessionSummary(session)) return false;
@@ -2993,7 +3629,7 @@ export class WebReadRequests {
           agent: "codex",
           title: record.title,
           created_at: record.created_at,
-          updated_at: record.created_at,
+          updated_at: nativeByOwner.get(record.id)?.updated_at ?? record.created_at,
           message_count: null,
           git_branch: null,
           origin: "interactive",
@@ -3003,15 +3639,96 @@ export class WebReadRequests {
           indexedSessionIds: [...(aliasesByOwner.get(record.id) ?? [])],
           executionMode: "codex-managed",
           sourceSessionId: record.source_session_id ?? null,
+          forked_from_session_id: record.source_session_id ?? null,
         })),
       );
+      const needsRuntime =
+        sessions.some((session) => {
+          if (
+            !isSessionSummary(session) ||
+            !("agent" in session) ||
+            session.agent !== "codex" ||
+            this.#managedRunners.has(session.id)
+          )
+            return false;
+          const observation = this.#catalogObservations.get(session.id);
+          return (
+            !observation ||
+            Date.now() - observation.at >= 5000 ||
+            !["control-outcome-unconfirmed", "session-retiring"].includes(observation.reason ?? "")
+          );
+        }) ||
+        (enabled &&
+          Object.values(SESSION_COLLECTIONS).some((collection) =>
+            this.store.sessions
+              .list(collection)
+              .some((row) => row.agent === "codex" && row.workspace_id === collection),
+          ));
+      const runtime = needsRuntime ? await this.#preflight.check() : null;
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
         return { workspaces: [], sessions: [], indexEnabled: false };
       return {
+        codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
         workspaces: workspaces
           .filter((workspace) => registered.has(workspace.id))
           .map(({ id, name, path }) => ({ id, name, path })),
-        sessions,
+        sessions: sessions.map((session) => {
+          if (!isSessionSummary(session) || !("agent" in session) || session.agent !== "codex")
+            return session;
+          const runner = this.#managedRunners.get(session.id);
+          const ownership = this.#ownership.get(session.id);
+          const reason =
+            ownership && Date.now() - ownership.checkedAt < 5000 ? ownership.reason : null;
+          const observation = this.#catalogObservations.get(session.id);
+          const observed =
+            observation && Date.now() - observation.at < 5000
+              ? {
+                  status: observation.status,
+                  executionLocation: null,
+                  ownershipReason: null,
+                  reason: observation.reason,
+                }
+              : undefined;
+          const unsafeObservation =
+            observed &&
+            ["control-outcome-unconfirmed", "session-retiring"].includes(observed.reason ?? "");
+          const continuation = runner?.retiring
+            ? {
+                status: runner.retirementFailed ? "outcome-unknown" : "idle",
+                executionLocation: "agentkib",
+                ownershipReason: null,
+                reason: runner.retirementFailed
+                  ? "control-outcome-unconfirmed"
+                  : "session-retiring",
+              }
+            : runner
+              ? {
+                  status: runner.state.status,
+                  executionLocation: "agentkib",
+                  ownershipReason: null,
+                  ...(runner.state.status === "outcome-unknown"
+                    ? { reason: "control-outcome-unconfirmed" }
+                    : {}),
+                }
+              : unsafeObservation
+                ? observed
+                : runtime?.reason
+                  ? {
+                      status: "unsupported",
+                      executionLocation: null,
+                      ownershipReason: null,
+                      reason: runtime.reason,
+                    }
+                  : reason
+                    ? {
+                        status: "idle",
+                        executionLocation: reason === "codex-owner-busy" ? "external" : null,
+                        ownershipReason: reason,
+                        reason,
+                      }
+                    : observed;
+          return continuation ? { ...session, continuation } : session;
+        }),
         indexEnabled: enabled || managed.length > 0,
       };
     }
@@ -3057,17 +3774,313 @@ export class WebReadRequests {
     return result;
   }
 
-  async #managedLive(sessionId: string, experimentalEnabled = false) {
+  async #inactiveRecord(sessionId: string): Promise<ManagedRecord> {
+    const stored = readManagedRecords(this.dataDir, this.store).find(
+      (record) => record.id === sessionId,
+    );
+    if (stored) {
+      if (
+        pathIdentity(canonicalize(this.store.workspacePath(stored.workspace_id))) !==
+        pathIdentity(canonicalize(stored.workspace))
+      )
+        throw new Error("session-workspace-mismatch");
+      this.#assertManagedHome(stored);
+      return stored;
+    }
+    const summary = this.store.sessions.get(sessionId);
+    if (!summary || summary.agent !== "codex" || summary.sidechain)
+      throw new Error("session-not-adoptable");
+    const resolved = await this.sessions.resolve(sessionId);
+    const nativeId = resolved.native.native_ref;
+    if (
+      resolved.summary.agent !== "codex" ||
+      resolved.native.agent !== "codex" ||
+      !this.sessions.verifiedCodexControlIds([nativeId]).has(nativeId.toLowerCase())
+    )
+      throw new Error("unverified-session-identity");
+    const workspace = canonicalize(resolved.workspace);
+    if (
+      pathIdentity(canonicalize(this.store.workspacePath(summary.workspace_id))) !==
+      pathIdentity(workspace)
+    )
+      throw new Error("session-workspace-mismatch");
+    return {
+      id: sessionId,
+      workspace_id: summary.workspace_id,
+      workspace,
+      cwd: this.sessions.verifiedCodexControlDirectory(nativeId)?.cwd,
+      home: canonicalize(this.sessions.codexHome()),
+      native_id: nativeId,
+      title: summary.title ?? "Codex",
+      created_at: new Date().toISOString(),
+      policy_id: "workspace-write-on-request",
+      released: true,
+      adopted: true,
+      archived: summary.archived,
+      snapshot: { revision: 0 },
+    };
+  }
+
+  async #inactiveLive(record: ManagedRecord, controls: boolean): Promise<Record<string, unknown>> {
+    const checked = await this.#preflight.check();
+    let reason = checked.reason;
+    try {
+      this.#managedCwd(record);
+    } catch (error) {
+      reason = error instanceof Error ? error.message : "codex-session-directory-unverified";
+    }
+    if (!reason && record.native_id) {
+      let ownership = this.#ownership.get(record.id);
+      if (!ownership || Date.now() - ownership.checkedAt >= 4000) {
+        try {
+          ownership = {
+            checkedAt: Date.now(),
+            reason: existingFileLeaseBusy(
+              path.join(record.home, "thread-writer-locks", `${record.native_id}.lock`),
+            )
+              ? "codex-owner-busy"
+              : null,
+          };
+        } catch {
+          ownership = { checkedAt: Date.now(), reason: "codex-owner-check-unavailable" };
+        }
+        this.#ownership.set(record.id, ownership);
+      }
+      reason = ownership.reason;
+    }
+    const retiringRunner = this.#managedRunners.get(record.id);
+    const retiring = retiringRunner?.retiring === true;
+    const ownershipReason = !retiring && reason === "codex-owner-busy" ? reason : null;
+    if (record.archived) reason = "session-archived";
+    else if (managedSessionHasUnknownCommands(this.dataDir, record.id))
+      reason = "control-outcome-unconfirmed";
+    else if (!record.native_id) reason = "native-session-unconfirmed";
+    if (retiring)
+      reason = retiringRunner.retirementFailed ? "control-outcome-unconfirmed" : "session-retiring";
+    const starting = this.#controlSessions.has(record.id) && record.snapshot?.status === "starting";
+    const previousObservation = this.#catalogObservations.get(record.id);
+    this.#catalogObservations.set(record.id, {
+      at: Date.now(),
+      status: reason && reason !== "codex-owner-busy" ? "unsupported" : "idle",
+      reason,
+    });
+    if (previousObservation?.reason !== reason) this.catalogChanged?.();
+    const state = new ManagedCodexState(record, record.snapshot?.revision ?? 0).snapshot(
+      this.#bootId,
+      false,
+    );
+    return {
+      ...state,
+      status: retiring
+        ? retiringRunner.retirementFailed
+          ? "outcome-unknown"
+          : "idle"
+        : starting
+          ? "starting"
+          : record.archived
+            ? "archived"
+            : reason && reason !== "codex-owner-busy"
+              ? "unsupported"
+              : "idle",
+      usage: projectContextUsage({
+        ...(isObject(record.snapshot?.usage)
+          ? record.snapshot.usage
+          : { available: true, tokenUsage: record.token_usage }),
+        reportGeneration: undefined,
+        state: "stale",
+      }),
+      executionLocation: starting || retiring ? "agentkib" : ownershipReason ? "external" : null,
+      ownershipReason,
+      sendEnabled: controls && reason === null && !starting,
+      stopEnabled: false,
+      approvals: [],
+      questions: [],
+      turnId: null,
+      activity: null,
+      reason,
+    };
+  }
+
+  async #retireIdleRunners(): Promise<void> {
+    if (this.#closing || this.#retiring) return;
+    this.#retiring = true;
+    try {
+      for (const [id, runner] of this.#managedRunners) {
+        if (runner.retiring || this.#controlSessions.has(id)) continue;
+        const observed = this.isSessionObserved?.(id) === true;
+        const left = runner.observed && !observed;
+        runner.observed ||= observed;
+        const live = runner.state.snapshot(this.#bootId, false);
+        // Leaving releases ownership after this turn, even if its longer-lived goal remains active.
+        if (
+          live.status !== "idle" ||
+          live.activity ||
+          (!left && live.goal && isObject(live.goal) && live.goal.status === "active")
+        ) {
+          runner.idleSince = null;
+          continue;
+        }
+        runner.idleSince ??= Date.now();
+        if (!left && (runner.idleSince === null || Date.now() - runner.idleSince < 60_000))
+          continue;
+        runner.retiring = true;
+        try {
+          await this.#closeManagedRunner(id, runner, () => {
+            if (this.#closing) return;
+            const latest = readManagedRecords(this.dataDir, this.store).find(
+              (record) => record.id === id,
+            );
+            if (latest) {
+              latest.released = true;
+              latest.snapshot = {
+                ...latest.snapshot,
+                status: "idle",
+                executionLocation: null,
+                ownershipReason: null,
+                reason: null,
+              };
+              saveManagedRecord(this.dataDir, latest);
+            }
+          });
+        } catch {
+          // The closing runner stays fenced until its real process-close event.
+        }
+      }
+    } finally {
+      this.#retiring = false;
+    }
+  }
+
+  async #closeManagedRunner(
+    id: string,
+    runner: ManagedRunner,
+    beforeRelease?: () => void,
+  ): Promise<void> {
+    runner.retiring = true;
+    let completed = false;
+    const complete = () => {
+      if (completed) return;
+      // Concurrent shutdown/release callers can await the same native close. Only
+      // the caller still owning this generation may finalize its durable state.
+      if (this.#managedRunners.get(id) !== runner && this.#startingRunners.get(id) !== runner) {
+        completed = true;
+        return;
+      }
+      try {
+        // Persist retirement while the lease still excludes a new runtime.
+        beforeRelease?.();
+      } catch (error) {
+        runner.retirementFailed = true;
+        throw error;
+      }
+      completed = true;
+      if (this.#managedRunners.get(id) === runner) this.#managedRunners.delete(id);
+      if (this.#startingRunners.get(id) === runner) this.#startingRunners.delete(id);
+      this.#ownership.delete(id);
+      runner.leaseReleased = true;
+      runner.release();
+    };
+    let failed = false;
+    const closed = () => {
+      if (failed) {
+        try {
+          complete();
+        } catch {
+          // A failed final write retains ownership rather than escaping an event callback.
+        }
+      }
+    };
+    runner.session.once("close", closed);
+    try {
+      await runner.bridge.close();
+      runner.session.off("close", closed);
+      complete();
+    } catch (error) {
+      failed = true;
+      runner.retirementFailed = true;
+      // A bridge flush may fail before requesting native shutdown. Regardless,
+      // keep the lease until process/stdio close is confirmed, even on timeout.
+      try {
+        await runner.session.close();
+      } catch {
+        /* The real close event settles ownership. */
+      }
+      if (runner.session.closed) {
+        runner.session.off("close", closed);
+        complete();
+      }
+      throw error;
+    }
+  }
+
+  async #managedLive(
+    sessionId: string,
+    experimentalEnabled = false,
+  ): Promise<Record<string, unknown>> {
     const managed = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
     );
-    if (!managed) return this.#codexFollowerLive(sessionId, experimentalEnabled);
+    if (!managed) {
+      try {
+        return await this.#inactiveLive(await this.#inactiveRecord(sessionId), experimentalEnabled);
+      } catch (error) {
+        // Root/home sessions can live in an unregistered native collection.
+        // Explain the proven directory failure without granting collection controls.
+        const summary = this.store.sessions.get(sessionId);
+        if (summary?.agent === "codex" && !summary.sidechain) {
+          const source = await this.sessions.resolve(sessionId);
+          const nativeId = source.native.native_ref;
+          const identity = this.sessions.verifiedCodexControlDirectory(nativeId);
+          if (
+            source.native.agent === "codex" &&
+            this.sessions.verifiedCodexControlIds([nativeId]).has(nativeId.toLowerCase()) &&
+            identity?.id === nativeId.toLowerCase()
+          ) {
+            let reason: string | undefined;
+            try {
+              this.#checkedCodexDirectory(identity.cwd);
+            } catch (directoryError) {
+              if (directoryError instanceof Error) reason = directoryError.message;
+            }
+            if (reason && !managedSessionHasUnknownCommands(this.dataDir, sessionId)) {
+              this.#catalogObservations.set(sessionId, {
+                at: Date.now(),
+                status: "unsupported",
+                reason,
+              });
+              return {
+                ...new ManagedCodexState({
+                  id: sessionId,
+                  workspace_id: summary.workspace_id,
+                  workspace: source.workspace,
+                }).snapshot(this.#bootId, false),
+                status: "unsupported",
+                executionLocation: null,
+                sendEnabled: false,
+                reason,
+              };
+            }
+          }
+        }
+        throw error;
+      }
+    }
     const liveWorkspace = canonicalize(this.store.workspacePath(managed.workspace_id));
     if (pathIdentity(liveWorkspace) !== pathIdentity(canonicalize(managed.workspace)))
       throw new Error("session-workspace-mismatch");
     this.#assertManagedHome(managed);
 
     const resident = this.#managedRunners.get(sessionId);
+    if (this.isSessionObserved?.(sessionId) === true) this.observeSession(sessionId);
+    if (resident?.retiring)
+      return {
+        ...(await this.#inactiveLive(managed, false)),
+        status: resident.retirementFailed ? "outcome-unknown" : "idle",
+        executionLocation: "agentkib",
+        ownershipReason: null,
+        reason: resident.retirementFailed ? "control-outcome-unconfirmed" : "session-retiring",
+        sendEnabled: false,
+      };
     if (resident?.session.connected) {
       return resident.bridge.snapshot(
         this.#bootId,
@@ -3075,60 +4088,10 @@ export class WebReadRequests {
       );
     }
     if (resident) {
-      this.#managedRunners.delete(sessionId);
-      try {
-        await resident.bridge.close();
-      } finally {
-        resident.release();
-      }
+      await this.#closeManagedRunner(sessionId, resident);
     }
 
-    const release = acquireManagedSessionLease(this.dataDir, sessionId);
-
-    try {
-      const workspace = canonicalize(this.store.workspacePath(managed.workspace_id));
-      if (pathIdentity(workspace) !== pathIdentity(canonicalize(managed.workspace)))
-        throw new Error("session-workspace-mismatch");
-      const home = this.#assertManagedHome(managed);
-      if (!managed.native_id) return this.#recoverySnapshot(managed, "native-session-unconfirmed");
-      const executable = resolveCommand("codex", this.environment);
-      if (!executable) return this.#recoverySnapshot(managed, "recovery-required");
-
-      let response: unknown;
-      try {
-        response = await this.#codex.request(executable, workspace, home, "thread/read", {
-          threadId: managed.native_id,
-          includeTurns: true,
-        });
-      } catch {
-        return this.#recoverySnapshot(managed, "recovery-required");
-      }
-      const thread = isObject(response) ? response.thread : null;
-      if (!isObject(thread) || thread.id !== managed.native_id)
-        throw new Error("thread-identity-mismatch");
-      if (typeof thread.cwd !== "string") throw new Error("codex-context-unavailable");
-      const cwd = canonicalize(thread.cwd);
-      if (!within(cwd, workspace)) throw new Error("codex-context-outside-workspace");
-
-      const latest = readManagedRecords(this.dataDir, this.store).find(
-        (record) => record.id === sessionId,
-      );
-      if (
-        !latest ||
-        latest.workspace_id !== managed.workspace_id ||
-        latest.native_id !== managed.native_id ||
-        pathIdentity(canonicalize(latest.workspace)) !== pathIdentity(workspace) ||
-        pathIdentity(canonicalize(latest.home)) !== pathIdentity(home)
-      )
-        throw new Error("session-unavailable");
-      this.#assertManagedHome(latest);
-
-      const state = new ManagedCodexState(latest, latest.snapshot?.revision ?? 0);
-      state.hydrate(thread, false);
-      return state.snapshot(this.#bootId, false);
-    } finally {
-      release();
-    }
+    return this.#inactiveLive(managed, experimentalEnabled);
   }
 
   async #antigravityLive(sessionId: string): Promise<Record<string, unknown>> {
@@ -3451,6 +4414,8 @@ export class WebReadRequests {
     }
   }
 
+  // Retained for the separately approved Desktop-follower cleanup.
+  // oxlint-disable-next-line no-unused-private-class-members
   async #codexFollowerLive(
     sessionId: string,
     experimentalEnabled: boolean,
@@ -3491,6 +4456,8 @@ export class WebReadRequests {
     }
   }
 
+  // Retained for the separately approved Desktop-follower cleanup.
+  // oxlint-disable-next-line no-unused-private-class-members
   async #followerCapabilities(
     sessionId: string,
     experimentalEnabled: boolean,
@@ -3606,38 +4573,46 @@ export class WebReadRequests {
     };
   }
 
-  #recoverySnapshot(record: ManagedRecord, reason: string) {
-    const snapshot = isObject(record.snapshot) ? { ...record.snapshot } : {};
-    snapshot.sessionId = record.id;
-    snapshot.workspaceId = record.workspace_id;
-    snapshot.runtimeBootId = this.#bootId;
-    snapshot.executionMode = "codex-managed";
-    const settings = isObject(snapshot.settings) ? { ...snapshot.settings } : {};
-    settings.applicationStatus = "unknown";
-    snapshot.settings = settings;
-    snapshot.usage = projectContextUsage({
-      ...(isObject(snapshot.usage)
-        ? snapshot.usage
-        : { available: true, tokenUsage: record.token_usage }),
-      // Persisted reports may belong to a previous backend process, not a live observer.
-      reportGeneration: undefined,
-      state: "stale",
-    });
-    snapshot.sendEnabled = false;
-    snapshot.stopEnabled = false;
-    snapshot.approvals = [];
-    snapshot.questions = [];
-    snapshot.status = record.archived
-      ? "archived"
-      : record.released
-        ? "released"
-        : "outcome-unknown";
-    snapshot.reason = record.archived
-      ? "session-archived"
-      : record.released
-        ? "session-released"
-        : reason;
-    return snapshot;
+  async #resumeCommand(sessionId: string) {
+    const generation = this.indexGeneration();
+    const target = async () => {
+      const record = await this.#inactiveRecord(sessionId);
+      const nativeId = record.native_id;
+      if (
+        !nativeId ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId)
+      )
+        throw new Error("unverified-session-identity");
+      // resolve() returns the registered root for ordinary indexed sessions. Preserve
+      // the native subdirectory, proven by both SQLite and the bounded rollout header.
+      const identity = this.sessions.verifiedCodexResumeIdentity(nativeId);
+      if (!identity || identity.id !== nativeId.toLowerCase())
+        throw new Error("unverified-session-identity");
+      const workspace = canonicalize(this.store.workspacePath(record.workspace_id));
+      const home = canonicalize(record.home);
+      const cwd = canonicalize(identity.cwd);
+      if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
+        throw new Error("session-workspace-mismatch");
+      this.#assertManagedHome(record);
+      if (!within(cwd, workspace)) throw new Error("codex-context-outside-workspace");
+      const directories = [workspace, home, cwd].map((directory) => {
+        const info = statSync(directory);
+        if (!info.isDirectory()) throw new Error("codex-context-unavailable");
+        return [pathIdentity(directory), info.dev, info.ino];
+      });
+      return {
+        cwd,
+        home,
+        nativeId,
+        key: JSON.stringify([record.workspace_id, nativeId, directories]),
+      };
+    };
+    const before = await target();
+    const after = await target();
+    if (generation !== this.indexGeneration() || before.key !== after.key)
+      throw new Error("session-unavailable");
+    // This read deliberately performs no CLI/version check, native RPC, or lock probe.
+    return codexResumeCommand(after.cwd, after.home, after.nativeId);
   }
 
   async #context(sessionId: string) {
@@ -3666,6 +4641,7 @@ export class WebReadRequests {
         throw new Error("unverified-session-identity");
     }
     if (!nativeId) return { available: false, reason: "native-session-unverified" };
+    const executionCwd = this.#managedCwd(managed ?? (await this.#inactiveRecord(sessionId)));
     const executable = resolveCommand("codex", this.environment);
     if (!executable) throw new Error("codex-cli-unavailable");
     let codexHome: string;
@@ -3674,7 +4650,7 @@ export class WebReadRequests {
     } catch {
       throw new Error("codex-home-unavailable");
     }
-    const response = await this.#codex.readThread(executable, workspace, codexHome, nativeId);
+    const response = await this.#codex.readThread(executable, executionCwd, codexHome, nativeId);
     const thread = isObject(response) ? response.thread : null;
     if (!isObject(thread) || thread.id !== nativeId) throw new Error("thread-identity-mismatch");
     if (
@@ -3698,38 +4674,31 @@ export class WebReadRequests {
   }
 
   async #resources(sessionId: string) {
-    const managed = readManagedRecords(this.dataDir, this.store).find(
+    const stored = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
     );
-    if (!managed)
-      return {
-        available: false,
-        executionMode: "codex-follower",
-        reason: "follower-operation-unverified",
-        skills: [],
-        plugins: [],
-        apps: [],
-        contextReferences: { supportedTypes: [] },
-      };
+    const managed = stored ?? (await this.#inactiveRecord(sessionId));
     const workspace = canonicalize(this.store.workspacePath(managed.workspace_id));
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(managed.workspace)))
       throw new Error("session-workspace-mismatch");
     const codexHome = this.#assertManagedHome(managed);
+    const executionCwd = this.#managedCwd(managed);
     const executable = resolveCommand("codex", this.environment);
     if (!executable) throw new Error("codex-cli-unavailable");
-    const result = await this.#codex.request(executable, workspace, codexHome, "skills/list", {
-      cwds: [workspace],
+    const result = await this.#codex.request(executable, executionCwd, codexHome, "skills/list", {
+      cwds: [executionCwd],
       forceReload: false,
     });
     const latest = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
     );
     if (
-      !latest ||
-      latest.workspace_id !== managed.workspace_id ||
-      latest.native_id !== managed.native_id ||
-      pathIdentity(canonicalize(latest.workspace)) !== pathIdentity(workspace) ||
-      pathIdentity(canonicalize(latest.home)) !== pathIdentity(codexHome)
+      stored &&
+      (!latest ||
+        latest.workspace_id !== managed.workspace_id ||
+        latest.native_id !== managed.native_id ||
+        pathIdentity(canonicalize(latest.workspace)) !== pathIdentity(workspace) ||
+        pathIdentity(canonicalize(latest.home)) !== pathIdentity(codexHome))
     )
       throw new Error("session-unavailable");
     const entries = isObject(result) && Array.isArray(result.data) ? result.data : [];
@@ -3742,7 +4711,8 @@ export class WebReadRequests {
       } catch {
         continue;
       }
-      if (pathIdentity(cwd) !== pathIdentity(workspace) || !Array.isArray(entry.skills)) continue;
+      if (pathIdentity(cwd) !== pathIdentity(executionCwd) || !Array.isArray(entry.skills))
+        continue;
       for (const skill of entry.skills.slice(0, 256)) {
         if (!isObject(skill) || typeof skill.path !== "string") continue;
         let skillPath: string;
@@ -3784,20 +4754,15 @@ export class WebReadRequests {
   }
 
   async #goal(sessionId: string) {
-    const managed = readManagedRecords(this.dataDir, this.store).find(
+    const stored = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
     );
-    if (!managed)
-      return {
-        available: false,
-        executionMode: "codex-follower",
-        reason: "follower-operation-unverified",
-      };
-
+    const managed = stored ?? (await this.#inactiveRecord(sessionId));
     const workspace = canonicalize(this.store.workspacePath(managed.workspace_id));
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(managed.workspace)))
       throw new Error("session-workspace-mismatch");
     const home = this.#assertManagedHome(managed);
+    const executionCwd = this.#managedCwd(managed);
     const storedGoal = isObject(managed.goal) ? managed.goal : null;
     const storedRevision = managed.snapshot?.revision ?? null;
     if (!managed.native_id)
@@ -3819,7 +4784,7 @@ export class WebReadRequests {
       try {
         result = await this.#codex.readThreadGoal(
           executable,
-          workspace,
+          executionCwd,
           home,
           managed.native_id,
           (thread) => {
@@ -3855,6 +4820,15 @@ export class WebReadRequests {
         goal = isObject(result.goal) && isObject(result.goal.goal) ? result.goal.goal : null;
       }
     }
+
+    if (!stored)
+      return {
+        available: true,
+        executionMode: "codex-managed",
+        goal,
+        revision: storedRevision,
+        ...(reason ? { reason } : {}),
+      };
 
     const latest = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
@@ -3909,10 +4883,71 @@ export class WebReadRequests {
     if (pathIdentity(home) !== pathIdentity(recordedHome)) throw new Error("codex-home-changed");
     return home;
   }
+
+  #managedCwd(record: ManagedRecord): string {
+    const workspace = canonicalize(this.store.workspacePath(record.workspace_id));
+    if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
+      throw new Error("session-workspace-mismatch");
+    let value = record.cwd;
+    if (value === undefined && record.native_id) {
+      // Older ledgers stored only the registration root. Re-prove the native
+      // directory instead of treating that broad root as execution authority.
+      const identity = this.sessions.verifiedCodexControlDirectory(record.native_id);
+      if (!identity || identity.id !== record.native_id.toLowerCase())
+        throw new Error("codex-session-directory-unverified");
+      value = identity.cwd;
+    } else if (value === undefined && !record.adopted) {
+      value = record.workspace;
+    }
+    const cwd = this.#checkedCodexDirectory(value);
+    if (!within(cwd, workspace)) throw new Error("codex-context-outside-workspace");
+    record.cwd = cwd;
+    return cwd;
+  }
+
+  #checkedCodexDirectory(value: string | undefined): string {
+    if (!value || !path.isAbsolute(value)) throw new Error("codex-session-directory-unverified");
+    let cwd: string;
+    try {
+      cwd = canonicalize(value);
+      if (!statSync(cwd).isDirectory()) throw new Error("codex-session-directory-not-directory");
+    } catch (error) {
+      if (error instanceof Error && error.message === "codex-session-directory-not-directory")
+        throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      throw new Error(
+        code === "ENOENT" || code === "ENOTDIR"
+          ? "codex-session-directory-missing"
+          : "codex-session-directory-unavailable",
+      );
+    }
+    const userHomes = [homedir(), this.environment.HOME, this.environment.USERPROFILE].filter(
+      (home): home is string => typeof home === "string" && path.isAbsolute(home),
+    );
+    if (
+      pathIdentity(cwd) === pathIdentity(path.parse(cwd).root) ||
+      userHomes.some((home) => pathIdentity(cwd) === pathIdentity(home))
+    )
+      throw new Error("codex-session-directory-unsafe");
+    return cwd;
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A resume-local guard; public revisions and native settings ACKs stay intact. */
+function managedControlState(state: ManagedCodexState): string {
+  const live = state.snapshot("", true);
+  delete live.revision;
+  delete live.tokenUsage;
+  delete live.usage;
+  delete live.streamText;
+  const record = { ...state.record };
+  delete record.snapshot;
+  delete record.token_usage;
+  return stableJson({ live, record, mutationRevision: state.mutationRevision });
 }
 
 function managedPolicyCatalog() {
@@ -3944,6 +4979,21 @@ function managedPolicyCatalog() {
       networkAccess: false,
     },
   ];
+}
+
+function validateManagedModelSelection(
+  record: Pick<ManagedRecord, "model" | "effort" | "service_tier">,
+  models: ManagedModelOption[],
+): void {
+  const selected = record.model
+    ? models.find((model) => model.id === record.model)
+    : models.find((model) => model.isDefault);
+  if (record.model && !selected) throw new Error("unsupported-model");
+  if (record.effort && !record.model) throw new Error("effort-requires-model");
+  if (record.effort && !selected?.efforts.includes(record.effort))
+    throw new Error("unsupported-effort");
+  if (record.service_tier && !selected?.serviceTiers.includes(record.service_tier))
+    throw new Error("unsupported-service-tier");
 }
 
 function projectManagedModels(value: unknown): ManagedModelOption[] {
@@ -3990,10 +5040,14 @@ function managedResumeParams(record: ManagedRecord, workspace: string): Record<s
         type: "workspaceWrite",
         writableRoots: [workspace],
         networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
       };
       params.sandbox = "workspace-write";
       config["sandbox_workspace_write.network_access"] = false;
       config["sandbox_workspace_write.writable_roots"] = [];
+      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
+      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
       break;
     case "full-access-on-request":
       params.approvalPolicy = "never";
@@ -4008,10 +5062,14 @@ function managedResumeParams(record: ManagedRecord, workspace: string): Record<s
         type: "workspaceWrite",
         writableRoots: [workspace],
         networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
       };
       params.sandbox = "workspace-write";
       config["sandbox_workspace_write.network_access"] = false;
       config["sandbox_workspace_write.writable_roots"] = [];
+      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
+      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
       break;
     default:
       throw new Error("unsupported-policy");
@@ -4021,7 +5079,7 @@ function managedResumeParams(record: ManagedRecord, workspace: string): Record<s
 
 function managedTurnSettings(record: ManagedRecord, workspace: string): Record<string, unknown> {
   const config: Record<string, unknown> = {};
-  const params: Record<string, unknown> = { config };
+  const params: Record<string, unknown> = { cwd: workspace, config };
   switch (record.policy_id ?? "workspace-write-on-request") {
     case "workspace-write-on-request":
       params.approvalPolicy = "on-request";
@@ -4030,10 +5088,14 @@ function managedTurnSettings(record: ManagedRecord, workspace: string): Record<s
         type: "workspaceWrite",
         writableRoots: [workspace],
         networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
       };
       params.sandbox = "workspace-write";
       config["sandbox_workspace_write.network_access"] = false;
       config["sandbox_workspace_write.writable_roots"] = [];
+      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
+      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
       break;
     case "full-access-on-request":
       params.approvalPolicy = "never";
@@ -4048,10 +5110,14 @@ function managedTurnSettings(record: ManagedRecord, workspace: string): Record<s
         type: "workspaceWrite",
         writableRoots: [workspace],
         networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
       };
       params.sandbox = "workspace-write";
       config["sandbox_workspace_write.network_access"] = false;
       config["sandbox_workspace_write.writable_roots"] = [];
+      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
+      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
       break;
     default:
       throw new Error("unsupported-policy");
@@ -4269,6 +5335,28 @@ function followerAnswerPayload(
   return { answers: normalized };
 }
 
+function managedWritableRootsMatch(
+  cwd: unknown,
+  responseCwd: unknown,
+  extraRoots: unknown,
+): boolean {
+  if (typeof cwd !== "string" || !path.isAbsolute(cwd) || !Array.isArray(extraRoots)) return false;
+  try {
+    const expected = pathIdentity(canonicalize(cwd));
+    const effective = new Set<string>();
+    // Native WorkspaceWrite roots are additional to cwd. The caller already
+    // verified both response cwd fields against the authorized session directory.
+    for (const root of [responseCwd, ...extraRoots]) {
+      if (typeof root !== "string" || !path.isAbsolute(root) || !statSync(root).isDirectory())
+        return false;
+      effective.add(pathIdentity(canonicalize(root)));
+    }
+    return effective.size === 1 && effective.has(expected);
+  } catch {
+    return false;
+  }
+}
+
 function verifyManagedPolicy(record: ManagedRecord, response: Record<string, unknown>): void {
   const id = record.policy_id ?? "workspace-write-on-request";
   const full = id === "full-access-on-request";
@@ -4280,11 +5368,13 @@ function verifyManagedPolicy(record: ManagedRecord, response: Record<string, unk
     sandbox.type !== (full ? "dangerFullAccess" : "workspaceWrite")
   )
     throw new Error("codex-policy-mismatch");
+  // Native WorkspaceWrite otherwise adds TMPDIR and /tmp outside writableRoots.
   if (
     !full &&
     (sandbox.networkAccess !== false ||
-      !Array.isArray(sandbox.writableRoots) ||
-      sandbox.writableRoots.some((root) => root !== record.workspace))
+      sandbox.excludeTmpdirEnvVar !== true ||
+      sandbox.excludeSlashTmp !== true ||
+      !managedWritableRootsMatch(record.cwd, response.cwd, sandbox.writableRoots))
   )
     throw new Error("codex-sandbox-mismatch");
   if (record.service_tier && response.serviceTier !== record.service_tier)
@@ -4341,7 +5431,7 @@ function managedCommandReconciles(
   thread: Record<string, unknown>,
 ): boolean {
   if (!evidence) return false;
-  if (["create", "adopt"].includes(String(evidence.operation)))
+  if (["create", "adopt", "resume"].includes(String(evidence.operation)))
     return typeof thread.id === "string";
   const turns = Array.isArray(thread.turns) ? thread.turns.filter(isObject) : [];
   if (["send", "steer", "queue-add", "queue-start"].includes(String(evidence.operation)))
@@ -4465,6 +5555,8 @@ function compactingRejection(
   };
 }
 
+// Retained with the dormant Desktop-follower implementation.
+// oxlint-disable-next-line no-unused-vars
 function followerUnavailable(error: unknown): Record<string, unknown> {
   return {
     available: false,
@@ -4476,7 +5568,7 @@ function followerUnavailable(error: unknown): Record<string, unknown> {
 function readManagedRecords(
   dataDir: string,
   store: BackendStore,
-  includeReleasedAdopted = false,
+  includeReleasedAdopted = true,
 ): ManagedRecord[] {
   const file = path.join(dataDir, "codex-managed", "executions.sqlite");
   if (!existsSync(file)) return [];

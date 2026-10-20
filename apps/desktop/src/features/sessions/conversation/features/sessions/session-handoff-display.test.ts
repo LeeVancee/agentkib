@@ -1,11 +1,9 @@
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
-import { codexReason } from "@/features/sessions/conversation/features/sessions/codex-copy";
 import {
   sessionDisplayState,
   sessionNextAction,
 } from "@/features/sessions/conversation/features/sessions/session-display-state";
-import { webLayoutCopy } from "@/features/sessions/conversation/features/sessions/web-layout-copy";
-import { canConfirmClaudeHandoff } from "@/features/sessions/conversation/features/sessions/claude-handoff";
 import type { SessionController } from "@/features/sessions/conversation/features/sessions/use-session-controller";
 
 function fixture(): SessionController {
@@ -51,54 +49,75 @@ function fixture(): SessionController {
 }
 describe("handoff-aware session presentation", () => {
   it.each(["idle", "released"] as const)(
-    "describes a qualified %s Claude source as awaiting handoff without enabling sending",
+    "continues an idle or retired %s Claude session without a handoff action",
     (status) => {
       const state = fixture();
       state.live!.status = status;
-      expect(canConfirmClaudeHandoff(state)).toBe(true);
+      state.live!.reason = undefined;
+      state.live!.sendEnabled = true;
+      state.capabilities!.features.send = { available: true };
+      state.canSend = true;
+      expect(sessionNextAction(state)).toBeUndefined();
       expect(sessionDisplayState(state)).toMatchObject({
-        label: "Handoff required",
-        nextAction: "managed-handoff",
-        tone: "warning",
+        label: "",
+        reason: "",
+        continuation: "idle",
       });
-      expect(sessionDisplayState(state).reason).toBe(codexReason("en-US", "handoff-required").text);
-      expect(state.canSend).toBe(false);
-      expect(state.live!.sendEnabled).toBe(false);
+      expect(state.canSend).toBe(true);
     },
   );
-  it("uses Codex's native resume when it is available, preserving its separate meaning", () => {
+  function codexFixture() {
     const state = fixture();
     state.current!.agent = "codex";
-    state.capabilities!.features.resume = { available: true };
-    expect(sessionDisplayState(state)).toMatchObject({
-      label: "Resume required",
-      nextAction: "native-resume",
+    Object.assign(state.live!, {
+      executionMode: "codex-managed",
+      reason: undefined,
+      ownershipReason: null,
+      executionLocation: null,
+      sendEnabled: true,
     });
-    expect(state.canSend).toBe(false);
+    state.capabilities!.executionMode = "codex-managed";
+    state.capabilities!.features.send = { available: true };
+    state.canSend = true;
+    return state;
+  }
+  it("keeps an idle Codex session ready without a badge or manual resume", () => {
+    const state = codexFixture();
+    state.capabilities!.features.resume = { available: true };
+    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).toMatchObject({
+      label: "",
+      reason: "",
+      continuation: "idle",
+    });
   });
-  it("can enter the native Codex review without management permission when the native capability remains available", () => {
-    const state = fixture();
-    state.current!.agent = "codex";
+  it("does not require management permission to send to an automatically continued Codex session", () => {
+    const state = codexFixture();
     state.access!.device!.manage = false;
-    state.capabilities!.features.resume = { available: true };
-    expect(sessionNextAction(state)).toBe("native-resume");
+    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state).continuation).toBe("idle");
   });
-  it("uses the real managed Codex handoff entry when native resume is unavailable", () => {
-    const state = fixture();
-    state.current!.agent = "codex";
+  it("identifies the external Codex owner without a handoff action or warning color", () => {
+    const state = codexFixture();
+    state.canSend = false;
+    Object.assign(state.live!, {
+      sendEnabled: false,
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      reason: "codex-owner-busy",
+    });
+    expect(sessionNextAction(state)).toBeUndefined();
     expect(sessionDisplayState(state)).toMatchObject({
-      label: "Handoff required",
-      nextAction: "managed-handoff",
+      label: "In use in Codex",
+      continuation: "busy",
+      tone: "muted",
     });
   });
-  it("recognizes a released native Codex source without rebranding resume as managed handoff", () => {
-    const state = fixture();
-    state.current!.agent = "codex";
+  it("returns a retired Codex session to idle without asking for resume confirmation", () => {
+    const state = codexFixture();
     state.live!.status = "released";
-    state.live!.reason = "session-released";
-    state.capabilities!.reason = "session-released";
-    state.capabilities!.features.resume = { available: true };
-    expect(sessionNextAction(state)).toBe("native-resume");
+    expect(sessionNextAction(state)).toBeUndefined();
+    expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
   });
   const blocked: [string, (state: SessionController) => void][] = [
     [
@@ -268,9 +287,9 @@ describe("handoff-aware session presentation", () => {
   it("keeps installation verification and unknown outcomes distinct from handoff", () => {
     const state = fixture();
     state.capabilities!.reason = "unverified-installation";
-    expect(sessionDisplayState(state)).toMatchObject({ label: "Unverified" });
+    expect(sessionDisplayState(state)).toMatchObject({ label: "View only" });
     state.controlReady = false;
-    expect(sessionDisplayState(state)).toMatchObject({ label: "Unverified" });
+    expect(sessionDisplayState(state)).toMatchObject({ label: "Verifying state" });
     state.notice = "uncertain";
     expect(sessionDisplayState(state)).toMatchObject({
       label: "Result unconfirmed",
@@ -288,12 +307,6 @@ describe("handoff-aware session presentation", () => {
       "Permission required",
       (s: SessionController) => {
         s.access!.device!.send = false;
-      },
-    ],
-    [
-      "Permission required",
-      (s: SessionController) => {
-        s.access!.device!.manage = false;
       },
     ],
     [
@@ -326,23 +339,34 @@ describe("handoff-aware session presentation", () => {
     state.live!.reason = undefined;
     state.canSend = true;
     state.capabilities!.features.send = { available: true };
-    expect(sessionDisplayState(state)).toMatchObject({ label: "Ready to send" });
+    expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
     expect(sessionDisplayState(state).nextAction).toBeUndefined();
   });
-  it("provides the distinct pending labels and advice in all four locales", () => {
+  it("uses the same neutral ownership state for both Agents in all four locales", () => {
     for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
       const state = fixture();
       state.locale = locale;
-      expect(sessionDisplayState(state)).toMatchObject({
-        label: webLayoutCopy[locale].handoffPending,
-        reason: codexReason(locale, "handoff-required").text,
-      });
-      state.current!.agent = "codex";
-      state.capabilities!.features.resume = { available: true };
-      expect(sessionDisplayState(state)).toMatchObject({
-        label: webLayoutCopy[locale].resumePending,
-        reason: webLayoutCopy[locale].resumeInfo,
-      });
+      for (const [agent, reason, name] of [
+        ["claude-code", "claude-owner-busy", "Claude Code"],
+        ["codex", "codex-owner-busy", "Codex"],
+      ] as const) {
+        state.current!.agent = agent;
+        state.live!.ownershipReason = reason;
+        expect(sessionDisplayState(state)).toMatchObject({
+          label: sessionContinuationCopy(locale).busy(name),
+          reason: "",
+          tone: "muted",
+          continuation: "busy",
+        });
+      }
     }
+  });
+  it("does not require management permission for automatic Claude continuation", () => {
+    const state = fixture();
+    state.access!.device!.manage = false;
+    state.live!.reason = undefined;
+    state.live!.sendEnabled = true;
+    state.canSend = true;
+    expect(sessionDisplayState(state)).toMatchObject({ label: "", continuation: "idle" });
   });
 });

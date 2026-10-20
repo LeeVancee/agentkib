@@ -35,10 +35,16 @@ const gauge = () =>
   screen.getByRole("button", { name: codexCopy[state.locale].contextUsage, hidden: true });
 const unmanagedClaude = () => {
   state.current = { id: "s", agent: "claude-code" } as typeof state.current;
-  state.live = { ...state.live!, reason: "handoff-required", usage: undefined };
+  state.live = {
+    ...state.live!,
+    executionMode: "claude-managed",
+    executionLocation: null,
+    reason: undefined,
+    usage: undefined,
+  };
 };
 
-describe("Claude context usage before handoff", () => {
+describe("Claude context usage before its first continued turn", () => {
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as Locale[])(
     "explains the missing CLI report in %s without inventing usage",
     (locale) => {
@@ -55,7 +61,7 @@ describe("Claude context usage before handoff", () => {
     },
   );
 
-  it("preserves native reports and pending/stale states even if handoff is required", () => {
+  it("preserves native reports and pending/stale states before continuing", () => {
     unmanagedClaude();
     state.live = { ...state.live!, usage: report(0) };
     const view = render(<ContextUsageGauge />);
@@ -71,7 +77,7 @@ describe("Claude context usage before handoff", () => {
     }
   });
 
-  it("prioritizes disconnect and revoked authorization over the handoff explanation", () => {
+  it("prioritizes disconnect and revoked authorization over the pending CLI explanation", () => {
     unmanagedClaude();
     const view = render(<ContextUsageGauge />);
     fireEvent.click(gauge());
@@ -114,13 +120,13 @@ describe("Claude context usage before handoff", () => {
     expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
   });
 
-  it("leaves managed Claude and other agents unchanged", () => {
+  it("does not apply the pre-start explanation to another agent or an already running worker", () => {
     unmanagedClaude();
     state.current = { ...state.current!, agent: "codex" };
     const view = render(<ContextUsageGauge />);
     expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
     state.current = { ...state.current!, agent: "claude-code" };
-    state.live = { ...state.live!, reason: undefined };
+    state.live = { ...state.live!, executionLocation: "agentkib", reason: undefined };
     view.rerender(<ContextUsageGauge />);
     expect(gauge()).toHaveTextContent(contextUsageCopy["zh-CN"].unavailable);
   });

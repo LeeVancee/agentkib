@@ -293,6 +293,7 @@ function MessageBlock({
 
 export function SessionTranscript({
   events,
+  pendingMessage,
   streamText,
   streamTextTruncated = false,
   liveTurnId,
@@ -306,6 +307,7 @@ export function SessionTranscript({
   onLoadEarlier,
 }: {
   events: ConversationEvent[];
+  pendingMessage?: { text: string; afterEventId?: string };
   streamText?: string;
   streamTextTruncated?: boolean;
   liveTurnId?: string;
@@ -320,6 +322,30 @@ export function SessionTranscript({
 }) {
   const projectedEvents = useMemo(() => {
     const projected = [...events];
+    if (pendingMessage) {
+      const anchor = pendingMessage.afterEventId
+        ? events.findIndex((item) => item.id === pendingMessage.afterEventId) + 1
+        : 0;
+      // Native replies can precede persistence of their user message. Keep the
+      // temporary row at the send-time boundary, rather than after those replies.
+      if (
+        !events
+          .slice(anchor)
+          .some(
+            (item) =>
+              item.kind === "user-message" && item.content?.trim() === pendingMessage.text.trim(),
+          )
+      ) {
+        projected.splice(anchor, 0, {
+          id: "session-pending:user",
+          kind: "user-message",
+          content: pendingMessage.text,
+          attachment_count: 0,
+          truncated: false,
+          ephemeral: true,
+        });
+      }
+    }
     if (streamText) {
       projected.push({
         id: `session-live:${liveTurnId ?? "current"}`,
@@ -333,7 +359,7 @@ export function SessionTranscript({
       });
     }
     return projected;
-  }, [events, liveTurnId, streamText, streamTextTruncated]);
+  }, [events, liveTurnId, pendingMessage, streamText, streamTextTruncated]);
   const [projection, setProjection] = useState(() =>
     projectTranscript(projectedEvents, incomplete),
   );

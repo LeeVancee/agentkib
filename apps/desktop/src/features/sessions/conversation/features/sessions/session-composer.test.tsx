@@ -17,8 +17,11 @@ const doubles = vi.hoisted(() => ({
   panels: null as SessionPanels | null,
   control: vi.fn(),
   codexAction: vi.fn(),
+  navigate: vi.fn(),
   upload: vi.fn(),
+  resumeCommand: vi.fn(),
 }));
+vi.mock("./session-navigation", () => ({ useSessionNavigate: () => doubles.navigate }));
 vi.mock("./session-context", () => ({
   useSession: () => {
     const [message, setMessage] = useState("");
@@ -83,6 +86,12 @@ describe("composer sending shortcuts", () => {
     vi.resetAllMocks();
     doubles.panels = null;
     doubles.control.mockResolvedValue(true);
+    doubles.resumeCommand.mockResolvedValue({
+      available: true,
+      command: "CODEX_HOME='/host/codex' codex resume '00000000-0000-4000-8000-000000000001'",
+      shell: "posix",
+      runOn: "host",
+    });
     doubles.codexAction.mockResolvedValue({ accepted: true });
     doubles.session = {
       selected: "session",
@@ -119,6 +128,8 @@ describe("composer sending shortcuts", () => {
       codexAction: doubles.codexAction,
       client: {
         uploadAttachment: doubles.upload,
+        codexResumeCommand: doubles.resumeCommand,
+        claudeResumeCommand: doubles.resumeCommand,
         request: vi.fn(),
       } as unknown as SessionController["client"],
     };
@@ -167,29 +178,22 @@ describe("composer sending shortcuts", () => {
     await waitFor(() => expect(doubles.control).toHaveBeenCalledTimes(1));
   });
 
-  it("opens connection management for a connected Claude terminal", () => {
-    const setActionsOpen = vi.fn();
-    doubles.panels = {
-      actionsOpen: false,
-      setActionsOpen,
-      filesOpen: false,
-      setFilesOpen: vi.fn(),
-    };
+  it("puts terminal approval guidance above the input and keeps connection management out of the composer", () => {
+    continuationFixture();
     doubles.session.current = {
       id: "session",
       agent: "claude-code",
     } as SessionController["current"];
-    doubles.session.live = { ...doubles.session.live!, executionMode: "claude-follower" };
-    doubles.session.access = {
-      ...doubles.session.access!,
-      device: { ...doubles.session.access!.device!, manage: true },
-    };
+    Object.assign(doubles.session.live!, {
+      executionMode: "claude-follower",
+      executionLocation: "terminal",
+    });
     renderComposer();
-    fireEvent.click(screen.getByRole("button", { name: "Manage terminal connection" }));
-    expect(setActionsOpen).toHaveBeenCalledExactlyOnceWith(true);
+    expect(screen.getByText("Handle approvals and questions in the terminal")).toBeVisible();
     expect(
-      screen.queryByRole("button", { name: "Connect original Claude terminal" }),
+      screen.queryByRole("button", { name: /Connect.*terminal|Manage terminal/ }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
   it("leaves Shift+Enter available for the browser's newline input", () => {
@@ -467,4 +471,398 @@ describe("composer sending shortcuts", () => {
       expect(input).toHaveAttribute("aria-describedby", hint.id);
     },
   );
+  function continuationFixture() {
+    doubles.session.access!.status = "approved";
+    doubles.session.access!.device!.id = "device";
+    doubles.session.access!.device!.manage = true;
+    doubles.session.capabilities!.features.fork = { available: true };
+    doubles.session.capabilities!.features.send = { available: true };
+    Object.assign(doubles.session.live!, {
+      executionMode: "codex-managed",
+      executionLocation: null,
+      ownershipReason: null,
+      reason: undefined,
+    });
+  }
+  function externalOwner() {
+    doubles.session.canSend = false;
+    Object.assign(doubles.session.live!, {
+      sendEnabled: false,
+      executionLocation: "external",
+      ownershipReason: "codex-owner-busy",
+      reason: "codex-owner-busy",
+    });
+  }
+  it("checks Claude on focus and keeps the composer directly available after background retirement", () => {
+    continuationFixture();
+    doubles.session.current = {
+      id: "session",
+      agent: "claude-code",
+    } as SessionController["current"];
+    Object.assign(doubles.session.live!, { executionMode: "claude-managed", status: "released" });
+    doubles.session.checkContinuation = vi.fn(async () => {});
+    const { input } = renderComposer();
+    expect(input).toHaveAttribute("placeholder", "Continue this session…");
+    fireEvent.focus(input);
+    expect(doubles.session.checkContinuation).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+  it("preserves a Claude draft and uploaded attachment through an owner conflict", async () => {
+    continuationFixture();
+    doubles.session.current = {
+      id: "session",
+      agent: "claude-code",
+    } as SessionController["current"];
+    Object.assign(doubles.session.live!, { executionMode: "claude-managed" });
+    doubles.upload.mockResolvedValue(attachment);
+    doubles.control.mockResolvedValue(false);
+    const { input, form, rerender } = renderComposer("Claude draft");
+    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment, { selector: "input" }), {
+      target: { files: [new File(["abc"], "note.txt", { type: "text/plain" })] },
+    });
+    await screen.findByText("100%");
+    fireEvent.submit(form);
+    await act(async () => {});
+    doubles.session.canSend = false;
+    Object.assign(doubles.session.live!, {
+      sendEnabled: false,
+      executionLocation: "external",
+      ownershipReason: "claude-owner-busy",
+      reason: "claude-owner-busy",
+    });
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue in Claude Code" })).toBeEnabled();
+    expect(input.isConnected).toBe(false);
+    Object.assign(doubles.session.live!, {
+      sendEnabled: true,
+      executionLocation: null,
+      ownershipReason: null,
+      reason: undefined,
+    });
+    doubles.session.canSend = true;
+    doubles.session.notice = "notDispatched";
+    rerender(<SessionComposer />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Claude draft");
+    expect(screen.getByText("note.txt")).toBeVisible();
+    fireEvent.submit(screen.getByRole("textbox", { name: "Message" }).closest("form")!);
+    await act(async () => {});
+    expect(doubles.control).toHaveBeenCalledTimes(2);
+    expect(doubles.control.mock.lastCall?.[5]).toEqual({ attachmentIds: ["attachment"] });
+  });
+  it("checks continuation on focus without presenting resume or handoff confirmation", () => {
+    continuationFixture();
+    doubles.session.checkContinuation = vi.fn(async () => {});
+    const { input } = renderComposer();
+    expect(input).toHaveAttribute("placeholder", "Continue this session…");
+    fireEvent.focus(input);
+    expect(doubles.session.checkContinuation).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByText("Resume execution")).not.toBeInTheDocument();
+  });
+  it("preserves a rejected send draft through the owner choice and restores input after release", async () => {
+    continuationFixture();
+    const pending = deferred<boolean>();
+    doubles.control.mockReturnValue(pending.promise);
+    const { input, form, rerender } = renderComposer("Keep this draft");
+    fireEvent.submit(form);
+    await act(async () => pending.resolve(false));
+    externalOwner();
+    rerender(<SessionComposer />);
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fork and continue" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Continue in Codex" }));
+    expect(screen.queryByRole("button", { name: "Fork and continue" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This session is view only in AgentKib. You can continue here once it's closed in Codex.",
+      ),
+    ).toBeVisible();
+    doubles.session.canSend = true;
+    Object.assign(doubles.session.live!, {
+      sendEnabled: true,
+      executionLocation: null,
+      ownershipReason: null,
+      reason: undefined,
+    });
+    rerender(<SessionComposer />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Keep this draft");
+    expect(doubles.control).toHaveBeenCalledTimes(1);
+    expect(input.isConnected).toBe(false);
+  });
+  it("offers the host Claude command for unsupported platforms without dispatching", async () => {
+    continuationFixture();
+    doubles.session.current = {
+      id: "session",
+      agent: "claude-code",
+    } as SessionController["current"];
+    doubles.session.canSend = false;
+    Object.assign(doubles.session.live!, {
+      executionMode: "claude-managed",
+      sendEnabled: false,
+      reason: "platform-unsupported",
+    });
+    render(<SessionComposer />);
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(
+      screen.getAllByText("Continuing Claude Code sessions here isn't supported on Windows yet"),
+    ).toHaveLength(1);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Copy resume command" })).toBeEnabled(),
+    );
+    expect(doubles.resumeCommand).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      expect.any(AbortSignal),
+    );
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+  it("offers a verified host command for an unsupported Codex version without dispatching", async () => {
+    continuationFixture();
+    doubles.session.canSend = false;
+    Object.assign(doubles.session.live!, {
+      sendEnabled: false,
+      reason: "codex-cli-version-too-old",
+    });
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(<SessionComposer />);
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(
+      screen.getAllByText("Your Codex version is too old. Update it to continue here."),
+    ).toHaveLength(1);
+    const button = screen.getByRole("button", { name: "Copy resume command" });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(doubles.resumeCommand).toHaveBeenCalledWith("session", expect.any(AbortSignal));
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        "CODEX_HOME='/host/codex' codex resume '00000000-0000-4000-8000-000000000001'",
+      ),
+    );
+    // The desktop app runs on the host, so the help does not point at another computer.
+    expect(screen.getByText(/^Open a terminal \(use PowerShell on Windows\)/)).toBeVisible();
+    expect(screen.queryByText(/On the computer running AgentKib/)).not.toBeInTheDocument();
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+    expect(doubles.navigate).not.toHaveBeenCalled();
+  });
+  it("goes back to the existing owner without offering a second resume", () => {
+    continuationFixture();
+    externalOwner();
+    const { rerender } = render(<SessionComposer />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue in Codex" }));
+    expect(
+      screen.getByText(
+        "This session is view only in AgentKib. You can continue here once it's closed in Codex.",
+      ),
+    ).toBeVisible();
+    // The session is already open there; running the resume command again would add a writer.
+    expect(screen.queryByRole("button", { name: "Copy resume command" })).not.toBeInTheDocument();
+    expect(doubles.resumeCommand).not.toHaveBeenCalled();
+    doubles.session.selected = "next-session";
+    doubles.session.current = {
+      id: "next-session",
+      agent: "codex",
+    } as SessionController["current"];
+    Object.assign(doubles.session.live!, { sessionId: "next-session" });
+    doubles.session.capabilities!.sessionId = "next-session";
+    rerender(<SessionComposer />);
+    // The choice belongs to the session it was made for.
+    expect(screen.getByRole("button", { name: "Continue in Codex" })).toBeEnabled();
+    expect(doubles.resumeCommand).not.toHaveBeenCalled();
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(doubles.codexAction).not.toHaveBeenCalled();
+  });
+  it("opens the fork returned by the guarded controller action", async () => {
+    continuationFixture();
+    externalOwner();
+    doubles.session.forkContinuation = vi.fn(async () => "forked-session");
+    render(<SessionComposer />);
+    fireEvent.click(screen.getByRole("button", { name: "Fork and continue" }));
+    await waitFor(() =>
+      expect(doubles.navigate).toHaveBeenCalledWith({
+        to: "/sessions/$sessionId",
+        params: { sessionId: "forked-session" },
+      }),
+    );
+    expect(doubles.session.forkContinuation).toHaveBeenCalledOnce();
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+  it("allows returning to Codex when management permission disables forking", () => {
+    continuationFixture();
+    externalOwner();
+    doubles.session.access!.device!.manage = false;
+    render(<SessionComposer />);
+    expect(screen.getByRole("button", { name: "Fork and continue" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Continue in Codex" })).toBeEnabled();
+  });
+  it("passes original files and resource selections to an occupied-session fork without sending", async () => {
+    continuationFixture();
+    doubles.session.forkContinuation = vi.fn(async () => "forked");
+    doubles.session.access!.device!.accessMode = "full";
+    doubles.upload.mockResolvedValue(attachment);
+    const file = new File(["abc"], "branch.txt", { type: "text/plain" });
+    const { rerender } = renderComposer("");
+    fireEvent.change(screen.getByLabelText(codexCopy["en-US"].attachment, { selector: "input" }), {
+      target: { files: [file] },
+    });
+    await screen.findByText("100%");
+    fireEvent.click(screen.getByRole("button", { name: "Reference file" }));
+    externalOwner();
+    rerender(<SessionComposer />);
+    fireEvent.click(screen.getByRole("button", { name: "Fork and continue" }));
+    await waitFor(() =>
+      expect(doubles.session.forkContinuation).toHaveBeenCalledWith({
+        files: [file],
+        resources: [{ id: "file", kind: "file", name: "README", available: true }],
+      }),
+    );
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+  it("uploads a transferred attachment to the branch once and permits an attachment-only draft after completion", async () => {
+    const file = new File(["abc"], "branch.txt", { type: "text/plain" });
+    const upload = deferred<UploadedAttachment>();
+    doubles.upload.mockReturnValue(upload.promise);
+    doubles.session.takeContinuationDraft = vi
+      .fn()
+      .mockReturnValueOnce({ files: [file], resources: [], historyReferences: [] });
+    const { input, rerender } = renderComposer("");
+    expect(doubles.upload).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      file,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+    expect(screen.getByText("branch.txt")).toBeVisible();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(doubles.control).not.toHaveBeenCalled();
+    await act(async () => upload.resolve({ ...attachment, id: "branch-attachment" }));
+    rerender(<SessionComposer />);
+    expect(doubles.upload).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(doubles.control).toHaveBeenCalledWith(
+        "send",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { attachmentIds: ["branch-attachment"] },
+      ),
+    );
+  });
+  it("keeps a transferred file visible and blocks sending after target upload failure", async () => {
+    const file = new File(["abc"], "branch.txt");
+    doubles.upload.mockRejectedValue(new Error("upload failed"));
+    doubles.session.takeContinuationDraft = vi
+      .fn()
+      .mockReturnValueOnce({ files: [file], resources: [], historyReferences: [] });
+    const { input } = renderComposer("Keep accompanying text");
+    await screen.findByRole("alert");
+    expect(screen.getByText("branch.txt")).toBeVisible();
+    expect(input).toHaveValue("Keep accompanying text");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(doubles.control).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: `${codexCopy["en-US"].remove}: branch.txt` }),
+    ).toBeEnabled();
+  });
+  it.each(["codex", "claude-code"] as const)(
+    "keeps failed branch files for a later %s fork, including distinct files with the same name",
+    async (agent) => {
+      continuationFixture();
+      doubles.session.current = { ...doubles.session.current!, agent };
+      Object.assign(doubles.session.live!, {
+        executionMode: agent === "claude-code" ? "claude-managed" : "codex-managed",
+      });
+      const files = [new File(["first"], "branch.txt"), new File(["second"], "branch.txt")];
+      doubles.upload.mockRejectedValue(new Error("upload failed"));
+      doubles.session.takeContinuationDraft = vi
+        .fn()
+        .mockReturnValueOnce({ files, resources: [], historyReferences: [] });
+      doubles.session.forkContinuation = vi.fn(async () => "next-branch");
+      const { input, rerender } = renderComposer("Keep accompanying text");
+      await screen.findByRole("alert");
+      expect(screen.getAllByText("branch.txt")).toHaveLength(2);
+      expect(input).toHaveValue("Keep accompanying text");
+      externalOwner();
+      const reason = agent === "claude-code" ? "claude-owner-busy" : "codex-owner-busy";
+      Object.assign(doubles.session.live!, { reason, ownershipReason: reason });
+      rerender(<SessionComposer />);
+      fireEvent.click(screen.getByRole("button", { name: "Fork and continue" }));
+      await waitFor(() =>
+        expect(doubles.session.forkContinuation).toHaveBeenCalledExactlyOnceWith({
+          files,
+          resources: [],
+        }),
+      );
+      expect(doubles.control).not.toHaveBeenCalled();
+      expect(doubles.codexAction).not.toHaveBeenCalled();
+    },
+  );
+  it("retains transferred resource descriptors for reselection and never dispatches source context IDs", () => {
+    const take = vi.fn().mockReturnValueOnce({
+      files: [],
+      resources: [
+        {
+          id: "source-resource",
+          kind: "file",
+          name: "README",
+          available: true,
+          navigationId: "source-directory",
+        },
+      ],
+      historyReferences: [],
+    });
+    doubles.session.takeContinuationDraft = take;
+    const { input, rerender } = renderComposer("Keep resource draft");
+    expect(screen.getByText(codexCopy["en-US"].resourceRemoved)).toBeVisible();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(doubles.control).not.toHaveBeenCalled();
+    rerender(<SessionComposer />);
+    expect(take).toHaveBeenCalledTimes(1);
+  });
+  it("ignores a transferred upload completing after another session is selected", async () => {
+    const file = new File(["abc"], "old-branch.txt");
+    const upload = deferred<UploadedAttachment>();
+    doubles.upload.mockReturnValue(upload.promise);
+    doubles.session.takeContinuationDraft = vi
+      .fn()
+      .mockReturnValueOnce({ files: [file], resources: [], historyReferences: [] });
+    const { input, rerender } = renderComposer("Original branch draft");
+    expect(screen.getByText("old-branch.txt")).toBeVisible();
+    doubles.session.selected = "other";
+    doubles.session.current = { ...doubles.session.current!, id: "other" };
+    doubles.session.capabilities = { ...doubles.session.capabilities!, sessionId: "other" };
+    rerender(<SessionComposer />);
+    fireEvent.change(input, { target: { value: "New selection draft" } });
+    await act(async () => upload.resolve(attachment));
+    expect(screen.queryByText("old-branch.txt")).not.toBeInTheDocument();
+    expect(input).toHaveValue("New selection draft");
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
+  it("waits for other controls to finish before consuming and uploading the branch draft", async () => {
+    const file = new File(["abc"], "waiting.txt");
+    const take = vi
+      .fn()
+      .mockReturnValueOnce({ files: [file], resources: [], historyReferences: [] });
+    doubles.session.takeContinuationDraft = take;
+    doubles.session.busy = true;
+    doubles.upload.mockResolvedValue(attachment);
+    const { rerender } = renderComposer("");
+    expect(take).not.toHaveBeenCalled();
+    expect(doubles.upload).not.toHaveBeenCalled();
+    doubles.session.busy = false;
+    rerender(<SessionComposer />);
+    await screen.findByText("waiting.txt");
+    expect(doubles.upload).toHaveBeenCalledExactlyOnceWith(
+      "session",
+      file,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+    expect(doubles.control).not.toHaveBeenCalled();
+  });
 });

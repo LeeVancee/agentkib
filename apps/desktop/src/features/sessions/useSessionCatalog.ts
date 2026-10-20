@@ -1,3 +1,5 @@
+import { isBusyRead } from "./conversation/features/sessions/session-read-retry";
+import { codexReason } from "./conversation/features/sessions/codex-copy";
 import { useI18n } from "@/core/useI18n";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useMutation, useQueries } from "@tanstack/react-query";
@@ -12,7 +14,7 @@ export function useSessionCatalog(
   enabled: boolean,
   afterRefresh?: () => Promise<unknown>,
 ) {
-  const { localizeMessage } = useI18n();
+  const { localizeMessage, locale } = useI18n();
   const client = useOptionalQueryClient();
   const key = JSON.stringify([...new Set(workspaces.map(({ id }) => id))].sort());
   const ids = useMemo(() => JSON.parse(key) as string[], [key]);
@@ -127,7 +129,10 @@ export function useSessionCatalog(
       (sync.variables?.key === key && !sync.isPending ? sync.data?.[id] : undefined) ??
       statuses[index]?.error ??
       lists[index]?.error;
-    if (error) errors[id] = localizeMessage(error);
+    if (error)
+      errors[id] = isBusyRead(error)
+        ? codexReason(locale, "session-state-unavailable").text
+        : localizeMessage(error);
   }
   const refresh = useCallback((): Promise<void> => {
     if (!enabled || !ids.length || !controller.current || controller.current.signal.aborted)

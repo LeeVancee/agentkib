@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import {
   chmodSync,
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -16,6 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
 import { Commands } from "../../../packages/backend/src/commands";
@@ -38,6 +40,9 @@ import { SessionIndex } from "../../../packages/backend/src/session-index";
 import { SessionReaders } from "../../../packages/backend/src/session-readers";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { WebReadRequests } from "../../../packages/backend/src/web-read";
+import { CodexAppServerSession } from "../../../packages/backend/src/codex-app-server";
+import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
+import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
 
 const remote = vi.hoisted(() => ({ serve: undefined as RemoteTlsRequestHandler | undefined }));
 vi.mock("node:os", async (original) => ({
@@ -71,10 +76,12 @@ vi.mock("../../../packages/backend/src/remote-tls", async (original) => ({
 }));
 
 type Catalog = {
+  codexRuntimeReason?: "codex-cli-version-too-old" | null;
   sessions: Array<
     ReturnType<BackendStore["sessions"]["list"]>[number] & {
       indexedSessionIds?: string[];
       executionMode?: string;
+      continuation?: { status: string; reason?: string };
     }
   >;
   workspaces: Array<{ id: string }>;
@@ -157,7 +164,9 @@ function fixture() {
       }) + "\n",
     );
     nativeDatabase
-      .prepare("INSERT INTO threads VALUES(?,?,?,?,?,?,?)")
+      .prepare(
+        "INSERT INTO threads(id,rollout_path,cwd,title,source,thread_source,forked_from_id) VALUES(?,?,?,?,?,?,?)",
+      )
       .run(native, file, workspace, `Native ${source}`, source, "user", fork);
     return file;
   }
@@ -258,6 +267,237 @@ function fixture() {
 }
 
 describe("managed directory ownership", () => {
+  it.each(
+    (["projectless", "unclassified"] as const).flatMap((collection) =>
+      [true, false].map((persisted) => [collection, persisted] as const),
+    ),
+  )(
+    "proves native %s collection aliases after restart without using titles (cwd persisted: %s)",
+    async (collection, persisted) => {
+      const f = fixture();
+      const cwd =
+        collection === "unclassified"
+          ? path.join(f.root, "Documents", "Codex", "project")
+          : f.workspace;
+      mkdirSync(cwd, { recursive: true });
+      if (collection === "unclassified")
+        f.store.sql.run("UPDATE workspaces SET canonical_path=? WHERE id='workspace'", f.root);
+      const file = f.addNative(f.owner.native_id!);
+      const header = JSON.parse(readFileSync(file, "utf8"));
+      header.payload.cwd = cwd;
+      writeFileSync(file, JSON.stringify(header) + "\n");
+      f.nativeDatabase.prepare("UPDATE threads SET cwd=? WHERE id=?").run(cwd, f.owner.native_id!);
+      if (collection === "projectless")
+        writeFileSync(
+          path.join(f.home, ".codex-global-state.json"),
+          JSON.stringify({ "projectless-thread-ids": [f.owner.native_id!] }),
+        );
+      const workspaceId = `session-collection:codex:${collection}`;
+      f.store.sessions.sync(
+        workspaceId,
+        "codex",
+        (await f.readers.list("codex", workspaceId)).sessions,
+      );
+      f.saveOwners([
+        {
+          ...f.owner,
+          workspace: collection === "unclassified" ? f.root : f.workspace,
+          ...(persisted ? { cwd } : {}),
+          title: "Different display title",
+        },
+      ]);
+      expect(
+        (await f.localCatalog()).sessions.find((record) => record.id === f.owner.id)
+          ?.indexedSessionIds,
+      ).toEqual([f.store.sessions.id("codex", f.owner.native_id!)]);
+      expect(f.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it("uses verified native activity time without inventing activity when a catalog is read", async () => {
+    const f = fixture();
+    f.nativeDatabase.exec("ALTER TABLE threads ADD COLUMN updated_at_ms INTEGER");
+    f.addNative(f.owner.native_id!);
+    const timestamp = Date.parse("2026-10-20T00:00:00Z");
+    f.nativeDatabase.prepare("UPDATE threads SET updated_at_ms=?").run(timestamp);
+    f.sync();
+    f.saveOwners([f.owner]);
+    expect((await f.localCatalog()).sessions.find((row) => row.id === f.owner.id)?.updated_at).toBe(
+      "2026-10-20T00:00:00Z",
+    );
+    f.nativeDatabase.prepare("UPDATE threads SET updated_at_ms=?").run(timestamp + 60_000);
+    expect((await f.localCatalog()).sessions.find((row) => row.id === f.owner.id)?.updated_at).toBe(
+      "2026-10-20T00:01:00Z",
+    );
+    expect((await f.localCatalog()).sessions.find((row) => row.id === f.owner.id)?.updated_at).toBe(
+      "2026-10-20T00:01:00Z",
+    );
+    const file = path.join(f.home, `${f.owner.native_id!}.jsonl`);
+    const header = JSON.parse(readFileSync(file, "utf8"));
+    header.payload.id = "11111111-2222-4333-8444-555555555555";
+    writeFileSync(file, JSON.stringify(header) + "\n");
+    expect((await f.localCatalog()).sessions.find((row) => row.id === f.owner.id)?.updated_at).toBe(
+      f.owner.created_at,
+    );
+  });
+
+  it("shares one version probe across catalog rows and refreshes a known older version", async () => {
+    const f = fixture();
+    const check = vi
+      .spyOn(CodexRuntimePreflight.prototype, "check")
+      .mockResolvedValue({ reason: "codex-cli-version-too-old" });
+    f.addNative(f.owner.native_id!, "cli");
+    f.addNative("11111111-2222-4333-8444-555555555555", "cli");
+    f.sync();
+    const catalog = await f.localCatalog();
+    expect(check).toHaveBeenCalledOnce();
+    expect(catalog.codexRuntimeReason).toBe("codex-cli-version-too-old");
+    expect(
+      catalog.sessions.every(
+        (row) =>
+          row.continuation?.status === "unsupported" &&
+          row.continuation.reason === "codex-cli-version-too-old",
+      ),
+    ).toBe(true);
+    check.mockResolvedValue({ reason: null });
+    expect(
+      (await f.localCatalog()).sessions.every(
+        (row) => row.continuation?.reason !== "codex-cli-version-too-old",
+      ),
+    ).toBe(true);
+  });
+
+  it("projects only a global old-version reason for raw native collections without exposing their sessions", async () => {
+    const f = fixture();
+    f.addNative(f.owner.native_id!, "cli");
+    writeFileSync(
+      path.join(f.home, ".codex-global-state.json"),
+      JSON.stringify({ "projectless-thread-ids": [f.owner.native_id!] }),
+    );
+    const collection = "session-collection:codex:projectless";
+    f.store.sessions.sync(
+      collection,
+      "codex",
+      (await f.readers.list("codex", collection)).sessions,
+    );
+    const check = vi
+      .spyOn(CodexRuntimePreflight.prototype, "check")
+      .mockResolvedValue({ reason: "codex-cli-version-too-old" });
+    expect(await f.localCatalog()).toMatchObject({
+      sessions: [],
+      codexRuntimeReason: "codex-cli-version-too-old",
+    });
+    expect(check).toHaveBeenCalledOnce();
+    check.mockResolvedValue({ reason: "codex-cli-version-unavailable" });
+    expect(await f.localCatalog()).toMatchObject({ sessions: [], codexRuntimeReason: null });
+  });
+
+  it.each([false, true])(
+    "refreshes inactive managed native history without a server (compressed: %s)",
+    async (compressed) => {
+      const f = fixture();
+      const file = f.addNative(f.owner.native_id!);
+      appendFileSync(
+        file,
+        Array.from({ length: 4 }, (_, index) =>
+          JSON.stringify({
+            type: "event_msg",
+            timestamp: `2026-10-20T00:00:0${index}Z`,
+            payload: { type: "agent_message", message: `Terminal answer ${index}` },
+          }),
+        ).join("\n") + "\n",
+      );
+      const nativeContent = readFileSync(file);
+      if (compressed) {
+        writeFileSync(`${file}.zst`, zstdCompressSync(nativeContent));
+        rmSync(file);
+      }
+      f.saveOwners([f.owner]);
+      const start = vi.spyOn(CodexAppServerSession, "start");
+      const follower = vi.spyOn(CodexFollowerBridge, "connect");
+      const page = await f.web.request({ operation: "events", sessionId: f.owner.id, limit: 2 });
+      expect(page.events).toEqual(
+        expect.arrayContaining([expect.objectContaining({ content: "Terminal answer 3" })]),
+      );
+      expect(page.next_cursor).toBeTruthy();
+      expect(
+        (
+          await f.web.request({
+            operation: "events",
+            sessionId: f.owner.id,
+            limit: 2,
+            cursor: page.next_cursor,
+          })
+        ).events,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ content: "Terminal answer 0" })]),
+      );
+      const addition =
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "agent_message", message: "Newest terminal answer" },
+        }) + "\n";
+      if (compressed)
+        writeFileSync(
+          `${file}.zst`,
+          zstdCompressSync(Buffer.concat([nativeContent, Buffer.from(addition)])),
+        );
+      else appendFileSync(file, addition);
+      expect(
+        (await f.web.request({ operation: "events", sessionId: f.owner.id, limit: 2 })).events,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ content: "Newest terminal answer" })]),
+      );
+      await expect(
+        f.web.request({ operation: "events", sessionId: f.owner.id, limit: 2, cursor: "42" }),
+      ).rejects.toThrow("TRANSCRIPT_CURSOR_STALE");
+      expect(start).not.toHaveBeenCalled();
+      expect(follower).not.toHaveBeenCalled();
+      expect(f.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["identity", "home", "cwd", "missing-directory"])(
+    "does not read inactive native contents when %s is not verified",
+    async (kind) => {
+      const f = fixture();
+      const file = f.addNative(f.owner.native_id!);
+      const record = { ...f.owner, cwd: f.workspace };
+      if (kind === "home") record.home = f.workspace;
+      else {
+        const header = JSON.parse(readFileSync(file, "utf8"));
+        if (kind === "identity") header.payload.id = "11111111-2222-4333-8444-555555555555";
+        else header.payload.cwd = kind === "cwd" ? f.home : path.join(f.workspace, "removed");
+        writeFileSync(file, JSON.stringify(header) + "\n");
+      }
+      f.saveOwners([record]);
+      const read = vi.spyOn(f.readers, "eventsForNative");
+      await expect(
+        f.web.request({ operation: "events", sessionId: f.owner.id, limit: 2 }),
+      ).rejects.toThrow();
+      expect(read).not.toHaveBeenCalled();
+      expect(f.run).not.toHaveBeenCalled();
+    },
+  );
+  it("matches a verified execution subdirectory while preserving its registered workspace owner", async () => {
+    const f = fixture();
+    const cwd = path.join(f.workspace, "subproject");
+    mkdirSync(cwd);
+    const file = f.addNative(f.owner.native_id!);
+    const header = JSON.parse(readFileSync(file, "utf8"));
+    header.payload.cwd = cwd;
+    writeFileSync(file, JSON.stringify(header) + "\n");
+    f.nativeDatabase.prepare("UPDATE threads SET cwd=? WHERE id=?").run(cwd, f.owner.native_id!);
+    f.sync();
+    f.saveOwners([{ ...f.owner, cwd }]);
+    expect(
+      (await f.localCatalog()).sessions.find((record) => record.id === f.owner.id)
+        ?.indexedSessionIds,
+    ).toHaveLength(1);
+    expect((await f.pairedCatalog())[0].origin).toBe("interactive");
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
   it("does not assign a persisted usage generation to the current backend without an observer", async () => {
     const f = fixture();
     f.saveOwners([

@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import type { AgentKind, ConversationSessionSummary } from "@/core/types";
+import type { ConversationPanel } from "./conversation-panel-commands";
 import { isSessionVisible } from "./session-catalog";
+
+export type RequestedConversationPanel = { sessionId: string; panel: ConversationPanel };
 
 export type SessionRecordFilter = "current" | "archived" | "metadata" | "all";
 
@@ -80,6 +83,9 @@ export const useSessionViewStore = create<{
   sessionOrder: Record<string, string[]>;
   scrollTop: number;
   creatingConversation: boolean;
+  requestedPanel?: RequestedConversationPanel;
+  requestPanel: (sessionId: string, panel: ConversationPanel) => void;
+  consumePanel: (request: RequestedConversationPanel) => void;
   setCreatingConversation: (creating: boolean) => void;
   revealSession: (session: ConversationSessionSummary) => void;
   setAgent: (agent: AgentKind | "all") => void;
@@ -98,6 +104,9 @@ export const useSessionViewStore = create<{
   ...initialDirectoryOrder,
   scrollTop: 0,
   creatingConversation: false,
+  requestPanel: (sessionId, panel) => set({ requestedPanel: { sessionId, panel } }),
+  consumePanel: (request) =>
+    set((state) => (state.requestedPanel === request ? { requestedPanel: undefined } : {})),
   setCreatingConversation: (creatingConversation) => set({ creatingConversation }),
   revealSession: (session) => {
     if (!isSessionVisible(session)) return;

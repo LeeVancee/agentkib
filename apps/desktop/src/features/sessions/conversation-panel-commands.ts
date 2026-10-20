@@ -1,4 +1,4 @@
-export type ConversationPanel = "files" | "actions" | "search";
+export type ConversationPanel = "files" | "actions" | "search" | "terminal";
 
 const CONVERSATION_PANEL_EVENT = "agentkib:open-conversation-panel";
 

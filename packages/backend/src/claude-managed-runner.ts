@@ -106,12 +106,30 @@ export type ClaudeRunnerOptions = {
   mcpConfig?: Record<string, unknown>;
   onResult?: (result: ClaudeRunnerTerminalResult) => void;
   controlTimeoutMs?: number;
+  /** Revalidate native ownership immediately before every new worker, including retirement reuse. */
+  beforeStart?: () => Promise<void>;
+  /** Persist cleanup proof before an undispatched startup publishes a retryable state. */
+  onUndispatchedStartup?: (proof: ClaudeStartupCleanupProof) => void;
   /** `claude --version` output; only used to explain a failure when the CLI is newer than verified. */
   cliVersion?: string;
 };
+export type ClaudeStartupFailureCode =
+  | "initialize-timeout"
+  | "initialize-write-failed"
+  | "process-start-failed"
+  | "process-exited"
+  | "stream-closed";
+export type ClaudeStartupCleanupKind = "not-started" | "mac-owned-process-tree";
+export type ClaudeStartupCleanupProof = {
+  requestId: string;
+  code: ClaudeStartupFailureCode;
+  cleanupKind: ClaudeStartupCleanupKind;
+  failedRevision: number;
+  checkpoint: { revision: number; turnId: string };
+};
 export class ClaudeUndispatchedError extends Error {
-  constructor() {
-    super("session-compacting");
+  constructor(message = "session-compacting") {
+    super(message);
   }
 }
 const object = (value: unknown): value is JsonObject =>
@@ -224,8 +242,9 @@ export class ClaudeRunnerState {
   }
 
   restoreStartup(checkpoint: ReturnType<ClaudeRunnerState["checkpoint"]>, reason: string): void {
+    const revision = Math.max(this.revision, checkpoint.revision) + 1;
     Object.assign(this, checkpoint);
-    this.revision = checkpoint.revision + 1;
+    this.revision = revision;
     this.reason = reason;
   }
 
@@ -1159,6 +1178,11 @@ export class ClaudeManagedRunnerProcess {
   #intentional = new WeakSet<ChildProcess>();
   #serializedTail: Promise<void> = Promise.resolve();
   #pendingDispatch?: () => void;
+  #startupFailure?: { code: ClaudeStartupFailureCode; reason: string };
+  #startupRecoveryBlocked = false;
+  #startupAttempt = false;
+  #startupDispatched = false;
+  #startupCleanupKind?: ClaudeStartupCleanupKind;
   #toolItems = new Map<string, Record<string, unknown>>();
   #controls = new Map<
     string,
@@ -1238,6 +1262,11 @@ export class ClaudeManagedRunnerProcess {
     return this.state.snapshot();
   }
 
+  /** Catalog polling needs only protocol state, without cloning or truncating response text. */
+  get status(): string {
+    return this.state.status;
+  }
+
   get optionsSnapshot(): ClaudeRunnerOptionsSnapshot {
     return structuredClone({
       models: this.#models,
@@ -1256,8 +1285,20 @@ export class ClaudeManagedRunnerProcess {
     return this.#observedPermissionMode;
   }
 
+  /** Presentation only. Internal snapshots and the ledger remain fenced during cleanup. */
+  get startupPending(): boolean {
+    return this.#startupAttempt && !this.#startupDispatched && !this.#startupRecoveryBlocked;
+  }
+
   /** Discover capabilities with initialize only: never enqueue a user/model turn. */
   async prepare(executable: string): Promise<ClaudeRunnerOptionsSnapshot> {
+    if (this.#retiring || this.state.status !== "idle" || this.#configuring)
+      throw new Error("Claude runner cannot prepare while busy");
+    if (this.#child) {
+      await this.#initializing;
+      return this.optionsSnapshot;
+    }
+    if (this.options.beforeStart) await this.options.beforeStart();
     if (this.#retiring || this.state.status !== "idle" || this.#configuring)
       throw new Error("Claude runner cannot prepare while busy");
     if (this.#child) {
@@ -1267,15 +1308,40 @@ export class ClaudeManagedRunnerProcess {
     const checkpoint = this.state.checkpoint();
     const init = this.state.initialize();
     let started: ChildProcess | undefined;
+    this.#startupAttempt = true;
     try {
       started = this.#start(executable);
-      await this.#write(init);
+      try {
+        await this.#write(init);
+      } catch (error) {
+        this.#fail(errorMessage(error), undefined, "initialize-write-failed");
+        throw error;
+      }
       await this.#initializing;
       return this.optionsSnapshot;
     } catch (error) {
-      if (!started?.pid) this.state.restoreStartup(checkpoint, errorMessage(error));
-      else this.#fail(errorMessage(error));
+      if (!started?.pid && !this.processId && !this.#cleanupError) {
+        this.state.restoreStartup(checkpoint, errorMessage(error));
+        this.#notify();
+      } else if (this.#startupFailure && !this.#startupRecoveryBlocked) {
+        // Capability discovery dispatches neither a user turn nor a setting mutation. Only
+        // a recognized startup failure and a confirmed owned-tree cleanup permit retry.
+        const failure = this.#startupFailure;
+        try {
+          await this.#terminate();
+          if (this.processId || this.#cleanupError)
+            throw new Error("Claude process cleanup unconfirmed");
+          if (this.#startupCleanupKind !== "mac-owned-process-tree") throw error;
+          this.state.restoreStartup(checkpoint, failure.reason);
+          this.#notify();
+        } catch (cleanupError) {
+          this.#fail(errorMessage(cleanupError));
+          throw cleanupError;
+        }
+      } else this.#fail(errorMessage(error));
       throw error;
+    } finally {
+      this.#startupAttempt = false;
     }
   }
 
@@ -1436,12 +1502,22 @@ export class ClaudeManagedRunnerProcess {
   ): Promise<void> {
     if (this.#retiring || this.#configuring)
       throw new Error("Claude runner is being retired or configured");
+    if (!this.#child && this.options.beforeStart) await this.options.beforeStart();
+    if (this.#retiring || this.#configuring)
+      throw new Error("Claude runner is being retired or configured");
     const checkpoint = this.state.checkpoint();
     if (this.state.revision !== revision) throw new Error("stale Claude revision");
     if (this.#child && !this.state.initialized) throw new Error("Claude initialize is incomplete");
     const user = this.state.begin(content, requestId);
     this.#steeringIds.clear();
-    this.#pendingDispatch = beforeDispatch;
+    // The ledger callback may be absent, or may throw before dispatch. Neither the callback's
+    // presence nor its later removal proves whether the user frame reached stdin.
+    let dispatched = false;
+    this.#pendingDispatch = () => {
+      beforeDispatch?.();
+      dispatched = true;
+      this.#startupDispatched = true;
+    };
     if (this.#child) {
       try {
         await this.#write(user);
@@ -1460,9 +1536,15 @@ export class ClaudeManagedRunnerProcess {
     }
     const init = this.state.initialize(user);
     let started: ChildProcess | undefined;
+    this.#startupAttempt = true;
     try {
       started = this.#start(executable);
-      await this.#write(init);
+      try {
+        await this.#write(init);
+      } catch (error) {
+        this.#fail(errorMessage(error), undefined, "initialize-write-failed");
+        throw error;
+      }
       await this.#initializing;
       this.#fresh = false;
     } catch (error) {
@@ -1472,12 +1554,43 @@ export class ClaudeManagedRunnerProcess {
         this.#notify();
         throw error;
       }
-      if (!started?.pid) {
-        this.state.restoreStartup(checkpoint, errorMessage(error));
+      const failure =
+        this.#startupFailure ??
+        (!started?.pid && !this.processId && !this.#cleanupError
+          ? { code: "process-start-failed" as const, reason: errorMessage(error) }
+          : undefined);
+      // Capture this before cleanup: an absent root afterward cannot prove no process started.
+      const neverStarted = !started?.pid && !this.processId && !this.#cleanupError;
+      if (!dispatched && failure && !this.#startupRecoveryBlocked) {
+        try {
+          if (this.state.status !== "outcome-unknown")
+            this.#fail(failure.reason, undefined, failure.code);
+          await this.#terminate();
+          const cleanupKind = neverStarted ? "not-started" : this.#startupCleanupKind;
+          if (this.#child || this.#cleanupError)
+            throw new Error("Claude process cleanup unconfirmed");
+          if (!cleanupKind) throw error;
+          this.options.onUndispatchedStartup?.({
+            requestId,
+            code: failure.code,
+            cleanupKind,
+            failedRevision: this.state.revision,
+            checkpoint: { revision: checkpoint.revision, turnId: checkpoint.turnId },
+          });
+        } catch (cleanupError) {
+          this.#fail(errorMessage(cleanupError));
+          throw cleanupError;
+        }
+        this.#pendingDispatch = undefined;
+        this.state.restoreStartup(checkpoint, failure.reason);
+        this.#notify();
+        if (this.state.status === "idle") throw new ClaudeUndispatchedError(failure.reason);
       } else {
         this.#fail(errorMessage(error));
       }
       throw error;
+    } finally {
+      this.#startupAttempt = false;
     }
   }
 
@@ -1520,6 +1633,10 @@ export class ClaudeManagedRunnerProcess {
 
   #start(executable: string): ChildProcess {
     if (this.#child) throw new Error("Claude runner already started");
+    this.#startupFailure = undefined;
+    this.#startupRecoveryBlocked = false;
+    this.#startupDispatched = false;
+    this.#startupCleanupKind = undefined;
     this.#acquireLease();
     this.#effectiveSettings = { model: null, effort: null, permissionMode: null };
     this.#observedPermissionMode = null;
@@ -1580,13 +1697,21 @@ export class ClaudeManagedRunnerProcess {
           ? MacOwnedProcessTree.attach(child)
           : UnixProcessGroup.attach(child);
     } catch (error) {
+      // A failed spawn has no process identity or descendants. A running root whose tree
+      // could not be captured must retain its lease and unknown-state protection.
+      child.once("error", () => undefined);
       try {
         if (child.pid) process.kill(-child.pid, "SIGKILL");
       } catch {
         child.kill("SIGKILL");
       }
-      this.#child = undefined;
-      this.#releaseLease();
+      if (!child.pid) {
+        this.#child = undefined;
+        this.#releaseLease();
+      } else {
+        this.#cleanupError = errorMessage(error);
+        this.#fail(`Claude process cleanup unconfirmed: ${this.#cleanupError}`);
+      }
       throw error;
     }
     this.#initializing = new Promise<void>((resolve, reject) => {
@@ -1595,7 +1720,7 @@ export class ClaudeManagedRunnerProcess {
       this.#initializationTimer = setTimeout(() => {
         const error = new Error("Claude initialize timed out");
         this.#rejectInitialization?.(error);
-        this.#fail(error.message);
+        this.#fail(error.message, undefined, "initialize-timeout");
       }, this.options.controlTimeoutMs ?? 30_000);
       this.#resolveInitialization = () => {
         if (this.#initializationTimer) clearTimeout(this.#initializationTimer);
@@ -1620,21 +1745,23 @@ export class ClaudeManagedRunnerProcess {
         this.#enqueueFrame(child, final);
       }
       void this.#frameChain.finally(() => {
-        if (this.#acceptsFrames(child)) this.#fail("Claude stream closed");
+        if (this.#acceptsFrames(child))
+          this.#fail("Claude stream closed", undefined, "stream-closed");
       });
     });
     child.stdin?.on("error", (error) => {
       if (!this.#acceptsFrames(child)) return;
-      this.#fail("Claude stdin write failed");
+      this.#fail("Claude stdin write failed", undefined, "initialize-write-failed");
       this.#rejectInitialization?.(error instanceof Error ? error : new Error(String(error)));
     });
     child.on("error", (error) => {
       if (!this.#acceptsFrames(child)) return;
       this.#rejectInitialization?.(error);
-      this.#fail(error.message);
+      this.#fail(error.message, undefined, "process-start-failed");
     });
     child.on("close", (code) => {
-      if (this.#acceptsFrames(child)) this.#fail(`Claude process exited (${code ?? "unknown"})`);
+      if (this.#acceptsFrames(child))
+        this.#fail(`Claude process exited (${code ?? "unknown"})`, undefined, "process-exited");
     });
     return child;
   }
@@ -2145,7 +2272,14 @@ export class ClaudeManagedRunnerProcess {
    * `code` marks a reason AgentKib can explain to the user; the stored reason is then
    * `<code>: <detail>` and the UI shows the explanation. Other failures keep their plain text.
    */
-  #fail(reason: string, code?: ClaudeTerminationCode): void {
+  #fail(
+    reason: string,
+    code?: ClaudeTerminationCode,
+    startupCode?: ClaudeStartupFailureCode,
+  ): void {
+    if (startupCode && !this.#startupRecoveryBlocked) {
+      this.#startupFailure ??= { code: startupCode, reason };
+    } else if (!startupCode) this.#startupRecoveryBlocked = true;
     this.#settingsAcknowledged = false;
     // A failed process no longer runs in any mode; the next worker reports its own.
     this.#observedPermissionMode = null;
@@ -2198,7 +2332,11 @@ export class ClaudeManagedRunnerProcess {
   async #terminateWorker(): Promise<void> {
     const child = this.#child;
     const tree = this.#tree;
-    if (!child || !tree) return;
+    if (!child) return;
+    if (!tree)
+      throw new Error(
+        `Claude process cleanup unconfirmed: ${this.#cleanupError ?? "missing owned tree"}`,
+      );
     this.#stopping = true;
     this.#closed = true;
     this.#intentional.add(child);
@@ -2207,6 +2345,10 @@ export class ClaudeManagedRunnerProcess {
     this.#rejectInitialization?.(new Error("Claude worker stopped before initialization"));
     try {
       await tree.terminate(child);
+      // A Unix process-group signal does not cover children that created another group.
+      // Only the owned-tree supervisor confirms all captured descendants have ended.
+      this.#startupCleanupKind =
+        tree instanceof MacOwnedProcessTree ? "mac-owned-process-tree" : undefined;
       this.#child = undefined;
       this.#tree = undefined;
       this.#fragments = [];

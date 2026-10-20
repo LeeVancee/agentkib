@@ -21,6 +21,7 @@ const POST_PATHS = new Set([
   "/managed/release",
   "/managed/reconcile",
   "/managed/action",
+  "/managed/settings-prepare",
 ]);
 const GET_PATHS = new Set([
   "/managed/options",

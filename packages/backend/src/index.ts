@@ -128,6 +128,7 @@ export class TypeScriptBackend {
   #sessionStream?: SessionStreamHub;
   #cursorBridge?: CursorBridge;
   #claudeBridge?: ClaudeBridge;
+  #catalogContinuation = new Map<string, string>();
   #webRead?: WebReadRequests;
   #sessionIndex?: SessionIndex;
   #historySearch?: HistorySearch;
@@ -477,6 +478,16 @@ export class TypeScriptBackend {
               this.#publishSession(sessionId, type, payload, live),
             alias: (sessionId, previousId, itemId, live) =>
               this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
+            catalogChanged: () =>
+              this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
+          },
+          {
+            isSessionObserved: (sessionId) =>
+              this.#sessionStream?.hasSubscribers(sessionId) ?? false,
+            isSessionBridged: (sessionId) => {
+              this.#claudeBridge?.assertCanAdopt();
+              return this.#claudeBridge?.blocksManagedResume(sessionId) ?? false;
+            },
           },
         );
         const claudeOwner = this.#claudeManaged;
@@ -485,10 +496,10 @@ export class TypeScriptBackend {
           bootId: claudeOwner.bootId,
           pluginDirectory: this.environment.AGENTKIB_CLAUDE_PLUGIN_DIR ?? "",
           target: (id, nativeId) => claudeOwner.nativeBridgeTarget(id, nativeId),
-          validate: (target, forControl) => {
+          validate: (target, forControl, bindingId) => {
             if (readPreferences(dataDir).session_index_enabled === false)
               throw new Error("session-index-disabled");
-            claudeOwner.validateNativeBridgeTarget(target, forControl);
+            claudeOwner.validateNativeBridgeTarget(target, forControl, bindingId);
           },
           publish: (id, type, payload, live) => this.#publishSession(id, type, payload, live),
         });
@@ -558,6 +569,10 @@ export class TypeScriptBackend {
           (event) => {
             this.notify(SESSION_EVENT_NOTIFICATION, event);
             if (event.type === "invalidate") this.#historySearch?.refresh(event.sessionId);
+          },
+          (sessionId) => {
+            this.#webRead?.observeSession(sessionId);
+            this.#claudeManaged?.observeSession(sessionId);
           },
         );
         this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
@@ -708,6 +723,7 @@ export class TypeScriptBackend {
         params.operation === "catalog" ||
         params.operation === "events" ||
         params.operation === "context" ||
+        params.operation === "resume-command" ||
         params.operation === "usage" ||
         params.operation === "goal" ||
         params.operation === "resources"
@@ -718,8 +734,49 @@ export class TypeScriptBackend {
         if (!value || typeof value !== "object" || Array.isArray(value)) return value;
         const catalog = value as Record<string, unknown>;
         const records = this.#claudeManaged!.catalog();
-        const aliases = this.#claudeManaged!.indexedAliases();
+        const managedIds = new Set(records.map((record) => record.id));
+        const aliases = new Set(
+          records.flatMap((record) =>
+            typeof record.indexedSessionId === "string" ? [record.indexedSessionId] : [],
+          ),
+        );
         const sessions = Array.isArray(catalog.sessions) ? catalog.sessions : [];
+        const continuation = (session: unknown) => {
+          if (!session || typeof session !== "object" || Array.isArray(session)) return session;
+          const row = session as Record<string, unknown>;
+          if (row.agent !== "claude-code" || typeof row.id !== "string") return row;
+          const projection = row.continuation;
+          let live = managedIds.has(row.id)
+            ? projection && typeof projection === "object" && !Array.isArray(projection)
+              ? (projection as Record<string, unknown>)
+              : undefined
+            : this.#claudeManaged!.catalogContinuation(row.id);
+          try {
+            if (
+              this.#claudeBridge?.handles(row.id) &&
+              this.#claudeBridge.blocksManagedResume(row.id)
+            )
+              live = this.#claudeBridge.live(row.id, false);
+          } catch {
+            // A broken connection registry must not prevent read-only catalog access.
+            live = {
+              status: "unsupported",
+              executionLocation: null,
+              reason: "claude-bridge-registry-invalid",
+            };
+          }
+          return live
+            ? {
+                ...row,
+                continuation: {
+                  status: live.status,
+                  executionLocation: live.executionLocation,
+                  ownershipReason: live.ownershipReason,
+                  reason: live.reason,
+                },
+              }
+            : row;
+        };
         return {
           ...catalog,
           sessions: [
@@ -731,7 +788,7 @@ export class TypeScriptBackend {
                 !("id" in session && aliases.has(String(session.id))),
             ),
             ...records,
-          ],
+          ].map(continuation),
         };
       });
     }
@@ -1559,6 +1616,7 @@ export class TypeScriptBackend {
         (sessionId, type, payload, live) => this.#publishSession(sessionId, type, payload, live),
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
+        () => this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] }),
       );
     }
     return await operation(this.#webRead);
@@ -1580,8 +1638,10 @@ export class TypeScriptBackend {
         return this.#claudeBridge!.management(params);
       if (
         typeof params.sessionId === "string" &&
+        params.operation !== "events" &&
+        params.operation !== "resume-command" &&
         this.#claudeBridge?.handles(params.sessionId) &&
-        params.operation !== "events"
+        this.#claudeBridge?.blocksManagedResume(params.sessionId)
       )
         return this.#claudeBridge.request(params);
       return await this.#claudeManaged!.request(params);
@@ -1629,6 +1689,19 @@ export class TypeScriptBackend {
     live?: Record<string, unknown>,
   ) {
     this.#sessionStream?.publish(sessionId, type, payload, live);
+    if (sessionId && type === "state") {
+      const state = live ?? payload;
+      const status = JSON.stringify([
+        state.status,
+        state.executionLocation,
+        state.ownershipReason,
+        state.reason,
+      ]);
+      if (this.#catalogContinuation.get(sessionId) !== status) {
+        this.#catalogContinuation.set(sessionId, status);
+        this.#sessionStream?.publish("", "invalidate", { domains: ["catalog"] });
+      }
+    }
     if (
       type === "invalidate" ||
       (type === "state" &&

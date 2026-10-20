@@ -49,15 +49,13 @@ const zh = {
   retry: "重新连接",
   unknown: "状态未确认",
   controlUnconfirmed:
-    "上次控制结果未确认，本次主机运行期间已禁用控制。请到原客户端检查，勿重复提交。",
+    "上次控制结果尚未确认，控制已暂停。请刷新核对已保存请求的处理状态，勿重复提交。",
   idle: "空闲",
   running: "运行中",
   unavailable: "实时控制暂不可用，请在桌面端检查连接状态。",
   openOriginalClient:
     "未检测到此会话的执行客户端。请在原客户端（如 Codex 或 Claude Code）打开后刷新。",
   unverifiedInstallation: "未能确认主机上的 Agent 安装或版本，控制已禁用。请在桌面端检查安装。",
-  handoffRequired: "此会话尚未交给 AgentKib。请先停止原客户端中的同一会话，再确认交接。",
-  confirmHandoff: "交给 AgentKib",
   unsupportedControl: "当前平台或 Agent 尚不支持实时控制，仍可阅读历史。",
   process: "执行过程",
   tools: "次工具调用",
@@ -74,7 +72,7 @@ const zh = {
   experimental: "实验控制",
   controlInfo: "仅在明确空闲时发送；运行中可停止当前轮次，不排队。",
   accepted: "请求已接收，不代表执行完成。",
-  uncertain: "结果未确认。不会自动重发，请刷新状态后检查原客户端。",
+  uncertain: "结果尚未确认。请刷新核对已保存请求的处理状态，不会自动重发。",
   notDispatched: "本次操作未执行。请刷新状态后重试，不会自动重发。",
   approval: "等待审批",
   accept: "允许一次",
@@ -82,8 +80,6 @@ const zh = {
   deny: "拒绝此次操作",
   claudeDecisionInfo: "请检查工具名称与完整输入。仅允许或拒绝此次操作，不保存权限规则。",
   claudeContextInfo: "审批上下文（只读）。权限建议仅供查看，不会应用或保存。",
-  managedResumeInfo:
-    "交接后，由 AgentKib 管理此 Claude 会话的执行。交接前请关闭原客户端中的同一会话，避免并发运行。",
   streamingReply: "当前实时回复",
   streamingReplyTruncated: "实时预览已截断，仅显示开头部分；请在历史记录中查看已保存的内容。",
   decline: "拒绝",
@@ -172,7 +168,7 @@ const en: Words = {
   retry: "Reconnect",
   unknown: "State unconfirmed",
   controlUnconfirmed:
-    "The previous control outcome is unconfirmed. Controls are disabled for this host run. Check the original client; do not resubmit.",
+    "The previous control outcome is unconfirmed, so controls are paused. Refresh to check the saved request; do not resubmit.",
   idle: "Idle",
   running: "Running",
   unavailable: "Live control is unavailable. Check the connection in the desktop app.",
@@ -180,9 +176,6 @@ const en: Words = {
     "No execution client was found for this session. Open it in the original client (such as Codex or Claude Code), then refresh.",
   unverifiedInstallation:
     "The host Agent installation or version could not be verified. Control is disabled. Check the installation in the desktop app.",
-  handoffRequired:
-    "This session has not been handed over to AgentKib. Stop the same session in the original client, then confirm the handoff.",
-  confirmHandoff: "Hand over to AgentKib",
   unsupportedControl:
     "Live control is not supported for this platform or Agent. History remains readable.",
   process: "Execution process",
@@ -201,7 +194,7 @@ const en: Words = {
   controlInfo: "Send only when confirmed idle; stop the current turn while running. No queueing.",
   accepted: "Request acknowledged; execution is not necessarily complete.",
   uncertain:
-    "Outcome unconfirmed. Nothing will be retried automatically. Refresh and check the original client.",
+    "The outcome is unconfirmed. Refresh to check the saved request; it will not be sent again automatically.",
   notDispatched:
     "This operation was not executed. Refresh the state before retrying. No automatic retry.",
   approval: "Approval required",
@@ -212,8 +205,6 @@ const en: Words = {
   deny: "Deny this operation",
   claudeDecisionInfo:
     "Review the tool name and full input. Allow or deny this operation only; no permission rules are saved.",
-  managedResumeInfo:
-    "After handoff, AgentKib manages execution of this Claude session. Close the same session in the original client before handing it over to avoid concurrent runs.",
   streamingReply: "Current live reply",
   streamingReplyTruncated:
     "Live preview truncated: only the beginning is shown. Check the history for saved content.",
@@ -299,15 +290,13 @@ const tw: Words = {
   retry: "重新連線",
   unknown: "狀態未確認",
   controlUnconfirmed:
-    "上次控制結果未確認，本次主機執行期間已停用控制。請到原客戶端檢查，勿重複提交。",
+    "上次控制結果尚未確認，控制已暫停。請重新整理核對已儲存請求的處理狀態，勿重複提交。",
   idle: "閒置",
   running: "執行中",
   unavailable: "即時控制暫時無法使用，請在桌面端檢查連線狀態。",
   openOriginalClient:
     "未偵測到此對話的執行客戶端。請在原客戶端（如 Codex 或 Claude Code）開啟後重新整理。",
   unverifiedInstallation: "無法確認主機上的 Agent 安裝或版本，控制已停用。請在桌面端檢查安裝。",
-  handoffRequired: "此對話尚未交給 AgentKib。請先停止原客戶端中的同一對話，再確認交接。",
-  confirmHandoff: "交給 AgentKib",
   unsupportedControl: "目前平台或 Agent 尚不支援即時控制，仍可閱讀歷史。",
   process: "執行過程",
   tools: "次工具呼叫",
@@ -324,7 +313,7 @@ const tw: Words = {
   experimental: "實驗控制",
   controlInfo: "僅在明確閒置時傳送；執行中可停止目前輪次，不排隊。",
   accepted: "請求已接收，不代表執行完成。",
-  uncertain: "結果未確認。不會自動重送，請重新整理狀態後檢查原客戶端。",
+  uncertain: "結果尚未確認。請重新整理核對已儲存請求的處理狀態，不會自動重傳。",
   notDispatched: "本次操作未執行。請重新整理狀態後重試，不會自動重送。",
   approval: "等待審批",
   accept: "允許一次",
@@ -332,8 +321,6 @@ const tw: Words = {
   deny: "拒絕此次操作",
   claudeDecisionInfo: "請檢查工具名稱與完整輸入。僅允許或拒絕此次操作，不儲存權限規則。",
   claudeContextInfo: "審批情境（唯讀）。權限建議僅供查看，不會套用或儲存。",
-  managedResumeInfo:
-    "交接後，由 AgentKib 管理此 Claude 對話的執行。交接前請關閉原客戶端中的同一對話，避免並行執行。",
   streamingReply: "目前即時回覆",
   streamingReplyTruncated: "即時預覽已截斷，僅顯示開頭部分；請在歷史記錄中查看已儲存的內容。",
   decline: "拒絕",
@@ -420,7 +407,7 @@ const ja: Words = {
   retry: "再接続",
   unknown: "状態未確認",
   controlUnconfirmed:
-    "前回の操作結果が未確認のため、今回のホスト起動中は操作できません。元のクライアントで確認し、再送しないでください。",
+    "前回の操作結果が未確認のため、操作を一時停止しています。更新して保存済みリクエストの処理状況を確認し、再送しないでください。",
   idle: "待機中",
   running: "実行中",
   unavailable: "リアルタイム制御は利用できません。デスクトップアプリで接続状態を確認してください。",
@@ -428,9 +415,6 @@ const ja: Words = {
     "この会話の実行クライアントが見つかりません。元のクライアント（Codex や Claude Code など）で開いて更新してください。",
   unverifiedInstallation:
     "ホストの Agent のインストールまたはバージョンを確認できないため、制御は無効です。デスクトップアプリでインストールを確認してください。",
-  handoffRequired:
-    "この会話はまだ AgentKib に引き渡されていません。元のクライアントで同じ会話を停止してから、引き渡しを確認してください。",
-  confirmHandoff: "AgentKib に引き渡す",
   unsupportedControl:
     "このプラットフォームまたは Agent はリアルタイム制御に対応していません。履歴は閲覧できます。",
   process: "実行過程",
@@ -449,7 +433,8 @@ const ja: Words = {
   controlInfo:
     "待機状態が確認されたときのみ送信し、実行中は現在のターンを停止できます。キューは利用できません。",
   accepted: "リクエストを受け付けました。実行完了を意味しません。",
-  uncertain: "結果は未確認です。自動再送はしません。更新して元のクライアントを確認してください。",
+  uncertain:
+    "結果は未確認です。更新して保存済みリクエストの処理状況を確認してください。自動で再送しません。",
   notDispatched:
     "今回の操作は実行されませんでした。状態を更新してから再試行してください。自動再送はしません。",
   approval: "承認待ち",
@@ -460,8 +445,6 @@ const ja: Words = {
   deny: "今回の操作を拒否",
   claudeDecisionInfo:
     "ツール名と入力全体を確認してください。今回の操作のみ許可または拒否し、権限ルールは保存しません。",
-  managedResumeInfo:
-    "引き渡し後は AgentKib がこの Claude 会話の実行を管理します。同時実行を避けるため、引き渡す前に元のクライアントで同じ会話を閉じてください。",
   streamingReply: "現在のリアルタイム応答",
   streamingReplyTruncated:
     "リアルタイムプレビューは先頭部分のみ表示しています。保存済みの内容は履歴で確認してください。",

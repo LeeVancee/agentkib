@@ -79,6 +79,62 @@ describe("trusted desktop conversation routes", () => {
     expect(await service.localRequest("/pair", {})).toMatchObject({ status: 404 });
   });
 
+  it("prepares Claude settings over the closed desktop route without fencing later preparation on failure", async () => {
+    await service.shutdown();
+    const options = {
+      available: true,
+      revision: 4,
+      current: {},
+      defaults: {},
+      writable: {},
+      models: [{ id: "fixture-model", efforts: [] }],
+    };
+    const prepare = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline initialize failure"))
+      .mockResolvedValue(options);
+    runtime.mockImplementation(async (params) => {
+      const operation = (params as { operation: string }).operation;
+      if (operation === "capabilities")
+        return { executionMode: "claude-managed", features: { settings: { available: true } } };
+      const result = (await defaultRuntime(params)) as Record<string, unknown>;
+      if (operation === "catalog")
+        return { ...result, sessions: [{ id: "s", workspace_id: "w", agent: "claude-code" }] };
+      return result;
+    });
+    service = new WebAccessService({
+      dataDir: directory,
+      staticDir: directory,
+      runtimeRequest: runtime,
+      claudeManagedRequest: prepare,
+      verifiedClaudeManaged: true,
+      sharedControl: createWebControlState(),
+      desktopOrigin: "app://bundle",
+      workspaceRequest: async () => [{ id: "w", name: "Workspace", path: directory }],
+    });
+    await service.initialize();
+    const access = await service.localRequest("/access");
+    const body = {
+      sessionId: "s",
+      bootId: (access.body as { bootId: string }).bootId,
+      expectedRevision: 4,
+    };
+    expect((await service.localRequest("/managed/settings-prepare", body)).status).not.toBe(200);
+    expect(await service.localRequest("/managed/settings-prepare", body)).toMatchObject({
+      status: 200,
+      body: { sessionId: "s", options: { models: [{ id: "fixture-model" }] } },
+    });
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(prepare.mock.calls[1][0]).toMatchObject({
+      operation: "settings-prepare",
+      sessionId: "s",
+      runtimeBootId: "r",
+      expectedRevision: 4,
+      experimentalEnabled: true,
+    });
+    expect(prepare.mock.calls[1][0]).not.toHaveProperty("requestId");
+  });
+
   it("retains duplicate-command protection and detailed unknown outcomes", async () => {
     const access = await service.localRequest("/access");
     const body = {

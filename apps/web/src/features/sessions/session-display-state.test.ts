@@ -1,5 +1,7 @@
+import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { describe, expect, it } from "vitest";
 import { dictionaries } from "@/features/conversation/i18n";
+import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
 import { sessionDisplayState } from "@/features/conversation/features/sessions/session-display-state";
 import type { SessionController } from "@/features/conversation/features/sessions/use-session-controller";
 const state = {
@@ -83,7 +85,7 @@ describe("session display state", () => {
     expect(sessionDisplayState(state).reason).toBe("");
   });
   it.each([
-    ["handoff-required", dictionaries["zh-CN"].handoffRequired],
+    ["handoff-required", codexReason("zh-CN", "handoff-required").text],
     ["unverified-installation", dictionaries["zh-CN"].unverifiedInstallation],
     ["open-in-original-client", dictionaries["zh-CN"].openOriginalClient],
   ])("explains %s from live state or send capability", (reason, expected) => {
@@ -125,3 +127,177 @@ it("shows a cancelled Claude turn while leaving the idle send eligibility unchan
   expect(value.canSend).toBe(true);
   expect(sessionDisplayState({ ...value, online: false }).label).toBe("已断线");
 });
+
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "projects Codex continuation states in %s",
+  (locale) => {
+    const copy = sessionContinuationCopy(locale);
+    const codex = {
+      ...state,
+      locale,
+      selected: "codex",
+      current: { id: "codex", agent: "codex", availability: "readable" },
+      live: {
+        ...state.live!,
+        sessionId: "codex",
+        executionMode: "codex-managed",
+        executionLocation: null,
+        ownershipReason: null,
+      },
+      capabilities: { sessionId: "codex", features: { send: { available: true } } },
+    } as SessionController;
+    expect(sessionDisplayState(codex)).toMatchObject({
+      continuation: "idle",
+      label: "",
+      reason: "",
+    });
+    expect(
+      sessionDisplayState({ ...codex, pendingSend: { sessionId: "codex", text: "draft" } }),
+    ).toMatchObject({ continuation: "starting", label: copy.starting, loading: true });
+    expect(
+      sessionDisplayState({ ...codex, live: { ...codex.live!, executionLocation: "agentkib" } }),
+    ).toMatchObject({ continuation: "running", label: copy.running, tone: "active" });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        canSend: false,
+        live: {
+          ...codex.live!,
+          ownershipReason: "codex-owner-busy",
+          executionLocation: "external",
+        },
+      }),
+    ).toMatchObject({ continuation: "busy", label: copy.busy("Codex"), tone: "muted" });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        canSend: false,
+        live: { ...codex.live!, sendEnabled: false, reason: "codex-cli-version-too-old" },
+      }),
+    ).toMatchObject({
+      continuation: "view-only",
+      label: copy.viewOnly,
+      reason: copy.codexVersionTooOld,
+    });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        live: { ...codex.live!, sessionId: "old", ownershipReason: "codex-owner-busy" },
+      }),
+    ).toMatchObject({ loading: true });
+    expect(
+      sessionDisplayState({
+        ...codex,
+        notice: "uncertain",
+        live: { ...codex.live!, ownershipReason: "codex-owner-busy" },
+      }).continuation,
+    ).toBeUndefined();
+  },
+);
+
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "projects Claude continuation without weakening dispatch in %s",
+  (locale) => {
+    const copy = sessionContinuationCopy(locale);
+    const claude = {
+      ...state,
+      locale,
+      selected: "claude",
+      current: { id: "claude", agent: "claude-code", availability: "readable" },
+      live: {
+        ...state.live!,
+        sessionId: "claude",
+        executionMode: "claude-managed",
+        executionLocation: null,
+        ownershipReason: null,
+      },
+      capabilities: { sessionId: "claude", features: { send: { available: true } } },
+    } as SessionController;
+    expect(sessionDisplayState(claude)).toMatchObject({ continuation: "idle", label: "" });
+    expect(
+      sessionDisplayState({ ...claude, pendingSend: { sessionId: "claude", text: "draft" } }),
+    ).toMatchObject({ continuation: "starting", label: copy.starting, loading: true });
+    expect(
+      sessionDisplayState({ ...claude, live: { ...claude.live!, executionLocation: "agentkib" } }),
+    ).toMatchObject({ continuation: "running", label: copy.running, tone: "active" });
+    expect(
+      sessionDisplayState({
+        ...claude,
+        live: {
+          ...claude.live!,
+          executionLocation: "terminal",
+          executionMode: "claude-follower",
+          sendEnabled: false,
+          terminalSend: true,
+          reason: "claude-terminal-approval",
+        },
+        canSend: false,
+      }),
+    ).toMatchObject({ continuation: "terminal", label: copy.terminalConnected, tone: "muted" });
+    // The production plugin cannot take messages yet: follow the terminal, never offer an input.
+    expect(
+      sessionDisplayState({
+        ...claude,
+        live: {
+          ...claude.live!,
+          executionLocation: "terminal",
+          executionMode: "claude-follower",
+          sendEnabled: false,
+          terminalSend: false,
+          reason: "claude-follower-send-unverified",
+        },
+        canSend: false,
+      }),
+    ).toMatchObject({
+      continuation: "terminal-watch",
+      label: copy.terminalConnected,
+      reason: "",
+      tone: "muted",
+    });
+    for (const ownershipReason of [
+      "claude-owner-busy",
+      "claude-background-session-running",
+      "owner-opened-elsewhere",
+    ])
+      expect(
+        sessionDisplayState({
+          ...claude,
+          canSend: false,
+          live: { ...claude.live!, ownershipReason },
+        }),
+      ).toMatchObject({
+        continuation: "busy",
+        label: copy.busy("Claude Code"),
+        reason: "",
+        tone: "muted",
+      });
+    expect(
+      sessionDisplayState({
+        ...claude,
+        canSend: false,
+        live: { ...claude.live!, sendEnabled: false, reason: "platform-unsupported" },
+      }),
+    ).toMatchObject({ continuation: "view-only", reason: copy.claudeWindowsUnsupported });
+    expect(
+      sessionDisplayState({
+        ...claude,
+        live: { ...claude.live!, sessionId: "old", executionLocation: "terminal" },
+      }),
+    ).toMatchObject({ loading: true });
+    expect(
+      sessionDisplayState({
+        ...claude,
+        live: { ...claude.live!, status: "outcome-unknown", executionLocation: "agentkib" },
+      }).continuation,
+    ).toBeUndefined();
+    for (const executionLocation of ["terminal", "agentkib"] as const)
+      expect(
+        sessionDisplayState({
+          ...claude,
+          pendingSend: { sessionId: "claude", text: "next" },
+          live: { ...claude.live!, executionLocation },
+        }).continuation,
+      ).toBe(executionLocation === "terminal" ? "terminal" : "running");
+    expect(claude.canSend).toBe(true);
+  },
+);

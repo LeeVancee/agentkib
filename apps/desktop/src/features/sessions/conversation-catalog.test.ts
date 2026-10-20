@@ -31,6 +31,7 @@ function catalog(id: string): DesktopConversationResponse {
 
 function fixture() {
   let receive = (_event: SessionStreamEvent<Live>) => {};
+  let controlChanged = (_sessionId: string) => {};
   const bridge: DesktopConversationBridge = {
     request: vi.fn(async () => catalog("initial")),
     upload: vi.fn(async () => ({ status: 400, body: {} })),
@@ -62,10 +63,19 @@ function fixture() {
       };
     },
     onUnavailable: () => () => {},
-    onControlChanged: () => () => {},
+    onControlChanged: (listener) => {
+      controlChanged = listener;
+      return () => {
+        controlChanged = () => {};
+      };
+    },
   };
   window.desktopConversation = bridge;
-  return { bridge, emit: (event: SessionStreamEvent<Live>) => receive(event) };
+  return {
+    bridge,
+    emit: (event: SessionStreamEvent<Live>) => receive(event),
+    settled: () => controlChanged("session"),
+  };
 }
 
 afterEach(() => {
@@ -74,6 +84,134 @@ afterEach(() => {
 });
 
 describe("desktop conversation catalog", () => {
+  it("keeps the catalog's verified global CLI floor alongside its controlled rows", async () => {
+    const { bridge } = fixture();
+    vi.mocked(bridge.request).mockResolvedValue({
+      ...catalog("initial"),
+      body: {
+        ...(catalog("initial").body as object),
+        codexRuntimeReason: "codex-cli-version-too-old",
+      },
+    });
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() =>
+      expect(view.result.current.codexRuntimeReason).toBe("codex-cli-version-too-old"),
+    );
+  });
+
+  it("silently retries bounded read contention without replacing the loaded catalog", async () => {
+    const { bridge } = fixture();
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("initial"));
+    vi.mocked(bridge.request)
+      .mockResolvedValueOnce({ status: 409, body: { error: "operation_busy" } })
+      .mockResolvedValueOnce(catalog("recovered"));
+    await act(async () => {
+      await refreshConversationCatalog();
+    });
+    expect(view.result.current.error).toBeUndefined();
+    expect(view.result.current.sessions[0]?.id).toBe("recovered");
+  });
+
+  it("stops after three busy reads and retains the previous rows", async () => {
+    const { bridge } = fixture();
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("initial"));
+    const reads = vi.mocked(bridge.request).mock.calls.length;
+    vi.mocked(bridge.request).mockResolvedValue({ status: 409, body: { error: "operation_busy" } });
+    await act(async () => {
+      await expect(refreshConversationCatalog()).rejects.toMatchObject({ code: "operation_busy" });
+    });
+    expect(bridge.request).toHaveBeenCalledTimes(reads + 3);
+    expect(view.result.current.sessions[0]?.id).toBe("initial");
+    expect(view.result.current.ready).toBe(true);
+    expect(view.result.current.error).toBeUndefined();
+  });
+  it.each(["control", "catalog"] as const)(
+    "waits for %s settlement after exhausted contention without pretending the initial catalog is ready",
+    async (source) => {
+      const { bridge, settled, emit } = fixture();
+      vi.mocked(bridge.request).mockResolvedValue({
+        status: 409,
+        body: { error: "operation_busy" },
+      });
+      const view = renderHook(() => useConversationCatalog(true));
+      await act(async () => {
+        await expect(refreshConversationCatalog()).rejects.toMatchObject({
+          code: "operation_busy",
+        });
+      });
+      const reads = vi.mocked(bridge.request).mock.calls.length;
+      expect(view.result.current.ready).toBe(false);
+      expect(view.result.current.error).toBeUndefined();
+      expect(view.result.current.sessions).toEqual([]);
+      await act(async () => {});
+      expect(bridge.request).toHaveBeenCalledTimes(reads);
+      vi.mocked(bridge.request).mockResolvedValue(catalog("settled"));
+      act(() => {
+        if (source === "control") settled();
+        else
+          emit({
+            protocolVersion: 2,
+            sessionId: "",
+            subscriptionId: "catalog",
+            runtimeBootId: "boot",
+            epoch: "epoch",
+            seq: 1,
+            cursor: "epoch:1",
+            type: "invalidate",
+            payload: { domains: ["catalog"] },
+          });
+      });
+      await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("settled"));
+      expect(view.result.current.ready).toBe(true);
+      expect(view.result.current.error).toBeUndefined();
+      expect(bridge.request).toHaveBeenCalledTimes(reads + 1);
+      act(() => settled());
+      expect(bridge.request).toHaveBeenCalledTimes(reads + 1);
+    },
+  );
+
+  it("does not lose settlement delivered before the final busy response", async () => {
+    const { bridge, settled } = fixture();
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("initial"));
+    const reads = vi.mocked(bridge.request).mock.calls.length;
+    let reject!: (error: Error) => void;
+    vi.mocked(bridge.request)
+      .mockResolvedValueOnce({ status: 409, body: { error: "operation_busy" } })
+      .mockResolvedValueOnce({ status: 409, body: { error: "operation_busy" } })
+      .mockReturnValueOnce(new Promise((_resolve, fail) => (reject = fail)))
+      .mockResolvedValue(catalog("settled-before-response"));
+    const refresh = refreshConversationCatalog();
+    void refresh.catch(() => {});
+    await waitFor(() => expect(bridge.request).toHaveBeenCalledTimes(reads + 3));
+    await act(async () => {
+      settled();
+      reject(new Error("operation_busy"));
+      await refresh;
+    });
+    expect(view.result.current.sessions[0]?.id).toBe("settled-before-response");
+    expect(view.result.current.error).toBeUndefined();
+  });
+
+  it("keeps a real catalog failure visible when a later read only encounters contention", async () => {
+    const { bridge } = fixture();
+    const view = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(view.result.current.sessions[0]?.id).toBe("initial"));
+    const failure = new Error("catalog storage unavailable");
+    vi.mocked(bridge.request).mockRejectedValueOnce(failure);
+    await act(async () => {
+      await expect(refreshConversationCatalog()).rejects.toBe(failure);
+    });
+    expect(view.result.current.error).toBe(failure);
+    vi.mocked(bridge.request).mockResolvedValue({ status: 409, body: { error: "operation_busy" } });
+    await act(async () => {
+      await expect(refreshConversationCatalog()).rejects.toMatchObject({ code: "operation_busy" });
+    });
+    expect(view.result.current.error).toBe(failure);
+    expect(view.result.current.sessions[0]?.id).toBe("initial");
+  });
   it("shares one observation across consumers and keeps it alive when another consumer is disabled", async () => {
     const { bridge, emit } = fixture();
     const first = renderHook(() => useConversationCatalog(true));

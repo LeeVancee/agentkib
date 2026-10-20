@@ -253,19 +253,21 @@ describe("remote capabilities share device and workspace authorization", () => {
       ).status,
     ).toBe(200);
   });
-  it("requires explicit handoff confirmation and a scoped task", async () => {
-    await pair({ manage: true });
+  it("keeps explicit Codex adoption behind the manage grant", async () => {
+    await pair();
     expect((await api("managed/adopt", { bootId, requestId: "a", sessionId: "s" })).status).toBe(
-      400,
+      403,
     );
     expect(managed).not.toHaveBeenCalled();
+  });
+  it("keeps Codex adoption scoped without manual confirmation", async () => {
+    await pair({ manage: true });
     expect(
       (
         await api("managed/adopt", {
           bootId,
           requestId: "b",
           sessionId: "unknown",
-          handoffConfirmed: true,
         })
       ).status,
     ).toBe(403);
@@ -276,10 +278,13 @@ describe("remote capabilities share device and workspace authorization", () => {
           bootId,
           requestId: "c",
           sessionId: "s",
-          handoffConfirmed: true,
         })
       ).status,
     ).toBe(200);
+    expect(managed).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "adopt", sessionId: "s" }),
+    );
+    expect(managed.mock.calls.at(-1)![0]).not.toHaveProperty("handoffConfirmed");
   });
   it("does not report a rejected or uncertain native handoff as success", async () => {
     await pair({ manage: true });
@@ -294,7 +299,6 @@ describe("remote capabilities share device and workspace authorization", () => {
       bootId,
       requestId: "busy",
       sessionId: "s",
-      handoffConfirmed: true,
     });
     expect(rejected.status).toBe(409);
     expect(await rejected.json()).toEqual({
@@ -311,7 +315,6 @@ describe("remote capabilities share device and workspace authorization", () => {
       bootId,
       requestId: "lost",
       sessionId: "s",
-      handoffConfirmed: true,
     });
     expect(unknown.status).toBe(502);
     expect(await unknown.json()).toEqual({ error: "outcome_unknown", controlOutcome: "unknown" });

@@ -208,6 +208,7 @@ async function renderConversation(sourceId?: string) {
   return f;
 }
 async function openSource() {
+  expect(screen.getByRole("button", { name: c.title })).toHaveClass("min-h-11");
   fireEvent.click(screen.getByRole("button", { name: c.title }));
   fireEvent.change(screen.getByRole("textbox", { name: c.query }), { target: { value: "needle" } });
   fireEvent.click(await screen.findByRole("button", { name: /Source history/ }, { timeout: 3000 }));

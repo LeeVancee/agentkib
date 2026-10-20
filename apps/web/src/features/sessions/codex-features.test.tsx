@@ -6,6 +6,8 @@ import { CodexComposer } from "@/features/conversation/features/sessions/codex-c
 import { NativeDecisions } from "@/features/conversation/features/interactions/native-decisions";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries } from "@/features/conversation/i18n";
+import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
+import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
@@ -422,6 +424,87 @@ it("requires explicit confirmation for native session/persistent approval scope 
   expect(submit).toHaveBeenCalledExactlyOnceWith(decision);
 });
 
+it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+  "keeps Codex operations focused on session management and automatic queues in %s",
+  async (locale) => {
+    state = {
+      ...state,
+      locale,
+      current: {
+        id: "s",
+        agent: "codex",
+        title: "Codex",
+        workspace_id: "w",
+        archived: false,
+        sidechain: false,
+        availability: "readable",
+      },
+      access: { ...state.access!, experimentalEnabled: true },
+      capabilities: {
+        sessionId: "s",
+        executionMode: "codex-managed",
+        status: "idle",
+        features: { resume: { available: true }, "queue-start": { available: true } },
+      },
+      client: Object.assign(state.client, {
+        codexQueue: vi.fn().mockResolvedValue({ data: [{ id: "queued", text: "Pending turn" }] }),
+        request: vi.fn().mockResolvedValue({ available: true, workspaces: [] }),
+      }),
+      refresh: vi.fn(),
+    };
+    const view = render(<CodexTools open ownership={<span>Legacy ownership controls</span>} />);
+    await screen.findByText("Pending turn");
+    const copy = codexCopy[locale];
+    const obsoleteResume = {
+      "zh-CN": "恢复执行",
+      "zh-TW": "恢復執行",
+      "en-US": "Resume execution",
+      "ja-JP": "実行を再開",
+    }[locale];
+    expect(screen.getByRole("heading", { name: copy.queue })).toBeVisible();
+    expect(screen.queryByRole("button", { name: copy.queueStart })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: obsoleteResume })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        /我已处理待审批事项|我已處理待審批事項|I have handled pending|保留中のリクエストとバックグラウンド/,
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByText("Legacy ownership controls")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(webLayoutCopy[locale].diagnostics));
+    expect(screen.queryByText(/codex-managed/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: copy.inspect })).toBeInTheDocument();
+    state = {
+      ...state,
+      capabilities: {
+        ...state.capabilities!,
+        features: { resume: { available: false }, "queue-start": { available: false } },
+      },
+    };
+    view.rerender(<CodexTools open />);
+    expect(
+      screen.queryByText(new RegExp(`${obsoleteResume}|${copy.queueStart}`)),
+    ).not.toBeInTheDocument();
+  },
+);
+
+it("retains Claude's existing ownership content", () => {
+  state = {
+    ...state,
+    current: {
+      id: "s",
+      agent: "claude-code",
+      title: "Claude",
+      workspace_id: "w",
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+    },
+  };
+  render(<CodexTools open ownership={<span>Claude ownership controls</span>} />);
+  expect(screen.getByText("Claude ownership controls")).toBeVisible();
+});
+
 it("keeps native inspection available while write outcome is unconfirmed", async () => {
   state = {
     ...state,
@@ -451,7 +534,7 @@ it("keeps native inspection available while write outcome is unconfirmed", async
   };
   render(<CodexTools />);
   fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
-  const inspect = screen.getByRole("button", { name: "检查原客户端状态" });
+  const inspect = screen.getByRole("button", { name: "检查会话状态" });
   expect(inspect).toBeEnabled();
   expect(screen.getByRole("button", { name: "重命名" })).toBeDisabled();
   fireEvent.click(inspect);

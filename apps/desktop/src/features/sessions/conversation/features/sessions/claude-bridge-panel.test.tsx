@@ -63,7 +63,25 @@ afterEach(() => {
 });
 
 describe("Claude terminal connection management", () => {
-  it("can revoke an offline follower binding before handing it over", async () => {
+  it.each([
+    ["zh-CN", "未连接", "仅可查看"],
+    ["zh-TW", "未連線", "僅可查看"],
+    ["en-US", "Not connected", "View only"],
+    ["ja-JP", "未接続", "閲覧のみ"],
+  ] as const)(
+    "labels an unconnected terminal accurately in %s",
+    async (locale, label, oldLabel) => {
+      state.session.locale = locale;
+      render(<ClaudeBridgePanel active />);
+      await screen.findByText("Install isolated plugin");
+      expect(screen.getByText(new RegExp(`^${label} ·`))).toBeVisible();
+      expect(screen.queryByText(new RegExp(`^${oldLabel} ·`))).not.toBeInTheDocument();
+      expect(
+        state.request.mock.calls.every(([request]) => request.operation === "bridge-status"),
+      ).toBe(true);
+    },
+  );
+  it("can revoke an offline follower binding without restarting its execution", async () => {
     state.session.live = {
       ...state.session.live!,
       executionMode: "claude-follower",
@@ -72,7 +90,7 @@ describe("Claude terminal connection management", () => {
     };
     render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    const disconnect = screen.getByRole("button", { name: "断开原终端连接" });
+    const disconnect = screen.getByRole("button", { name: "断开终端连接" });
     expect(disconnect).toBeEnabled();
     fireEvent.click(disconnect);
     fireEvent.click(await screen.findByRole("button", { name: "确认断开" }));
@@ -87,7 +105,7 @@ describe("Claude terminal connection management", () => {
   it("cannot revoke an unbound session or another session's follower", async () => {
     const view = render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    expect(screen.getByRole("button", { name: "断开原终端连接" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "断开终端连接" })).toBeDisabled();
     state.session.live = {
       ...state.session.live!,
       sessionId: "other",
@@ -95,7 +113,7 @@ describe("Claude terminal connection management", () => {
       status: "idle",
     };
     view.rerender(<ClaudeBridgePanel active />);
-    expect(screen.getByRole("button", { name: "断开原终端连接" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "断开终端连接" })).toBeDisabled();
     expect(
       state.request.mock.calls.some(([request]) => request.operation === "bridge-disconnect"),
     ).toBe(false);
@@ -116,7 +134,7 @@ describe("Claude terminal connection management", () => {
     } as SessionController;
     view.rerender(<ClaudeBridgePanel active />);
     expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "断开原终端连接" }));
+    fireEvent.click(screen.getByRole("button", { name: "断开终端连接" }));
     expect(
       state.request.mock.calls.some(([request]) => request.operation === "bridge-disconnect"),
     ).toBe(false);
@@ -144,7 +162,7 @@ describe("Claude terminal connection management", () => {
     render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
     expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "断开原终端连接" }));
+    fireEvent.click(screen.getByRole("button", { name: "断开终端连接" }));
     expect(
       state.request.mock.calls.some(([request]) => request.operation === "bridge-disconnect"),
     ).toBe(false);
@@ -171,10 +189,10 @@ describe("Claude terminal connection management", () => {
     await screen.findByText("Install isolated plugin");
     fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
     await screen.findByText("one-time-code", { selector: "code" });
-    expect(screen.getByRole("button", { name: "断开原终端连接" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "断开终端连接" })).toBeDisabled();
     state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
     view.rerender(<ClaudeBridgePanel active />);
-    fireEvent.click(screen.getByRole("button", { name: "断开原终端连接" }));
+    fireEvent.click(screen.getByRole("button", { name: "断开终端连接" }));
     expect(
       state.request.mock.calls.some(([request]) => request.operation === "bridge-disconnect"),
     ).toBe(false);
@@ -374,7 +392,7 @@ describe("Claude terminal connection management", () => {
       render(<ClaudeBridgePanel active />);
       await act(async () => {});
       await act(async () => vi.advanceTimersByTime(2500));
-      fireEvent.click(screen.getByRole("button", { name: "断开原终端连接" }));
+      fireEvent.click(screen.getByRole("button", { name: "断开终端连接" }));
       fireEvent.click(screen.getByRole("button", { name: "确认断开" }));
       await act(async () => {
         if (outcome === "rejected") previous.reject(new Error("previous lookup failed"));
@@ -407,10 +425,10 @@ describe("Claude terminal connection management", () => {
     expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
   });
   it.each([
-    ["platform-unsupported", "连接原 Claude 终端仅支持 macOS。请在 macOS 主机上操作。"],
+    ["platform-unsupported", "连接终端仅支持 macOS。请在 macOS 主机上操作。"],
     [
       "claude-bridge-unavailable",
-      "原终端桥接服务无法启动。请检查主机日志并重新启动 AgentKib 后重试。",
+      "终端桥接服务无法启动。请检查主机日志并重新启动 AgentKib 后重试。",
     ],
   ])("explains %s and the required CLI version", async (reason, explanation) => {
     state.request.mockResolvedValue({ ...status(), supported: false, reason });
@@ -418,7 +436,7 @@ describe("Claude terminal connection management", () => {
     expect(await screen.findByText(explanation)).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("需要 Claude Code 2.1.301");
     expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "断开原终端连接" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "断开终端连接" })).toBeDisabled();
   });
   it("polls connection failures after code expiry and clears the code only on a confirmed connection", async () => {
     vi.useFakeTimers();
@@ -452,14 +470,14 @@ describe("Claude terminal connection management", () => {
     await act(async () => {});
     const generate = screen.getByRole("button", { name: "生成一次性连接码" });
     expect(generate).toBeDisabled();
-    expect(screen.getByText("若要生成新的连接码，请先断开当前原终端连接。")).toBeVisible();
+    expect(screen.getByText("若要生成新的连接码，请先断开当前终端连接。")).toBeVisible();
     fireEvent.click(generate);
     await act(async () => vi.advanceTimersByTime(2500));
     expect(
       state.request.mock.calls.every(([request]) => request.operation === "bridge-status"),
     ).toBe(true);
     expect(state.session.refresh).toHaveBeenCalledExactlyOnceWith(true);
-    expect(screen.getByRole("button", { name: "断开原终端连接" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "断开终端连接" })).toBeEnabled();
   });
   it("does not display a late challenge for a different session", async () => {
     let resolve!: (value: unknown) => void;

@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/re
 import { useHomeInstallations } from "@/features/home/home-query";
 import { WorkspaceSessionsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceSessionsPage } from "@/features/workspace/WorkspaceSessionsPage";
+import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { api } from "@/core/api";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
@@ -26,6 +27,14 @@ function WorkspaceSessionsRoute() {
       workspace={selectedWorkspace}
       enabled={runtime?.session_index_enabled === true}
       targetAgents={targetAgents}
+      onOpenClaudeSession={(sessionId, panel) => {
+        const view = useSessionViewStore.getState();
+        view.resetFilters();
+        view.setFilter("all");
+        view.setCreatingConversation(false);
+        if (panel) view.requestPanel(sessionId, panel);
+        void navigate({ to: "/sessions", search: (current) => ({ ...current, sessionId }) });
+      }}
       onRuntimeChanged={async (enabled) => {
         setRuntime(await api.setSessionIndexEnabled(enabled));
       }}

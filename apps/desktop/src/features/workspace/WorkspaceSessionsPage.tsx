@@ -129,6 +129,7 @@ export function WorkspaceSessionsPage({
   onInitialSessionConsumed,
   resumeContinuation,
   onResumeConsumed,
+  onOpenClaudeSession,
   targetAgents,
 }: {
   workspace: WorkspaceSummary;
@@ -140,6 +141,7 @@ export function WorkspaceSessionsPage({
   onInitialSessionConsumed?: () => void;
   resumeContinuation?: SessionContinuationResume & { autoPrepare: boolean };
   onResumeConsumed?: () => void;
+  onOpenClaudeSession?: (sessionId: string, panel?: "terminal") => void;
   targetAgents: AgentKind[];
 }) {
   const { formatDateTime, formatRelativeTime, localizeMessage, tr } = useI18n();
@@ -971,6 +973,14 @@ export function WorkspaceSessionsPage({
           workspaceId={workspace.id}
           initialSessionId={selected?.agent === "claude-code" ? selected.id : undefined}
           onClose={() => setShowClaude(false)}
+          onConnectTerminal={
+            window.agentkibDesktop?.platform === "darwin" && onOpenClaudeSession
+              ? (sessionId) => {
+                  setShowClaude(false);
+                  onOpenClaudeSession(sessionId, "terminal");
+                }
+              : undefined
+          }
         />
       )}
       {showHandoff && selected && (

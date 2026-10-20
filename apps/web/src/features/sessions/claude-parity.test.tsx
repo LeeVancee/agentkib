@@ -131,6 +131,7 @@ function createHost({
       status: "idle",
       revision: 1,
       executionMode: "claude-managed",
+      executionLocation: null,
       sendEnabled: true,
       approvals: [],
       questions: [],
@@ -182,6 +183,7 @@ function createHost({
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     const path = url.pathname.replace("/api/web/v1/", "");
+    if (path === "managed/settings-prepare") return Response.json(state.settings);
     if (init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       state.mutations.push({ path, ...body });
@@ -279,20 +281,16 @@ function createHost({
   vi.stubGlobal("EventSource", ClaudeEventSource);
   ClaudeEventSource.live = () => state.live;
   if (unmanaged) {
-    state.live = {
-      ...state.live,
-      executionMode: "managed-resume",
-      reason: "handoff-required",
-      sendEnabled: false,
-    };
-    for (const key of Object.keys(state.features)) state.features[key] = unavailable;
+    state.live = { ...state.live, executionMode: "claude-managed", sendEnabled: true };
     state.features.adopt = available;
-    state.features.inspect = available;
   }
   if (follower) {
     state.live = {
       ...state.live,
       executionMode: "claude-follower",
+      executionLocation: "terminal",
+      // These cases cover the experimental plugin that accepts messages sent from here.
+      terminalSend: true,
       connectionGeneration: "lease-a",
     };
     for (const key of Object.keys(state.features)) state.features[key] = unavailable;
@@ -307,6 +305,10 @@ async function openSession() {
   await screen.findByText("Claude history");
   await waitFor(() => expect(screen.getByRole("button", { name: "会话操作" })).toBeEnabled());
 }
+async function openSettings() {
+  fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+  await waitFor(() => expect(screen.getByLabelText(copy.model)).toBeEnabled());
+}
 beforeEach(() => {
   sessionStorage.clear();
   vi.stubGlobal("scrollTo", vi.fn());
@@ -317,64 +319,85 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Claude history handoff shortcut", () => {
-  it("rechecks an open confirmation before dispatching without losing the draft", async () => {
+describe("idle Claude settings and retirement", () => {
+  it("prepares native settings only when the user opens the settings panel", async () => {
+    const { fetcher } = createHost();
+    await openSession();
+    expect(
+      fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
+    ).toHaveLength(0);
+    await openSettings();
+    await waitFor(() =>
+      expect(
+        fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/settings-prepare")),
+      ).toHaveLength(1),
+    );
+    const call = fetcher.mock.calls.find(([url]) =>
+      String(url).endsWith("/managed/settings-prepare"),
+    )!;
+    expect(JSON.parse(String(call[1]?.body))).toEqual({
+      sessionId: "session",
+      bootId: "boot",
+      expectedRevision: 1,
+    });
+  });
+
+  it("does not replay another client's old retirement notice but shows the next retirement in this visit", async () => {
+    const { state } = createHost();
+    state.live = {
+      ...state.live,
+      continuationNotice: "background-ended",
+      continuationNoticeId: "old-client-retirement",
+    };
+    const { result } = renderHook(() => useSessionController({}));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    await act(async () => result.current.choose("session"));
+    expect(result.current.live?.continuationNotice).toBeNull();
+    state.live = { ...state.live, continuationNoticeId: "new-retirement" };
+    act(() => {
+      for (const source of ClaudeEventSource.instances) source.emit(state.live);
+    });
+    await waitFor(() => expect(result.current.live?.continuationNotice).toBe("background-ended"));
+    expect(result.current.live?.continuationNoticeId).toBe("new-retirement");
+  });
+});
+
+describe("Claude history continuation", () => {
+  it("continues directly and rechecks an unknown outcome without losing the draft", async () => {
     const { state } = createHost({ unmanaged: true });
     await openSession();
     const draft = screen.getByRole("textbox", { name: "发送消息" });
     fireEvent.change(draft, { target: { value: "Keep this draft" } });
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
-    expect(
-      screen.getAllByText("此会话尚未交给 AgentKib。请先停止原客户端中的同一会话，再确认交接。")
-        .length,
-    ).toBeGreaterThan(0);
-    fireEvent.click(await screen.findByRole("button", { name: "交给 AgentKib" }));
-    const confirm = await screen.findByRole("button", { name: "交给 AgentKib" });
-    expect(confirm).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
-    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
-    expect(draft).toHaveValue("Keep this draft");
-    expect(state.mutations).toEqual([]);
-
-    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
-    fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
-    );
     state.live = {
       ...state.live,
       revision: 2,
+      sendEnabled: false,
       reason: "control-outcome-unconfirmed",
     };
     act(() => {
       for (const source of ClaudeEventSource.instances) source.emit(state.live);
     });
-    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
-    expect(state.mutations).toEqual([]);
-    expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
     expect(draft).toHaveValue("Keep this draft");
-    state.live = { ...state.live, revision: 3, reason: "handoff-required" };
+    state.live = { ...state.live, revision: 3, reason: undefined, sendEnabled: true };
     act(() => {
       for (const source of ClaudeEventSource.instances) source.emit(state.live);
     });
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(state.mutations).toHaveLength(1));
     expect(state.mutations[0]).toMatchObject({
-      path: "managed/adopt",
-      agent: "claude-code",
+      path: "send",
       sessionId: "session",
-      handoffConfirmed: true,
-      handoffFingerprint: "verified-history",
+      text: "Keep this draft",
+      expectedRevision: 3,
     });
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument(),
-    );
-    expect(draft).toHaveValue("Keep this draft");
-    expect(state.mutations).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(state.mutations[0]).not.toHaveProperty("handoffConfirmed");
+    expect(state.mutations.some((request) => request.path === "managed/adopt")).toBe(false);
   });
 
   it.each(["manage", "capability", "unknown"])(
@@ -405,20 +428,42 @@ describe("original Claude terminal over Web", () => {
     expect(state.mutations).toEqual([]);
   });
 
-  it("keeps unverified native sending disabled with a specific reason", async () => {
+  it("follows a terminal that cannot take messages instead of offering a dead input", async () => {
     const { state } = createHost({ follower: true });
-    state.live = { ...state.live, sendEnabled: false, reason: "claude-follower-send-unverified" };
+    state.live = {
+      ...state.live,
+      sendEnabled: false,
+      terminalSend: false,
+      reason: "claude-follower-send-unverified",
+    };
     await openSession();
+    expect(await screen.findByText("在终端中继续这条会话，这里会同步显示")).toBeVisible();
+    expect(screen.getByText("在终端中运行 · 已连接")).toBeVisible();
+    // The limitation is explained once, by the bar, not again in a banner.
     expect(
-      await screen.findByText(
-        "原会话发送尚未开放，请在原终端发送；AgentKib 可同步观察并取消当前轮次。",
-      ),
-    ).toBeVisible();
-    fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
-      target: { value: "Keep original terminal draft" },
-    });
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+      screen.queryByText("会话发送尚未开放，请在终端发送；AgentKib 可同步观察并取消当前轮次。"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "发送消息" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
+    expect(state.mutations).toEqual([]);
+  });
+
+  it("observes a terminal turn without offering an unverified stop", async () => {
+    const { state } = createHost({ follower: true });
+    state.live = {
+      ...state.live,
+      status: "running",
+      turnId: "turn-terminal",
+      sendEnabled: false,
+      stopEnabled: true,
+      terminalSend: false,
+    };
+    state.features.stop = available;
+    await openSession();
+    expect(await screen.findByText("在终端中继续这条会话，这里会同步显示")).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "发送消息" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "停止当前轮次" })).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
   });
 
@@ -446,7 +491,9 @@ describe("original Claude terminal over Web", () => {
   it("sends directly to a connected session once without exposing local pairing or handoff", async () => {
     const { state } = createHost({ follower: true });
     await openSession();
-    expect(await screen.findByText("已连接原会话", { selector: "aside strong" })).toBeVisible();
+    expect(await screen.findByText("在终端中运行 · 已连接")).toBeVisible();
+    expect(screen.getByText("审批和提问在终端中处理")).toBeVisible();
+    expect(document.querySelector("aside.info")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "生成一次性连接码" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
@@ -482,14 +529,14 @@ describe("original Claude terminal over Web", () => {
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeDisabled());
     expect(draft).toHaveValue("Unsent terminal draft");
-    expect(screen.getByText("原终端连接已断开", { selector: "aside strong" })).toBeVisible();
+    expect(screen.getByText("终端连接已断开", { selector: "aside strong" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
     expect(state.mutations).toEqual([]);
   });
 
   it.each([
-    ["claude-terminal-approval", "awaiting-approval", "正在等待工具审批，请在原终端处理。"],
-    ["claude-terminal-question", "waiting-input", "正在等待问题回答，请在原终端处理。"],
+    ["claude-terminal-approval", "awaiting-approval", "审批和提问在终端中处理"],
+    ["claude-terminal-question", "waiting-input", "审批和提问在终端中处理"],
     [
       "claude-bridge-event-gap",
       "unsupported",
@@ -498,12 +545,12 @@ describe("original Claude terminal over Web", () => {
     [
       "claude-follower-turn-unconfirmed",
       "running",
-      "原终端正在执行，当前轮次身份尚未核实；暂不能取消，请在原终端处理。",
+      "终端正在执行，当前轮次身份尚未核实；暂不能取消，请在终端处理。",
     ],
     [
       "claude-terminal-permission-unconfirmed",
       "running",
-      "原终端曾请求工具审批，当前授权或执行状态尚未核实，请查看原终端。",
+      "终端曾请求工具审批，当前授权或执行状态尚未核实，请查看终端。",
     ],
   ])("handles %s in the original terminal", async (reason, status, text) => {
     const { state } = createHost({ follower: true });
@@ -521,7 +568,7 @@ describe("Claude Remote parity", () => {
     const host = createHost({ staleSettingsAfterMutation: true });
     host.state.settings.selected = {};
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
@@ -578,7 +625,7 @@ describe("Claude Remote parity", () => {
       host.state.settings.options.models[1]!.efforts = ["low"];
       host.state.settings.options.models[1]!.defaultEffort = defaultEffort;
       await openSession();
-      fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+      await openSettings();
       fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
       fireEvent.click(screen.getByRole("button", { name: copy.apply }));
       await waitFor(() => expect(host.state.mutations).toHaveLength(1));
@@ -597,7 +644,7 @@ describe("Claude Remote parity", () => {
     host.state.settings.current.effort = "high";
     host.state.settings.current.permissionMode = "plan";
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
@@ -629,7 +676,7 @@ describe("Claude Remote parity", () => {
       resolvedModel: "claude-sonnet-fixture",
     });
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     expect(screen.getByLabelText(copy.model)).toHaveValue("sonnet");
     fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "high" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
@@ -653,7 +700,7 @@ describe("Claude Remote parity", () => {
       serviceTierIds: [],
     });
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "sonnet" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await screen.findByText(composerLayoutCopy["zh-CN"].settingsPending);
@@ -682,7 +729,7 @@ describe("Claude Remote parity", () => {
       const host = createHost();
       host.state.settings.options.models[1]!.efforts = ["medium", "high"];
       await openSession();
-      fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+      await openSettings();
       fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
       fireEvent.click(screen.getByRole("button", { name: copy.apply }));
       await screen.findByText(composerLayoutCopy["zh-CN"].settingsPending);
@@ -711,7 +758,7 @@ describe("Claude Remote parity", () => {
       host.state.settings.defaults = {};
       host.state.settings.options.models[1]!.efforts = ["medium", "high"];
       await openSession();
-      fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+      await openSettings();
       expect(screen.getByLabelText("工具权限")).toHaveValue(permissionMode ?? "");
       fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });
       fireEvent.click(screen.getByRole("button", { name: copy.apply }));
@@ -733,7 +780,7 @@ describe("Claude Remote parity", () => {
     host.state.settings.selected = { permissionMode: "plan" };
     host.state.settings.current.permissionMode = "plan";
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText(copy.effort), { target: { value: "high" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() => expect(host.state.mutations).toHaveLength(1));
@@ -745,7 +792,7 @@ describe("Claude Remote parity", () => {
   it("clears submitted fields before the next settings edit", async () => {
     const host = createHost();
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     fireEvent.change(screen.getByLabelText("工具权限"), { target: { value: "plan" } });
     fireEvent.click(screen.getByRole("button", { name: copy.apply }));
     await waitFor(() => expect(host.state.settings.selected?.permissionMode).toBe("plan"));
@@ -761,7 +808,7 @@ describe("Claude Remote parity", () => {
   it("applies discovered settings through the generic action and keeps the previous current settings pending", async () => {
     const host = createHost();
     await openSession();
-    fireEvent.click(await screen.findByRole("button", { name: /Host Claude/ }));
+    await openSettings();
     expect(screen.queryByLabelText(copy.executionPolicy)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(copy.serviceTier)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(copy.model), { target: { value: "second-model" } });

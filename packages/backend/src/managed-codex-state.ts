@@ -1,4 +1,5 @@
 import type { CodexAppServerSession } from "./codex-app-server";
+import { isDeepStrictEqual } from "node:util";
 import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
 
 type JsonObject = Record<string, unknown>;
@@ -21,6 +22,7 @@ const MAX_PENDING = 32;
 export class ManagedCodexState {
   #record: ManagedRecord;
   #revision = 0;
+  #mutationRevision = 0;
   #goalRevision = 0;
   #status = "starting";
   #turn: string | null = null;
@@ -47,6 +49,7 @@ export class ManagedCodexState {
     this.#record = structuredClone(record);
     this.#revision =
       Number.isSafeInteger(initialRevision) && initialRevision >= 0 ? initialRevision : 0;
+    this.#mutationRevision = this.#revision;
     if (isObject(record.token_usage)) this.#usageState = "stale";
     if (record.snapshot?.activity === "compacting") {
       this.#usageBarrierTurn =
@@ -57,6 +60,11 @@ export class ManagedCodexState {
 
   get revision(): number {
     return this.#revision;
+  }
+
+  /** Observation-only usage updates do not advance this resume-local CAS guard. */
+  get mutationRevision(): number {
+    return this.#mutationRevision;
   }
 
   get goalRevision(): number {
@@ -98,6 +106,8 @@ export class ManagedCodexState {
       workspaceId: this.#record.workspace_id,
       runtimeBootId,
       executionMode: "codex-managed",
+      executionLocation: "agentkib",
+      ownershipReason: null,
       status: this.#status,
       activity: this.activity,
       revision: this.#revision,
@@ -158,7 +168,7 @@ export class ManagedCodexState {
       case "thread/started": {
         const thread = isObject(params.thread) ? params.thread : {};
         const id = requiredString(thread.id, "invalid-thread");
-        if (this.nativeId && this.nativeId !== id) return { changed: false };
+        if (this.nativeId) return { changed: false };
         this.#record.native_id = id;
         break;
       }
@@ -254,7 +264,7 @@ export class ManagedCodexState {
         this.#items.set(id, structuredClone(params.item));
         if (method === "item/completed") {
           const event = projectItem(params.item, this.#turn);
-          this.#revision += 1;
+          this.#mutationRevision = ++this.#revision;
           return { changed: true, ...(event ? { event } : {}) };
         }
         break;
@@ -315,6 +325,8 @@ export class ManagedCodexState {
         break;
       case "thread/settings/updated": {
         if (!isObject(params.threadSettings)) throw new Error("invalid-thread-settings");
+        if (isDeepStrictEqual(this.#record.native_settings, params.threadSettings))
+          return { changed: false };
         const previousModel = currentManagedModel(this.#record);
         const applyingSelection =
           managedModelPending(this.#record) && params.threadSettings.model === this.#record.model;
@@ -341,7 +353,7 @@ export class ManagedCodexState {
           this.#usageBarrierTurn = undefined;
           this.#usageState = "ready";
         } else this.#usageState = "stale";
-        break;
+        return this.#changed(false, true);
       }
       case "thread/goal/updated":
         if (!isObject(params.goal)) throw new Error("invalid-goal");
@@ -349,6 +361,7 @@ export class ManagedCodexState {
         this.#goalRevision += 1;
         break;
       case "thread/goal/cleared":
+        if (this.#record.goal == null) return { changed: false };
         this.#record.goal = null;
         this.#goalRevision += 1;
         break;
@@ -429,7 +442,7 @@ export class ManagedCodexState {
     }
     if (isObject(thread.status) && thread.status.type === "active" && this.#turn === null)
       this.fail("unconfirmed-active-turn");
-    if (incrementRevision) this.#runtimeRevision = ++this.#revision;
+    if (incrementRevision) this.#runtimeRevision = this.#mutationRevision = ++this.#revision;
     return { snapshot: this.snapshot("", false), events };
   }
 
@@ -439,7 +452,7 @@ export class ManagedCodexState {
     this.#record.native_settings = null;
     this.#compactions.clear();
     this.#usageState = "stale";
-    this.#runtimeRevision = ++this.#revision;
+    this.#runtimeRevision = this.#mutationRevision = ++this.#revision;
   }
 
   restoreReconciledTurn(): boolean {
@@ -451,7 +464,7 @@ export class ManagedCodexState {
         : this.#approvals.size > 0
           ? "awaiting-approval"
           : "running";
-    this.#runtimeRevision = ++this.#revision;
+    this.#runtimeRevision = this.#mutationRevision = ++this.#revision;
     return true;
   }
 
@@ -467,7 +480,7 @@ export class ManagedCodexState {
     this.#lastTurn = turnId;
     this.#status = "running";
     this.#reason = null;
-    this.#runtimeRevision = ++this.#revision;
+    this.#runtimeRevision = this.#mutationRevision = ++this.#revision;
   }
 
   commitManagedMutation(
@@ -484,7 +497,7 @@ export class ManagedCodexState {
     if (Object.hasOwn(update, "model") && (this.#record.model ?? null) !== previousModel)
       this.#invalidateUsage();
     if (status) this.#status = status;
-    this.#revision += 1;
+    this.#mutationRevision = ++this.#revision;
     if (status) this.#runtimeRevision = this.#revision;
   }
 
@@ -499,8 +512,9 @@ export class ManagedCodexState {
     set.add(key);
   }
 
-  #changed(runtimeChanged = false): { changed: true } {
+  #changed(runtimeChanged = false, observationOnly = false): { changed: true } {
     this.#revision += 1;
+    if (!observationOnly) this.#mutationRevision = this.#revision;
     if (runtimeChanged) this.#runtimeRevision = this.#revision;
     return { changed: true };
   }
@@ -509,6 +523,7 @@ export class ManagedCodexState {
 export class ManagedCodexEventBridge {
   #pending: Promise<void> = Promise.resolve();
   #closed = false;
+  #closing?: Promise<void>;
 
   constructor(
     readonly session: CodexAppServerSession,
@@ -534,8 +549,11 @@ export class ManagedCodexEventBridge {
     await this.#pending;
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    return (this.#closing ??= this.#close());
+  }
+
+  async #close(): Promise<void> {
     this.#closed = true;
     await this.#pending;
     await this.session.close();

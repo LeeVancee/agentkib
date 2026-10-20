@@ -10,7 +10,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { Input } from "@/components/ui/input";
-import { NativeCheckbox } from "@/components/ui/native-checkbox";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
@@ -20,7 +19,6 @@ import { blockedWhileCompacting } from "./session-activity";
 import { contextUsageCopy } from "./context-usage-copy";
 import { subscribeSessionInvalidation } from "./session-events";
 import { sessionAgentCopy } from "./session-agent-copy";
-import { sessionNextAction } from "./session-display-state";
 
 export function CodexTools({
   open: controlledOpen,
@@ -75,7 +73,6 @@ export function CodexTools({
   const [mode, setMode] = useState<"" | "default" | "plan">("");
   const [editing, setEditing] = useState("");
   const [text, setText] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
   const [queueError, setQueueError] = useState("");
   const [revision, setRevision] = useState(0);
   const [operation, setOperation] = useState(false);
@@ -88,7 +85,6 @@ export function CodexTools({
     setMode("");
     setEditing("");
     setText("");
-    setConfirmed(false);
   }, [selected]);
   useEffect(() => {
     setName(current?.title ?? "");
@@ -181,7 +177,6 @@ export function CodexTools({
     );
   }
   const actionLabels: Record<string, string> = {
-    resume: copy.resume,
     inspect: copy.inspect,
     steer: copy.steer,
     "queue-add": copy.queueAdd,
@@ -290,37 +285,7 @@ export function CodexTools({
               {actionButton("fork", copy.fork)}
             </div>
           </section>
-          <section className="space-y-3 border-t pt-3">
-            <h3 className="font-medium">{layout.ownership}</h3>
-            {ownership}
-            {!isClaude && (
-              <Disclosure open={sessionNextAction(session) === "native-resume" || undefined}>
-                <DisclosureSummary className="cursor-pointer py-2 text-sm">
-                  {copy.resume}
-                </DisclosureSummary>
-                <div className="space-y-3 pt-2">
-                  <label className="flex items-start gap-2 text-xs">
-                    <NativeCheckbox
-                      checked={confirmed}
-                      onChange={(e) => setConfirmed(e.target.checked)}
-                    />
-                    {copy.handoff}
-                  </label>
-                  <Button
-                    variant="outline"
-                    disabled={!enabled("resume") || !confirmed}
-                    title={reason("resume")}
-                    onClick={() => void run("resume", { handoffConfirmed: true })}
-                  >
-                    {copy.resume}
-                  </Button>
-                  {!capabilities?.features.resume?.available && (
-                    <p className="text-xs text-muted-foreground">{reason("resume")}</p>
-                  )}
-                </div>
-              </Disclosure>
-            )}
-          </section>
+          {isClaude && ownership}
           {!isClaude && access?.device?.accessMode !== "full" && (
             <section className="space-y-3 border-t pt-3">
               <h3>{copy.settings}</h3>
@@ -450,10 +415,6 @@ export function CodexTools({
                   </div>
                 );
               })}
-              {!!queue?.data?.length &&
-                !isClaude &&
-                live?.status === "idle" &&
-                actionButton("queue-start", copy.queueStart)}
             </section>
           )}
           <Disclosure className="space-y-3 border-t pt-3">
@@ -463,12 +424,16 @@ export function CodexTools({
             <h3>{copy.capabilities}</h3>
             <p className="break-words text-xs text-muted-foreground">
               {capabilities
-                ? `${capabilities.executionMode} · ${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason).text}` : ""}`
+                ? `${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason).text}` : ""}`
                 : copy.unavailable}
             </p>
             <ul className="space-y-1 text-xs text-muted-foreground">
               {Object.entries(capabilities?.features ?? {})
-                .filter(([, feature]) => !feature?.available)
+                .filter(
+                  ([action, feature]) =>
+                    !feature?.available &&
+                    (isClaude || !["resume", "queue-start"].includes(action)),
+                )
                 .map(([action, feature]) => (
                   <li key={action}>
                     {actionLabels[action] ?? action}: {codexReason(locale, feature?.reason).text}

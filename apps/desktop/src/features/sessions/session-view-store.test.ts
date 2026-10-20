@@ -97,4 +97,18 @@ describe("session view source visibility", () => {
       sessionOrder: { workspace: ["saved-session", "new-session"] },
     });
   });
+  it("keeps a requested terminal panel in memory and never clears a newer destination from a stale consumer", () => {
+    const view = useSessionViewStore.getState();
+    view.requestPanel("first", "terminal");
+    const first = useSessionViewStore.getState().requestedPanel!;
+    view.requestPanel("second", "terminal");
+    const second = useSessionViewStore.getState().requestedPanel!;
+    view.consumePanel(first);
+    expect(useSessionViewStore.getState().requestedPanel).toBe(second);
+    view.consumePanel(second);
+    expect(useSessionViewStore.getState().requestedPanel).toBeUndefined();
+    expect(localStorage.getItem("agentkib.session-directory-order") ?? "").not.toContain(
+      "terminal",
+    );
+  });
 });

@@ -10,6 +10,30 @@ const TERMINATION_TIMEOUT_MS = 1_000;
 
 type Response = { id?: unknown; result?: unknown; error?: unknown };
 
+/** A native rejection is distinct from losing the response after a write. */
+export class CodexAppServerError extends Error {
+  readonly code?: number;
+  readonly data?: unknown;
+
+  constructor(value: unknown) {
+    const error = isObject(value) ? value : {};
+    super(
+      typeof error.message === "string" ? error.message : "Codex app-server rejected the request",
+    );
+    this.name = "CodexAppServerError";
+    this.code = typeof error.code === "number" ? error.code : undefined;
+    this.data = error.data;
+  }
+}
+
+export function codexWriterBusy(error: unknown): boolean {
+  return (
+    error instanceof CodexAppServerError &&
+    error.code === -32600 &&
+    /\balready has an active writer\b/i.test(error.message)
+  );
+}
+
 /** A bounded, persistent app-server connection for managed AgentKib sessions. */
 export class CodexAppServerSession extends EventEmitter {
   #child: ChildProcess;
@@ -89,6 +113,11 @@ export class CodexAppServerSession extends EventEmitter {
     return !this.#closed && this.#child.exitCode === null && this.#child.signalCode === null;
   }
 
+  /** A failed shutdown request does not prove that the process and stdio exited. */
+  get closed(): boolean {
+    return this.#didClose;
+  }
+
   async request(method: string, params: unknown, onDispatch?: () => void): Promise<unknown> {
     if (!this.connected) throw this.#closed ?? new Error("Codex app-server is unavailable");
     if (this.#pending.size >= 128) throw new Error("Codex app-server is busy");
@@ -111,7 +140,10 @@ export class CodexAppServerSession extends EventEmitter {
       onDispatch?.();
       this.#write(frame);
       const value = await response;
-      if (value.error !== undefined) throw new Error("Codex app-server rejected the request");
+      if (value.error !== undefined) {
+        if (value.error instanceof Error) throw value.error;
+        throw new CodexAppServerError(value.error);
+      }
       if (!("result" in value)) throw new Error("Codex app-server returned an invalid response");
       return value.result;
     } finally {

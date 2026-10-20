@@ -1,3 +1,4 @@
+import { isBusyRead, retryBusyRead } from "./conversation/features/sessions/session-read-retry";
 import { useEffect } from "react";
 import { create } from "zustand";
 import type { ConversationCatalog } from "@agentkib/web-client";
@@ -13,6 +14,7 @@ interface ConversationCatalogState {
   sessions: ConversationSessionSummary[];
   ready: boolean;
   error?: unknown;
+  codexRuntimeReason?: ConversationCatalog["codexRuntimeReason"];
 }
 
 const useConversationCatalogStore = create<ConversationCatalogState>(() => ({
@@ -22,6 +24,7 @@ const useConversationCatalogStore = create<ConversationCatalogState>(() => ({
 let generation = 0;
 let invalidation = 0;
 let pending: Promise<ConversationSessionSummary[]> | undefined;
+let waitingForSettlement = false;
 let observationError: unknown;
 let retryObservation: (() => void) | undefined;
 let catalogObservers = 0;
@@ -31,13 +34,15 @@ const emptySessions: ConversationSessionSummary[] = [];
 function resetConversationCatalog() {
   generation += 1;
   pending = undefined;
+  waitingForSettlement = false;
   observationError = undefined;
   const current = useConversationCatalogStore.getState();
-  if (current.sessions.length || current.error)
+  if (current.sessions.length || current.error || current.codexRuntimeReason)
     useConversationCatalogStore.setState({
       sessions: emptySessions,
       ready: true,
       error: undefined,
+      codexRuntimeReason: undefined,
     });
 }
 
@@ -47,10 +52,25 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
   invalidation++;
   if (pending) return pending;
   const request = generation;
+  let blockedVersion: number | undefined;
   const task = (async () => {
     while (true) {
       const version = invalidation;
-      const catalog = await desktopConversationRequest<ConversationCatalog>("catalog");
+      let catalog: ConversationCatalog;
+      try {
+        catalog = await retryBusyRead(() =>
+          desktopConversationRequest<ConversationCatalog>("catalog"),
+        );
+      } catch (error) {
+        if (generation === request && isBusyRead(error)) {
+          waitingForSettlement = true;
+          blockedVersion = version;
+          // Settlement can arrive before the rejected read returns. Consume that
+          // notification once; otherwise wait without turning contention into an error.
+          if (version !== invalidation) continue;
+        }
+        throw error;
+      }
       const sessions: ConversationSessionSummary[] = catalog.sessions.map((session) => ({
         ...session,
         indexedSessionIds:
@@ -63,8 +83,14 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
       }));
       if (generation !== request) return sessions;
       if (version === invalidation) {
+        waitingForSettlement = false;
         // A successful one-off read does not prove the live subscription recovered.
-        useConversationCatalogStore.setState({ sessions, ready: true, error: observationError });
+        useConversationCatalogStore.setState({
+          sessions,
+          ready: true,
+          error: observationError,
+          codexRuntimeReason: catalog.codexRuntimeReason,
+        });
         return sessions;
       }
       // A create/fork or invalidation arrived during this fetch. Its caller must
@@ -72,11 +98,18 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
     }
   })()
     .catch((error: unknown) => {
-      if (generation === request) useConversationCatalogStore.setState({ ready: true, error });
+      if (generation === request && !isBusyRead(error)) {
+        waitingForSettlement = false;
+        useConversationCatalogStore.setState({ ready: true, error });
+      }
       throw error;
     })
     .finally(() => {
-      if (pending === task) pending = undefined;
+      if (pending !== task) return;
+      pending = undefined;
+      // Also cover a notification delivered between the rejection and cleanup.
+      if (generation === request && waitingForSettlement && blockedVersion !== invalidation)
+        void refreshConversationCatalog().catch(() => {});
     });
   pending = task;
   return task;
@@ -136,6 +169,10 @@ export function useConversationCatalog(enabled: boolean) {
         },
         event: (type, data) => {
           if (closed || resyncing) return false;
+          if (type === "control-changed") {
+            if (pending || waitingForSettlement) void refreshConversationCatalog().catch(() => {});
+            return false;
+          }
           if (type === "session-ready") {
             try {
               const ready = JSON.parse(data) as { cursor?: string };

@@ -94,6 +94,126 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("responsive composer behavior", () => {
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "keeps the complete settings label when no model is reported in %s",
+    async (locale) => {
+      state.locale = locale;
+      state.t = dictionaries[locale];
+      vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+        ...settings(),
+        current: {},
+        options: { models: [], policies: [], serviceTiers: [] },
+      });
+      render(<CodexComposer />);
+      await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalled());
+      const button = screen.getByRole("button", { name: codexCopy[locale].conversationSettings });
+      expect(button).toHaveClass("h-11", "shrink-0");
+      expect(screen.getByText(codexCopy[locale].conversationSettings)).not.toHaveClass("truncate");
+    },
+  );
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "only shows unknown settings after a local settings intent in %s",
+    async (locale) => {
+      state.locale = locale;
+      state.t = dictionaries[locale];
+      vi.mocked(state.client.codexSessionSettings).mockResolvedValue({
+        ...settings(),
+        applicationStatus: "unknown",
+      });
+      const view = render(<CodexComposer />);
+      await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalled());
+      expect(
+        screen.queryByText(composerLayoutCopy[locale].settingsUnknown),
+      ).not.toBeInTheDocument();
+      state = { ...state, settingsChangedHere: true };
+      view.rerender(<CodexComposer />);
+      expect(screen.getByText(composerLayoutCopy[locale].settingsUnknown)).toBeVisible();
+    },
+  );
+  it.each([
+    [
+      "zh-CN",
+      "当前模型不在主机已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
+      "更改下一轮模型",
+    ],
+    [
+      "zh-TW",
+      "目前模型不在主機已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
+      "變更下一輪模型",
+    ],
+    [
+      "en-US",
+      "The current model is not in the host's verified model list. This message was not sent. Change the next-turn model before sending again.",
+      "Change next-turn model",
+    ],
+    [
+      "ja-JP",
+      "現在のモデルはホストで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
+      "次のターンのモデルを変更",
+    ],
+  ] as const)(
+    "opens settings for an unsupported model in %s without sending or changing the draft",
+    async (locale, reason, action) => {
+      state = {
+        ...state,
+        locale,
+        t: dictionaries[locale],
+        notice: "notDispatched",
+        noticeReason: "unsupported-model",
+        message: "Keep this draft",
+      };
+      const inherited = {
+        ...settings(),
+        current: { modelId: "unlisted-model", effort: "high", mode: "default" as const },
+      };
+      vi.mocked(state.client.codexSessionSettings).mockResolvedValue(inherited);
+      render(<CodexComposer />);
+      expect(await screen.findByText(reason)).toBeVisible();
+      await screen.findByRole("button", { name: /unlisted-model/ });
+      vi.mocked(state.client.codexSessionSettings).mockClear();
+      fireEvent.click(screen.getByRole("button", { name: action }));
+      const dialog = screen.getByRole("dialog", { name: codexCopy[locale].conversationSettings });
+      await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledWith("s"));
+      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.control).not.toHaveBeenCalled();
+      expect(state.setMessage).not.toHaveBeenCalled();
+      fireEvent.change(within(dialog).getByLabelText(codexCopy[locale].model), {
+        target: { value: "model" },
+      });
+      fireEvent.click(within(dialog).getByRole("button", { name: codexCopy[locale].apply }));
+      await waitFor(() =>
+        expect(state.codexAction).toHaveBeenCalledWith(
+          "settings",
+          expect.objectContaining({ model: "model" }),
+        ),
+      );
+      expect(state.control).not.toHaveBeenCalled();
+      expect(state.setMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("shows effort recovery only for a confirmed Codex rejection", async () => {
+    state = { ...state, notice: "notDispatched", noticeReason: "unsupported-effort" };
+    const view = render(<CodexComposer />);
+    expect(
+      await screen.findByText(
+        "当前模型不支持所选思考强度，本次消息尚未发送。请调整下一轮模型或思考强度后再发送。",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "更改下一轮模型" })).toBeVisible();
+    state = { ...state, notice: "uncertain" };
+    view.rerender(<CodexComposer />);
+    expect(screen.queryByRole("button", { name: "更改下一轮模型" })).not.toBeInTheDocument();
+    state = {
+      ...state,
+      notice: "notDispatched",
+      current: { ...state.current!, agent: "claude-code" },
+      capabilities: { ...state.capabilities!, features: {} },
+    };
+    view.rerender(<CodexComposer />);
+    expect(screen.queryByRole("button", { name: "更改下一轮模型" })).not.toBeInTheDocument();
+  });
+
   it("shows native usage before settings load and preserves it after a late settings response", async () => {
     let finish!: (value: CodexSessionSettings) => void;
     vi.mocked(state.client.codexSessionSettings).mockImplementationOnce(

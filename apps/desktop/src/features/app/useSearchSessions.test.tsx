@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { homeKeys } from "@/features/home/home-query";
+import { queuedSessionRead } from "@/features/sessions/session-query";
 import { useSearchSessions } from "./useSearchSessions";
 
 vi.mock("@/core/api", () => ({
@@ -51,7 +52,10 @@ describe("useSearchSessions", () => {
     vi.clearAllMocks();
     vi.mocked(api.workspaceSessions).mockImplementation(async (id) => [session(id)]);
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
 
   it("does not expose or read indexed data while closed or indexing is disabled", () => {
     const { client, wrapper } = setup();
@@ -167,6 +171,114 @@ describe("useSearchSessions", () => {
     expect(maximum).toBe(4);
     expect(api.workspaceSessions).toHaveBeenCalledTimes(12);
     expect(result.current.sessions).toHaveLength(12);
+    expect(result.current.errors).toEqual({});
+  });
+
+  it("reuses an in-flight read after reopening and retries busy with the current consumer", async () => {
+    const { wrapper } = setup();
+    const pending = deferred<ConversationSessionSummary[]>();
+    let calls = 0;
+    vi.mocked(api.workspaceSessions).mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) await pending.promise;
+      if (calls < 3) throw new Error("operation_busy");
+      return [session("one")];
+    });
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useSearchSessions([workspace("one")], enabled),
+      { wrapper, initialProps: { enabled: true } },
+    );
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(1);
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve([]));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(api.workspaceSessions).toHaveBeenCalledTimes(3);
+    expect(result.current.sessions).toEqual([session("one")]);
+    expect(result.current.errors).toEqual({});
+    expect(api.refreshWorkspaceSessions).not.toHaveBeenCalled();
+  });
+
+  it("keeps shared busy retries alive until the last consumer cancels", async () => {
+    vi.useFakeTimers();
+    const { client } = setup();
+    const first = new AbortController();
+    const second = new AbortController();
+    const read = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("operation_busy"))
+      .mockRejectedValueOnce(new Error("operation_busy"))
+      .mockResolvedValue("ready");
+    const outcomes = Promise.allSettled([
+      queuedSessionRead(client, "shared", first.signal, read, { retryBusy: true }),
+      queuedSessionRead(client, "shared", second.signal, read, { retryBusy: true }),
+    ]);
+    await vi.advanceTimersByTimeAsync(0);
+    first.abort();
+    await vi.advanceTimersByTimeAsync(450);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(await outcomes).toEqual([
+      { status: "rejected", reason: expect.objectContaining({ name: "AbortError" }) },
+      { status: "fulfilled", value: "ready" },
+    ]);
+  });
+
+  it("cancels unused busy waiting without letting old cleanup remove a reopened request", async () => {
+    vi.useFakeTimers();
+    const { client } = setup();
+    const previous = new AbortController();
+    const oldRead = vi.fn().mockRejectedValue(new Error("operation_busy"));
+    const oldOutcome = queuedSessionRead(client, "reopen", previous.signal, oldRead, {
+      retryBusy: true,
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    previous.abort();
+    const current = new AbortController();
+    const pending = deferred<string>();
+    const newRead = vi.fn(() => pending.promise);
+    const newRequest = queuedSessionRead(client, "reopen", current.signal, newRead, {
+      retryBusy: true,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    const previousError = await oldOutcome;
+    const duplicateRead = vi.fn().mockResolvedValue("duplicate");
+    const joinedRequest = queuedSessionRead(
+      client,
+      "reopen",
+      new AbortController().signal,
+      duplicateRead,
+      { retryBusy: true },
+    );
+    pending.resolve("current");
+    expect(await Promise.all([newRequest, joinedRequest])).toEqual(["current", "current"]);
+    expect(previousError).toMatchObject({ name: "AbortError" });
+    expect(oldRead).toHaveBeenCalledTimes(1);
+    expect(newRead).toHaveBeenCalledTimes(1);
+    expect(duplicateRead).not.toHaveBeenCalled();
+  });
+
+  it("bounds observation to three busy reads without retrying an index scan", async () => {
+    vi.useFakeTimers();
+    const { client } = setup();
+    const observe = vi.fn().mockRejectedValue(new Error("operation_busy"));
+    vi.mocked(api.refreshWorkspaceSessions).mockRejectedValue(new Error("operation_busy"));
+    const outcomes = Promise.allSettled([
+      queuedSessionRead(client, "observation", new AbortController().signal, observe, {
+        retryBusy: true,
+      }),
+      queuedSessionRead(client, "scan", new AbortController().signal, () =>
+        api.refreshWorkspaceSessions("one", false),
+      ),
+    ]);
+    await vi.advanceTimersByTimeAsync(450);
+    expect(observe).toHaveBeenCalledTimes(3);
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(1);
+    for (const outcome of await outcomes)
+      expect(outcome).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({ message: "operation_busy" }),
+      });
   });
 
   it("does not overwrite a newer shared snapshot with an older pending read", async () => {

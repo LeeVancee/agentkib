@@ -1,3 +1,11 @@
+import { continuationResources } from "./continuation-draft";
+import {
+  sessionContinuationCopy,
+  SessionContinuationReturned,
+  SessionContinuationTerminal,
+} from "@agentkib/session-ui";
+import { SessionBusyChoice } from "./session-busy-choice";
+import { SessionReadOnly } from "./session-read-only";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
@@ -36,13 +44,12 @@ import { codexCopy, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
 import { PermissionModeNotice } from "./permission-mode-notice";
-import { useSessionPanels } from "./session-panels";
-import { canConfirmClaudeHandoff } from "./claude-handoff";
 import { claudeConnectionCopy } from "./claude-connection-copy";
 
 type Upload = {
   key: string;
   name: string;
+  file?: File;
   percent: number;
   result?: UploadedAttachment;
   failed?: boolean;
@@ -54,7 +61,6 @@ export function SessionComposer({
   connectionStatusInBanner?: boolean;
 }) {
   const session = useSession();
-  const panels = useSessionPanels();
   const {
     historyReferences = [],
     setHistoryReferences,
@@ -78,6 +84,11 @@ export function SessionComposer({
     notice,
   } = session;
   const isClaude = current?.agent === "claude-code";
+  const isCodex = current?.agent === "codex";
+  const continuation = sessionContinuationCopy(locale);
+  const returnKey = JSON.stringify([selected, live?.ownershipReason, live?.reason]);
+  const [returnedFor, setReturnedFor] = useState<string | null>(null);
+  useEffect(() => setReturnedFor(null), [returnKey]);
   const copy = codexCopy[locale];
   const layout = composerLayoutCopy[locale];
   const display = sessionDisplayState(session);
@@ -106,7 +117,6 @@ export function SessionComposer({
     const controllers = active.current;
     const urls = previewUrls.current;
     setUploads([]);
-    setComposerText("");
     setResources([]);
     setSubmitted(false);
     submitPending.current = false;
@@ -178,7 +188,7 @@ export function SessionComposer({
           : undefined;
       if (previewUrl) previewUrls.current.set(key, previewUrl);
       active.current.set(key, abort);
-      setUploads((items) => [...items, { key, name: file.name, percent: 0, previewUrl }]);
+      setUploads((items) => [...items, { key, name: file.name, file, percent: 0, previewUrl }]);
       void client
         .uploadAttachment(
           selected,
@@ -209,6 +219,37 @@ export function SessionComposer({
         .finally(() => active.current.delete(key));
     }
   }
+  useEffect(() => {
+    if (!online || !controlReady || busy || submitted || capabilities?.sessionId !== selected)
+      return;
+    const draft = session.takeContinuationDraft?.(selected);
+    if (!draft) return;
+    setResources(continuationResources(draft.resources));
+    if (!draft.files.length) return;
+    if (uploadPermission) void add(draft.files);
+    else {
+      count.current = draft.files.length;
+      setUploads(
+        draft.files.map((file) => ({
+          key: crypto.randomUUID(),
+          name: file.name,
+          file,
+          percent: 0,
+          failed: true,
+        })),
+      );
+      setError(codexReason(locale, capabilities.features.attachments?.reason).text);
+    }
+  }, [
+    selected,
+    online,
+    controlReady,
+    capabilities?.sessionId,
+    uploadPermission,
+    busy,
+    submitted,
+    session.takeContinuationDraft,
+  ]);
   async function remove(item: Upload) {
     const requestGeneration = generation.current;
     active.current.get(item.key)?.abort();
@@ -228,9 +269,9 @@ export function SessionComposer({
       }
     }
   }
-  const ready = uploads.every((item) => !!item.result);
+  const ready = uploads.every((item) => !!item.result) && resources.every((item) => item.available);
   const attachmentIds = uploads.flatMap((item) => (item.result ? [item.result.id] : []));
-  const resourceIds = resources.map((item) => item.id);
+  const resourceIds = resources.filter((item) => item.available).map((item) => item.id);
   const draft = composerValue;
   const valid = ready && validHistoryMessage(draft, historyReferences, attachmentIds.length > 0);
   const resourceNeedsMessage =
@@ -299,26 +340,27 @@ export function SessionComposer({
   }, [connectionFailure, connectionToastId, display.reason, selected]);
   const canSubmit = online && controlReady && canSend;
   const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
-  const primaryAction = canStop ? (
-    <Button
-      type="button"
-      variant="destructive"
-      className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
-      aria-label={t.stop}
-      onClick={() => void control("stop")}
-    >
-      <Square size={17} />
-    </Button>
-  ) : (
-    <Button
-      type="submit"
-      className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
-      aria-label={t.send}
-      disabled={!canSubmit || compacting || !valid || submitted}
-    >
-      <ArrowUp size={20} />
-    </Button>
-  );
+  const primaryAction =
+    canStop && live?.executionMode !== "claude-follower" ? (
+      <Button
+        type="button"
+        variant="outline"
+        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
+        aria-label={t.stop}
+        onClick={() => void control("stop")}
+      >
+        <Square size={17} />
+      </Button>
+    ) : (
+      <Button
+        type="submit"
+        className="inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0"
+        aria-label={t.send}
+        disabled={!canSubmit || compacting || !valid || submitted}
+      >
+        <ArrowUp size={20} />
+      </Button>
+    );
   const advancedActions =
     (running || compacting) &&
     (!isClaude ||
@@ -368,8 +410,39 @@ export function SessionComposer({
         </DropdownMenuContent>
       </DropdownMenu>
     ) : null;
+  if ((isCodex || isClaude) && display.continuation === "busy")
+    return returnedFor === returnKey ? (
+      <div className="w-full max-w-3xl self-center">
+        <SessionContinuationReturned
+          locale={locale}
+          agent={isClaude ? "Claude Code" : "Codex"}
+          hasDraft={Boolean(
+            message.trim() || uploads.length || resources.length || historyReferences.length,
+          )}
+        />
+      </div>
+    ) : (
+      <SessionBusyChoice
+        onReturn={() => setReturnedFor(returnKey)}
+        composerDraft={() => ({
+          files: uploads.flatMap((item) => (item.file ? [item.file] : [])),
+          resources,
+        })}
+      />
+    );
+  if ((isCodex || isClaude) && display.continuation === "view-only")
+    return <SessionReadOnly reason={display.reason} />;
+  if (isClaude && display.continuation === "terminal-watch")
+    return (
+      <div className="w-full max-w-3xl shrink-0 self-center">
+        <SessionContinuationTerminal locale={locale} />
+      </div>
+    );
   return (
     <div className="w-full max-w-3xl shrink-0 self-center space-y-2">
+      {isClaude && display.continuation === "terminal" && (
+        <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
+      )}
       <form
         className="w-full space-y-2 rounded-3xl border bg-background p-2 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/20 md:p-3"
         onSubmit={(event) => {
@@ -377,14 +450,7 @@ export function SessionComposer({
           if (canSubmit && !compacting) void send("send");
         }}
       >
-        {isClaude && (live?.model || live?.cliVersion) && (
-          <p className="px-1 text-xs text-muted-foreground">
-            {[live.model, live.cliVersion && `Claude Code ${live.cliVersion}`]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-        )}
-        {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} />}
+        {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
         <label className="sr-only" htmlFor="message">
           {t.message}
         </label>
@@ -395,7 +461,10 @@ export function SessionComposer({
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder={t.message}
+          placeholder={isCodex || isClaude ? continuation.placeholder : t.message}
+          onFocus={() => {
+            if (isCodex || isClaude) void session.checkContinuation?.();
+          }}
           disabled={busy || submitted}
           aria-describedby={
             enterSends && canSubmit && !compacting && !busy && !submitted
@@ -495,6 +564,11 @@ export function SessionComposer({
             />
           </Dialog>
         )}
+        {resources.some((item) => !item.available) && (
+          <p role="status" className="text-xs text-muted-foreground">
+            {copy.resourceRemoved}
+          </p>
+        )}
         {resourceNeedsMessage && (
           <p role="status" className="text-sm text-muted-foreground">
             {layout.resourceNeedsMessage}
@@ -562,7 +636,7 @@ export function SessionComposer({
           </p>
         )}
         {!canSend &&
-          !(connectionStatusInBanner && live?.executionMode === "claude-follower") &&
+          !(connectionStatusInBanner && isClaude) &&
           (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
           !compacting &&
           !connectionFailure &&
@@ -570,28 +644,6 @@ export function SessionComposer({
             <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
               {display.reason}
             </p>
-          )}
-        {panels &&
-          isClaude &&
-          live?.executionMode !== "claude-managed" &&
-          access?.device?.manage &&
-          online &&
-          controlReady &&
-          !busy &&
-          notice !== "uncertain" &&
-          live?.status !== "outcome-unknown" && (
-            <Button type="button" variant="outline" onClick={() => panels.setActionsOpen(true)}>
-              {live?.executionMode === "claude-follower"
-                ? claudeConnectionCopy[locale].manage
-                : claudeConnectionCopy[locale].title}
-            </Button>
-          )}
-        {panels &&
-          live?.executionMode !== "claude-follower" &&
-          canConfirmClaudeHandoff(session) && (
-            <Button type="button" variant="outline" onClick={() => panels.setActionsOpen(true)}>
-              {t.confirmHandoff}
-            </Button>
           )}
         {!isClaude && access?.device?.accessMode !== "full" && (
           <Disclosure className="px-1 text-xs text-muted-foreground">

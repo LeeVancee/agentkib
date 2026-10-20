@@ -97,8 +97,8 @@ interface BridgeOptions {
   pluginDirectory: string;
   /** A bounded native identity read. No model, transcript rewrite or managed adopt. */
   target(sessionId: string, nativeId?: string): Promise<ClaudeBridgeTarget>;
-  /** Recheck registered ownership and canonical paths without rehashing complete history. */
-  validate(target: ClaudeBridgeTarget, forControl: boolean): void;
+  /** The binding ID only accompanies an existing row's authenticated execution or recovery. */
+  validate(target: ClaudeBridgeTarget, forControl: boolean, bindingId?: string): void;
   publish(
     sessionId: string,
     type: SessionStreamEvent["type"],
@@ -210,6 +210,17 @@ export class ClaudeBridge {
   handles(sessionId: string): boolean {
     const row = this.#bindings.get(sessionId);
     return !!row && (!row.revoked || row.inflight !== null);
+  }
+  blocksManagedResume(sessionId: string): boolean {
+    this.assertCanAdopt();
+    const row = this.#bindings.get(sessionId);
+    if (!row) return false;
+    if (row.inflight || readUnknownManagedCommands(this.options.dataDir, sessionId).length > 0)
+      return true;
+    const connection = this.#connections.get(sessionId);
+    // A fresh lease also protects the interval between pairing and its first snapshot.
+    // Expired, settled bindings retain their credentials without blocking a native resume.
+    return !!connection && !row.revoked && Date.now() - connection.lastSeen <= HEARTBEAT_MS;
   }
   #save(): void {
     privateJson(path.join(this.root, "bindings-v1.json"), {
@@ -344,7 +355,7 @@ export class ClaudeBridge {
     if (!row) throw new Error("session-unavailable");
     let valid = false;
     try {
-      this.options.validate(row.target, false);
+      this.options.validate(row.target, false, row.bindingId);
       valid = true;
     } catch {
       /* Invalid sources never expose cached private content. */
@@ -396,6 +407,10 @@ export class ClaudeBridge {
       workspaceId: row.target.workspaceId,
       runtimeBootId: this.options.bootId,
       executionMode: "claude-follower",
+      executionLocation: online ? "terminal" : null,
+      ownershipReason: null,
+      // The plugin's static capability; `sendEnabled` additionally needs an idle terminal.
+      terminalSend: snapshot?.capabilities.send === true,
       connectionGeneration: connection?.leaseId ?? this.options.bootId,
       cliVersion: `${CLAUDE_BRIDGE_CLI_VERSION} (Claude Code)`,
       revision: connection?.revision ?? this.#revision,
@@ -525,7 +540,7 @@ export class ClaudeBridge {
       case "usage":
         return this.live(id, false).usage;
       case "context":
-        this.options.validate(row.target, false);
+        this.options.validate(row.target, false, row.bindingId);
         return {
           available: true,
           cwd: row.target.workspace,
@@ -628,7 +643,7 @@ export class ClaudeBridge {
       value.runtimeBootId !== this.options.bootId
     )
       throw new Error("control-unavailable");
-    this.options.validate(row.target, true);
+    this.options.validate(row.target, true, row.bindingId);
     const live = this.live(row.target.sessionId, true);
     const connection = this.#connections.get(row.target.sessionId);
     if (!connection?.snapshot || row.revoked || !this.#online(row.target.sessionId))
@@ -937,7 +952,7 @@ export class ClaudeBridge {
         return;
       }
       try {
-        this.options.validate(row.target, false);
+        this.options.validate(row.target, false, row.bindingId);
       } catch {
         this.#disconnect(row.target.sessionId);
         reply(410, { error: "bridge-source-unavailable" });
@@ -1017,7 +1032,7 @@ export class ClaudeBridge {
             !pending.delivered &&
             this.#connections.get(row.target.sessionId) === connection
           ) {
-            this.options.validate(row.target, true);
+            this.options.validate(row.target, true, row.bindingId);
             if (response.destroyed) return;
             dispatchManagedCommand(this.options.dataDir, pending.requestId);
             pending.delivered = true;

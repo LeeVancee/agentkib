@@ -1,9 +1,146 @@
 import { describe, expect, it } from "vitest";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopy, codexReason } from "@/features/conversation/features/sessions/codex-copy";
+import { sessionContinuationCopy, sessionContinuationListState } from "@agentkib/session-ui";
+import { managedControlCopy } from "@/features/conversation/features/sessions/managed-control-copy";
 
 describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];
+  it.each(locales)("explains unconfirmed fork settings with recovery guidance in %s", (locale) => {
+    for (const reason of ["native-model-unconfirmed", "native-effort-unconfirmed"]) {
+      const explanation = codexReason(locale, reason);
+      expect(explanation.technical).toBeUndefined();
+      expect(explanation.text).not.toBe(codexReason(locale).text);
+      expect(explanation.text).toContain("Codex");
+    }
+  });
+  it.each(locales)("explains directory failures and projects view only in %s", (locale) => {
+    for (const reason of [
+      "codex-session-directory-unsafe",
+      "codex-session-directory-missing",
+      "codex-session-directory-not-directory",
+      "codex-session-directory-unavailable",
+      "codex-session-directory-unverified",
+      "codex-context-outside-workspace",
+      "codex-workspace-mismatch",
+      "codex-sandbox-mismatch",
+    ]) {
+      expect(codexReason(locale, reason).technical).toBeUndefined();
+      expect(codexReason(locale, reason).text).not.toBe(codexReason(locale).text);
+      expect(
+        sessionContinuationListState(
+          { agent: "codex", continuation: { status: "unsupported", reason } },
+          locale,
+        ),
+      ).toEqual({ label: sessionContinuationCopy(locale).viewOnly });
+    }
+  });
+  it.each(locales)("explains ownership, version and installation failures in %s", (locale) => {
+    const continuation = sessionContinuationCopy(locale);
+    expect(codexReason(locale, "codex-owner-busy")).toEqual({
+      text: continuation.busy("Codex"),
+    });
+    expect(codexReason(locale, "codex-cli-version-too-old")).toEqual({
+      text: continuation.codexVersionTooOld,
+    });
+    const missing = codexReason(locale, "codex-cli-unavailable");
+    expect(missing.technical).toBeUndefined();
+    expect(missing.text).toContain("Codex CLI");
+    expect(missing.text).not.toBe(codexReason(locale).text);
+  });
+
+  it.each([
+    [
+      "zh-CN",
+      "无法确认 Codex 版本，目前仅可查看。请检查 Codex CLI 后刷新重试。",
+      "无法确认这条会话是否正在 Codex 中使用，目前仅可查看。请刷新重试。",
+    ],
+    [
+      "zh-TW",
+      "無法確認 Codex 版本，目前僅可查看。請檢查 Codex CLI 後重新整理再試。",
+      "無法確認這段對話是否正在 Codex 中使用，目前僅可查看。請重新整理再試。",
+    ],
+    [
+      "en-US",
+      "The Codex version could not be confirmed. This session is view only. Check Codex CLI, then refresh to retry.",
+      "Could not confirm whether this session is in use in Codex. It remains view only. Refresh to retry.",
+    ],
+    [
+      "ja-JP",
+      "Codex のバージョンを確認できないため、この会話は閲覧のみです。Codex CLI を確認してから再読み込みしてください。",
+      "この会話が Codex で使用中か確認できないため、閲覧のみです。再読み込みしてお試しください。",
+    ],
+  ] as const)(
+    "keeps failed version and owner checks view only with specific recovery advice in %s",
+    (locale, version, ownership) => {
+      expect(codexReason(locale, "codex-cli-version-unavailable")).toEqual({ text: version });
+      expect(codexReason(locale, "codex-owner-check-unavailable")).toEqual({ text: ownership });
+      expect(version).not.toBe(codexReason(locale, "codex-cli-version-too-old").text);
+      expect(ownership).not.toBe(codexReason(locale, "codex-owner-busy").text);
+      expect(version).not.toBe(codexReason(locale, "control-outcome-unconfirmed").text);
+    },
+  );
+
+  it.each([
+    ["zh-CN", "待发队列", "检查会话状态"],
+    ["zh-TW", "待發佇列", "檢查對話狀態"],
+    ["en-US", "Queued messages", "Inspect session state"],
+    ["ja-JP", "送信待ちキュー", "会話の状態を確認"],
+  ] as const)("describes the managed queue and inspection in %s", (locale, queue, inspect) => {
+    const copy = codexCopy[locale];
+    expect(copy.queue).toBe(queue);
+    expect(copy.inspect).toBe(inspect);
+    expect(copy.composerHint + copy.queueTooLarge).not.toMatch(
+      /原客户端|原客戶端|original.client|元のクライアント/i,
+    );
+  });
+
+  it("retains approval scope and original-client context labels", () => {
+    expect(codexCopy["en-US"]).toMatchObject({
+      native: "Original-client approval options",
+      accepted: "Request accepted; check the original client for its current state",
+      context: "Original-client context",
+    });
+  });
+
+  it.each(locales)("keeps automatic continuation recovery actionable in %s", (locale) => {
+    const removedWorkflow =
+      /原客户端|原客戶端|original.client|元のクライアント|交给|交給|交还|交還|handed over|引き渡|恢复执行|恢復執行|resume execution|実行を再開/i;
+    for (const reason of [
+      "codex-connection-failed",
+      "codex-owner-changed",
+      "session-already-managed",
+      "session-released",
+      "recovery-required",
+      "native-session-unconfirmed",
+      "session-state-unavailable",
+      "control-outcome-unconfirmed",
+    ]) {
+      expect(codexReason(locale, reason).text).not.toMatch(removedWorkflow);
+    }
+    for (const key of ["access", "protocol"] as const) {
+      expect(managedControlCopy[locale][key]).not.toMatch(/交接|handing over|引き渡/i);
+    }
+    expect(dictionaries[locale].controlUnconfirmed).not.toMatch(removedWorkflow);
+    expect(dictionaries[locale].uncertain).not.toMatch(removedWorkflow);
+  });
+
+  it.each([
+    ["zh-CN", "已保存请求", "不会自动重发", "勿重复提交"],
+    ["zh-TW", "已儲存請求", "不會自動重傳", "勿重複提交"],
+    ["en-US", "saved request", "not be sent again automatically", "do not resubmit"],
+    ["ja-JP", "保存済みリクエスト", "自動で再送しません", "再送しないでください"],
+  ] as const)(
+    "requires checking an unknown outcome without resending in %s",
+    (locale, request, noAutomaticResend, noResubmit) => {
+      const reason = codexReason(locale, "control-outcome-unconfirmed").text;
+      expect(reason).toContain(request);
+      expect(reason).toContain(noAutomaticResend);
+      expect(reason).toContain(noResubmit);
+      expect(dictionaries[locale].controlUnconfirmed).toContain(noResubmit);
+      expect(dictionaries[locale].uncertain).toContain(request);
+    },
+  );
   it.each(locales)(
     "explains state restrictions without reporting a read failure in %s",
     (locale) => {
@@ -34,7 +171,7 @@ describe("Codex capability reasons", () => {
 
   it.each(locales)("reuses specific installation and original-client advice in %s", (locale) => {
     expect(codexReason(locale, "handoff-required")).toEqual({
-      text: dictionaries[locale].handoffRequired,
+      text: dictionaries[locale].unavailable,
     });
     expect(codexReason(locale, "unverified-installation")).toEqual({
       text: dictionaries[locale].unverifiedInstallation,
@@ -105,7 +242,7 @@ describe("reasons a Claude session was stopped for", () => {
 
   it("keeps general unknown outcomes separate from stopped Claude sessions", () => {
     expect(codexReason("en-US", "control-outcome-unconfirmed")).toEqual({
-      text: "The previous outcome is unconfirmed. Check the original client and the saved request status; it will not be sent again automatically.",
+      text: "The previous outcome is unconfirmed. Refresh to check the saved request; do not resubmit. It will not be sent again automatically.",
     });
     expect(codexReason("en-US", "codex-connection-failed").technical).toBeUndefined();
     expect(codexReason("en-US", "Claude process exited (1)").technical).toBe(

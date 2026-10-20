@@ -22,6 +22,7 @@ import { dispatchClaude } from "./claude-dispatch";
 import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
 import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
+import { continuationPreflightReason } from "./continuation-reason";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { markdownLinkTargets } from "./markdown-links";
 import {
@@ -326,6 +327,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/managed/capabilities": { lan: true },
     "/managed/inspect": { lan: true },
     "/managed/context": { lan: true },
+    "/managed/resume-command": { lan: true },
     "/managed/settings": {},
     "/managed/queue": {},
     "/managed/goals": {},
@@ -359,6 +361,8 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/managed/release": { lan: true, control: true },
     "/managed/reconcile": { lan: true, control: true },
     "/managed/action": { control: true },
+    // Explicit capability discovery starts a worker but never dispatches a command receipt.
+    "/managed/settings-prepare": {},
     "/artifact-tickets": { lan: true },
     "/attachments": { lan: true },
     "/attachments/delete": { lan: true },
@@ -794,7 +798,9 @@ export class WebAccessService {
       const workspaceId = snapshotField(snapshot, "workspaceId");
       if (
         typeof workspaceId !== "string" ||
-        !(await this.workspaceAllowed(workspaceId, device, reserved))
+        !(this.options.mode === "lan" && executionMode === "codex-managed" && sessionId
+          ? await this.lanCodexScopeAllowed(sessionId, workspaceId, reserved)
+          : await this.workspaceAllowed(workspaceId, device, reserved))
       )
         return false;
     }
@@ -806,12 +812,12 @@ export class WebAccessService {
     device?: WebDevice,
   ) {
     const executionMode = snapshotField(snapshot, "executionMode");
+    if (executionMode === "codex-follower") return false;
     return (
       this.controlsEnabled(sessionId, device) &&
       (!!this.options.acceptanceSessionId ||
         this.options.verifiedExperimental === true ||
-        (this.options.verifiedCodex === true &&
-          (executionMode === "codex-managed" || executionMode === "codex-follower")) ||
+        (this.options.verifiedCodex === true && executionMode === "codex-managed") ||
         (this.options.verifiedClaudeManaged === true &&
           (executionMode === "managed-resume" ||
             executionMode === "claude-managed" ||
@@ -2505,6 +2511,20 @@ export class WebAccessService {
       throw new HttpError(403, "workspace_not_authorized");
     return session.workspace_id;
   }
+  private async lanCodexScopeAllowed(sessionId: string, workspaceId: string, reserved = false) {
+    // LAN has no workspace allowlist; retain its existing registered-session
+    // boundary without granting file access or managed lifecycle permissions.
+    const catalog = (await this.runtime({ operation: "catalog" }, undefined, reserved)) as {
+      sessions?: { id: string; agent: string; workspace_id: string }[];
+    };
+    if (
+      !catalog.sessions?.some(
+        (row) => row.id === sessionId && row.agent === "codex" && row.workspace_id === workspaceId,
+      )
+    )
+      return false;
+    return (await this.registeredWorkspaces(reserved)).some((row) => row.id === workspaceId);
+  }
   private codexPermission(
     operation: string,
   ): "send" | "approve" | "manage" | "attachments" | "advancedControl" | "organize" | "settings" {
@@ -2620,13 +2640,13 @@ export class WebAccessService {
           ["context", "resources", "settings-state", "usage", "goal"].includes(operation) ||
           operation.startsWith("goal-");
         const allowed =
+          data.executionMode === "codex-managed" &&
           (operation === "usage" || this.controlsEnabled(sessionId, device)) &&
           device[this.codexPermission(operation)] === true &&
           (!fullOnly || this.isFullAccess(device)) &&
           (operation !== "fork" || device.organize === true) &&
-          this.options.mode !== "lan" &&
-          (workspaceAllowed ||
-            (["send", "inspect"].includes(operation) && data.executionMode === "codex-follower"));
+          (this.options.mode !== "lan" || operation === "send") &&
+          workspaceAllowed;
         return [operation, allowed ? feature : { available: false, reason: "permission_denied" }];
       }),
     );
@@ -2673,7 +2693,8 @@ export class WebAccessService {
     if (operation.startsWith("goal-")) this.fullAccess(hash);
     if (operation === "fork") this.grant(hash, "organize");
     const sessionId = this.field(body.sessionId);
-    if (this.isFullAccess(device)) await this.codexScope(sessionId, hash, false, !generic);
+    if (!generic || this.isFullAccess(device))
+      await this.codexScope(sessionId, hash, false, !generic);
     if (!this.controlsEnabled(sessionId, device))
       throw new HttpError(403, "session_control_not_allowed");
     if (operation === "inspect") {
@@ -2764,19 +2785,19 @@ export class WebAccessService {
         features?: Record<string, { available: boolean; reason?: string }>;
         executionMode?: string;
       };
-      const sessionSettingsAction = operation === "settings" || operation.startsWith("goal-");
       if (
-        (operation !== "resume" &&
-          capabilities.executionMode !== "codex-managed" &&
-          !(generic && capabilities.executionMode === "claude-managed") &&
-          !(sessionSettingsAction && capabilities.executionMode === "codex-follower")) ||
+        (capabilities.executionMode !== "codex-managed" &&
+          !(generic && capabilities.executionMode === "claude-managed")) ||
         capabilities.features?.[operation]?.available !== true
       )
         throw new HttpError(
           409,
           capabilities.features?.[operation]?.reason === "session-compacting"
             ? "session-compacting"
-            : "capability_unavailable",
+            : continuationPreflightReason(
+                capabilities.features?.[operation]?.reason,
+                "capability_unavailable",
+              ),
         );
       const snapshot = (await this.runtime(
         { operation: "live", sessionId, experimentalEnabled: true },
@@ -3029,11 +3050,6 @@ export class WebAccessService {
         }
         params.goal = goal;
       }
-      if (["resume", "queue-resume", "goal-resume"].includes(operation)) {
-        if (operation === "resume" && body.handoffConfirmed !== true)
-          throw new HttpError(400, "handoff_confirmation_required");
-        if (operation === "resume" || generic) params.handoffConfirmed = true;
-      }
       if (body.resourceIds !== undefined) {
         if (!["steer", "queue-add", "queue-update"].includes(operation))
           throw new HttpError(400, "resources_not_supported");
@@ -3088,12 +3104,7 @@ export class WebAccessService {
           control.dispatched = false;
           if (newlyPinnedDevice)
             await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
-          throw new HttpError(
-            409,
-            (result.reason ?? result.error) === "session-compacting"
-              ? "session-compacting"
-              : "control_preflight_rejected",
-          );
+          throw new HttpError(409, continuationPreflightReason(result.reason ?? result.error));
         }
         throw new HttpError(502, "outcome_unknown");
       }
@@ -3107,6 +3118,105 @@ export class WebAccessService {
         this.admission = false;
         if (newlyPinnedDevice)
           await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
+      }
+    }
+  }
+  private async prepareClaudeSettings(
+    res: ConversationResponse,
+    hash: string,
+    body: Record<string, unknown>,
+  ) {
+    if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
+    if (Object.keys(body).some((key) => !["sessionId", "bootId", "expectedRevision"].includes(key)))
+      throw new HttpError(400, "invalid_input");
+    const device = this.fullAccess(hash, "advancedControl");
+    this.grant(hash, "settings");
+    const sessionId = this.field(body.sessionId);
+    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
+      throw new HttpError(400, "invalid_revision");
+    if (
+      !this.options.verifiedClaudeManaged ||
+      !this.options.claudeManagedRequest ||
+      !this.controlsEnabled(sessionId, device)
+    )
+      throw new HttpError(403, "session_control_not_allowed");
+    const workspaceId = await this.codexScope(sessionId, hash, false, false);
+    if (this.unconfirmed.has(sessionId)) throw new HttpError(409, "outcome_unknown");
+    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    this.admission = true;
+    this.active.add(sessionId);
+    let started = false;
+    try {
+      const capabilities = (await this.runtime(
+        { operation: "capabilities", sessionId, experimentalEnabled: true },
+        undefined,
+        true,
+      )) as {
+        executionMode?: string;
+        features?: Record<string, { available?: boolean; reason?: string }>;
+      };
+      if (
+        capabilities.executionMode !== "claude-managed" ||
+        capabilities.features?.settings?.available !== true
+      )
+        throw new HttpError(
+          409,
+          continuationPreflightReason(
+            capabilities.features?.settings?.reason,
+            "capability_unavailable",
+          ),
+        );
+      const live = (await this.runtime(
+        { operation: "live", sessionId, experimentalEnabled: true },
+        undefined,
+        true,
+      )) as {
+        runtimeBootId?: string;
+        revision?: number;
+      };
+      if (!live.runtimeBootId || live.revision !== body.expectedRevision)
+        throw new HttpError(409, "stale_state");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
+      this.grant(hash, "settings");
+      if (!(await this.workspaceAllowed(workspaceId, device, true)))
+        throw new HttpError(403, "workspace_not_authorized");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
+      this.grant(hash, "settings");
+      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      const params = {
+        operation: "settings-prepare",
+        sessionId,
+        deviceId: device.id,
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: body.expectedRevision,
+        experimentalEnabled: true,
+      };
+      // Unlike set_* or a user turn, initialize has no command outcome to fence. A timeout
+      // leaves admission reserved until the real preparation settles, never permits overlap.
+      const pending = this.options.claudeManagedRequest(params).finally(() => {
+        this.active.delete(sessionId);
+        this.admission = false;
+        this.notifyControlChanged(sessionId);
+      });
+      started = true;
+      const settings = await this.runtime(params, pending, true);
+      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
+      this.grant(hash, "settings");
+      await this.codexScope(sessionId, hash, false, false);
+      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
+      this.grant(hash, "settings");
+      return this.json(res, 200, { sessionId, ...this.projectSettings(settings) });
+    } finally {
+      if (!started) {
+        this.active.delete(sessionId);
+        this.admission = false;
       }
     }
   }
@@ -3187,6 +3297,35 @@ export class WebAccessService {
     const scope = await this.historyScope(hash, reserved);
     if (!scope.targetSessionIds.includes(sessionId))
       throw new HttpError(403, "workspace_not_authorized");
+  }
+  private async codexResumeCommandScope(sessionId: string, hash: string) {
+    const access = await this.historyAccessScope(hash);
+    const catalog = (await this.runtime({ operation: "catalog" })) as {
+      sessions?: { id: string; workspace_id: string; agent: string; availability: string }[];
+    };
+    const session = catalog.sessions?.find(
+      (item) =>
+        item.id === sessionId &&
+        ["codex", "claude-code"].includes(item.agent) &&
+        item.availability === "readable",
+    );
+    const workspace = (await this.registeredWorkspaces()).find(
+      (item) => item.id === session?.workspace_id && access.workspaces.includes(item.id),
+    );
+    if (!workspace) throw new HttpError(403, "workspace_not_authorized");
+    let directory: string;
+    let identity: string;
+    try {
+      directory = await realpath(workspace.path);
+      const info = await stat(directory);
+      if (!info.isDirectory()) throw new Error("not_directory");
+      identity = JSON.stringify([workspace.id, directory, info.dev, info.ino]);
+    } catch {
+      throw new HttpError(403, "workspace_not_authorized");
+    }
+    if ((await this.historyAccessScope(hash)).token !== access.token)
+      throw new HttpError(403, "access_changed");
+    return digest(JSON.stringify([access.token, identity]));
   }
   private async historyCall(
     method: string,
@@ -3412,12 +3551,12 @@ export class WebAccessService {
       }
     } else {
       params.sessionId = this.field(body.sessionId);
-      if (operation === "adopt") {
-        if (body.handoffConfirmed !== true)
-          throw new HttpError(400, "handoff_confirmation_required");
-        params.handoffConfirmed = true;
-        if (agent === "claude-code")
-          params.handoffFingerprint = this.field(body.handoffFingerprint, 256);
+      if (
+        operation === "adopt" &&
+        agent === "claude-code" &&
+        body.handoffFingerprint !== undefined
+      ) {
+        params.handoffFingerprint = this.field(body.handoffFingerprint, 256);
       }
     }
     if (agent === "claude-code" && operation === "release") {
@@ -3504,6 +3643,11 @@ export class WebAccessService {
           "session-released",
           "stale-Claude-revision",
           "codex-owner-busy",
+          "codex-cli-version-too-old",
+          "codex-cli-unavailable",
+          "codex-cli-version-unavailable",
+          "codex-owner-check-unavailable",
+          "platform-unsupported",
           "unsupported-codex-cli-version",
           "unsupported-model",
           "unsupported-effort",
@@ -3518,7 +3662,9 @@ export class WebAccessService {
         ]);
         throw new HttpError(
           409,
-          safeReasons.has(result.reason ?? "") ? result.reason! : "control_preflight_rejected",
+          safeReasons.has(result.reason ?? "")
+            ? result.reason!
+            : continuationPreflightReason(result.reason),
         );
       }
       throw new HttpError(502, "outcome_unknown");
@@ -3558,6 +3704,9 @@ export class WebAccessService {
       };
       snapshot = {
         ...state,
+        ...(this.options.mode === "lan" && state.executionMode === "codex-managed" && !device.send
+          ? { sendEnabled: false, stopEnabled: false }
+          : {}),
         approvals: state.approvals?.map((approval) => ({
           ...approval,
           supported:
@@ -3745,7 +3894,14 @@ export class WebAccessService {
     if (lan && req.headers.origin !== origin) throw new HttpError(403, "invalid_origin");
     if (req.headers.origin && req.headers.origin !== origin)
       throw new HttpError(403, "invalid_origin");
-    if (!lan && req.headers["sec-fetch-site"] === "cross-site")
+    // External apps may open the public shell. This exception never covers API or embedded reads.
+    const navigationPath = (req.url || "/").split("?")[0];
+    const pageNavigation =
+      (req.method === "GET" || req.method === "HEAD") &&
+      (navigationPath === "/" || navigationPath === "/index.html") &&
+      req.headers["sec-fetch-mode"] === "navigate" &&
+      req.headers["sec-fetch-dest"] === "document";
+    if (!lan && req.headers["sec-fetch-site"] === "cross-site" && !pageNavigation)
       throw new HttpError(403, "cross_site_request");
     const cookieName = external ? "ak_web_secure" : "ak_web_local";
     let raw = lan
@@ -4045,6 +4201,11 @@ export class WebAccessService {
           );
         return this.json(res, 200, { ok: true });
       }
+      if (path === "/managed/settings-prepare") {
+        if (req.headers["x-agentkib-protocol"] !== "2")
+          throw new HttpError(409, "incompatible_protocol");
+        return this.prepareClaudeSettings(res, hash, body);
+      }
       if (path === "/managed/action")
         return this.codexAction(res, hash, this.field(body.operation, 64), body, control, true);
       if (path.startsWith("/managed/"))
@@ -4231,7 +4392,13 @@ export class WebAccessService {
         )
           throw new HttpError(409, "session-compacting");
         if (!claudeReplay && operation === "send" && snapshot.sendEnabled !== true)
-          throw new HttpError(409, "control_unavailable");
+          throw new HttpError(
+            409,
+            continuationPreflightReason(
+              snapshotField(snapshot, "ownershipReason") ?? snapshotField(snapshot, "reason"),
+              "control_unavailable",
+            ),
+          );
         if (
           !claudeReplay &&
           operation === "stop" &&
@@ -4388,6 +4555,16 @@ export class WebAccessService {
         this.grant(hash, permission);
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
         if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
+        if (
+          lan &&
+          snapshotField(snapshot, "executionMode") === "codex-managed" &&
+          !(await this.lanCodexScopeAllowed(
+            sessionId,
+            String(snapshotField(snapshot, "workspaceId")),
+            true,
+          ))
+        )
+          throw new HttpError(403, "workspace_not_authorized");
         this.grant(hash, permission);
         params.runtimeBootId = snapshot.runtimeBootId;
         dispatched = true;
@@ -4432,14 +4609,25 @@ export class WebAccessService {
           if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
           throw new HttpError(
             409,
-            (result as { reason?: string; error?: string }).reason === "session-compacting" ||
-              (result as { error?: string }).error === "session-compacting"
-              ? "session-compacting"
-              : "control_preflight_rejected",
+            continuationPreflightReason(
+              (result as { reason?: string; error?: string }).reason ??
+                (result as { error?: string }).error,
+            ),
           );
         }
         this.grant(hash, permission);
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+        if (
+          lan &&
+          snapshotField(snapshot, "executionMode") === "codex-managed" &&
+          !(await this.lanCodexScopeAllowed(
+            sessionId,
+            String(snapshotField(snapshot, "workspaceId")),
+            true,
+          ))
+        )
+          throw new HttpError(403, "workspace_not_authorized");
+        this.grant(hash, permission);
         if (
           typeof result !== "object" ||
           result === null ||
@@ -4563,15 +4751,15 @@ export class WebAccessService {
         };
         this.grant(hash);
         const workspace = catalog.sessions.find((item) => item.id === sessionId)?.workspace_id;
+        const workspaceAllowed =
+          !!workspace &&
+          (this.options.mode === "lan" && snapshotField(result, "executionMode") === "codex-managed"
+            ? await this.lanCodexScopeAllowed(sessionId, workspace)
+            : await this.workspaceAllowed(workspace, device));
         return this.json(
           res,
           200,
-          this.projectCapabilities(
-            result,
-            device,
-            !!workspace && (await this.workspaceAllowed(workspace, device)),
-            sessionId,
-          ),
+          this.projectCapabilities(result, this.grant(hash), workspaceAllowed, sessionId),
         );
       }
       if ((result as { reason?: string }).reason === "queue-too-large")
@@ -4682,15 +4870,17 @@ export class WebAccessService {
                 ? this.codexPermission(result.operation!)
                 : "send";
         this.grant(hash, permission);
-        // Follower controls use the existing device send/approve grant; only
-        // managed execution adds a workspace allowlist. Receipt recovery must
-        // enforce the same boundary as the command it reports.
+        // Receipt recovery enforces the same workspace boundary as managed controls.
         if (
-          (this.isFullAccess(device) || result.executionMode !== "codex-follower") &&
           result.workspaceId &&
-          !(await this.workspaceAllowed(result.workspaceId, device))
+          !(this.options.mode === "lan" &&
+          result.executionMode === "codex-managed" &&
+          result.sessionId
+            ? await this.lanCodexScopeAllowed(result.sessionId, result.workspaceId)
+            : await this.workspaceAllowed(result.workspaceId, device))
         )
           throw new HttpError(403, "workspace_not_authorized");
+        this.grant(hash, permission);
         if (
           result.sessionId &&
           ["accepted", "not-dispatched"].includes(result.status ?? "") &&
@@ -4749,6 +4939,33 @@ export class WebAccessService {
           ? this.projectClaudeCapabilities(result, this.grant(hash), sessionId)
           : result,
       );
+    }
+    if (path === "/managed/resume-command") {
+      const sessionId = this.field(url.searchParams.get("sessionId"));
+      const scope = await this.codexResumeCommandScope(sessionId, hash);
+      const result = (await this.runtime({ operation: "resume-command", sessionId })) as {
+        available?: unknown;
+        command?: unknown;
+        shell?: unknown;
+        runOn?: unknown;
+      } | null;
+      if ((await this.codexResumeCommandScope(sessionId, hash)) !== scope)
+        throw new HttpError(403, "access_changed");
+      if (
+        result?.available !== true ||
+        typeof result.command !== "string" ||
+        !result.command ||
+        result.command.length > 32768 ||
+        !["posix", "powershell"].includes(String(result.shell)) ||
+        result.runOn !== "host"
+      )
+        throw new HttpError(503, "codex_context_unavailable");
+      return this.json(res, 200, {
+        available: true,
+        command: result.command,
+        shell: result.shell,
+        runOn: "host",
+      });
     }
     if (path === "/managed/context") {
       const id = this.field(url.searchParams.get("sessionId"));
@@ -4872,7 +5089,7 @@ export class WebAccessService {
         });
       };
       const project = async (event: SessionStreamEvent): Promise<SessionStreamEvent> => {
-        const device = authorized();
+        let device = authorized();
         if (event.type === "snapshot") {
           controlContext = controlMetadata(event.payload.live);
           return {
@@ -4889,15 +5106,22 @@ export class WebAccessService {
         const patch = this.projectPermissionField(this.projectUsageFields(event.payload, device));
         if ("executionMode" in patch) controlContext.executionMode = patch.executionMode;
         if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
-        const enabled =
+        let enabled =
           this.controlsEnabledForProvider(sessionId, controlContext, device) &&
           (!["codex-managed", "claude-managed", "claude-follower"].includes(
             String(controlContext.executionMode),
           ) ||
             (typeof controlContext.workspaceId === "string" &&
-              (this.isFullAccess(device)
-                ? controlContext.workspaceId === streamWorkspaceId
-                : this.config.allowedWorkspaceIds?.includes(controlContext.workspaceId) === true)));
+              (this.options.mode === "lan" &&
+              controlContext.executionMode === "codex-managed" &&
+              sessionId
+                ? await this.lanCodexScopeAllowed(sessionId, controlContext.workspaceId, true)
+                : this.isFullAccess(device)
+                  ? controlContext.workspaceId === streamWorkspaceId
+                  : this.config.allowedWorkspaceIds?.includes(controlContext.workspaceId) ===
+                    true)));
+        device = authorized();
+        enabled = enabled && this.controlsEnabledForProvider(sessionId, controlContext, device);
         // Full-access streams validated their registered workspace on admission;
         // registration changes cancel them through ConversationHub.scopesChanged.
         if (Array.isArray(patch.approvals))

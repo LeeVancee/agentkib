@@ -246,7 +246,7 @@ export function ClaudeBridgePanel({ active }: { active: boolean }) {
       {status?.sessionId === selected && canManage && (
         <>
           <p role="status">
-            {status.connected ? copy.connected : copy.history} · {copy.requiredVersion}{" "}
+            {status.connected ? copy.connected : copy.notConnected} · {copy.requiredVersion}{" "}
             {status.version}
           </p>
           <p className="text-xs text-muted-foreground">

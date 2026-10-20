@@ -1,4 +1,5 @@
 import { dispatchClaude } from "./claude-dispatch";
+import { continuationPreflightReason } from "./continuation-reason";
 import { AttachmentStore } from "./attachments";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { historyInputHash } from "./history-references";
@@ -128,9 +129,7 @@ async function localClaudeRequestInner(
       requestId: field(input.requestId),
       deviceId: OWNER,
     };
-    if (operation === "adopt") {
-      if (input.handoffConfirmed !== true) throw new Error("handoff_confirmation_required");
-      params.handoffConfirmed = true;
+    if (operation === "adopt" && input.handoffFingerprint !== undefined) {
       params.handoffFingerprint = field(input.handoffFingerprint);
     }
     if (operation === "release") {
@@ -239,7 +238,10 @@ async function localClaudeRequestInner(
   let validateHistory: (() => Promise<void>) | undefined;
   if (operation === "send") {
     if (input.resourceIds !== undefined) throw new Error("context_unavailable");
-    if (!replay && live.sendEnabled !== true) throw new Error("control_unavailable");
+    if (!replay && live.sendEnabled !== true)
+      throw new Error(
+        continuationPreflightReason(live.ownershipReason ?? live.reason, "control_unavailable"),
+      );
     let text = typeof input.text === "string" ? input.text : "";
     if (input.text !== undefined && typeof input.text !== "string") throw new Error("invalid_text");
     if (text.length > 16_000 || Buffer.byteLength(text) > 16_384) throw new Error("invalid_text");

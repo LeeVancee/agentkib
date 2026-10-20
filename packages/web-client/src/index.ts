@@ -33,6 +33,13 @@ export function isHistoryReadPath(path: string): boolean {
 }
 
 export interface ConversationSessionSummary {
+  /** Read-only runtime observation; absent when the host has not observed an owner. */
+  continuation?: {
+    status: string;
+    executionLocation?: "agentkib" | "terminal" | "external" | null;
+    ownershipReason?: string | null;
+    reason?: string | null;
+  };
   /** Verified index identities that route to this managed session. */
   indexedSessionIds?: string[];
   id: string;
@@ -70,6 +77,8 @@ export interface ConversationWorkspaceSummary {
 }
 export interface ConversationCatalog {
   sessions: ConversationSessionSummary[];
+  /** Global verified CLI floor; absent on older hosts, never a control grant. */
+  codexRuntimeReason?: "codex-cli-version-too-old" | null;
   // Missing on older desktop hosts; never treat it as an empty known catalog.
   workspaces?: ConversationWorkspaceSummary[];
   indexEnabled: boolean;
@@ -202,6 +211,8 @@ export interface UserQuestionRequest {
 }
 export interface Live {
   sessionId: string;
+  /** Backend incarnation captured by this state, distinct from the access boot id. */
+  runtimeBootId?: string;
   status: string;
   revision: number;
   turnId?: string;
@@ -212,6 +223,13 @@ export interface Live {
   approvals: Approval[];
   questions?: UserQuestionRequest[];
   reason?: string;
+  executionLocation?: "agentkib" | "terminal" | "external" | null;
+  ownershipReason?: string | null;
+  continuationNotice?: "background-ended" | "owner-opened-elsewhere" | null;
+  /** Ephemeral retirement event identity; a newly opened client must not replay an old notice. */
+  continuationNoticeId?: string | null;
+  /** Whether a connected terminal can take messages sent from AgentKib at all. */
+  terminalSend?: boolean;
   executionMode?:
     | "managed-resume"
     | "claude-managed"
@@ -267,6 +285,8 @@ export type ControlReceipt =
         requestId?: string;
         sessionId?: string;
         reconciled?: boolean;
+        reason?: string;
+        error?: string;
       } | null;
       completionObserved: boolean;
     };
@@ -368,6 +388,14 @@ export interface ManagedInspection {
   handoffFingerprint?: string;
   available?: boolean;
   reason?: string;
+  executionLocation?: "agentkib" | "terminal" | "external" | null;
+  ownershipReason?: string | null;
+}
+export interface CodexResumeCommand {
+  available: true;
+  command: string;
+  shell: "posix" | "powershell";
+  runOn: "host";
 }
 export interface ManagedActionBody {
   expectedRevision?: number;
@@ -847,6 +875,20 @@ export class WebClient {
       signal,
     );
   }
+  codexResumeCommand(sessionId: string, signal?: AbortSignal) {
+    return this.request<CodexResumeCommand>(
+      `managed/resume-command?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  claudeResumeCommand(sessionId: string, signal?: AbortSignal) {
+    return this.request<CodexResumeCommand>(
+      `managed/resume-command?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
   managedAction(operation: "create" | "adopt" | "release" | "reconcile", body: ManagedActionBody) {
     return this.request<ManagedActionResult>(`managed/${operation}`, body);
   }
@@ -886,6 +928,12 @@ export class WebClient {
           undefined,
           signal,
         );
+  }
+  prepareSessionSettings(
+    body: { sessionId: string; bootId: string; expectedRevision: number },
+    signal?: AbortSignal,
+  ) {
+    return this.request<SessionSettings>("managed/settings-prepare", body, signal);
   }
   sessionQueue(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
     return agent === "codex"

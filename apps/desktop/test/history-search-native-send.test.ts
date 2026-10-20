@@ -40,6 +40,10 @@ const sourceBody = "Historical decision native-marker-73ad: preserve the blue re
 // Only the external CLI boundary is synthetic. The packaged Backend owns command
 // admission, the durable ledger and native writes; references use its real Workers.
 const appServer = String.raw`
+if (process.argv.includes('--version')) {
+  console.log('codex-cli 0.147.0');
+  process.exit(0);
+}
 const fs = require('node:fs');
 const readline = require('node:readline');
 const id = process.env.FIXTURE_NATIVE_ID;
@@ -64,7 +68,8 @@ input.on('line', (line) => {
     case 'thread/start':
     case 'thread/resume': result = { thread: thread(), cwd, model: 'offline-model', reasoningEffort: null, serviceTier: null,
       approvalPolicy: 'on-request', approvalsReviewer: 'user',
-      sandbox: { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false } }; break;
+      sandbox: { type: 'workspaceWrite', writableRoots: [], networkAccess: false,
+        excludeTmpdirEnvVar: true, excludeSlashTmp: true } }; break;
     case 'thread/read': result = { thread: thread() }; break;
     case 'thread/goal/get': result = { goal: null }; break;
     case 'turn/start':

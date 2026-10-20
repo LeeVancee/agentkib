@@ -1,3 +1,5 @@
+import { catalogCopy } from "../catalog/catalog-copy";
+import { codexReason } from "./codex-copy";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
 import { claudeSessionBanner } from "./claude-session-banner";
 import { HistoryReferenceChips } from "../history/history-search-controls";
@@ -17,8 +19,6 @@ import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
 import { useLayoutEffect, useRef, useState } from "react";
 import { webLayoutCopy } from "./web-layout-copy";
-import { sessionDisplayState } from "./session-display-state";
-import { codexCopy } from "./codex-copy";
 import { approvalSummary } from "./approval-summary";
 export function SessionReader() {
   const session = useSession();
@@ -37,6 +37,7 @@ export function SessionReader() {
     locale,
     live,
     notice,
+    noticeReason,
     canSend,
     canStop,
     message,
@@ -49,7 +50,9 @@ export function SessionReader() {
   const submitPending = useRef(false);
   const banner = claudeSessionBanner(session);
   const panels = useSessionPanels();
-  const display = sessionDisplayState(session);
+  const forkSource = current?.forked_from_session_id
+    ? session.sessions?.find((item) => item.id === current.forked_from_session_id)
+    : undefined;
   const hasNativeReply =
     !!live?.turnId &&
     page?.events.some((event) => event.kind === "agent-message" && event.turn_id === live.turnId);
@@ -122,15 +125,24 @@ export function SessionReader() {
             </div>
           ) : (
             <>
-              {current?.agent === "claude-code" && (
-                <aside
-                  className="info mx-auto mb-5 max-w-3xl"
-                  data-execution-mode={live?.executionMode}
-                >
-                  <strong className="block mb-1">{banner.title}</strong>
-                  {banner.body}
-                </aside>
-              )}
+              {current?.agent === "claude-code" &&
+                banner &&
+                banner.notice !== "background-ended" && (
+                  <aside
+                    className="info mx-auto mb-5 max-w-3xl"
+                    data-execution-mode={live?.executionMode}
+                  >
+                    {banner.title && <strong className="block mb-1">{banner.title}</strong>}
+                    {banner.body}
+                  </aside>
+                )}
+              {["codex", "claude-code"].includes(current?.agent ?? "") &&
+                current?.forked_from_session_id && (
+                  <p className="mx-auto mb-4 w-full max-w-3xl text-xs text-muted-foreground">
+                    {catalogCopy[locale].fork}{" "}
+                    {forkSource ? session.sourceTitle(forkSource.id) : t.untitled}
+                  </p>
+                )}
               {page?.warnings.length ? (
                 <aside className="mx-auto mb-5 max-w-3xl rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-6 text-amber-600">
                   {t.warnings}: {page.warnings.join(" · ")}
@@ -139,6 +151,9 @@ export function SessionReader() {
               <SessionTranscript
                 key={selected}
                 events={page.events}
+                pendingMessage={
+                  session.pendingSend?.sessionId === selected ? session.pendingSend : undefined
+                }
                 streamText={!hasNativeReply ? liveStreamText : undefined}
                 streamTextTruncated={live?.streamTextTruncated}
                 liveTurnId={live?.turnId}
@@ -175,6 +190,16 @@ export function SessionReader() {
             </Button>
           )}
           <div className="flex flex-col gap-2">
+            {current?.agent === "claude-code" &&
+              banner?.notice === "background-ended" &&
+              !session.pendingSend && (
+                <p
+                  role="status"
+                  className="mx-auto w-full max-w-3xl px-3 text-xs leading-5 text-muted-foreground"
+                >
+                  {banner.body}
+                </p>
+              )}
             <div className="max-h-[25dvh] shrink-0 overflow-y-auto">
               {live?.approvals.map((a) => (
                 <Button
@@ -205,30 +230,24 @@ export function SessionReader() {
                 </Button>
               ))}
             </div>
-            {notice && (
-              <p
-                role="status"
-                className="mx-auto w-full max-w-3xl px-5 py-2 text-xs leading-6 text-muted-foreground"
-              >
-                {t[notice]}
-              </p>
-            )}
-            {panels && display.nextAction && current?.agent !== "claude-code" && (
-              <div className="mx-auto w-full max-w-3xl space-y-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs">
-                <strong>{display.label}</strong>
-                <p>{display.reason}</p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => panels.setActionsOpen(true)}
+            {notice &&
+              !(
+                current?.agent === "codex" &&
+                notice === "notDispatched" &&
+                (noticeReason === "unsupported-model" || noticeReason === "unsupported-effort")
+              ) &&
+              !(current?.agent === "claude-code" && banner && notice === "uncertain") && (
+                <p
+                  role="status"
+                  className="mx-auto w-full max-w-3xl px-5 py-2 text-xs leading-6 text-muted-foreground"
                 >
-                  {display.nextAction === "managed-handoff"
-                    ? t.confirmHandoff
-                    : codexCopy[locale].resume}
-                </Button>
-              </div>
-            )}
+                  {notice === "notDispatched" && session.actionUnavailableReason
+                    ? codexReason(locale, session.actionUnavailableReason).text
+                    : current?.agent === "codex" && notice === "notDispatched" && noticeReason
+                      ? codexReason(locale, noticeReason).text
+                      : t[notice]}
+                </p>
+              )}
             {(current?.agent === "codex" ||
               current?.agent === "claude-code" ||
               current?.agent === "antigravity") &&
@@ -236,7 +255,10 @@ export function SessionReader() {
             access.protocolVersion === 2 &&
             access.device?.send ? (
               current?.agent === "codex" || current?.agent === "claude-code" ? (
-                <SessionComposer connectionStatusInBanner key={`composer-${selected}`} />
+                <SessionComposer
+                  connectionStatusInBanner={!!banner && banner.notice !== "background-ended"}
+                  key={`composer-${selected}`}
+                />
               ) : (
                 <form
                   className="w-full max-w-3xl shrink-0 self-center space-y-2 rounded-3xl border bg-background p-2 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/20"

@@ -17,6 +17,7 @@ import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
+import { Commands } from "../../../packages/backend/src/commands";
 import { WebAccessService, createWebControlState } from "../electron/main/web/service";
 import {
   CLAUDE_BRIDGE_PATHS,
@@ -63,6 +64,7 @@ describe.skipIf(process.platform !== "darwin")(
     let seq: number;
     let snapshot: ClaudeBridgeSnapshot;
     let received: ClaudeBridgeCommand[];
+    const processScans: Array<Parameters<Commands["run"]>[2]> = [];
 
     async function rpc<T>(method: string, params: unknown = {}): Promise<T> {
       const reply = await backend.handleAsync({ jsonrpc: "2.0", id: randomUUID(), method, params });
@@ -221,6 +223,30 @@ describe.skipIf(process.platform !== "darwin")(
       expect(result.status, JSON.stringify(result.body)).toBe(200);
     }
     beforeEach(async () => {
+      processScans.length = 0;
+      const run = Commands.prototype.run;
+      vi.spyOn(Commands.prototype, "run").mockImplementation(
+        function (this: Commands, program, args, options) {
+          if (
+            program === "/bin/ps" &&
+            args.length === 2 &&
+            args[0] === "-axo" &&
+            args[1] === "pid=,pgid=,lstart=,command="
+          ) {
+            // This fixture starts no execution worker. A global process scan can exceed
+            // its test budget during startup or exit; ownership parsing has separate tests.
+            processScans.push(options);
+            return Promise.resolve({
+              success: true,
+              bytes: Buffer.alloc(0),
+              error: "",
+              truncated: false,
+              exitCode: 0,
+            });
+          }
+          return run.call(this, program, args, options);
+        },
+      );
       directory = realpathSync(mkdtempSync(join(tmpdir(), "ak-claude-bridge-runtime-")));
       const data = join(directory, "data");
       workspace = join(directory, "workspace");
@@ -244,7 +270,7 @@ describe.skipIf(process.platform !== "darwin")(
       writeFileSync(source, sourceBytes);
       writeFileSync(
         join(bin, "claude"),
-        `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(join(directory, "unexpected-cli"))}, JSON.stringify(process.argv.slice(2))+'\\n');if(process.argv[2]==='--version'){console.log('2.1.301 (Claude Code)');process.exit(0);}process.exit(99);\n`,
+        `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(join(directory, "unexpected-cli"))}, JSON.stringify(process.argv.slice(2))+'\\n');if(process.argv[2]==='--version'){console.log('2.1.301 (Claude Code)');process.exit(0);}if(process.argv[2]==='agents'&&process.argv[3]==='--json'){console.log('[]');process.exit(0);}process.exit(99);\n`,
         { mode: 0o700 },
       );
       writeFileSync(
@@ -334,26 +360,52 @@ describe.skipIf(process.platform !== "darwin")(
       received = [];
     });
     afterEach(async () => {
+      // A timed-out hook can finish after the next fixture has replaced these bindings.
+      const fixture = { service, backend, directory, source, sourceBytes };
+      vi.restoreAllMocks();
       try {
-        await service?.dispose();
-        await backend?.close();
-        if (source) expect(readFileSync(source, "utf8")).toBe(sourceBytes);
-        if (existsSync(join(directory, "unexpected-cli"))) {
-          const frames = readFileSync(join(directory, "unexpected-cli"), "utf8")
+        await fixture.service?.dispose();
+        await fixture.backend?.close();
+        if (fixture.source) expect(readFileSync(fixture.source, "utf8")).toBe(fixture.sourceBytes);
+        if (existsSync(join(fixture.directory, "unexpected-cli"))) {
+          const frames = readFileSync(join(fixture.directory, "unexpected-cli"), "utf8")
             .trim()
             .split("\n")
             .filter(Boolean)
             .map((line) => JSON.parse(line) as string[]);
-          expect(frames.every((args) => args.length === 1 && args[0] === "--version")).toBe(true);
+          expect(
+            frames.every(
+              (args) =>
+                (args.length === 1 && args[0] === "--version") ||
+                (args.length === 2 && args[0] === "agents" && args[1] === "--json"),
+            ),
+          ).toBe(true);
         }
       } finally {
-        vi.restoreAllMocks();
-        if (directory) rmSync(directory, { recursive: true, force: true });
+        if (fixture.directory) rmSync(fixture.directory, { recursive: true, force: true });
       }
     });
 
     it("keeps indexed history while connecting the original execution host and denies Web bridge management", async () => {
-      expect((await live()).executionMode).toBe("managed-resume");
+      expect(await live()).toMatchObject({
+        executionMode: "claude-managed",
+        executionLocation: null,
+        status: "idle",
+        sendEnabled: true,
+      });
+      expect(processScans).toHaveLength(1);
+      expect(processScans[0]).toMatchObject({
+        timeout: 3000,
+        limit: 4 * 1024 * 1024,
+        strictOutput: true,
+        env: { TZ: "UTC", LC_ALL: "C", LANG: "C" },
+      });
+      expect(
+        readFileSync(join(directory, "unexpected-cli"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line)),
+      ).toEqual([["--version"], ["agents", "--json"]]);
       await connect();
       expect(await live()).toMatchObject({
         executionMode: "claude-follower",

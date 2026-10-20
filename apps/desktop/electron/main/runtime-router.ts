@@ -273,9 +273,16 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       params !== null &&
       !Array.isArray(params) &&
       "operation" in params &&
-      ["diff", "catalog", "events", "context", "usage", "goal", "resources"].includes(
-        String(params.operation),
-      )
+      [
+        "diff",
+        "catalog",
+        "events",
+        "context",
+        "resume-command",
+        "usage",
+        "goal",
+        "resources",
+      ].includes(String(params.operation))
     )
       return this.typescript.request<TResult>(method, params);
     if (

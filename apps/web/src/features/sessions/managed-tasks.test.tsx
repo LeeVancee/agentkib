@@ -99,12 +99,77 @@ describe("ManagedTasks", () => {
   afterEach(cleanup);
   async function show(create = false) {
     const view = render(<ManagedTasks create={create} />);
-    fireEvent.click(
-      screen.getByRole("button", { name: create ? "New task" : "Execution management" }),
-    );
-    await screen.findByRole("button", { name: create ? "Create" : /Hand over|Return to/ });
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    await screen.findByRole("button", { name: "Create" });
     return view;
   }
+
+  it.each([
+    ["zh-CN", "新建任务"],
+    ["zh-TW", "新增任務"],
+    ["en-US", "New task"],
+    ["ja-JP", "タスクを作成"],
+  ])("keeps the create trigger at touch size in %s", (locale, label) => {
+    session.locale = locale;
+    render(<ManagedTasks create />);
+    expect(screen.getByRole("button", { name: label })).toHaveClass("min-h-11");
+    expect(mutations()).toHaveLength(0);
+  });
+
+  it.each(["external", "codex-managed", "claude-managed", "claude-follower"])(
+    "hides Codex ownership controls and their obsolete options lookup (%s)",
+    (executionMode) => {
+      session.live.executionMode = executionMode;
+      if (executionMode.startsWith("claude")) session.current.agent = "claude-code";
+      render(<ManagedTasks initialOpen />);
+      expect(screen.queryByRole("button")).not.toBeInTheDocument();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(session.client.request).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["adopt", "release", "reconcile"] as const)(
+    "keeps a saved Codex %s fenced and checks its receipt while the operations panel is hidden",
+    async (kind) => {
+      const requestId = crypto.randomUUID();
+      const scope = pendingScope("", "browser");
+      rememberPending(scope, { requestId, sessionId: "original-session", kind });
+      session.client.receipt.mockResolvedValue({ found: true, requestId, status: "unknown" });
+      const panel = (active: boolean) => (
+        <ManagedTasks
+          active={active}
+          renderContent={(content) => (active ? <div role="group">{content}</div> : null)}
+        />
+      );
+      const view = render(panel(false));
+      await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
+      expect(readPending(scope)).toHaveLength(1);
+      view.rerender(panel(true));
+      expect(screen.getByText(/The previous outcome is unconfirmed/)).toBeInTheDocument();
+      expect(screen.queryByRole("button")).not.toBeInTheDocument();
+      expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(mutations()).toEqual([]);
+
+      view.rerender(panel(false));
+      session.client.receipt.mockResolvedValue({
+        found: true,
+        requestId,
+        sessionId: "original-session",
+        operation: kind,
+        status: "accepted",
+      });
+      act(() =>
+        publishSessionInvalidation(session.client as unknown as WebClient, "original-session", [
+          "receipts",
+        ]),
+      );
+      await waitFor(() => expect(readPending(scope)).toEqual([]));
+      expect(session.refresh).toHaveBeenCalledWith(true);
+      expect(session.client.request).not.toHaveBeenCalled();
+      expect(navigate).not.toHaveBeenCalled();
+    },
+  );
+
   it("creates Claude tasks through the shared management entry without Codex model fields", async () => {
     await show(true);
     fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "claude-code" } });
@@ -130,33 +195,10 @@ describe("ManagedTasks", () => {
       ],
     ]);
   });
-  it("requires Claude's verified history fingerprint before handing over ownership", async () => {
-    session.current.agent = "claude-code";
-    let complete!: (value: { sessionId: string; handoffFingerprint: string }) => void;
-    session.client.managedInspect.mockReturnValue(new Promise((resolve) => (complete = resolve)));
-    await show();
-    fireEvent.click(screen.getByRole("checkbox"));
-    const handoff = screen.getByRole("button", { name: "Hand over to AgentKib" });
-    expect(handoff).toBeDisabled();
-    expect(mutations()).toEqual([]);
-    await act(async () =>
-      complete({ sessionId: "original-session", handoffFingerprint: "verified-history" }),
-    );
-    fireEvent.click(handoff);
-    await waitFor(() => expect(session.refresh).toHaveBeenCalledWith(true));
-    expect(mutations()[0]).toEqual([
-      "managed/adopt",
-      expect.objectContaining({
-        agent: "claude-code",
-        sessionId: "original-session",
-        handoffConfirmed: true,
-        handoffFingerprint: "verified-history",
-      }),
-    ]);
-  });
   it.each(["permission", "experimental", "agent"])(
     "hides execution management when %s is unavailable",
     (reason) => {
+      session.current.agent = "claude-code";
       if (reason === "permission") session.access.device.manage = false;
       if (reason === "experimental") session.access.experimentalEnabled = false;
       if (reason === "agent") session.current.agent = "claude";
@@ -165,79 +207,6 @@ describe("ManagedTasks", () => {
       expect(session.client.request).not.toHaveBeenCalled();
     },
   );
-  it.each(["offline", "capability", "unknown", "stale-session", "send-permission"])(
-    "blocks an already open Claude confirmation after %s changes",
-    async (reason) => {
-      session.current.agent = "claude-code";
-      const view = await show();
-      fireEvent.click(screen.getByRole("checkbox"));
-      const button = screen.getByRole("button", { name: "Hand over to AgentKib" });
-      expect(button).toBeEnabled();
-      if (reason === "offline") session.online = false;
-      if (reason === "capability") session.capabilities.features.adopt.available = false;
-      if (reason === "unknown") session.live.reason = "control-outcome-unconfirmed";
-      if (reason === "stale-session") session.capabilities.sessionId = "previous-session";
-      if (reason === "send-permission") session.access.device.send = false;
-      view.rerender(<ManagedTasks />);
-      expect(button).toBeDisabled();
-      fireEvent.click(button);
-      expect(mutations()).toEqual([]);
-    },
-  );
-  it("ignores a late Claude inspection after selecting another session", async () => {
-    session.current.agent = "claude-code";
-    let finish!: (value: { sessionId: string; handoffFingerprint: string }) => void;
-    session.client.managedInspect.mockImplementation((id: string) =>
-      id === "original-session"
-        ? new Promise((resolve) => {
-            finish = resolve;
-          })
-        : Promise.resolve({ sessionId: id, handoffFingerprint: "second-history" }),
-    );
-    const view = await show();
-    fireEvent.click(screen.getByRole("checkbox"));
-    session.selected = "second-session";
-    session.current.id = "second-session";
-    session.live.sessionId = "second-session";
-    session.capabilities.sessionId = "second-session";
-    view.rerender(<ManagedTasks />);
-    await act(async () =>
-      finish({ sessionId: "original-session", handoffFingerprint: "old-history" }),
-    );
-    expect(screen.getByRole("checkbox")).not.toBeChecked();
-    const button = screen.getByRole("button", { name: "Hand over to AgentKib" });
-    expect(button).toBeDisabled();
-    expect(mutations()).toEqual([]);
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(button);
-    await waitFor(() => expect(mutations()).toHaveLength(1));
-    expect(mutations()[0][1]).toMatchObject({
-      sessionId: "second-session",
-      handoffFingerprint: "second-history",
-    });
-  });
-  it("requires an explicit handoff confirmation and keeps the existing session id", async () => {
-    await show();
-    const handoff = screen.getByRole("button", { name: "Hand over to AgentKib" });
-    expect(handoff).toBeDisabled();
-    fireEvent.click(handoff);
-    expect(mutations()).toHaveLength(0);
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(handoff);
-    await waitFor(() => expect(session.refresh).toHaveBeenCalledWith(true));
-    expect(mutations()).toEqual([
-      [
-        "managed/adopt",
-        expect.objectContaining({
-          bootId: "boot",
-          sessionId: "original-session",
-          handoffConfirmed: true,
-          requestId: expect.any(String),
-        }),
-      ],
-    ]);
-    expect(navigate).not.toHaveBeenCalled();
-  });
   it("does not dispatch creation without an authorized workspace", async () => {
     session.client.request.mockResolvedValue({ ...options, workspaces: [] });
     await show(true);
@@ -267,20 +236,6 @@ describe("ManagedTasks", () => {
       to: "/sessions/$sessionId",
       params: { sessionId: "new-session" },
     });
-  });
-  it("keeps a failed reconciliation open without claiming success or replaying a command", async () => {
-    session.live.executionMode = "codex-managed";
-    session.client.request.mockImplementation(async (path: string) =>
-      path === "managed/options" ? options : { reconciled: false },
-    );
-    await show();
-    fireEvent.click(screen.getByRole("button", { name: "Check previous outcome" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("still unknown");
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(mutations()).toHaveLength(1);
-    expect(mutations()[0][0]).toBe("managed/reconcile");
-    expect(session.refresh).not.toHaveBeenCalled();
-    expect(navigate).not.toHaveBeenCalled();
   });
   it("blocks repeated creation after an unknown dispatched outcome", async () => {
     session.client.request.mockImplementation(async (path: string) => {
@@ -373,62 +328,6 @@ describe("ManagedTasks", () => {
     expect(readPending(scope)).toEqual([]);
     expect(mutations()).toEqual([]);
   });
-  it("reconciles a late unknown handoff while its panel is closed and blocks replay after reopening", async () => {
-    let fail!: (error: Error) => void;
-    let receipt!: (result: unknown) => void;
-    session.client.request.mockImplementation((path: string) =>
-      path === "managed/options"
-        ? Promise.resolve(options)
-        : new Promise((_resolve, reject) => {
-            fail = reject;
-          }),
-    );
-    session.client.receipt.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          receipt = resolve;
-        }),
-    );
-    const panel = (active: boolean) => (
-      <ManagedTasks
-        active={active}
-        renderContent={(content) => (active ? <div role="dialog">{content}</div> : null)}
-      />
-    );
-    const view = render(panel(true));
-    await screen.findByRole("button", { name: "Hand over to AgentKib" });
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "Hand over to AgentKib" }));
-    const requestId = mutations()[0][1].requestId;
-    view.rerender(panel(false));
-    await act(async () => {
-      fail(new ApiError(503, "runtime_timeout", "unknown"));
-    });
-    await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(readPending(pendingScope("", "browser"))).toHaveLength(1);
-    view.rerender(panel(true));
-    const handoff = await screen.findByRole("button", { name: "Hand over to AgentKib" });
-    fireEvent.click(screen.getByRole("checkbox"));
-    expect(handoff).toBeDisabled();
-    fireEvent.click(handoff);
-    expect(mutations()).toHaveLength(1);
-    expect(screen.getByText(/The previous outcome is unconfirmed/)).toBeInTheDocument();
-    view.rerender(panel(false));
-    await act(async () => {
-      receipt({
-        found: true,
-        requestId,
-        sessionId: "original-session",
-        operation: "adopt",
-        status: "accepted",
-      });
-    });
-    expect(readPending(pendingScope("", "browser"))).toEqual([]);
-    expect(session.refresh).toHaveBeenCalledWith(true);
-    expect(mutations()).toHaveLength(1);
-    expect(navigate).not.toHaveBeenCalled();
-  });
   it("ignores a late successful creation after management permission is revoked", async () => {
     let finish!: (value: { sessionId: string }) => void;
     session.client.request.mockImplementation((path: string) =>
@@ -495,7 +394,8 @@ describe("ManagedTasks", () => {
         recovery: "legacy-prepared",
         completionObserved: false,
       });
-      await show(kind === "create");
+      if (kind === "create") await show(true);
+      else render(<ManagedTasks />);
       await waitFor(() => expect(readPending(scope)).toEqual([]));
       expect(mutations()).toHaveLength(0);
       expect(navigate).not.toHaveBeenCalled();
@@ -544,5 +444,36 @@ describe("ManagedTasks", () => {
     );
     expect(mutations()).toHaveLength(0);
     expect(readPending(scope)).toEqual([]);
+  });
+  it("reconciles creation after a runtime restart while the original transport was still pending", async () => {
+    let reject!: (error: Error) => void;
+    session.client.request.mockImplementation((path: string) =>
+      path.startsWith("managed/options")
+        ? Promise.resolve(options)
+        : new Promise((_resolve, fail) => {
+            reject = fail;
+          }),
+    );
+    const view = await show(true);
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    const requestId = mutations()[0][1].requestId;
+    session.access = { ...session.access, bootId: "new-boot" };
+    view.rerender(<ManagedTasks create />);
+    session.client.receipt.mockResolvedValue({
+      found: true,
+      requestId,
+      sessionId: "created-session",
+      operation: "create",
+      status: "accepted",
+    });
+    await act(async () => reject(new ApiError(503, "runtime_timeout", "unknown")));
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledExactlyOnceWith({
+        to: "/sessions/$sessionId",
+        params: { sessionId: "created-session" },
+      }),
+    );
+    expect(mutations()).toHaveLength(1);
+    expect(readPending(pendingScope("", "browser"))).toEqual([]);
   });
 });

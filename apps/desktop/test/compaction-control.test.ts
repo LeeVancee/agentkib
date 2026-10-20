@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexAppServerSession } from "../../../packages/backend/src/codex-app-server";
+import {
+  CodexAppServerError,
+  CodexAppServerSession,
+} from "../../../packages/backend/src/codex-app-server";
+import { CodexRuntimePreflight } from "../../../packages/backend/src/codex-runtime-preflight";
 import { CodexFollowerBridge } from "../../../packages/backend/src/codex-follower-bridge";
 import { CodexFollowerState } from "../../../packages/backend/src/codex-follower-state";
 import { CodexSessions } from "../../../packages/backend/src/codex-sessions";
@@ -30,6 +34,10 @@ afterEach(async () => {
 });
 
 function fixture() {
+  vi.spyOn(CodexRuntimePreflight.prototype, "check").mockResolvedValue({
+    executable: "/fixture/codex",
+    reason: null,
+  });
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-compaction-control-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
@@ -115,7 +123,13 @@ function fixture() {
           serviceTier: null,
           approvalPolicy: "on-request",
           approvalsReviewer: "user",
-          sandbox: { type: "workspaceWrite", writableRoots: [workspace], networkAccess: false },
+          sandbox: {
+            type: "workspaceWrite",
+            writableRoots: [],
+            networkAccess: false,
+            excludeTmpdirEnvVar: true,
+            excludeSlashTmp: true,
+          },
         };
       throw new Error(`unexpected-offline-request:${method}`);
     }
@@ -212,27 +226,21 @@ function fixture() {
     return result as { sessionId: string; runtimeBootId: string; live: Json };
   }
   async function observe() {
-    // The mocked Desktop follower is macOS-only. Simulate its platform only
-    // during observation so managed CLI requests retain the actual host platform.
-    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
-    try {
-      const live = (await web.request({
-        operation: "live",
-        sessionId: indexedId,
-        experimentalEnabled: true,
-      })) as Json;
-      expect(connect).toHaveBeenCalledOnce();
-      expect(live).toMatchObject({
-        executionMode: "codex-follower",
-        status: "idle",
-        revision: 1,
-      });
-      return live;
-    } finally {
-      Object.defineProperty(process, "platform", platform);
-    }
+    const live = (await web.request({
+      operation: "live",
+      sessionId: indexedId,
+      experimentalEnabled: true,
+    })) as Json;
+    expect(connect).not.toHaveBeenCalled();
+    expect(live).toMatchObject({
+      executionMode: "codex-managed",
+      status: "idle",
+      executionLocation: null,
+      revision: 0,
+    });
+    return live;
   }
+
   function releasedRecord(adopted = true, savedSnapshot: Json = {}) {
     saveManagedRecord(root, {
       id: indexedId,
@@ -314,7 +322,7 @@ describe("Web managed control compaction barriers", () => {
       controlOutcome: "not-dispatched",
       error: "session-compacting",
     });
-    expect(f.app.sent).toEqual(["skills/list"]);
+    expect(f.app.sent).toEqual(["model/list", "skills/list"]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toEqual([]);
     expect(f.command).not.toHaveBeenCalled();
   });
@@ -336,7 +344,7 @@ describe("Web managed control compaction barriers", () => {
       error: "session-compacting",
       requestId: request.requestId,
     });
-    expect(f.app.sent).toEqual([]);
+    expect(f.app.sent).toEqual(["model/list"]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toEqual([]);
     // A retry reads the same receipt and must not send once compaction finishes.
     f.app.emit("notification", {
@@ -352,7 +360,7 @@ describe("Web managed control compaction barriers", () => {
       sendEnabled: true,
     });
     expect(await f.web.managedControl(request)).toEqual(result);
-    expect(f.app.sent).toEqual([]);
+    expect(f.app.sent).toEqual(["model/list"]);
     expect(f.command).not.toHaveBeenCalled();
   });
 
@@ -372,7 +380,7 @@ describe("Web managed control compaction barriers", () => {
       controlOutcome: "not-dispatched",
       error: "stale-or-disabled-control",
     });
-    expect(f.app.sent).toEqual([]);
+    expect(f.app.sent).toEqual(["model/list"]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toEqual([]);
   });
 
@@ -409,9 +417,9 @@ describe("Web managed control compaction barriers", () => {
     const request = sendRequest(created);
     const result = await f.web.managedControl(request);
     expect(result).toMatchObject({ accepted: true, requestId: request.requestId });
-    expect(f.app.sent).toEqual(["turn/start"]);
+    expect(f.app.sent).toEqual(["model/list", "turn/start"]);
     expect(await f.web.managedControl(request)).toEqual(result);
-    expect(f.app.sent).toEqual(["turn/start"]);
+    expect(f.app.sent).toEqual(["model/list", "turn/start"]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toEqual([]);
   });
 
@@ -428,7 +436,7 @@ describe("Web managed control compaction barriers", () => {
       controlOutcome: "unknown",
       reason: "control-outcome-unconfirmed",
     });
-    expect(f.app.sent).toEqual(["turn/start"]);
+    expect(f.app.sent).toEqual(["model/list", "turn/start"]);
     expect(readUnknownManagedCommands(f.root, created.sessionId)).toMatchObject([
       { requestId: request.requestId },
     ]);
@@ -436,7 +444,7 @@ describe("Web managed control compaction barriers", () => {
       controlOutcome: "unknown",
       reason: "control-outcome-unconfirmed",
     });
-    expect(f.app.sent).toEqual(["turn/start"]);
+    expect(f.app.sent).toEqual(["model/list", "turn/start"]);
   });
 
   it("keeps native stop available for a confirmed turn during compaction", async () => {
@@ -463,9 +471,9 @@ describe("Web managed control compaction barriers", () => {
   });
 });
 
-describe("observed Codex ownership transfer during compaction", () => {
+describe("Codex writer lock replaces Desktop ownership observations", () => {
   it.each(["adopt", "resume"])(
-    "allows explicit %s when a current owner reports idle",
+    "allows %s without confirmation when the native writer is free",
     async (operation) => {
       const f = fixture(),
         observed = await f.observe();
@@ -514,7 +522,7 @@ describe("observed Codex ownership transfer during compaction", () => {
   });
 
   it.each(["adopt", "resume"])(
-    "does not transfer %s from a compacting native owner",
+    "does not use a compacting follower snapshot to gate %s",
     async (operation) => {
       const f = fixture(),
         observed = await f.observe();
@@ -535,26 +543,26 @@ describe("observed Codex ownership transfer during compaction", () => {
               runtimeBootId: observed.runtimeBootId,
               experimentalEnabled: true,
             });
-      expect(result).toMatchObject({
-        accepted: false,
-        controlOutcome: "not-dispatched",
-        reason: "session-compacting",
-      });
-      expect(f.start).not.toHaveBeenCalled();
-      expect(f.app.sent).toEqual([]);
-      expect(readManagedRecord(f.root, f.indexedId)?.released ?? true).toBe(true);
+      expect(result).toMatchObject({ accepted: true, completed: true });
+      expect(f.start).toHaveBeenCalledOnce();
+      expect(f.app.sent).toEqual(["model/list", "thread/goal/get", "thread/resume"]);
+      expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(false);
       expect(f.command).not.toHaveBeenCalled();
     },
   );
 
   it.each(["adopt", "resume"])(
-    "rechecks %s before the native resume write callback",
+    "reports a writer acquired immediately before %s as a definite native rejection",
     async (operation) => {
       const f = fixture(),
         observed = await f.observe();
       if (operation === "resume") f.releasedRecord();
-      f.app.beforeWrite = (method) => {
-        if (method === "thread/resume") f.followerSnapshot(true);
+      f.app.afterWrite = (method) => {
+        if (method === "thread/resume")
+          throw new CodexAppServerError({
+            code: -32600,
+            message: "thread already has an active writer",
+          });
       };
       const base = {
         operation,
@@ -574,9 +582,9 @@ describe("observed Codex ownership transfer during compaction", () => {
       expect(result).toMatchObject({
         accepted: false,
         controlOutcome: "not-dispatched",
-        reason: "session-compacting",
+        reason: "codex-owner-busy",
       });
-      expect(f.app.sent).toEqual(["model/list", "thread/goal/get"]);
+      expect(f.app.sent).toEqual(["model/list", "thread/goal/get", "thread/resume"]);
       expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(true);
       expect(readUnknownManagedCommands(f.root, f.indexedId)).toEqual([]);
       expect(f.command).not.toHaveBeenCalled();
@@ -584,13 +592,20 @@ describe("observed Codex ownership transfer during compaction", () => {
   );
 
   it.each(["adopt", "resume"])(
-    "rechecks %s after model/goal observations finish",
+    "keeps the final writer rejection authoritative for %s after model/goal reads",
     async (operation) => {
       const f = fixture(),
         observed = await f.observe();
       if (operation === "resume") f.releasedRecord();
       f.app.beforeRequest = (method) => {
         if (method === "model/list") f.followerSnapshot(true);
+      };
+      f.app.afterWrite = (method) => {
+        if (method === "thread/resume")
+          throw new CodexAppServerError({
+            code: -32600,
+            message: "thread already has an active writer",
+          });
       };
       const base = {
         operation,
@@ -610,15 +625,15 @@ describe("observed Codex ownership transfer during compaction", () => {
       expect(result).toMatchObject({
         accepted: false,
         controlOutcome: "not-dispatched",
-        reason: "session-compacting",
+        reason: "codex-owner-busy",
       });
-      expect(f.app.sent).toEqual(["model/list", "thread/goal/get"]);
+      expect(f.app.sent).toEqual(["model/list", "thread/goal/get", "thread/resume"]);
       expect(readManagedRecord(f.root, f.indexedId)?.released).toBe(true);
     },
   );
 
   it.each(["adopt", "resume"])(
-    "does not transfer %s after a native stream reset invalidates revision",
+    "keeps %s independent of an unconnected follower stream reset",
     async (operation) => {
       const f = fixture(),
         observed = await f.observe();
@@ -641,12 +656,8 @@ describe("observed Codex ownership transfer during compaction", () => {
               runtimeBootId: observed.runtimeBootId,
               experimentalEnabled: true,
             });
-      expect(result).toMatchObject({
-        accepted: false,
-        controlOutcome: "not-dispatched",
-        reason: "recovery-required",
-      });
-      expect(f.app.sent).toEqual(["model/list", "thread/goal/get"]);
+      expect(result).toMatchObject({ accepted: true, completed: true });
+      expect(f.app.sent).toEqual(["model/list", "thread/goal/get", "thread/resume"]);
       expect(readUnknownManagedCommands(f.root, f.indexedId)).toEqual([]);
     },
   );

@@ -479,7 +479,12 @@ describe.skipIf(process.platform === "win32")("managed Claude sessions", () => {
     chmodSync(path.join(bin, "claude"), 0o700);
     const environment = { ...f.environment(variable?.(f)), PATH: bin };
     const commands = {
-      run: vi.fn(async () => ({ success: true, bytes: Buffer.from("2.1.286 (Claude Code)\n") })),
+      run: vi.fn(async (command: string, args: string[]) => {
+        if (command === "/bin/ps") return { success: true, bytes: Buffer.from("") };
+        if (args[0] === "agents") return { success: true, bytes: Buffer.from("[]\n") };
+        expect(args).toEqual(["--version"]);
+        return { success: true, bytes: Buffer.from("2.1.286 (Claude Code)\n") };
+      }),
     } as unknown as Commands;
     const store = {
       workspacePath: () => f.project,

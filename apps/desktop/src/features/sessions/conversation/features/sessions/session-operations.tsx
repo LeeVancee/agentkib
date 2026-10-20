@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import { useSessionPanels } from "./session-panels";
+import { claudeConnectionCopy } from "./claude-connection-copy";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";
@@ -12,7 +15,19 @@ export function SessionOperations({
   open: boolean;
   onOpenChange: (value: boolean) => void;
 }) {
-  const { t, locale, current, setModal, refresh, busy, embedded } = useSession();
+  const { t, locale, current, selected, access, setModal, refresh, busy, embedded } = useSession();
+  const panels = useSessionPanels();
+  const [localTerminalOpen, setLocalTerminalOpen] = useState(false);
+  const terminalOpen = panels?.terminalOpen ?? localTerminalOpen;
+  const setTerminalOpen = panels?.setTerminalOpen ?? setLocalTerminalOpen;
+  const canConnectTerminal =
+    current?.agent === "claude-code" &&
+    document.documentElement.dataset.platform === "macos" &&
+    !!access?.device?.manage;
+  const terminalCopy = claudeConnectionCopy[locale];
+  useEffect(() => {
+    setTerminalOpen(false);
+  }, [selected, canConnectTerminal, setTerminalOpen]);
   const shortcuts = (
     <div className="flex flex-wrap gap-2 border-b pb-4">
       <Button
@@ -58,25 +73,48 @@ export function SessionOperations({
         {shortcuts}
       </Dialog>
     ) : null;
-  // Keep the receipt reconciler mounted even after the operations panel closes.
+  // Old request identities still need settlement after the execution controls disappear.
   return (
-    <ManagedTasks
-      active={open}
-      onClose={() => onOpenChange(false)}
-      renderContent={(ownership) => (
-        <CodexTools
-          open={open}
-          onOpenChange={onOpenChange}
-          showTrigger={false}
-          shortcuts={
-            <>
-              <ClaudeBridgePanel active={open} />
-              {shortcuts}
-            </>
-          }
-          ownership={ownership}
-        />
+    <>
+      <ManagedTasks
+        active={open}
+        onClose={() => onOpenChange(false)}
+        renderContent={(pendingOutcome) => (
+          <CodexTools
+            open={open}
+            onOpenChange={onOpenChange}
+            showTrigger={false}
+            shortcuts={
+              <>
+                {canConnectTerminal && (
+                  <Button
+                    variant="outline"
+                    className="min-h-11"
+                    onClick={() => {
+                      onOpenChange(false);
+                      setTerminalOpen(true);
+                    }}
+                  >
+                    {terminalCopy.title}…
+                  </Button>
+                )}
+                {shortcuts}
+              </>
+            }
+            ownership={pendingOutcome}
+          />
+        )}
+      />
+      {canConnectTerminal && terminalOpen && (
+        <Dialog
+          panel
+          title={terminalCopy.title}
+          closeLabel={t.close}
+          onClose={() => setTerminalOpen(false)}
+        >
+          <ClaudeBridgePanel active />
+        </Dialog>
       )}
-    />
+    </>
   );
 }

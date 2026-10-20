@@ -1,9 +1,8 @@
 import { Disclosure, DisclosureSummary } from "../../components/ui/disclosure";
 import { codexReason } from "./codex-copy";
 import { managedErrorCopy } from "./managed-error-copy";
-import { claudeConnectionCopy } from "./claude-connection-copy";
 import { managedText } from "./managed-copy";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSessionNavigate } from "./session-navigation";
 import { subscribeSessionInvalidation } from "./session-events";
 import { Plus } from "lucide-react";
@@ -17,8 +16,6 @@ import {
 import { Button } from "../../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../../components/ui/dialog";
 import { useSession } from "./session-context";
-import { canConfirmClaudeHandoff, claudeHandoffBlockReason } from "./claude-handoff";
-import { managedControlCopy, type ManagedControlBlockReason } from "./managed-control-copy";
 import { catalogCopy } from "../catalog/catalog-copy";
 import { dictionaries } from "../../i18n";
 import { sessionAgentCopy } from "./session-agent-copy";
@@ -27,6 +24,7 @@ import {
   pendingScope,
   readPending,
   rememberPending,
+  subscribePending,
   type PendingControl,
 } from "./pending-controls";
 
@@ -50,7 +48,7 @@ export function ManagedTasks({
   showTrigger?: boolean;
 }) {
   const session = useSession();
-  const { client, origin, access, current, live, selected, refresh, locale } = session;
+  const { client, origin, access, current, selected, refresh, locale } = session;
   const [localOpen, setLocalOpen] = useState(initialOpen);
   const open = renderContent ? !!active : localOpen;
   function setOpen(value: boolean) {
@@ -63,19 +61,11 @@ export function ManagedTasks({
     : current?.agent === "claude-code"
       ? "claude-code"
       : "codex";
-  const handoffMode = !create && agent === "claude-code" ? live?.executionMode : undefined;
-  const handoffGeneration =
-    !create && agent === "claude-code" ? live?.connectionGeneration : undefined;
-  const handoffReleased = !create && agent === "claude-code" && live?.status === "released";
-  const [handoffFingerprint, setHandoffFingerprint] = useState<string>();
-  const [handoffInspectPending, setHandoffInspectPending] = useState(false);
-  const controlHintId = useId();
   const [options, setOptions] = useState<Options>();
   const [workspaceId, setWorkspaceId] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [permissionMode, setPermissionMode] = useState<ClaudePermissionMode | "">("");
-  const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [errorDetail, setErrorDetail] = useState("");
@@ -97,6 +87,7 @@ export function ManagedTasks({
   }
   const [uncertain, setUncertain] = useState(false);
   const [pending, setPending] = useState<PendingControl>();
+  const [pendingReadRevision, setPendingReadRevision] = useState(0);
   const scope =
     access?.status === "approved" && access.device?.id
       ? pendingScope(origin, access.device.id)
@@ -122,28 +113,35 @@ export function ManagedTasks({
     access?.experimentalEnabled,
   ]);
   useEffect(() => {
-    setPending(undefined);
-    setUncertain(false);
-    if (!scope) return;
-    try {
-      const entry = readPending(scope).find((value) =>
-        create
-          ? value.kind === "create" && (value.agent ?? "codex") === agent
-          : value.sessionId === selected && ["adopt", "release", "reconcile"].includes(value.kind),
-      );
-      setPending(entry);
-      setUncertain(!!entry);
-    } catch {
-      setUncertain(true);
-      setError(
-        managedText(
-          locale,
-          "Cannot read the saved request identity.",
-          "无法读取已保存的请求标识。",
-        ),
-      );
-    }
-  }, [scope, selected, create, agent, locale]);
+    const readSaved = () => {
+      // A create already in flight is reconciled only after its transport result is unknown.
+      if (create && flight.current) return;
+      setPending(undefined);
+      setUncertain(false);
+      if (!scope) return;
+      try {
+        const entry = readPending(scope).find((value) =>
+          create
+            ? value.kind === "create" && (value.agent ?? "codex") === agent
+            : value.sessionId === selected &&
+              ["adopt", "release", "reconcile"].includes(value.kind),
+        );
+        setPending(entry);
+        setUncertain(!!entry);
+      } catch {
+        setUncertain(true);
+        setError(
+          managedText(
+            locale,
+            "Cannot read the saved request identity.",
+            "无法读取已保存的请求标识。",
+          ),
+        );
+      }
+    };
+    readSaved();
+    return subscribePending(readSaved);
+  }, [scope, selected, create, agent, locale, pendingReadRevision]);
   useEffect(() => {
     if (
       !scope ||
@@ -173,8 +171,10 @@ export function ManagedTasks({
           return false;
         if (result.status !== "accepted" && result.status !== "not-dispatched") return false;
         forgetPending(scope, pending.requestId);
-        setPending(undefined);
-        setUncertain(false);
+        if (create) {
+          setPending(undefined);
+          setUncertain(false);
+        }
         setError(
           result.status === "not-dispatched"
             ? managedText(locale, "The request was not dispatched.", "该请求未发送到执行端。")
@@ -182,10 +182,9 @@ export function ManagedTasks({
         );
         await refresh(true);
         if (generation !== epoch.current) return true;
-        if (result.status === "accepted") {
+        if (result.status === "accepted" && pending.kind === "create") {
           setOpen(false);
-          if (pending.kind === "create")
-            void navigate({ to: "/sessions/$sessionId", params: { sessionId: result.sessionId } });
+          void navigate({ to: "/sessions/$sessionId", params: { sessionId: result.sessionId } });
         }
         return true;
       } catch {
@@ -233,7 +232,7 @@ export function ManagedTasks({
     locale,
   ]);
   useEffect(() => {
-    if (!open || !access?.device?.manage || !access.experimentalEnabled) return;
+    if (!create || !open || !access?.device?.manage || !access.experimentalEnabled) return;
     const abort = new AbortController();
     setOptions(undefined);
     void client
@@ -268,92 +267,18 @@ export function ManagedTasks({
     access?.experimentalEnabled,
   ]);
   useEffect(() => {
-    // Ownership changes invalidate read-only proof, not a dispatched command or receipt.
-    setConfirmed(false);
-    setHandoffFingerprint(undefined);
-    setHandoffInspectPending(false);
-    setError("");
-    setErrorDetail("");
-    if (
-      !open ||
-      !access?.device?.manage ||
-      !access.experimentalEnabled ||
-      create ||
-      agent !== "claude-code"
-    )
-      return;
-    const abort = new AbortController();
-    setHandoffInspectPending(true);
-    void client
-      .managedInspect(selected, agent, abort.signal)
-      .then((value) => {
-        if (!abort.signal.aborted && value.sessionId === selected)
-          setHandoffFingerprint(value.handoffFingerprint);
-      })
-      .catch((e: unknown) => {
-        if (!abort.signal.aborted) reportError(e);
-      })
-      .finally(() => {
-        if (!abort.signal.aborted) setHandoffInspectPending(false);
-      });
-    return () => {
-      abort.abort();
-    };
-  }, [
-    open,
-    agent,
-    create,
-    client,
-    selected,
-    handoffMode,
-    handoffGeneration,
-    handoffReleased,
-    access?.bootId,
-    access?.device?.id,
-    access?.device?.manage,
-    access?.experimentalEnabled,
-  ]);
-  useEffect(() => {
     // An initial create request may arrive before the trusted access read finishes.
     if (access && (!access.device?.manage || !access.experimentalEnabled)) setLocalOpen(false);
   }, [access?.status, access?.device?.manage, access?.experimentalEnabled]);
   if (
     !access?.device?.manage ||
     !access.experimentalEnabled ||
-    (!create && current?.agent !== "codex" && current?.agent !== "claude-code")
+    (!create && current?.agent !== "codex" && current?.agent !== "claude-code") ||
+    (!create && !uncertain)
   )
     return renderContent ? renderContent(null) : null;
-  const managed =
-    live?.executionMode === "codex-managed" ||
-    (live?.executionMode === "claude-managed" && live.status !== "released");
-  const claudeBlockReason =
-    !managed && agent === "claude-code" ? claudeHandoffBlockReason(session) : undefined;
-  const controlBlockReason: ManagedControlBlockReason | undefined = busy
-    ? "processing"
-    : uncertain
-      ? "uncertain"
-      : live?.activity === "compacting"
-        ? "compacting"
-        : !options?.available
-          ? "tool"
-          : claudeBlockReason
-            ? claudeBlockReason
-            : !managed && !confirmed
-              ? "confirmation"
-              : !managed && agent === "claude-code" && !handoffFingerprint
-                ? handoffInspectPending
-                  ? "fingerprintLoading"
-                  : "fingerprintUnavailable"
-                : undefined;
-  async function run(operation: "create" | "adopt" | "release" | "reconcile") {
-    if (
-      flight.current ||
-      (operation === "adopt" && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
-      (live?.activity === "compacting" && (operation === "adopt" || operation === "release")) ||
-      (uncertain && operation !== "reconcile") ||
-      (operation === "adopt" && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
-    )
-      return;
+  async function run() {
+    if (flight.current || !create || uncertain || !options?.available || !workspaceId) return;
     flight.current = true;
     setBusy(true);
     setError("");
@@ -362,9 +287,9 @@ export function ManagedTasks({
     const requestId = crypto.randomUUID();
     const entry: PendingControl = {
       requestId,
-      kind: operation,
+      kind: "create",
       agent,
-      ...(operation === "create" ? { workspaceId } : { sessionId: selected }),
+      workspaceId,
     };
     try {
       try {
@@ -373,50 +298,24 @@ export function ManagedTasks({
       } catch {
         throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
       }
-      const result = await client.request<{ sessionId?: string; reconciled?: boolean }>(
-        `managed/${operation}`,
-        {
-          ...(agent === "claude-code" ? { agent } : {}),
-          bootId: access!.bootId,
-          requestId,
-          ...(operation === "release" ? { expectedRevision: live?.revision } : {}),
-          ...(operation === "create"
-            ? {
-                workspaceId,
-                ...(model ? { model } : {}),
-                ...(effort ? { effort } : {}),
-                ...(agent === "claude-code" && permissionMode ? { permissionMode } : {}),
-              }
-            : { sessionId: selected }),
-          ...(operation === "adopt"
-            ? {
-                handoffConfirmed: confirmed,
-                ...(agent === "claude-code" ? { handoffFingerprint } : {}),
-              }
-            : {}),
-        },
-      );
+      const result = await client.request<{ sessionId?: string }>("managed/create", {
+        ...(agent === "claude-code" ? { agent } : {}),
+        bootId: access!.bootId,
+        requestId,
+        workspaceId,
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+        ...(agent === "claude-code" && permissionMode ? { permissionMode } : {}),
+      });
       if (scope) forgetPending(scope, requestId);
       if (generation !== epoch.current) return;
       setPending(undefined);
-      if (operation === "reconcile" && result.reconciled !== true) {
-        setUncertain(true);
-
-        setError(
-          managedText(
-            locale,
-            "The previous outcome is still unknown. No command was replayed.",
-            "仍无法确认上次执行结果，没有重新发送命令。",
-          ),
-        );
-        return;
-      }
       await refresh(true);
       if (generation !== epoch.current) return;
       setOpen(false);
       setUncertain(false);
 
-      if (operation === "create" && result.sessionId)
+      if (result.sessionId)
         void navigate({ to: "/sessions/$sessionId", params: { sessionId: result.sessionId } });
     } catch (e) {
       if (scope && e instanceof ApiError && e.controlOutcome === "not-dispatched") {
@@ -436,17 +335,22 @@ export function ManagedTasks({
     } finally {
       flight.current = false;
       setBusy(false);
+      // An access/runtime change may have suppressed the storage subscription
+      // while this create was in flight. Read its durable identity in the new scope.
+      if (generation !== epoch.current) setPendingReadRevision((value) => value + 1);
     }
   }
   const content = (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        {managedText(
-          locale,
-          "AgentKib must stay running on the host (the computer running the Agent). Tasks use workspace access and request approval when needed.",
-          "AgentKib 需要在主机（运行 Agent 的电脑）上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
-        )}
-      </p>
+      {create && (
+        <p className="text-sm text-muted-foreground">
+          {managedText(
+            locale,
+            "AgentKib must stay running on the host (the computer running the Agent). Tasks use workspace access and request approval when needed.",
+            "AgentKib 需要在主机（运行 Agent 的电脑）上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
+          )}
+        </p>
+      )}
       {create && (
         <label>
           {managedText(locale, "Agent", "执行工具")}
@@ -490,7 +394,7 @@ export function ManagedTasks({
           </p>
         </div>
       )}
-      {!options ? (
+      {!create ? null : !options ? (
         <p role="status">{managedText(locale, "Loading…", "正在读取…")}</p>
       ) : (
         <>
@@ -509,7 +413,7 @@ export function ManagedTasks({
               )}
             </div>
           )}
-          {create ? (
+          {
             <>
               <label>
                 {managedText(locale, "Workspace", "工作区")}
@@ -610,90 +514,24 @@ export function ManagedTasks({
               )}
               <Button
                 disabled={busy || uncertain || !options.available || !workspaceId}
-                onClick={() => void run("create")}
+                onClick={() => void run()}
               >
                 {managedText(locale, "Create", "创建")}
               </Button>
             </>
-          ) : (
-            <>
-              <p>
-                {managed
-                  ? managedText(
-                      locale,
-                      "This session has been handed over to AgentKib",
-                      "此会话已交给 AgentKib",
-                    )
-                  : managedText(
-                      locale,
-                      "This session has not been handed over to AgentKib",
-                      "此会话尚未交给 AgentKib",
-                    )}
-              </p>
-              {live?.executionMode === "claude-follower" && (
-                <p role="status" className="text-sm text-muted-foreground">
-                  {claudeConnectionCopy[locale].disconnectFirst}
-                </p>
-              )}
-              {!managed && live?.executionMode !== "claude-follower" && (
-                <label className="flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={confirmed}
-                    onChange={(e) => setConfirmed(e.target.checked)}
-                  />
-                  {managedText(
-                    locale,
-                    "I have stopped the turn, handled pending requests and background commands, and closed the original execution client. Continue with the same session ID.",
-                    "我已结束当前轮次、处理待审批事项和后台命令，并关闭原执行客户端。使用原会话 ID 继续。",
-                  )}
-                </label>
-              )}
-              {live?.executionMode !== "claude-follower" && (
-                <>
-                  <Button
-                    aria-describedby={controlBlockReason ? controlHintId : undefined}
-                    disabled={
-                      busy ||
-                      uncertain ||
-                      live?.activity === "compacting" ||
-                      !options.available ||
-                      (!managed && agent === "claude-code" && !canConfirmClaudeHandoff(session)) ||
-                      (!managed && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
-                    }
-                    onClick={() => void run(managed ? "release" : "adopt")}
-                  >
-                    {managed
-                      ? managedText(locale, "Return to original client", "交还原客户端")
-                      : managedText(locale, "Hand over to AgentKib", "交给 AgentKib")}
-                  </Button>
-                  {controlBlockReason && (
-                    <p id={controlHintId} role="status" className="text-sm text-muted-foreground">
-                      {managedControlCopy[locale][controlBlockReason]}
-                    </p>
-                  )}
-                </>
-              )}
-              {managed && (
-                <Button variant="outline" disabled={busy} onClick={() => void run("reconcile")}>
-                  {managedText(locale, "Check previous outcome", "检查上次操作结果")}
-                </Button>
-              )}
-            </>
-          )}
+          }
         </>
       )}
     </div>
   );
   if (renderContent) return renderContent(content);
+  if (!create) return null;
   return (
     <>
       {showTrigger && (
-        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
+        <Button variant="ghost" size="sm" className="min-h-11" onClick={() => setOpen(true)}>
           {create && <Plus size={16} />}
-          {create
-            ? managedText(locale, "New task", "新建任务")
-            : managedText(locale, "Execution management", "执行管理")}
+          {managedText(locale, "New task", "新建任务")}
         </Button>
       )}
       <Dialog
@@ -706,11 +544,7 @@ export function ManagedTasks({
         }}
       >
         <DialogContent closeLabel={dictionaries[locale].close}>
-          <DialogTitle>
-            {create
-              ? managedText(locale, "New task", "新建任务")
-              : managedText(locale, "Execution management", "执行管理")}
-          </DialogTitle>
+          <DialogTitle>{managedText(locale, "New task", "新建任务")}</DialogTitle>
           {content}
         </DialogContent>
       </Dialog>

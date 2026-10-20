@@ -94,7 +94,11 @@ readline.createInterface({input: process.stdin}).on('line', (line) => {
     if (initialize) emit(plan().afterInitialize);
   } else if (frame.type === 'user') {
     first ||= frame.uuid;
+    const transcript = process.env.CLAUDE_CONFIG_DIR + '/' + frame.session_id + '.jsonl';
+    const append = row => fs.appendFileSync(transcript, JSON.stringify({sessionId:frame.session_id,cwd:process.cwd(),...row})+'\n');
+    append({type:'user',uuid:frame.uuid,message:frame.message});
     if (emit(plan().onUser)) return;
+    append({type:'assistant',uuid:require('node:crypto').randomUUID(),parentUuid:frame.uuid,message:{role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'Synthetic complete'}]}});
     send({type: 'assistant', parent_tool_use_id: null, message: {
       id: first, model: 'fixture-model', usage: {input_tokens: 7}, content: [],
     }});
@@ -439,10 +443,15 @@ function hostFixture(version: string | null = "2.1.296") {
     live: Record<string, any>;
   }> = [];
   const commands = {
-    run: vi.fn(async () => ({
-      success: true,
-      bytes: Buffer.from(version === null ? "not a version\n" : `${version} (Claude Code)\n`),
-    })),
+    run: vi.fn(async (command: string, args: string[]) => {
+      if (command === "/bin/ps") return { success: true, bytes: Buffer.from("") };
+      if (args[0] === "agents") return { success: true, bytes: Buffer.from("[]\n") };
+      expect(args).toEqual(["--version"]);
+      return {
+        success: true,
+        bytes: Buffer.from(version === null ? "not a version\n" : `${version} (Claude Code)\n`),
+      };
+    }),
   } as unknown as Commands;
   const store = {
     workspacePath: () => f.workspace,
@@ -633,7 +642,14 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const created = await create(f.owner);
       const id = created.sessionId as string;
       // Preparing discovers the mode without sending a turn.
-      await f.owner.settingsState(id);
+      await f.owner.request({
+        operation: "settings-prepare",
+        sessionId: id,
+        deviceId,
+        runtimeBootId: f.owner.bootId,
+        expectedRevision: (await f.owner.live(id, true)).revision,
+        experimentalEnabled: true,
+      });
       expect((await liveOf(f.owner, id)).permission).toEqual({ mode: "auto" });
       f.events.length = 0;
       await f.owner.request({
@@ -647,7 +663,11 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const last = f.patches(id).at(-1);
       expect(last?.payload.permission).toEqual({ mode: null });
       const released = await liveOf(f.owner, id);
-      expect(released.status).toBe("released");
+      expect(released).toMatchObject({
+        status: "idle",
+        sendEnabled: true,
+        executionLocation: null,
+      });
       // Neither a stale mode nor a hint for a session this host no longer runs.
       expect(released.permission).toEqual({ mode: null });
     });
@@ -656,11 +676,13 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const f = hostFixture();
       f.setPlan({ beforeInitialize: [init("auto")] });
       const send = vi.spyOn(ClaudeManagedRunnerProcess.prototype, "send");
+      let firstGetterFailure: number | undefined;
       vi.spyOn(
         ClaudeManagedRunnerProcess.prototype,
         "observedPermissionMode",
         "get",
       ).mockImplementation(() => {
+        firstGetterFailure ??= f.events.length;
         throw new Error("synthetic getter failure");
       });
       const created = await create(f.owner);
@@ -672,7 +694,19 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(runner.hasWorker).toBe(true);
       expect(await liveOf(f.owner, id)).not.toHaveProperty("permission");
       expect(f.patches(id).length).toBeGreaterThan(0);
-      for (const patch of f.patches(id)) expect(patch.payload).not.toHaveProperty("permission");
+      expect(firstGetterFailure).toBeDefined();
+      let preStartHints = 0;
+      for (const patch of f.patches(id)) {
+        if (patch.payload.permission !== undefined) {
+          // Before a worker exists, no observed-mode getter is read and the CLI hint is valid.
+          expect(patch.payload.status).toBe("starting");
+          expect(patch.payload.permission).toEqual({ mode: null, possiblyAuto: true });
+          expect(f.events.indexOf(patch)).toBeLessThan(firstGetterFailure!);
+          preStartHints += 1;
+        } else expect(patch.payload).not.toHaveProperty("permission");
+      }
+      expect(preStartHints).toBeGreaterThan(0);
+      expect(f.patches(id).some((patch) => patch.payload.status !== "starting")).toBe(true);
       // Later frames are still processed and the session still takes turns.
       await control(f.owner, id, "send", { text: "second turn" });
       await f.idle(id);

@@ -188,3 +188,42 @@ export function acquireManagedSessionLease(dataDir: string, sessionId: string): 
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(sessionId)) throw new Error("invalid-session");
   return acquirePortableFileLease(path.join(dataDir, "codex-managed", `managed-${sessionId}.lock`));
 }
+
+/** Probe an existing third-party lock without creating, changing or deleting it. */
+export function existingFileLeaseBusy(lockPath: string): boolean {
+  if (!["darwin", "linux", "win32"].includes(process.platform))
+    throw new Error("platform-unsupported");
+  let fd: number;
+  try {
+    const directory = lstatSync(path.dirname(lockPath));
+    if (directory.isSymbolicLink() || !directory.isDirectory())
+      throw new Error("invalid-managed-lock-directory");
+    fd = openSync(lockPath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  try {
+    if (!fstatSync(fd).isFile() || isReparseOrSymlink(lockPath, lstatSync(lockPath)))
+      throw new Error("invalid-managed-lock-file");
+    if (process.platform === "win32") {
+      try {
+        acquireWindowsLock(lockPath, fd)();
+        return false;
+      } catch (error) {
+        if (error instanceof Error && error.message === "session-managed-by-another-runtime")
+          return true;
+        throw error;
+      }
+    }
+    if (flockApi().lock(fd, 2 | 4) !== 0) {
+      const code = nativeBindings().errno();
+      if (code === 11 || code === 35) return true;
+      throw new Error(`Cannot inspect existing writer lock (${code})`);
+    }
+    if (flockApi().lock(fd, 8) !== 0) throw new Error("Cannot release writer lock probe");
+    return false;
+  } finally {
+    closeSync(fd);
+  }
+}

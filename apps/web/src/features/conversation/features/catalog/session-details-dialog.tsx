@@ -8,6 +8,7 @@ type NativeContext = {
   cwd?: string;
   projectId?: string | null;
   branchAtCreation?: string | null;
+  sourceFile?: string | null;
 };
 export function SessionDetailsDialog() {
   const {
@@ -20,14 +21,17 @@ export function SessionDetailsDialog() {
     sourceTitle,
     online,
     liveText,
+    live,
     client,
     access,
   } = useSession();
+  const currentLive = current?.id && live?.sessionId === current.id ? live : undefined;
   const [context, setContext] = useState<{ key: string; value?: NativeContext }>();
   const isCodex = current?.agent === "codex";
+  const hasNativeContext = isCodex || current?.agent === "claude-code";
   const contextKey = `${access?.device?.id ?? ""}:${current?.id ?? ""}`;
   useEffect(() => {
-    if (!isCodex || !current?.id || access?.status !== "approved") return;
+    if (!hasNativeContext || !current?.id || access?.status !== "approved") return;
     const abort = new AbortController();
     const key = `${access.device?.id ?? ""}:${current.id}`;
     setContext({ key });
@@ -44,8 +48,9 @@ export function SessionDetailsDialog() {
         if (!abort.signal.aborted) setContext({ key, value: { available: false } });
       });
     return () => abort.abort();
-  }, [client, current?.id, isCodex, access?.status, access?.device?.id]);
-  const nativeContext = context?.key === contextKey ? context.value : undefined;
+  }, [client, current?.id, hasNativeContext, access?.status, access?.device?.id]);
+  const nativeContext =
+    access?.status === "approved" && context?.key === contextKey ? context.value : undefined;
   const nativeValue = (value?: string | null) =>
     !nativeContext
       ? c.contextLoading
@@ -57,6 +62,14 @@ export function SessionDetailsDialog() {
       <dl>
         <dt>{t.agent}</dt>
         <dd>{agentName(current?.agent)}</dd>
+        <dt>{c.clientVersion}</dt>
+        <dd className="break-all">{currentLive?.cliVersion?.trim() || c.unknown}</dd>
+        <dt>{c.model}</dt>
+        <dd className="break-all">{currentLive?.model?.trim() || c.unknown}</dd>
+        <dt>{c.sourceFile}</dt>
+        <dd className="break-all">
+          {nativeContext?.available ? nativeContext.sourceFile?.trim() || c.unknown : c.unknown}
+        </dd>
         <dt>{c.project}</dt>
         <dd>{currentWorkspace?.name || c.missing}</dd>
         <dt>{c.path}</dt>

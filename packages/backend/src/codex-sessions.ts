@@ -1,15 +1,8 @@
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  openSync,
-  readSync,
-  readdirSync,
-} from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type { SessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessionOwnership } from "./codex-session-ownership";
+import { isCompressedRollout, readRolloutPrefix, resolveRollout } from "./codex-rollout-files";
 import { homedir } from "node:os";
 import path from "node:path";
 import { Sql, type Row } from "./sql";
@@ -154,25 +147,69 @@ function readable(value: string): boolean {
     return false;
   }
 }
+function sessionMeta(line: Buffer): Record<string, unknown> | null {
+  const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line));
+  if (
+    parsed?.type !== "session_meta" ||
+    !parsed.payload ||
+    typeof parsed.payload !== "object" ||
+    Array.isArray(parsed.payload)
+  )
+    return null;
+  return parsed.payload;
+}
+const MAX_HEADER_BYTES = 256 * 1024;
+// The header fields callers read; the rest, such as instructions, is not kept.
+const HEADER_FIELDS = [
+  "id",
+  "cwd",
+  "source",
+  "thread_source",
+  "parent_thread_id",
+  "forked_from_id",
+  "originator",
+  "history_mode",
+] as const;
+/**
+ * Compressed rollouts no longer change, so their decoded headers are kept by
+ * file identity: listing a workspace on every history request then decodes
+ * each one once.
+ */
+const compressedHeaders = new Map<
+  string,
+  { newline: number; payload: Record<string, unknown> | null }
+>();
 function headerPayload(value: string, limit: number): Record<string, unknown> | null {
   let fd: number | undefined;
   try {
     fd = regularOpen(value);
-    const data = Buffer.allocUnsafe(limit),
-      size = readSync(fd, data, 0, data.length, 0),
-      newline = data.indexOf(10, 0);
-    if (newline < 0 || newline >= size) return null;
-    const parsed = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(0, newline)),
-    );
-    if (
-      parsed?.type !== "session_meta" ||
-      !parsed.payload ||
-      typeof parsed.payload !== "object" ||
-      Array.isArray(parsed.payload)
-    )
-      return null;
-    return parsed.payload;
+    if (!isCompressedRollout(value)) {
+      const data = readRolloutPrefix(fd, value, limit),
+        newline = data.indexOf(10, 0);
+      return newline < 0 ? null : sessionMeta(data.subarray(0, newline));
+    }
+    const metadata = fstatSync(fd, { bigint: true }),
+      key = `${value}\0${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}`;
+    let entry = compressedHeaders.get(key);
+    if (!entry) {
+      const data = readRolloutPrefix(fd, value, MAX_HEADER_BYTES),
+        newline = data.indexOf(10, 0);
+      let payload: Record<string, unknown> | null = null;
+      try {
+        const full = newline < 0 ? null : sessionMeta(data.subarray(0, newline));
+        if (full)
+          payload = Object.fromEntries(
+            HEADER_FIELDS.filter((field) => field in full).map((field) => [field, full[field]]),
+          );
+      } catch {
+        payload = null;
+      }
+      entry = { newline, payload };
+      if (compressedHeaders.size >= 50_000)
+        compressedHeaders.delete(compressedHeaders.keys().next().value!);
+      compressedHeaders.set(key, entry);
+    }
+    return entry.newline < 0 || entry.newline >= limit ? null : entry.payload;
   } catch {
     return null;
   } finally {
@@ -226,6 +263,26 @@ export class CodexSessions {
       this.#verifyIndexed(nativeRefs, [], (_row, transcript, id) =>
         verifiedCodexControlId(transcript, id) ? id : null,
       ).keys(),
+    );
+  }
+  /** Control uses the native creation directory even when an older resume changed SQLite cwd. */
+  verifiedControlDirectories(
+    nativeRefs: Iterable<string>,
+  ): Map<string, { id: string; cwd: string }> {
+    return this.#verifyIndexed(
+      nativeRefs,
+      [],
+      (_row, transcript, id) => {
+        const payload = headerPayload(transcript, 64 * 1024);
+        const cwd = nonempty(payload?.cwd);
+        return typeof payload?.id === "string" &&
+          uuid(payload.id) === id &&
+          cwd &&
+          path.isAbsolute(cwd)
+          ? { id, cwd }
+          : null;
+      },
+      { consistent: (a, b) => pathIdentity(a.cwd) === pathIdentity(b.cwd) },
     );
   }
   /** Display ownership requires the indexed UUID and absolute cwd to match the native header. */
@@ -312,7 +369,9 @@ export class CodexSessions {
               continue;
             }
             const rawPath = String(row.rollout_path);
-            const transcript = path.isAbsolute(rawPath) ? rawPath : path.join(home, rawPath);
+            const transcript = resolveRollout(
+              path.isAbsolute(rawPath) ? rawPath : path.join(home, rawPath),
+            );
             const identity = verify(row, transcript, id);
             const previous = verified.get(id);
             if (
@@ -389,6 +448,8 @@ export class CodexSessions {
           if (selection.matches && !selection.matches(String(row.k0))) continue;
           let transcript = String(row.k1);
           if (!path.isAbsolute(transcript)) transcript = path.join(home, transcript);
+          // An idle thread's rollout may only exist compressed.
+          transcript = resolveRollout(transcript);
           const parsed = sourceValue(row.k8),
             p = nonempty(row.k9),
             f = nonempty(row.k10);

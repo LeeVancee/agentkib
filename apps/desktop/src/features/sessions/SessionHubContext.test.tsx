@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   controlled: [] as ConversationSessionSummary[],
   controlledReady: true,
   controlledError: undefined as unknown,
+  codexRuntimeReason: undefined as "codex-cli-version-too-old" | null | undefined,
   search: {} as { sessionId?: string },
   workspaces: [{ id: "workspace", name: "Project", path: "/project" }],
   remote: { hosts: [], sessions: [], workspaces: [], errors: {} },
@@ -21,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   refreshControlled: vi.fn(),
 }));
 vi.mock("@/core/useI18n", () => ({
-  useI18n: () => ({ tr: String, localizeMessage: String }),
+  useI18n: () => ({ tr: String, localizeMessage: String, locale: "zh-CN" }),
 }));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mocks.navigate,
@@ -53,6 +54,7 @@ vi.mock("./conversation-catalog", () => ({
     sessions: mocks.controlled,
     ready: mocks.controlledReady,
     error: mocks.controlledError,
+    codexRuntimeReason: mocks.codexRuntimeReason,
   }),
   refreshConversationCatalog: mocks.refreshControlled,
 }));
@@ -70,7 +72,11 @@ function Directory() {
       <button onClick={() => void hub.refresh()}>Refresh</button>
       <output>{hub.selected?.id ?? "none"}</output>
       {hub.sessions.map((session) => (
-        <button key={session.id} onClick={() => hub.select(session.id)}>
+        <button
+          key={session.id}
+          data-runtime-reason={session.continuation?.reason ?? undefined}
+          onClick={() => hub.select(session.id)}
+        >
           {session.id}
         </button>
       ))}
@@ -95,13 +101,106 @@ beforeEach(() => {
   mocks.controlled = [session("managed-id"), session("unmanaged")];
   mocks.controlledReady = true;
   mocks.controlledError = undefined;
+  mocks.codexRuntimeReason = undefined;
   mocks.search = {};
   useAppStore.getState().setRuntime({ session_index_enabled: true } as RuntimeInfo);
   useSessionViewStore.getState().resetFilters();
+  useSessionViewStore.getState().setCreatingConversation(false);
 });
 afterEach(cleanup);
 
 describe("desktop authoritative session directory", () => {
+  it("finishes creation when selecting the already committed conversation", () => {
+    mocks.search = { sessionId: "managed-id" };
+    useSessionViewStore.getState().setCreatingConversation(true);
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+  });
+
+  it("waits for the latest selected creation target to commit", () => {
+    useSessionViewStore.getState().setCreatingConversation(true);
+    const content = (
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>
+    );
+    const view = render(content);
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    fireEvent.click(screen.getByRole("button", { name: "unmanaged" }));
+    mocks.search = { sessionId: "managed-id" };
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(useSessionViewStore.getState().creatingConversation).toBe(true);
+    mocks.search = { sessionId: "unmanaged" };
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+  });
+
+  it("does not finish a later creation from a cancelled selection", () => {
+    useSessionViewStore.getState().setCreatingConversation(true);
+    const view = render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    act(() => useSessionViewStore.getState().setCreatingConversation(false));
+    act(() => useSessionViewStore.getState().setCreatingConversation(true));
+    mocks.search = { sessionId: "managed-id" };
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(useSessionViewStore.getState().creatingConversation).toBe(true);
+  });
+
+  it("preserves a new creation when its entry clears an older pending selection", () => {
+    function NewCreation() {
+      const hub = useSessionHub();
+      return (
+        <button
+          onClick={() => {
+            useSessionViewStore.getState().setCreatingConversation(true);
+            hub.select();
+          }}
+        >
+          Begin another creation
+        </button>
+      );
+    }
+    useSessionViewStore.getState().setCreatingConversation(true);
+    const content = (
+      <SessionHubProvider>
+        <Directory />
+        <NewCreation />
+      </SessionHubProvider>
+    );
+    const view = render(content);
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    fireEvent.click(screen.getByRole("button", { name: "Begin another creation" }));
+    mocks.search = { sessionId: "managed-id" };
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+        <NewCreation />
+      </SessionHubProvider>,
+    );
+    expect(useSessionViewStore.getState().creatingConversation).toBe(true);
+  });
+
   it.each(
     Object.values(SESSION_COLLECTIONS).flatMap((workspaceId) =>
       [true, false].map((bridge) => ({ workspaceId, bridge })),
@@ -158,6 +257,66 @@ describe("desktop authoritative session directory", () => {
     );
     expect(screen.queryByRole("button", { name: ordinary.id })).toBeNull();
     expect(screen.getByText("Hidden record notice")).toBeTruthy();
+  });
+
+  it("hides only proven native aliases across Codex collections", () => {
+    mocks.indexed = [
+      { ...session("proven-native"), workspace_id: SESSION_COLLECTIONS.projectless },
+      { ...session("unproven-native"), workspace_id: SESSION_COLLECTIONS.unclassified },
+    ];
+    mocks.controlled = [{ ...session("managed-id"), indexedSessionIds: ["proven-native"] }];
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "proven-native" })).toBeNull();
+    expect(screen.getByRole("button", { name: "managed-id" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "unproven-native" })).toBeTruthy();
+  });
+
+  it.each([false, true])(
+    "does not promote a legacy scalar alias across collections (mixed plural: %s)",
+    (mixed) => {
+      mocks.indexed = [
+        { ...session("legacy-native"), workspace_id: SESSION_COLLECTIONS.projectless },
+      ];
+      const legacy = {
+        ...session("legacy-managed"),
+        indexedSessionId: "legacy-native",
+        ...(mixed ? { indexedSessionIds: ["legacy-native"] } : {}),
+      };
+      mocks.controlled = [legacy];
+      render(
+        <SessionHubProvider>
+          <Directory />
+        </SessionHubProvider>,
+      );
+      expect(screen.getByRole("button", { name: "legacy-native" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "legacy-managed" })).toBeTruthy();
+    },
+  );
+
+  it("projects a verified global Codex runtime floor onto raw collection rows", () => {
+    mocks.indexed = [{ ...session("raw-native"), workspace_id: SESSION_COLLECTIONS.projectless }];
+    mocks.codexRuntimeReason = "codex-cli-version-too-old";
+    const view = render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(
+      screen.getByRole("button", { name: "raw-native" }).getAttribute("data-runtime-reason"),
+    ).toBe("codex-cli-version-too-old");
+    mocks.codexRuntimeReason = null;
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(
+      screen.getByRole("button", { name: "raw-native" }).getAttribute("data-runtime-reason"),
+    ).toBeNull();
   });
 
   it.each(["auxiliary", "execution"] as const)(

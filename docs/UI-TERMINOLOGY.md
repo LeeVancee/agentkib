@@ -43,21 +43,57 @@
 
 行为依据见 `apps/desktop/src/features/skills/SkillManagerPanels.tsx`、`packages/backend/src/skill-manager.ts` 的 `prepareDeployment`、`packages/backend/src/skill-sync.ts` 的 `prepare`。界面文字调整不合并这些操作或改变授权。
 
-## 会话与执行控制
+## 会话与续接
+
+D10、D11 的同 Agent 续接以“能否继续、在哪里运行”为准。用户直接输入，后台完成占用、锁、指纹、版本和平台检查；这些检查及未知结果的核对要求保留，不再要求用户手动交接执行权。
 
 | 概念 | 简体中文 | 繁體中文 | 日本語 | English |
 | --- | --- | --- | --- | --- |
 | 可选择、读取历史或控制的实体 | 会话 | 對話 | 会話 | Session |
-| 会话的创建、交接与执行状态管理入口 | 执行管理 | 執行管理 | 実行管理 | Execution management |
-| 将符合资格的会话交给 AgentKib 控制 | 交给 AgentKib | 交給 AgentKib | AgentKib に引き渡す | Hand over to AgentKib |
-| 明确不可控制的来源或权限状态 | 仅可查看 | 僅可查看 | 閲覧のみ | View only |
-| 符合既有条件，完成交接后才可控制 | 待交接 | 待交接 | 引き継ぎ待ち | Handoff required |
+| 操作入口 | 会话操作 | 對話操作 | 会話の操作 | Session actions |
+| 重命名、归档等管理 | 会话管理 | 對話管理 | 会話の管理 | Session management |
+| 空闲时的输入框占位 | 继续这条会话… | 繼續這段對話… | この会話を続ける… | Continue this session… |
+| 发送后后台启动中的过渡状态 | 正在启动… | 正在啟動… | 起動中… | Starting… |
+| AgentKib 后台进程正在运行 | 在 AgentKib 中运行 | 在 AgentKib 中執行 | AgentKib で実行中 | Running in AgentKib |
+| Claude Code 终端已连接 | 在终端中运行 · 已连接 | 在終端中執行 · 已連線 | ターミナルで実行中 · 接続済み | Running in terminal · Connected |
+| 已连接终端的列表徽标 | 终端 | 終端 | ターミナル | Terminal |
+| 已连接终端的审批与提问提示 | 审批和提问在终端中处理 | 核准和提問在終端中處理 | 承認と質問はターミナルで対応してください | Handle approvals and questions in the terminal |
+| 正在别处使用且无法连接 | 正在 {agent} 中使用 | 正在 {agent} 中使用 | {agent} で使用中 | In use in {agent} |
+| 外部占用时的主要操作 | 分支会话并继续 | 分支對話並繼續 | 会話を分岐して続ける | Fork and continue |
+| 外部占用时返回该 Agent | 回 {agent} 继续 | 回 {agent} 繼續 | {agent} で続ける | Continue in {agent} |
+| 平台、Agent 或版本不支持继续 | 仅可查看 | 僅可查看 | 閲覧のみ | View only |
+| 使用已有客户端继续 | 在原客户端继续 | 在原客戶端繼續 | 元のクライアントで続ける | Continue in the original client |
+| 复制主机上的续接命令 | 复制续接命令 | 複製續接命令 | 再開コマンドをコピー | Copy resume command |
+| Claude Code 连接设置向导 | 连接终端 | 連接終端 | ターミナルに接続 | Connect terminal |
+| Claude 工具权限尚未取得原生确认 | 工具权限待确认 | 工具權限待確認 | ツール権限は未確認 | Tool permissions unconfirmed |
+| 外部占用时打开插件安装指引（终端能接收从这里发的消息后才显示） | 安装连接插件，以后自动连接 | 安裝連線外掛，以後自動連線 | 接続プラグインをインストールすると、次回から自動で接続されます | Install the connection plugin to connect automatically |
+| Codex 下一轮待发消息 | 待发队列 | 待發佇列 | 送信待ちキュー | Queued messages |
 
 “会话”指实体，正文可称消息、内容或历史；用户输入、引用原文与文件正文不做术语替换。繁体界面使用“對話”，日文沿用“会話”，按地区自然表达保持各语言内部一致。英文实体统一为 `Session`，协议名与第三方产品的正式名称保持原样。
 
-“执行管理”处理会话执行权，不等同于资产的版本与文件管理。不能因为资产由 AgentKib 管理，就声称对应会话已交接；也不能把等待交接、校验中、连接异常或缺少权限统一写成“仅可查看”。“交给 AgentKib”的入口仍受各 Agent 原有资格、权限、指纹、压缩与结果确认门控限制。
+空闲时不显示额外状态徽标。启动中、运行中、已连接终端、外部占用、仅可查看使用中性色或主色；首页、侧栏和详情沿用同一概念。首页和侧栏只显示不必检查其他客户端就能确定的状态：在 AgentKib 中运行、终端、仅可查看；“正在 {agent} 中使用”在打开会话后显示。侧栏用圆点时，悬停及无障碍标签写出对应状态；仅可查看不增加运行圆点。同一个原因在一屏只说明一次。客户端版本、会话 ID、来源文件放在“会话操作 → 会话详情”，输入区不堆放这些技术信息。
 
-原生续接与执行交接分别描述：原生续接使用 Agent 已有的续接能力；交接由 AgentKib 接管执行。工作区中的历史续接也不能仅为统一文字而改成执行接管。
+外部占用时才显示选择条，`{agent}` 使用实际产品名（Claude Code、Codex）。主要操作创建分支，原会话不受影响；返回该 Agent 的操作保持当前草稿，只说明在哪里继续，不提供续接命令，因为会话已经在那边打开。有文字、附件或引用草稿时，选择条及返回说明显示“草稿已保留，回到这里后会恢复。”，没有草稿时不显示。选择条定期检查占用，发送仍以主机权威检查为准。只读时给出具体原因；校验中、未知操作结果、连接异常、缺少权限分别解释，不能统一当作平台或版本不支持，也不能承诺自动重发。
+
+| 提示用途 | 简体中文 | 繁體中文 | 日本語 | English |
+| --- | --- | --- | --- | --- |
+| 外部占用选择 | 这条会话正在 {agent} 中使用。为避免两边同时写入，请选择： | 這段對話正在 {agent} 中使用。為避免兩邊同時寫入，請選擇： | この会話は {agent} で使用中です。同時に書き込まれないよう、操作を選んでください： | This session is in use in {agent}. To avoid both sides writing at once, choose: |
+| 分支说明 | 原会话不受影响，新会话会标“分支自 {title}” | 原對話不受影響，新對話會標「分支自 {title}」 | 元の会話には影響しません。新しい会話には「{title} から分岐」と表示されます。 | The original session stays as is. The new one is marked "Forked from {title}". |
+| 返回该 Agent 之后 | 这条会话在 AgentKib 中只读，{agent} 那边关闭后会自动恢复 | 這段對話在 AgentKib 中為唯讀，{agent} 那邊關閉後會自動恢復 | この会話は AgentKib では閲覧のみです。{agent} 側で閉じると、ここで続けられるようになります。 | This session is view only in AgentKib. You can continue here once it's closed in {agent}. |
+| 已连接终端但不能从这里发送 | 在终端中继续这条会话，这里会同步显示 | 在終端中繼續這段對話，這裡會同步顯示 | この会話はターミナルで続けてください。ここにも同期して表示されます。 | Continue this session in the terminal. It stays in sync here. |
+| Codex 完全退出说明 | 只关掉 Codex 的窗口可能不够，完全退出应用后才能在这里继续 | 只關閉 Codex 的視窗可能不夠，完全結束應用程式後才能在這裡繼續 | Codex のウィンドウを閉じるだけでは不十分な場合があります。ここで続けるには、アプリを完全に終了してください。 | Closing the Codex window may not be enough. Quit the app completely to continue here. |
+| Claude Code 后台自动结束 | 后台进程已结束，下次发送时会自动继续 | 背景程序已結束，下次傳送訊息時會自動繼續 | バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。 | The background process ended. It will resume automatically when you send your next message. |
+| Claude Code 中途外部打开 | 你在 Claude Code 里打开了这条会话，AgentKib 已停止，避免两边同时写入 | 你在 Claude Code 裡開啟了這段對話，AgentKib 已停止，避免兩邊同時寫入 | Claude Code でこの会話が開かれたため、同時に書き込まれないよう AgentKib を停止しました。 | You opened this session in Claude Code. AgentKib stopped to avoid both sides writing at once. |
+| Windows Claude Code 原因 | Windows 上暂不支持在这里继续 Claude Code 会话 | Windows 上暫不支援在這裡繼續 Claude Code 對話 | Windows では、ここで Claude Code の会話を続ける機能はまだ使えません | Continuing Claude Code sessions here isn't supported on Windows yet |
+| Codex 版本过低原因 | Codex 版本过低，升级后可以在这里继续 | Codex 版本過舊，升級後可以在這裡繼續 | Codex のバージョンが古いため、更新するとここで続けられます。 | Your Codex version is too old. Update it to continue here. |
+
+Claude Code 自动结束仅在用户停留期间真实回收进程时显示一次浅色提示，重新进入不重播；中途冲突显示信息提示；Codex 自动释放不显示结束提示。连接终端设置只在 macOS 桌面提供，沿用现有三步向导，入口在“会话操作”。当前生产插件还不能接收从 AgentKib 发出的消息：已连接时输入区换成“在终端中继续这条会话，这里会同步显示”，发送与停止都在终端处理，跟随态不提供“停止”按钮；选择条在此之前不显示插件链接。AgentKib 后台执行的停止入口保留。Web 沿用现有能力提供复制续接命令与主机操作说明，不增加跨 Agent 功能。
+
+连接终端对话框尚未连接时使用“未连接”，不将其描述为会话“仅可查看”。输入区的权限模式风险采用可展开的简短说明，保留完整原生模式解释及“上次观察”区别，不更改审批或发送权限。移动端主要操作的触控高度至少为 44px。
+
+同 Agent 续接的可见入口不再使用“交给 AgentKib”“交还原客户端”“待交接”“执行管理”“由 AgentKib 执行”“已连接原会话”“仅查看历史”“恢复执行”，连接指引不再称“原终端”，队列不再称“原客户端待发队列”。这些规则不要求改名 API、类型、诊断码或旧操作回执，也不改变资产管理中的“由 AgentKib 管理”概念。
+
+跨 Agent 的“在其他 Agent 中继续”“交接文件”“在工作区续接”是独立功能，沿用其现有四语文案与行为；`handoff.*`、`sessions.*Handoff` 等键和协议不在本轮替换范围。保留“在原客户端继续”，不能因取消执行交接而将其删除。Codex follower 暂时保留，删除需单独确认。
 
 ## 保留与解释的技术概念
 
@@ -77,3 +113,5 @@ UX-30 的范围为变更审查流程、资源库与技能管理的主要入口�
 UX-31 按可复现的显示路径补齐：工作区 `ClaudeSessionPanel`、其文件面板 `ClaudeFilesPanel` 的双语选择器，`managedText` 调用键与四语词条的匹配，以及远程 Web 设置简体文案中的繁体混字。检查两种缺失情形：语言分支实际落到简体、动态字符串键无法匹配而显示原文。已有完整四语分支的 `native-scope`、`question-form`、`native-decisions` 等组件不计为缺译。
 
 验收以实际组件的 `zh-TW`、`ja-JP` 渲染和关键操作文案为准，并回归 `zh-CN`、`en-US`；四语言键数量一致只能作为辅助检查。本轮不据此声称全仓所有文案或所有实机状态均已审计，也不恢复“约 170 处缺翻译”的旧统计。
+
+D10、D11 会话无感续接（2026-10-19）更新本表“会话与续接”部分，取代早期 UX-30 中的手动执行交接术语。核对范围为桌面会话页、工作区 Claude 面板、Web 会话页，以及首页、目录、连接向导和会话详情；四语词条和实际渲染均需验证。真实 CLI、Windows 与真手机验收单独记录，不能由字典比对或合成测试替代。第 4 阶段记录见 `qa/session-continue-stage-4-validation-2026-10-19.md`。

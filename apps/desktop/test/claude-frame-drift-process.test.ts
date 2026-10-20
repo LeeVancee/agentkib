@@ -862,7 +862,12 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
 const deviceId = "browser-device-a";
 function hostFor(f: Fake, version = "2.1.296") {
   const commands = {
-    run: vi.fn(async () => ({ success: true, bytes: Buffer.from(`${version} (Claude Code)\n`) })),
+    run: vi.fn(async (command: string, args: string[]) => {
+      if (command === "/bin/ps") return { success: true, bytes: Buffer.from("") };
+      if (args[0] === "agents") return { success: true, bytes: Buffer.from("[]\n") };
+      expect(args).toEqual(["--version"]);
+      return { success: true, bytes: Buffer.from(`${version} (Claude Code)\n`) };
+    }),
   } as unknown as Commands;
   const store = {
     workspacePath: () => f.workspace,

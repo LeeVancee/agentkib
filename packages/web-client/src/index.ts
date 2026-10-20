@@ -77,6 +77,8 @@ export interface ConversationWorkspaceSummary {
 }
 export interface ConversationCatalog {
   sessions: ConversationSessionSummary[];
+  /** Global verified CLI floor; absent on older hosts, never a control grant. */
+  codexRuntimeReason?: "codex-cli-version-too-old" | null;
   // Missing on older desktop hosts; never treat it as an empty known catalog.
   workspaces?: ConversationWorkspaceSummary[];
   indexEnabled: boolean;
@@ -209,6 +211,8 @@ export interface UserQuestionRequest {
 }
 export interface Live {
   sessionId: string;
+  /** Backend incarnation captured by this state, distinct from the access boot id. */
+  runtimeBootId?: string;
   status: string;
   revision: number;
   turnId?: string;
@@ -222,6 +226,8 @@ export interface Live {
   executionLocation?: "agentkib" | "terminal" | "external" | null;
   ownershipReason?: string | null;
   continuationNotice?: "background-ended" | "owner-opened-elsewhere" | null;
+  /** Ephemeral retirement event identity; a newly opened client must not replay an old notice. */
+  continuationNoticeId?: string | null;
   /** Whether a connected terminal can take messages sent from AgentKib at all. */
   terminalSend?: boolean;
   executionMode?:
@@ -279,6 +285,8 @@ export type ControlReceipt =
         requestId?: string;
         sessionId?: string;
         reconciled?: boolean;
+        reason?: string;
+        error?: string;
       } | null;
       completionObserved: boolean;
     };
@@ -920,6 +928,12 @@ export class WebClient {
           undefined,
           signal,
         );
+  }
+  prepareSessionSettings(
+    body: { sessionId: string; bootId: string; expectedRevision: number },
+    signal?: AbortSignal,
+  ) {
+    return this.request<SessionSettings>("managed/settings-prepare", body, signal);
   }
   sessionQueue(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
     return agent === "codex"

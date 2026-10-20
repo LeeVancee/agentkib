@@ -1300,13 +1300,33 @@ export class ClaudeManagedRunnerProcess {
     let started: ChildProcess | undefined;
     try {
       started = this.#start(executable);
-      await this.#write(init);
+      try {
+        await this.#write(init);
+      } catch (error) {
+        this.#fail(errorMessage(error), undefined, "initialize-write-failed");
+        throw error;
+      }
       await this.#initializing;
       return this.optionsSnapshot;
     } catch (error) {
-      if (!started?.pid && !this.processId && !this.#cleanupError)
+      if (!started?.pid && !this.processId && !this.#cleanupError) {
         this.state.restoreStartup(checkpoint, errorMessage(error));
-      else this.#fail(errorMessage(error));
+        this.#notify();
+      } else if (this.#startupFailure && !this.#startupRecoveryBlocked) {
+        // Capability discovery dispatches neither a user turn nor a setting mutation. Only
+        // a recognized startup failure and a confirmed owned-tree cleanup permit retry.
+        const failure = this.#startupFailure;
+        try {
+          await this.#terminate();
+          if (this.processId || this.#cleanupError)
+            throw new Error("Claude process cleanup unconfirmed");
+          this.state.restoreStartup(checkpoint, failure.reason);
+          this.#notify();
+        } catch (cleanupError) {
+          this.#fail(errorMessage(cleanupError));
+          throw cleanupError;
+        }
+      } else this.#fail(errorMessage(error));
       throw error;
     }
   }

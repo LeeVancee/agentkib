@@ -19,7 +19,8 @@ import { Duplex } from "node:stream";
 import type { BackendStore } from "../../../packages/backend/src/store";
 import type { SessionReaders } from "../../../packages/backend/src/session-readers";
 import type { Commands } from "../../../packages/backend/src/commands";
-import { createFakeClaude, processAlive, type FakeClaudePlan } from "./fixtures/claude-fake-cli";
+import { processAlive, type FakeClaudePlan } from "./fixtures/claude-fake-cli";
+import { createStartupClaude } from "./fixtures/claude-startup-cli";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -28,7 +29,7 @@ afterEach(async () => {
 });
 
 function fixture(plan: FakeClaudePlan) {
-  const f = createFakeClaude("agentkib-claude-startup-");
+  const f = createStartupClaude();
   f.setPlan(plan);
   cleanups.push(() => rmSync(f.root, { recursive: true, force: true }));
   const runner = new ClaudeManagedRunnerProcess(
@@ -96,6 +97,25 @@ async function send(owner: ClaudeManagedReadOwner, id: string, requestId = rando
 }
 
 describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup recovery", () => {
+  it("restores an explicit settings initialize timeout after confirmed cleanup without a user frame", async () => {
+    const f = fixture({ silentInitialize: true });
+    await expect(f.runner.prepare(f.executable)).rejects.toThrow("Claude initialize timed out");
+    expect(f.runner.hasWorker).toBe(false);
+    expect(f.runner.snapshot()).toMatchObject({ status: "idle", sendEnabled: true });
+    expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+    f.setPlan({});
+    await expect(f.runner.prepare(f.executable)).resolves.toMatchObject({
+      settingsAcknowledged: true,
+    });
+  }, 30_000);
+
+  it("keeps a settings initialize protocol failure unknown", async () => {
+    const f = fixture({ beforeInitialize: [{ __raw: "invalid frame" }], silentInitialize: true });
+    await expect(f.runner.prepare(f.executable)).rejects.toThrow();
+    expect(f.evidence()).toContain("bad-frame");
+    expect(f.runner.snapshot().status).toBe("outcome-unknown");
+    expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+  }, 30_000);
   it("restores an undispatched initialize timeout after confirming worker cleanup, then permits a new send", async () => {
     const f = fixture({ silentInitialize: true });
     const dispatched = vi.fn();
@@ -124,35 +144,41 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
     expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
   }, 30_000);
 
-  it("restores a failed initialize write only after the owned tree is gone", async () => {
-    const f = fixture({});
-    const original = Duplex.prototype.write;
-    const writing = vi.spyOn(Duplex.prototype, "write").mockImplementation(function (
-      this: Duplex,
-      ...args: Parameters<Duplex["write"]>
-    ) {
-      const chunk = args[0];
-      if (Buffer.isBuffer(chunk) && chunk.includes(Buffer.from('"subtype":"initialize"'))) {
-        const callback = args.at(-1);
-        queueMicrotask(() => {
-          if (typeof callback === "function")
-            callback(new Error("synthetic initialize write failure"));
-        });
-        return false;
-      }
-      return Reflect.apply(original, this, args);
-    });
-    await expect(
-      f.runner.send(f.executable, "synthetic draft", randomUUID(), 0),
-    ).rejects.toBeInstanceOf(ClaudeUndispatchedError);
-    writing.mockRestore();
-    expect(f.runner.hasWorker).toBe(false);
-    expect(f.runner.snapshot()).toMatchObject({
-      status: "idle",
-      reason: "synthetic initialize write failure",
-    });
-    expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
-  }, 30_000);
+  it.each(["send", "prepare"] as const)(
+    "restores a failed %s initialize write only after the owned tree is gone",
+    async (operation) => {
+      const f = fixture({});
+      const original = Duplex.prototype.write;
+      const writing = vi.spyOn(Duplex.prototype, "write").mockImplementation(function (
+        this: Duplex,
+        ...args: Parameters<Duplex["write"]>
+      ) {
+        const chunk = args[0];
+        if (Buffer.isBuffer(chunk) && chunk.includes(Buffer.from('"subtype":"initialize"'))) {
+          const callback = args.at(-1);
+          queueMicrotask(() => {
+            if (typeof callback === "function")
+              callback(new Error("synthetic initialize write failure"));
+          });
+          return false;
+        }
+        return Reflect.apply(original, this, args);
+      });
+      await expect(
+        operation === "send"
+          ? f.runner.send(f.executable, "synthetic draft", randomUUID(), 0)
+          : f.runner.prepare(f.executable),
+      ).rejects.toBeInstanceOf(operation === "send" ? ClaudeUndispatchedError : Error);
+      writing.mockRestore();
+      expect(f.runner.hasWorker).toBe(false);
+      expect(f.runner.snapshot()).toMatchObject({
+        status: "idle",
+        reason: "synthetic initialize write failure",
+      });
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+    },
+    30_000,
+  );
 
   it.skipIf(process.platform !== "darwin")(
     "keeps cleanup failure unknown and does not publish a cleanup receipt",
@@ -240,6 +266,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
     await expect(
       f.runner.send(f.executable, "synthetic draft", randomUUID(), 0),
     ).rejects.not.toBeInstanceOf(ClaudeUndispatchedError);
+    expect(f.evidence()).toContain("bad-frame");
     expect(f.runner.snapshot().status).toBe("outcome-unknown");
     expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
   }, 30_000);
@@ -249,6 +276,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))("Claude startup
     await f.runner.send(f.executable, "synthetic draft", randomUUID(), 0).catch(() => undefined);
     await expect.poll(() => f.runner.snapshot().status).toBe("outcome-unknown");
     expect(f.frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+    expect(f.evidence()).toContain("close-user");
   }, 30_000);
 
   it("finishes a pre-initialize stream failure as not-dispatched and keeps the session usable after restart", async () => {

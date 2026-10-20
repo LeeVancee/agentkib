@@ -6,6 +6,7 @@ import {
   openSync,
   readdirSync,
   readSync,
+  realpathSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -72,6 +73,51 @@ function readsForkSource(words: string[], nativeId: string, identities?: Set<str
   );
 }
 
+/** ps flattens argv; only an executable/official Node entry can establish a CLI owner. */
+function claudeProcess(
+  words: string[],
+  resolvedExecutable: string | null,
+): "claude" | "other" | "uncertain" {
+  const executable = words[0] ?? "";
+  const name = path.posix.basename(executable);
+  if (name === "claude") return "claude";
+  if (["echo", "printf"].includes(name)) return "other";
+  if (["sh", "bash", "zsh", "dash", "fish"].includes(name)) {
+    // -c/-lc executes command text, while a script named Claude remains unverified.
+    if (/^-[a-z]*c[a-z]*$/.test(words[1] ?? "")) return "other";
+    return "uncertain";
+  }
+  if (path.isAbsolute(executable) && resolvedExecutable) {
+    try {
+      if (realpathSync(executable) === realpathSync(resolvedExecutable)) return "claude";
+    } catch {
+      // A missing/unreadable candidate cannot supply positive executable identity.
+    }
+  }
+  if (name === "node" || name === "nodejs") {
+    let index = 1;
+    while (words[index]?.startsWith("-")) {
+      const option = words[index]!;
+      if (
+        ["-e", "--eval", "-p", "--print"].some(
+          (flag) => option === flag || option.startsWith(`${flag}=`),
+        )
+      )
+        return "other";
+      // Only self-contained runtime options keep the following word an unambiguous script.
+      if (!/^--(?:max-old-space-size=\d+|no-warnings|enable-source-maps)$/.test(option))
+        return "uncertain";
+      index++;
+    }
+    const entry = words[index] ?? "";
+    if (entry.endsWith("/node_modules/@anthropic-ai/claude-code/cli.js")) return "claude";
+    return "uncertain";
+  }
+  // This is only called after exact session flags match. An older native executable or
+  // unfamiliar launcher cannot prove the session is free merely by lacking the word Claude.
+  return "uncertain";
+}
+
 /**
  * Read-only observations. Startup checks never reuse one: every worker start must see current
  * external ownership. Only a maintenance tick shares one observation across its live workers.
@@ -117,6 +163,7 @@ export class ClaudeSessionOwnerProbe {
       ownedPid !== null && (pid === ownedPid || processes?.get(pid)?.group === ownedPid);
     let uncertain = false;
     const identities: ProcessIdentities = new Map();
+    const resolvedExecutable = resolveCommand("claude", this.environment);
 
     for (const agent of agents ?? []) {
       if (!object(agent)) continue;
@@ -138,13 +185,19 @@ export class ClaudeSessionOwnerProbe {
       for (const [pid, row] of processes) {
         if (owned(pid)) continue;
         const words = row.command.trim().split(/\s+/);
-        if (!words.some((word) => path.posix.basename(word) === "claude")) continue;
         const mentioned = words.some(
           (word, index) =>
             word === `--resume=${nativeId}` ||
             word === `--session-id=${nativeId}` ||
             (["--resume", "-r", "--session-id"].includes(word) && words[index + 1] === nativeId),
         );
+        if (!mentioned) continue;
+        const executable = claudeProcess(words, resolvedExecutable);
+        if (executable === "other") continue;
+        if (executable === "uncertain") {
+          uncertain = true;
+          continue;
+        }
         // ps flattens argv: fork-looking words may be user prompt text. Only a positive,
         // consistent agents/verified registry identity can prove this PID writes the child.
         if (mentioned && !readsForkSource(words, nativeId, identities.get(pid)))

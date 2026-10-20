@@ -85,6 +85,7 @@ function fixture() {
     process,
     record,
     registry,
+    executable,
     agents(value: unknown) {
       agents = value;
     },
@@ -197,6 +198,65 @@ describe.skipIf(process.platform === "win32")("Claude session ownership probe", 
         pid: 113,
         source: "ps",
       });
+    },
+  );
+
+  it("recognizes the resolved native executable even when its filename is a version number", async () => {
+    const f = fixture();
+    f.failAgents();
+    const versions = path.join(f.registry, "..", "versions");
+    mkdirSync(versions);
+    const nativeExecutable = path.join(versions, "2.1.301");
+    writeFileSync(nativeExecutable, "native executable fixture\n", { mode: 0o700 });
+    rmSync(f.executable);
+    symlinkSync(nativeExecutable, f.executable);
+    f.process(142, `${nativeExecutable} --resume=${nativeId}`);
+    await expect(f.probe.check(nativeId)).resolves.toEqual({
+      kind: "interactive",
+      pid: 142,
+      source: "ps",
+    });
+  });
+
+  it.each([
+    `/bin/sh -c echo claude --resume ${nativeId}`,
+    `/bin/zsh -c printf claude --resume=${nativeId}`,
+    `/bin/echo claude --session-id ${nativeId}`,
+    `node -e console.log(claude --resume ${nativeId})`,
+  ])("does not treat shell or echo text as a Claude process (%s)", async (command) => {
+    const f = fixture();
+    f.failAgents();
+    f.process(139, command);
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+  });
+
+  it.each([
+    `/usr/local/bin/node /opt/tools/node_modules/@anthropic-ai/claude-code/cli.js --resume=${nativeId} --print`,
+    `node --max-old-space-size=4096 /opt/tools/node_modules/@anthropic-ai/claude-code/cli.js --session-id ${nativeId} -p`,
+  ])("recognizes an official Claude Node entry point (%s)", async (command) => {
+    const f = fixture();
+    f.failAgents();
+    f.process(140, command);
+    await expect(f.probe.check(nativeId)).resolves.toEqual({
+      kind: "background",
+      pid: 140,
+      source: "ps",
+    });
+  });
+
+  it.each([
+    `"/Applications/Claude Tools/claude" --resume=${nativeId}`,
+    `node /opt/unknown/claude-cli.js --resume=${nativeId}`,
+    `/bin/sh /opt/unknown/claude --resume=${nativeId}`,
+    `/opt/native/versions/2.1.299 --resume=${nativeId}`,
+    `node /opt/legacy/cli.js --session-id=${nativeId}`,
+  ])(
+    "fails closed when flattened command arguments cannot verify the Claude entry (%s)",
+    async (command) => {
+      const f = fixture();
+      f.failAgents();
+      f.process(141, command);
+      await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
     },
   );
 

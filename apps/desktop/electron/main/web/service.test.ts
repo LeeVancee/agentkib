@@ -488,6 +488,114 @@ describe("WebAccessService loopback security boundary", () => {
     expect(runtime).toHaveBeenCalledTimes(1);
     expect((await http("/api/web/v1/events?sessionId=x&limit=10000")).status).toBe(400);
   });
+  it.each(["local", "external"] as const)(
+    "allows only top-level cross-site page navigation on the %s entry",
+    async (entry) => {
+      const headers: Record<string, string> = {
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+      };
+      if (entry === "external") {
+        await service.request({
+          operation: "configure",
+          enabled: true,
+          port,
+          externalOrigin: "https://web.example",
+          experimentalEnabled: false,
+        });
+        headers.Host = "web.example";
+      }
+      for (const path of ["/", "/index.html"]) {
+        for (const method of ["GET", "HEAD"]) {
+          const result = await http(path, { method, headers });
+          expect(result.status, `${method} ${path}`).toBe(200);
+          expect(result.headers["referrer-policy"]).toBe("no-referrer");
+          expect(result.headers["x-content-type-options"]).toBe("nosniff");
+          expect(result.headers["set-cookie"]).toBeUndefined();
+          const policy = String(result.headers["content-security-policy"]);
+          for (const directive of [
+            "default-src 'self'",
+            "script-src 'self'",
+            "connect-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'none'",
+            "form-action 'self'",
+          ])
+            expect(policy.split(";").map((value) => value.trim())).toContain(directive);
+          expect(result.body).toBe(method === "HEAD" ? "" : "<html>local web</html>");
+        }
+      }
+      expect(runtime).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["local", "external"] as const)(
+    "keeps cross-site API, embedded and non-navigation requests blocked on the %s entry",
+    async (entry) => {
+      const headers: Record<string, string> = {
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+      };
+      if (entry === "external") {
+        await service.request({
+          operation: "configure",
+          enabled: true,
+          port,
+          externalOrigin: "https://web.example",
+          experimentalEnabled: false,
+        });
+        headers.Host = "web.example";
+      }
+      for (const path of [
+        "/api/web/v1/access",
+        "/api/web/v1/catalog",
+        "/assets/app.js",
+        "/other",
+      ]) {
+        expect((await http(path, { headers })).status, path).toBe(403);
+      }
+      // The navigation exception uses the raw path, before URL or percent normalization.
+      for (const path of [
+        "/./index.html",
+        "/nested/../index.html",
+        "/%2e/index.html",
+        "/%69ndex.html",
+        "/index%2ehtml",
+        "/index.html/..",
+        "//index.html",
+        "/index.html/",
+        "/api/web/v1/../v1/access",
+      ]) {
+        const result = await http(path, { headers });
+        expect(result.status, path).toBe(403);
+        expect(result.json(), path).toEqual({ error: "cross_site_request" });
+      }
+      for (const method of ["POST", "OPTIONS"]) {
+        expect((await http("/", { method, headers })).status, method).toBe(403);
+      }
+      const blockedHeaders: Record<string, string>[] = [
+        { "Sec-Fetch-Dest": "iframe" },
+        { "Sec-Fetch-Dest": "object" },
+        { "Sec-Fetch-Dest": "empty" },
+        { "Sec-Fetch-Mode": "cors" },
+        { "Sec-Fetch-Mode": "same-origin" },
+        { "Sec-Fetch-Mode": "" },
+        { "Sec-Fetch-Dest": "" },
+        { Origin: "https://evil.example" },
+        { Host: "evil.example", "X-Forwarded-Host": "web.example" },
+      ];
+      for (const overrides of blockedHeaders) {
+        expect((await http("/", { headers: { ...headers, ...overrides } })).status).toBe(403);
+      }
+      for (const missing of ["Sec-Fetch-Mode", "Sec-Fetch-Dest"]) {
+        const incomplete = { ...headers };
+        delete incomplete[missing];
+        expect((await http("/", { headers: incomplete })).status, missing).toBe(403);
+      }
+      expect(runtime).not.toHaveBeenCalled();
+    },
+  );
   it("protects the workspace catalog and preserves history metadata without requiring control grants", async () => {
     const catalog = {
       indexEnabled: true,

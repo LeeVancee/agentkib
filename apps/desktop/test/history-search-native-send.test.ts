@@ -68,7 +68,8 @@ input.on('line', (line) => {
     case 'thread/start':
     case 'thread/resume': result = { thread: thread(), cwd, model: 'offline-model', reasoningEffort: null, serviceTier: null,
       approvalPolicy: 'on-request', approvalsReviewer: 'user',
-      sandbox: { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false } }; break;
+      sandbox: { type: 'workspaceWrite', writableRoots: [], networkAccess: false,
+        excludeTmpdirEnvVar: true, excludeSlashTmp: true } }; break;
     case 'thread/read': result = { thread: thread() }; break;
     case 'thread/goal/get': result = { goal: null }; break;
     case 'turn/start':

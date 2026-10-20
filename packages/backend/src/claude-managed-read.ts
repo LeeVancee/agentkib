@@ -24,7 +24,7 @@ import { ClaudeSessionOwnerProbe, type ClaudeOwnerObservationShare } from "./cla
 import { resolveCommand } from "./command-resolution";
 import { validHistoryControl } from "./history-control-schema";
 import type { Commands } from "./commands";
-import type { SessionReaders } from "./session-readers";
+import type { ClaudeControlMetadataShare, SessionReaders } from "./session-readers";
 import type { BackendStore } from "./store";
 import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
@@ -168,6 +168,7 @@ export class ClaudeManagedReadOwner {
   #starting = new Set<string>();
   #activeHostClaims = new Map<string, string>();
   #continuationNotices = new Map<string, string>();
+  #continuationNoticeIds = new Map<string, string>();
   #maintenanceTimer: ReturnType<typeof setInterval>;
   #maintenance?: Promise<void>;
   #shuttingDown = false;
@@ -379,6 +380,9 @@ export class ClaudeManagedReadOwner {
       case "settings-state":
         if (!id) throw new Error("missing-session");
         return this.settingsState(id);
+      case "settings-prepare":
+        if (!id) throw new Error("missing-session");
+        return this.#prepareSettings(value, id);
       case "goal":
         if (!id) throw new Error("missing-session");
         await this.#live(id, false);
@@ -1233,9 +1237,9 @@ export class ClaudeManagedReadOwner {
       await this.#reserveRunner(record.id);
       runner = this.#newRunner(record, options, settings);
     }
-    const executable = resolveCommand("claude", this.environment);
-    if (!executable) throw new Error("claude-cli-unavailable");
     try {
+      const executable = resolveCommand("claude", this.environment);
+      if (!executable) throw new Error("claude-cli-unavailable");
       await runner.prepare(executable);
     } finally {
       this.#starting.delete(record.id);
@@ -1441,7 +1445,7 @@ export class ClaudeManagedReadOwner {
         ...target,
         registeredWorkspace: canonicalize(this.store.workspacePath(target.workspaceId)),
         home: this.#home(),
-        title: "Claude Code",
+        title: this.#nativeMetadata(target.nativeId, target.workspace)?.title ?? "Claude Code",
         createdAt: new Date().toISOString(),
         adopted: false,
         released: false,
@@ -1622,7 +1626,11 @@ export class ClaudeManagedReadOwner {
         createdAt: new Date().toISOString(),
         adopted: false,
         released: false,
-        title: `${state.title ?? record.title} (fork)`,
+        title:
+          this.#nativeMetadata(record.nativeId, record.workspace)?.title ??
+          state.title ??
+          record.title,
+        nativeTitle: undefined,
         fresh: true,
         fingerprint: null,
         forkSourceNativeId: record.nativeId,
@@ -2321,9 +2329,12 @@ export class ClaudeManagedReadOwner {
         completedRequests: [],
       };
       this.#save(record);
-      if (Object.keys(selectedSettings).length)
+      const explicitlyNamed = typeof value.name === "string" && value.name.trim().length > 0;
+      if (Object.keys(selectedSettings).length || explicitlyNamed)
         this.#hostState.update(id, (host) => {
           host.settings = selectedSettings;
+          // A user-chosen create name has the same precedence as a later explicit rename.
+          if (explicitlyNamed) host.title = record.title;
         });
       const cliVersion = await this.#installationVersion();
       const permission = this.#permissionView(
@@ -2465,7 +2476,11 @@ export class ClaudeManagedReadOwner {
         return claimed;
       }
       const previous = this.#load(id);
-      const name = "Claude Code";
+      const namedCreate = existing && !existing.adopted && existing.title !== "Claude Code";
+      const name =
+        existing && (existing.forkSourceNativeId || namedCreate)
+          ? existing.title
+          : (this.#nativeMetadata(nativeId, workspace)?.title ?? previous?.title ?? "Claude Code");
       const record: ClaudeRecord = {
         version: 1,
         id,
@@ -2766,6 +2781,7 @@ export class ClaudeManagedReadOwner {
     if (this.#isSessionBridged(record)) throw new Error("session-already-bridged");
     this.#ownershipReasons.set(id, { at: Date.now(), reason: null });
     this.#continuationNotices.delete(id);
+    this.#continuationNoticeIds.delete(id);
     this.#idleSince.delete(id);
     if (this.continuation.isSessionObserved?.(id)) this.#observed.add(id);
   }
@@ -2889,7 +2905,13 @@ export class ClaudeManagedReadOwner {
           const retirement = runner.retireIfInactive();
           if (retirement && (await retirement)) {
             this.#idleSince.delete(id);
-            this.#continuationNotices.set(id, "background-ended");
+            if (observed && this.continuation.isSessionObserved?.(id) === true) {
+              this.#continuationNotices.set(id, "background-ended");
+              this.#continuationNoticeIds.set(id, randomUUID());
+            } else {
+              this.#continuationNotices.delete(id);
+              this.#continuationNoticeIds.delete(id);
+            }
             const live = await this.#live(id, false);
             this.#publishConversationEvent?.(id, "state", live, live);
           }
@@ -3074,23 +3096,67 @@ export class ClaudeManagedReadOwner {
     return undefined;
   }
 
+  #nativeMetadata(nativeId: string, workspace: string, share?: ClaudeControlMetadataShare) {
+    try {
+      return this.sessions.verifiedClaudeControlMetadata(nativeId, workspace, share);
+    } catch {
+      // Display-only fallback: unavailable or mismatched native history must never lend a
+      // title/activity time to this record. Control retains its separate mandatory proof.
+      return undefined;
+    }
+  }
+
   catalog(): Array<Record<string, unknown>> {
     const records = this.#listRecords();
+    const metadataShare: ClaudeControlMetadataShare = {};
     return records.flatMap((record) => {
       try {
         this.#validate(record);
         if (record.released && record.adopted) return [];
         const indexedSessionId = this.store.sessions.id("claude-code", record.nativeId);
+        const native = record.fresh
+          ? undefined
+          : this.#nativeMetadata(record.nativeId, record.workspace, metadataShare);
+        // Older named creates predate host.title initialization. Keep their explicit name;
+        // adopted native sessions still follow the verified native display title.
+        const namedCreateTitle =
+          !record.adopted && !record.forkSourceNativeId && record.title !== "Claude Code"
+            ? record.title
+            : undefined;
+        const legacyForkTitle =
+          record.forkSourceNativeId && record.title === "Claude Code (fork)"
+            ? this.#nativeMetadata(record.forkSourceNativeId, record.workspace, metadataShare)
+                ?.title
+            : undefined;
+        const forkSources = record.forkSourceNativeId
+          ? records.filter(
+              (source) =>
+                source.nativeId === record.forkSourceNativeId &&
+                source.workspace === record.workspace &&
+                source.home === record.home,
+            )
+          : [];
+        const forkSourceId = record.forkSourceNativeId
+          ? forkSources.length === 1
+            ? forkSources[0]!.id
+            : this.store.sessions.id("claude-code", record.forkSourceNativeId)
+          : null;
         return [
           {
             id: record.id,
             indexedSessionId,
             workspace_id: record.workspaceId,
             agent: "claude-code",
-            title: this.#hostState.peek(record.id)?.title ?? record.title,
+            title:
+              this.#hostState.peek(record.id)?.title ??
+              (record.forkSourceNativeId
+                ? (legacyForkTitle ?? record.title)
+                : (namedCreateTitle ?? native?.title ?? record.title)),
             origin: "interactive",
             created_at: record.createdAt,
-            updated_at: record.createdAt,
+            updated_at: native?.updated_at ?? record.createdAt,
+            forked_from_session_id: forkSourceId,
+            spawned_by_session_id: null,
             message_count: null,
             git_branch: null,
             archived: this.#hostState.peek(record.id)?.archived ?? false,
@@ -3289,6 +3355,13 @@ export class ClaudeManagedReadOwner {
   }
 
   async #live(id: string, controls: boolean): Promise<Record<string, unknown>> {
+    if (
+      this.#continuationNotices.get(id) === "background-ended" &&
+      this.continuation.isSessionObserved?.(id) !== true
+    ) {
+      this.#continuationNotices.delete(id);
+      this.#continuationNoticeIds.delete(id);
+    }
     let record = this.#load(id);
     const version = supportsClaudeManagedRunner() ? await this.#installationVersion() : null;
     if (!record) {
@@ -3406,6 +3479,7 @@ export class ClaudeManagedReadOwner {
           );
     live.ownershipReason = ownershipReason;
     live.continuationNotice = this.#continuationNotices.get(id) ?? null;
+    live.continuationNoticeId = this.#continuationNoticeIds.get(id) ?? null;
     if (this.#starting.has(id) && live.status !== "outcome-unknown") {
       live.status = "starting";
       live.executionLocation = "agentkib";
@@ -3442,18 +3516,24 @@ export class ClaudeManagedReadOwner {
             supported: false,
           }));
     }
+    this.#rememberConfirmedOptions(id);
     const host = this.#hostState.read(id);
     live.revision = Number(live.revision ?? 0) + host.revision;
     live.goal = host.goal;
     live.archived = host.archived;
     live.schedule = { paused: host.paused, reason: host.reason, revision: host.revision };
-    const options = runner?.optionsSnapshot;
+    const options = runner?.optionsSnapshot.settingsAcknowledged
+      ? runner.optionsSnapshot
+      : host.lastConfirmedOptions?.options;
+    const confirmed =
+      live.status !== "outcome-unknown" &&
+      (!runner?.hasWorker || runner.optionsSnapshot.settingsAcknowledged) &&
+      options !== undefined &&
+      stableJson(host.lastConfirmedOptions?.selection) === stableJson(host.settings);
     live.settings = {
-      current: options?.settingsAcknowledged
-        ? options.settings
-        : { model: null, effort: null, permissionMode: null },
+      current: options?.settings ?? { model: null, effort: null, permissionMode: null },
       selected: host.settings,
-      applicationStatus: options?.settingsAcknowledged ? "confirmed" : "pending",
+      applicationStatus: confirmed ? "confirmed" : "pending",
     };
     const permission = record.released
       ? this.#releasedPermission(id)
@@ -3472,6 +3552,8 @@ export class ClaudeManagedReadOwner {
     snapshot: ClaudeRunnerSnapshot,
     record = this.#load(id),
   ): Record<string, unknown> {
+    // Streaming frames only publish progress; persist the options catalog at idle ACK/turn boundaries.
+    if (snapshot.status === "idle") this.#rememberConfirmedOptions(id);
     const host = this.#hostState.read(id);
     // Same version source as #live: the cached value, never a fresh probe per CLI frame.
     const version = this.#version?.value ?? null;
@@ -3491,6 +3573,7 @@ export class ClaudeManagedReadOwner {
         this.#runners.get(id)?.hasWorker || this.#starting.has(id) ? "agentkib" : null,
       ownershipReason: this.#ownershipReasons.get(id)?.reason ?? null,
       continuationNotice: this.#continuationNotices.get(id) ?? null,
+      continuationNoticeId: this.#continuationNoticeIds.get(id) ?? null,
       permissionMode: "cli-configured",
       cliVersion: version,
       ...(permission ? { permission } : {}),
@@ -3522,6 +3605,8 @@ export class ClaudeManagedReadOwner {
       }
       const previous = this.#lastPermission.get(id);
       if (previous !== undefined) return { mode: previous, previous: true };
+      const cached = this.#hostState.read(id).lastConfirmedOptions?.permissionMode;
+      if (cached !== null && cached !== undefined) return { mode: cached, previous: true };
       // Documented start-mode rule: without feature flags (third-party provider, telemetry off)
       // `claude -p` starts in auto from 2.1.285. Organization policy can change this, so the
       // hint says "possibly" and only marks the unknown mode.
@@ -3984,30 +4069,131 @@ export class ClaudeManagedReadOwner {
     );
   }
 
+  #rememberConfirmedOptions(id: string): void {
+    const runner = this.#runners.get(id);
+    const native = runner?.optionsSnapshot;
+    if (!native?.settingsAcknowledged) return;
+    const host = this.#hostState.read(id);
+    const { settingsAcknowledged: _acknowledged, ...options } = native;
+    let permissionMode: ClaudeObservedPermissionMode | null;
+    try {
+      permissionMode = runner?.observedPermissionMode ?? null;
+    } catch {
+      // Permission is a display-only observation; a broken view cannot fail a turn.
+      permissionMode = host.lastConfirmedOptions?.permissionMode ?? null;
+    }
+    const confirmed = {
+      options,
+      selection: host.settings,
+      permissionMode,
+    };
+    // Native frames frequently repeat identical settings. They must not advance the CAS
+    // revision or turn a harmless read into a steady stream of host-state mutations.
+    if (stableJson(host.lastConfirmedOptions) === stableJson(confirmed)) return;
+    this.#hostState.update(id, (state) => {
+      state.lastConfirmedOptions = structuredClone(confirmed);
+    });
+  }
+
+  async #prepareSettings(value: Record<string, unknown>, id: string) {
+    const allowed = new Set([
+      "operation",
+      "sessionId",
+      "deviceId",
+      "runtimeBootId",
+      "expectedRevision",
+      "experimentalEnabled",
+    ]);
+    if (
+      !validClaudeDeviceId(value.deviceId) ||
+      value.runtimeBootId !== this.bootId ||
+      value.experimentalEnabled !== true ||
+      typeof value.expectedRevision !== "number" ||
+      !Number.isSafeInteger(value.expectedRevision) ||
+      value.expectedRevision < 0 ||
+      Object.keys(value).some((key) => !allowed.has(key))
+    )
+      throw new Error("invalid-managed-settings-prepare");
+    if (!supportsClaudeManagedRunner()) throw new Error("platform-unsupported");
+    if (!supportsClaudeVersion((await this.#installationVersion()) ?? "", "2.1.286"))
+      throw new Error("unsupported-Claude-version");
+    const owned = this.#ownerLocks.has(id);
+    if (!owned) {
+      const release = this.#tryLock(id);
+      if (!release) throw new Error("session-managed-by-another-runtime");
+      this.#ownerLocks.set(id, release);
+    }
+    try {
+      // The record may have changed while acquiring the lease. As with send, validate the
+      // authoritative record after acquiring it before any process is prepared.
+      let record = this.#load(id);
+      if (!record || record.released) throw new Error("session-unavailable");
+      this.#validate(record);
+      const live = await this.#live(id, true);
+      if (live.status === "outcome-unknown" || managedSessionHasUnknownCommands(this.dataDir, id))
+        throw new Error("control-outcome-unconfirmed");
+      if (live.revision !== value.expectedRevision) throw new Error("stale-Claude-revision");
+      if (this.#hostState.read(id).archived) throw new Error("session-archived");
+      if (live.status !== "idle" || live.activity === "compacting") throw new Error("session-busy");
+      if (live.ownershipReason) throw new Error(String(live.ownershipReason));
+      // The live read can recover a proved, interrupted startup. Prepare from that durable
+      // revision rather than the pre-recovery snapshot captured above.
+      record = this.#load(id);
+      if (!record || record.released) throw new Error("session-unavailable");
+      this.#validate(record);
+      const publishCurrentState = async () => {
+        const currentLive = await this.#live(id, true);
+        this.#publishConversationEvent?.(id, "state", currentLive, currentLive);
+      };
+      try {
+        await this.#prepareRunner(record);
+      } catch (error) {
+        // A fresh startup probe can reject ownership after the cached idle preflight.
+        this.#ownershipReasons.delete(id);
+        try {
+          await publishCurrentState();
+        } catch {
+          // A failed best-effort notification must not replace the original startup error.
+        }
+        throw error;
+      }
+      // Success and cleanup callbacks run before the startup guard clears. Publish the
+      // authoritative terminal state afterward, including any new unknown/owner fence.
+      await publishCurrentState();
+      return this.settingsState(id);
+    } finally {
+      if (!owned && !this.#runners.has(id)) {
+        this.#ownerLocks.get(id)?.();
+        this.#ownerLocks.delete(id);
+      }
+    }
+  }
+
   async settingsState(id: string): Promise<Record<string, unknown>> {
-    let live = await this.#live(id, false);
+    const live = await this.#live(id, false);
     if (!supportsClaudeVersion((await this.#installationVersion()) ?? "", "2.1.286"))
       return { available: false, reason: "unsupported-Claude-version", revision: live.revision };
-    const record = this.#load(id);
-    if (record && !record.released && live.status === "idle" && live.activity !== "compacting") {
-      await this.#prepareRunner(record);
-      live = await this.#live(id, false);
-    }
     const state = this.#hostState.read(id);
-    const native = this.#runners.get(id)?.optionsSnapshot;
+    const runner = this.#runners.get(id);
+    const native = runner?.optionsSnapshot.settingsAcknowledged
+      ? runner.optionsSnapshot
+      : state.lastConfirmedOptions?.options;
     const selected = {
       model: state.settings.model ?? null,
       effort: state.settings.effort ?? null,
       permissionMode: state.settings.permissionMode ?? null,
     };
-    const confirmed = native?.settingsAcknowledged === true;
-    const current = confirmed
-      ? native.settings
-      : { model: null, effort: null, permissionMode: null };
+    const confirmed =
+      live.status !== "outcome-unknown" &&
+      (!runner?.hasWorker || runner.optionsSnapshot.settingsAcknowledged) &&
+      native !== undefined &&
+      stableJson(state.lastConfirmedOptions?.selection) === stableJson(state.settings);
+    const current = native?.settings ?? { model: null, effort: null, permissionMode: null };
     const mutable =
       this.#load(id)?.released === false &&
       live.status === "idle" &&
       live.activity !== "compacting" &&
+      !live.ownershipReason &&
       !state.archived;
     return {
       available: true,

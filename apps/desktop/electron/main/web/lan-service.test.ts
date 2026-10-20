@@ -183,6 +183,46 @@ describe("hosted LAN transport", () => {
       capabilities: { read: true, send: false, approve: false },
     });
   });
+  it("keeps LAN origin, bearer and CSRF checks with top-level navigation metadata", async () => {
+    const headers = {
+      "Sec-Fetch-Site": "cross-site",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Dest": "document",
+    };
+    const blockedHeaders: Record<string, string>[] = [
+      { Origin: "" },
+      { Origin: "null" },
+      { Origin: "https://evil.test" },
+      { Host: "evil.test", "X-Forwarded-Host": `192.168.20.10:${port}` },
+    ];
+    for (const overrides of blockedHeaders) {
+      const result = await http("/info", { ...headers, ...overrides });
+      expect(result.status).toBe(403);
+      expect(result.headers["access-control-allow-origin"]).toBeUndefined();
+    }
+    expect((await http("/events?sessionId=session", headers)).status).toBe(401);
+    await bootstrap();
+    await pair();
+    const readable = await http("/events?sessionId=session", headers);
+    expect(readable.status).toBe(200);
+    expect(readable.headers["access-control-allow-origin"]).toBe(HOSTED_ORIGIN);
+    const reads = runtime.mock.calls.length;
+    expect(
+      (
+        await http("/events?sessionId=session", {
+          ...headers,
+          Authorization: `Bearer ${"a".repeat(43)}`,
+        })
+      ).status,
+    ).toBe(401);
+    const mutation = await http("/pair", { ...headers, "X-CSRF-Token": "bad" }, "POST", {
+      code: "12345678",
+      name: "navigation",
+    });
+    expect(mutation.status).toBe(403);
+    expect(mutation.data).toMatchObject({ error: "csrf_rejected" });
+    expect(runtime).toHaveBeenCalledTimes(reads);
+  });
   it("keeps the legacy hosted handshake, pairing and reads without accepting old controls", async () => {
     // This is the released client's pre-authentication compatibility gate.
     const { data: info } = await http("/info");

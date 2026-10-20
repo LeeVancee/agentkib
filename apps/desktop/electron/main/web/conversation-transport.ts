@@ -82,6 +82,7 @@ export function isConversationPath(path: string, post: boolean) {
         "/managed/release",
         "/managed/reconcile",
         "/managed/action",
+        "/managed/settings-prepare",
       ].includes(name) ||
         /^\/codex\/(steer|queue-add|queue-update|queue-delete|queue-reorder|queue-start|rename|archive|unarchive|fork|settings|goal-set|goal-pause|goal-resume|goal-clear|resume|inspect)$/.test(
           name,

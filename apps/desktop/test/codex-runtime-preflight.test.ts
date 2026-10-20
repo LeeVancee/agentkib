@@ -26,6 +26,38 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 describe("Codex writer preflight", () => {
+  it("shares concurrent catalog version reads and invalidates the cached executable identity", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "agentkib-version-check-"));
+    roots.push(root);
+    const executable = path.join(root, process.platform === "win32" ? "codex.exe" : "codex");
+    writeFileSync(executable, "old fixture");
+    chmodSync(executable, 0o700);
+    const run = vi.spyOn(Commands.prototype, "run").mockResolvedValue({
+      bytes: Buffer.from("codex-cli 0.146.0"),
+      error: "",
+      success: true,
+      truncated: false,
+      exitCode: 0,
+    });
+    const checker = new CodexRuntimePreflight({ PATH: root });
+    try {
+      const results = await Promise.all(Array.from({ length: 20 }, () => checker.check()));
+      expect(results.every(({ reason }) => reason === "codex-cli-version-too-old")).toBe(true);
+      expect(run).toHaveBeenCalledOnce();
+      writeFileSync(executable, "updated fixture with a different identity");
+      run.mockResolvedValue({
+        bytes: Buffer.from("codex-cli 0.155.1"),
+        error: "",
+        success: true,
+        truncated: false,
+        exitCode: 0,
+      });
+      expect(await checker.check()).toMatchObject({ reason: null });
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      checker.close();
+    }
+  });
   it.each([
     ["codex-cli 0.147.0", null],
     ["codex-cli 0.146.0", "codex-cli-version-too-old"],

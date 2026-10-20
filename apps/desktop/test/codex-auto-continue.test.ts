@@ -52,7 +52,11 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function fixture(compressedHistory = false, registeredRoot?: string) {
+function fixture(
+  compressedHistory = false,
+  registeredRoot?: string,
+  runtimeEnvironment: NodeJS.ProcessEnv = {},
+) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-codex-auto-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
@@ -141,11 +145,20 @@ function fixture(compressedHistory = false, registeredRoot?: string) {
     .spyOn(CodexFollowerBridge, "connect")
     .mockRejectedValue(new Error("must-not-follow-desktop"));
   let nativeFailure: unknown;
+  let turnFailure: unknown;
   const methods: string[] = [];
   const requests: Array<{ method: string; params: unknown }> = [];
   let broadSandbox = false;
+  let sandboxRootsOverride: { value: unknown } | undefined;
+  let policyReply: Record<string, unknown> = {};
   let readCwd: string | undefined;
   let wrongReplyCwd: "top" | "thread" | undefined;
+  let sourceModel: string | null = "model-a";
+  let sourceEffort: string | null = "low";
+  let configuredModel = "model-a";
+  let models: Array<Record<string, unknown>> = [
+    { model: "model-a", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
+  ];
   const servers: OfflineServer[] = [];
   class OfflineServer extends EventEmitter {
     connected = true;
@@ -156,20 +169,24 @@ function fixture(compressedHistory = false, registeredRoot?: string) {
       methods.push(method);
       requests.push({ method, params });
       if (method === "thread/resume" && nativeFailure) throw nativeFailure;
-      if (method === "model/list")
-        return { data: [{ model: "model-a", isDefault: true, supportedReasoningEfforts: [] }] };
+      if (method === "model/list") return { data: models };
       if (method === "thread/goal/get") return { goal: null };
       if (method === "skills/list") return { data: [] };
       if (method === "thread/read")
         return {
           thread: {
-            id: nativeId,
+            id: (params as { threadId?: string }).threadId ?? nativeId,
             cwd: readCwd ?? executionCwd,
+            model: sourceModel,
+            reasoningEffort: sourceEffort,
             status: { type: "idle" },
             turns: [{ id: "finished-turn", status: "completed", items: [] }],
           },
         };
-      if (method === "turn/start") return { turn: { id: "new-turn", status: "inProgress" } };
+      if (method === "turn/start") {
+        if (turnFailure) throw turnFailure;
+        return { turn: { id: "new-turn", status: "inProgress" } };
+      }
       if (method === "turn/steer") return { turnId: "new-turn" };
       if (method === "thread/queue/add")
         return {
@@ -182,22 +199,42 @@ function fixture(compressedHistory = false, registeredRoot?: string) {
       if (["thread/resume", "thread/start", "thread/fork", "thread/unarchive"].includes(method))
         return {
           thread: {
-            id: method === "thread/fork" ? forkId : nativeId,
+            id:
+              method === "thread/fork"
+                ? forkId
+                : ((params as { threadId?: string }).threadId ?? nativeId),
             cwd: wrongReplyCwd === "thread" ? workspace : executionCwd,
             status: { type: "idle" },
             turns: [],
           },
           cwd: wrongReplyCwd === "top" ? workspace : executionCwd,
-          model: "model-a",
-          reasoningEffort: null,
+          model: (params as Record<string, unknown>).model ?? configuredModel,
+          reasoningEffort:
+            (params as { config?: Record<string, unknown> }).config?.model_reasoning_effort ?? null,
           serviceTier: null,
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-          sandbox: {
-            type: "workspaceWrite",
-            writableRoots: [broadSandbox ? workspace : executionCwd],
-            networkAccess: false,
-          },
+          approvalPolicy: (params as Record<string, unknown>).approvalPolicy,
+          approvalsReviewer: (params as Record<string, unknown>).approvalsReviewer,
+          sandbox:
+            (params as Record<string, unknown>).sandbox === "danger-full-access"
+              ? { type: "dangerFullAccess" }
+              : {
+                  type: "workspaceWrite",
+                  writableRoots: sandboxRootsOverride
+                    ? sandboxRootsOverride.value
+                    : broadSandbox
+                      ? [workspace]
+                      : [],
+                  networkAccess: false,
+                  excludeTmpdirEnvVar:
+                    (params as { config?: Record<string, unknown> }).config?.[
+                      "sandbox_workspace_write.exclude_tmpdir_env_var"
+                    ] === true,
+                  excludeSlashTmp:
+                    (params as { config?: Record<string, unknown> }).config?.[
+                      "sandbox_workspace_write.exclude_slash_tmp"
+                    ] === true,
+                },
+          ...policyReply,
         };
       throw new Error(`unexpected-native-method:${method}`);
     }
@@ -237,7 +274,7 @@ function fixture(compressedHistory = false, registeredRoot?: string) {
     readers,
     root,
     () => 0n,
-    { CODEX_HOME: home, HOME: root, PATH: bin },
+    { CODEX_HOME: home, HOME: root, PATH: bin, ...runtimeEnvironment },
     undefined,
     () => observed,
   );
@@ -286,14 +323,33 @@ function fixture(compressedHistory = false, registeredRoot?: string) {
     setReadCwd: (cwd: string) => {
       readCwd = cwd;
     },
+    setSourceSettings: (model: string | null, effort: string | null) => {
+      sourceModel = model;
+      sourceEffort = effort;
+    },
+    setConfiguredModel: (model: string) => {
+      configuredModel = model;
+    },
+    setModels: (value: Array<Record<string, unknown>>) => {
+      models = value;
+    },
     mismatchReply: (field: "top" | "thread") => {
       wrongReplyCwd = field;
     },
     widenSandbox: () => {
       broadSandbox = true;
     },
+    setSandboxRoots: (value: unknown) => {
+      sandboxRootsOverride = { value };
+    },
+    setPolicyReply: (value: Record<string, unknown>) => {
+      policyReply = value;
+    },
     setFailure: (error: unknown) => {
       nativeFailure = error;
+    },
+    setTurnFailure: (error: unknown) => {
+      turnFailure = error;
     },
     leave: () => {
       observed = false;
@@ -303,6 +359,480 @@ function fixture(compressedHistory = false, registeredRoot?: string) {
     },
   };
 }
+
+describe("Codex fork model recovery", () => {
+  const catalog = [
+    { model: "model-a", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
+    {
+      model: "source-model",
+      isDefault: false,
+      supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+    },
+  ];
+  async function forkResult(f: ReturnType<typeof fixture>) {
+    const state = await f.live();
+    return f.web.managedControl({
+      operation: "fork",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+    });
+  }
+  async function fork(f: ReturnType<typeof fixture>) {
+    const result = await forkResult(f);
+    expect(result.accepted).toBe(true);
+    return result.sessionId as string;
+  }
+  async function action(
+    f: ReturnType<typeof fixture>,
+    id: string,
+    operation: "send" | "settings",
+    fields: Record<string, unknown> = {},
+  ) {
+    const state = await f.web.request({
+      operation: "live",
+      sessionId: id,
+      experimentalEnabled: true,
+    });
+    return f.web.managedControl({
+      operation,
+      sessionId: id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      runtimeBootId: state.runtimeBootId,
+      expectedRevision: state.revision,
+      experimentalEnabled: true,
+      ...(operation === "send" ? { text: "One continued message" } : {}),
+      ...fields,
+    });
+  }
+
+  it("inherits the verified source model and effort instead of the CLI configuration default", async () => {
+    const f = fixture();
+    f.setModels(catalog);
+    f.setSourceSettings("source-model", "low");
+    f.setConfiguredModel("configuration-only-model");
+    const id = await fork(f);
+    expect(f.requests.find(({ method }) => method === "thread/fork")?.params).toMatchObject({
+      model: "source-model",
+      config: { model_reasoning_effort: "low" },
+    });
+    expect(readManagedRecord(f.root, id)).toMatchObject({ model: "source-model", effort: "low" });
+    expect(await action(f, id, "send")).toMatchObject({ accepted: true });
+    expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      model: "source-model",
+      effort: "low",
+    });
+  });
+
+  it.each([false, true])(
+    "keeps an unlisted source fork recoverable through explicit next-turn settings after release=%s",
+    async (release) => {
+      const f = fixture();
+      f.setModels(catalog);
+      f.setSourceSettings("unlisted-source-model", "low");
+      const id = await fork(f);
+      expect(readManagedRecord(f.root, id)).toMatchObject({
+        model: "unlisted-source-model",
+        effort: "low",
+      });
+      if (release)
+        await f.web.managedLifecycle({
+          operation: "release",
+          sessionId: id,
+          requestId: randomUUID(),
+          deviceId: "fixture",
+        });
+      const requestId = randomUUID();
+      expect(await action(f, id, "send", { requestId })).toMatchObject({
+        accepted: false,
+        controlOutcome: "not-dispatched",
+        error: "unsupported-model",
+      });
+      expect(f.methods).not.toContain("turn/start");
+      expect(readUnknownManagedCommands(f.root, id)).toEqual([]);
+      expect(readControlReceipt(f.root, { requestId, deviceId: "fixture" })).toMatchObject({
+        found: true,
+        status: "not-dispatched",
+        operation: "send",
+        ack: { error: "unsupported-model" },
+      });
+      expect(await action(f, id, "settings", { model: "model-a", effort: "low" })).toMatchObject({
+        accepted: true,
+      });
+      expect(await action(f, id, "send")).toMatchObject({ accepted: true });
+      expect(f.requests.filter(({ method }) => method === "turn/start")).toEqual([
+        expect.objectContaining({
+          params: expect.objectContaining({ model: "model-a", effort: "low" }),
+        }),
+      ]);
+    },
+  );
+
+  it.each([
+    [{ model: "invented-model" }, "unsupported-model"],
+    [{ model: "model-a", effort: "invented-effort" }, "unsupported-effort"],
+  ] as const)("continues to validate explicit user settings %s", async (settings, error) => {
+    const f = fixture();
+    f.setModels(catalog);
+    const id = await fork(f);
+    const before = readManagedRecord(f.root, id);
+    expect(await action(f, id, "settings", settings)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      error,
+    });
+    expect(readManagedRecord(f.root, id)?.model).toBe(before?.model);
+    expect(f.methods).not.toContain("turn/start");
+  });
+
+  it("does not create a branch with the configuration default when the source model is unavailable", async () => {
+    const f = fixture();
+    f.setSourceSettings(null, null);
+    const rejection = await forkResult(f);
+    expect(rejection).toMatchObject({
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason: "native-model-unconfirmed",
+      sessionId: f.summary.id,
+      requestId: expect.any(String),
+      runtimeBootId: expect.any(String),
+    });
+    expect(
+      readControlReceipt(f.root, { requestId: rejection.requestId, deviceId: "fixture" }),
+    ).toMatchObject({
+      status: "not-dispatched",
+      operation: "fork",
+      ack: { reason: "native-model-unconfirmed" },
+    });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+    expect(f.methods).not.toContain("thread/fork");
+  });
+
+  it("does not inherit configuration effort when the native source effort is unconfirmed", async () => {
+    const f = fixture();
+    f.setSourceSettings("model-a", null);
+    const rejection = await forkResult(f);
+    expect(rejection).toMatchObject({
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason: "native-effort-unconfirmed",
+      sessionId: f.summary.id,
+      requestId: expect.any(String),
+      runtimeBootId: expect.any(String),
+    });
+    expect(
+      readControlReceipt(f.root, { requestId: rejection.requestId, deviceId: "fixture" }),
+    ).toMatchObject({
+      status: "not-dispatched",
+      operation: "fork",
+      ack: { reason: "native-effort-unconfirmed" },
+    });
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toEqual([]);
+    expect(f.methods).not.toContain("thread/fork");
+    expect(f.methods).not.toContain("turn/start");
+  });
+
+  it("uses the source ledger's confirmed model selection when the native effort is unavailable", async () => {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    f.servers[0]!.complete();
+    expect(
+      await action(f, f.summary.id, "settings", { model: "model-a", effort: "low" }),
+    ).toMatchObject({ accepted: true });
+    f.setSourceSettings("model-a", null);
+    const id = await fork(f);
+    expect(f.requests.find(({ method }) => method === "thread/fork")?.params).toMatchObject({
+      model: "model-a",
+      config: { model_reasoning_effort: "low" },
+    });
+    expect(readManagedRecord(f.root, id)).toMatchObject({ model: "model-a", effort: "low" });
+  });
+
+  it("uses matching effective native settings when neither the current read nor selected effort is available", async () => {
+    const f = fixture();
+    expect(await f.send()).toMatchObject({ accepted: true });
+    f.servers[0]!.complete();
+    await f.web.managedLifecycle({
+      operation: "release",
+      sessionId: f.summary.id,
+      requestId: randomUUID(),
+      deviceId: "fixture",
+    });
+    const source = readManagedRecord(f.root, f.summary.id)!;
+    const native = source.native_settings as Record<string, unknown>;
+    saveManagedRecord(f.root, {
+      ...source,
+      effort: null,
+      native_settings: { ...native, model: "model-a", effort: "low" },
+    });
+    f.setSourceSettings("model-a", null);
+    const id = await fork(f);
+    expect(readManagedRecord(f.root, id)).toMatchObject({ model: "model-a", effort: "low" });
+  });
+
+  it("does not apply ledger effort from a different model to an unconfirmed native source", async () => {
+    const f = fixture();
+    f.setModels(catalog);
+    expect(await f.send()).toMatchObject({ accepted: true });
+    f.servers[0]!.complete();
+    expect(
+      await action(f, f.summary.id, "settings", { model: "model-a", effort: "low" }),
+    ).toMatchObject({ accepted: true });
+    f.setSourceSettings("source-model", null);
+    expect(await forkResult(f)).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "native-effort-unconfirmed",
+    });
+    expect(f.methods).not.toContain("thread/fork");
+  });
+
+  it("rejects an explicitly chosen unavailable model before creating a native thread", async () => {
+    const f = fixture();
+    expect(
+      await f.web.managedLifecycle({
+        operation: "create",
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        workspaceId: "workspace",
+        policyId: "workspace-write-on-request",
+        model: "invented-model",
+      }),
+    ).toMatchObject({
+      accepted: false,
+      controlOutcome: "not-dispatched",
+      reason: "unsupported-model",
+    });
+    expect(f.methods).not.toContain("thread/start");
+    expect(f.methods).not.toContain("turn/start");
+  });
+
+  it("keeps a dispatched turn uncertain and blocks model changes without resending", async () => {
+    const f = fixture();
+    const id = await fork(f);
+    f.setTurnFailure(new Error("Codex app-server request timed out"));
+    const requestId = randomUUID();
+    expect(await action(f, id, "send", { requestId })).toMatchObject({
+      accepted: false,
+      controlOutcome: "unknown",
+      reason: "control-outcome-unconfirmed",
+    });
+    expect(readUnknownManagedCommands(f.root, id)).toHaveLength(1);
+    expect(readControlReceipt(f.root, { requestId, deviceId: "fixture" })).toMatchObject({
+      status: "unknown",
+    });
+    await expect(action(f, id, "settings", { model: "model-a" })).rejects.toThrow(
+      "control-outcome-unconfirmed",
+    );
+    expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
+  });
+});
+
+describe("Codex managed sandbox verification", () => {
+  const policies = [
+    ["workspace-write-on-request", "on-request", "user", "workspaceWrite"],
+    ["workspace-write-auto-review", "on-request", "auto_review", "workspaceWrite"],
+    ["full-access-on-request", "never", "user", "dangerFullAccess"],
+  ] as const;
+  const create = (f: ReturnType<typeof fixture>, policyId: (typeof policies)[number][0]) =>
+    f.web.managedLifecycle({
+      operation: "create",
+      requestId: randomUUID(),
+      deviceId: "fixture",
+      workspaceId: "workspace",
+      policyId,
+      model: "model-a",
+    });
+
+  it.each(policies)("confirms the native %s policy", async (policyId, approval, reviewer, type) => {
+    const f = fixture();
+    const result = await create(f, policyId);
+    expect(result).toMatchObject({ accepted: true });
+    expect(readManagedRecord(f.root, result.sessionId!)?.native_settings).toMatchObject({
+      approvalPolicy: approval,
+      approvalsReviewer: reviewer,
+      sandboxPolicy: { type },
+    });
+    expect(f.methods).not.toContain("turn/start");
+  });
+
+  it.each(
+    policies.flatMap(
+      (policy) =>
+        [
+          [policy[0], "approvalPolicy", policy[1] === "never" ? "on-request" : "never"],
+          [policy[0], "approvalsReviewer", policy[2] === "user" ? "auto_review" : "user"],
+          [
+            policy[0],
+            "sandbox",
+            { type: policy[3] === "workspaceWrite" ? "dangerFullAccess" : "workspaceWrite" },
+          ],
+        ] as const,
+    ),
+  )("rejects a changed %s %s after native dispatch", async (policyId, field, value) => {
+    const f = fixture();
+    f.setPolicyReply({ [field]: value });
+    expect(await create(f, policyId)).toMatchObject({ accepted: false, controlOutcome: "unknown" });
+    expect(f.methods).not.toContain("turn/start");
+  });
+
+  it.each(["implicit", "explicit", "duplicate", "canonical-alias"] as const)(
+    "accepts only the verified cwd with %s native extra roots",
+    async (kind) => {
+      const f = fixture();
+      const roots =
+        kind === "implicit"
+          ? []
+          : kind === "duplicate"
+            ? [f.workspace, f.workspace]
+            : [kind === "canonical-alias" ? `${f.workspace}${path.sep}.` : f.workspace];
+      f.setSandboxRoots(roots);
+      expect(await f.send()).toMatchObject({ accepted: true });
+      expect(f.requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+        cwd: f.workspace,
+        sandboxPolicy: { writableRoots: [f.workspace], networkAccess: false },
+      });
+    },
+  );
+
+  it.each([
+    "root",
+    "home",
+    "outside",
+    "descendant",
+    "missing",
+    "relative",
+    "non-string",
+    "absent",
+    "null",
+    "not-array",
+  ] as const)("rejects unsafe or unconfirmed native extra roots: %s", async (kind) => {
+    const f = fixture();
+    const child = path.join(f.workspace, "child");
+    mkdirSync(child);
+    const roots: unknown =
+      kind === "root"
+        ? [path.parse(f.root).root]
+        : kind === "home"
+          ? [homedir()]
+          : kind === "outside"
+            ? [f.home]
+            : kind === "descendant"
+              ? [child]
+              : kind === "missing"
+                ? [path.join(f.workspace, "missing")]
+                : kind === "relative"
+                  ? ["."]
+                  : kind === "non-string"
+                    ? [null]
+                    : kind === "absent"
+                      ? undefined
+                      : kind === "null"
+                        ? null
+                        : f.workspace;
+    f.setSandboxRoots(roots);
+    expect(await f.send()).toMatchObject({ accepted: false, controlOutcome: "not-dispatched" });
+    expect(f.methods).not.toContain("turn/start");
+    expect(readUnknownManagedCommands(f.root, f.summary.id)).toHaveLength(1);
+  });
+
+  it.each(["workspace-write-on-request", "workspace-write-auto-review"] as const)(
+    "rejects network access for %s even with implicit cwd roots",
+    async (policyId) => {
+      const f = fixture();
+      f.setPolicyReply({
+        sandbox: {
+          type: "workspaceWrite",
+          writableRoots: [],
+          networkAccess: true,
+          excludeTmpdirEnvVar: true,
+          excludeSlashTmp: true,
+        },
+      });
+      expect(await create(f, policyId)).toMatchObject({
+        accepted: false,
+        controlOutcome: "unknown",
+      });
+      expect(f.methods).not.toContain("turn/start");
+    },
+  );
+
+  it.each(
+    (["workspace-write-on-request", "workspace-write-auto-review"] as const).flatMap((policyId) =>
+      (["excludeTmpdirEnvVar", "excludeSlashTmp"] as const).flatMap((field) =>
+        [false, undefined, null, "true", 1].map((value) => [policyId, field, value] as const),
+      ),
+    ),
+  )("rejects %s when native %s is %s", async (policyId, field, value) => {
+    const f = fixture();
+    f.setPolicyReply({
+      sandbox: {
+        type: "workspaceWrite",
+        writableRoots: [],
+        networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
+        [field]: value,
+      },
+    });
+    const result = await create(f, policyId);
+    expect(result).toMatchObject({ accepted: false, controlOutcome: "unknown" });
+    expect(f.methods).not.toContain("turn/start");
+    expect(readUnknownManagedCommands(f.root, result.sessionId!)).toHaveLength(1);
+  });
+
+  it.each(
+    (["workspace-write-on-request", "workspace-write-auto-review"] as const).flatMap((policyId) =>
+      (["root", "home"] as const).map((tmpdir) => [policyId, tmpdir] as const),
+    ),
+  )("keeps %s inside cwd when its child environment TMPDIR is %s", async (policyId, kind) => {
+    const runtimeTmpdir = kind === "root" ? path.parse(process.cwd()).root : homedir();
+    const f = fixture(false, undefined, { TMPDIR: runtimeTmpdir });
+    const result = await create(f, policyId);
+    expect(result).toMatchObject({ accepted: true });
+    const live = await f.web.request({
+      operation: "live",
+      sessionId: result.sessionId!,
+      experimentalEnabled: true,
+    });
+    expect(
+      await f.web.managedControl({
+        operation: "send",
+        sessionId: result.sessionId!,
+        requestId: randomUUID(),
+        deviceId: "fixture",
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: live.revision,
+        experimentalEnabled: true,
+        text: "Continue only in cwd",
+      }),
+    ).toMatchObject({ accepted: true });
+    expect(f.start.mock.calls[0]?.[3]?.TMPDIR).toBe(runtimeTmpdir);
+    for (const request of f.requests.filter(({ method }) =>
+      ["thread/start", "turn/start"].includes(method),
+    ))
+      expect(request.params).toMatchObject({
+        cwd: f.workspace,
+        config: {
+          "sandbox_workspace_write.writable_roots": [],
+          "sandbox_workspace_write.exclude_tmpdir_env_var": true,
+          "sandbox_workspace_write.exclude_slash_tmp": true,
+        },
+        sandboxPolicy: {
+          writableRoots: [f.workspace],
+          networkAccess: false,
+          excludeTmpdirEnvVar: true,
+          excludeSlashTmp: true,
+        },
+      });
+  });
+});
 
 describe("Codex automatic CLI continuation", () => {
   it.each([path.parse(process.cwd()).root, "home"])(
@@ -552,6 +1082,37 @@ describe("Codex automatic CLI continuation", () => {
     expect(f.methods.filter((method) => method === "turn/start")).toHaveLength(1);
     expect(f.start.mock.calls[0]?.[2]).toBe(f.home);
     expect(f.follower).not.toHaveBeenCalled();
+  });
+
+  it("resets history cursors when switching between native read-only history and a managed runner", async () => {
+    vi.useFakeTimers();
+    const f = fixture(true);
+    await f.send();
+    f.servers[0]!.complete();
+    await vi.advanceTimersByTimeAsync(61_000);
+    const executable = f.start.mock.calls[0]![0];
+    f.version.mockResolvedValue({ executable, reason: "codex-cli-version-too-old" });
+    f.version.mockClear();
+    const page = await f.web.request({ operation: "events", sessionId: f.summary.id, limit: 1 });
+    expect(page.next_cursor).toMatch(/^codex-native-v1:/);
+    expect(page.events).toEqual([expect.objectContaining({ content: "Earlier answer" })]);
+    expect(f.version).not.toHaveBeenCalled();
+    expect(f.start).toHaveBeenCalledOnce();
+    f.version.mockResolvedValue({ executable, reason: null });
+    expect(await f.send()).toMatchObject({ accepted: true });
+    await expect(
+      f.web.request({
+        operation: "events",
+        sessionId: f.summary.id,
+        limit: 1,
+        cursor: page.next_cursor,
+      }),
+    ).rejects.toThrow("TRANSCRIPT_CURSOR_STALE");
+    f.servers[1]!.complete();
+    await vi.advanceTimersByTimeAsync(61_000);
+    await expect(
+      f.web.request({ operation: "events", sessionId: f.summary.id, limit: 1, cursor: "42" }),
+    ).rejects.toThrow("TRANSCRIPT_CURSOR_STALE");
   });
 
   it("keeps native writer conflicts authoritative for compressed history", async () => {

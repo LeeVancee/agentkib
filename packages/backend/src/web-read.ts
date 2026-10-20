@@ -4,13 +4,14 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
 import { historyReferenceSchema, validHistoryControl } from "./history-control-schema";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
 import {
   hasManagedCatalogWorkspace,
-  managedCatalogAliases,
+  managedCatalogProjection,
   managedRecordSchema,
   readManagedCatalog,
 } from "./managed-session-catalog";
@@ -2075,6 +2076,18 @@ export class WebReadRequests {
     if (claimed) return claimed;
 
     try {
+      // Fork/resume can retain a native model outside the current picker so the
+      // user can inspect it or change next-turn settings without running it.
+      // Operations that can request inference still validate before dispatch.
+      if (
+        ["send", "steer", "queue-add", "queue-start", "goal-set", "goal-resume"].includes(
+          request.operation,
+        )
+      )
+        validateManagedModelSelection(
+          record,
+          projectManagedModels(await runner.session.request("model/list", { limit: 100 })),
+        );
       let method: string;
       let params: unknown;
       let responseId: unknown;
@@ -2892,6 +2905,46 @@ export class WebReadRequests {
       .at(-1);
     if (!last) throw new Error("no-completed-turn");
     if (typeof last.id !== "string") throw new Error("no-completed-turn");
+    const rejectSourceSettings = (reason: string) => {
+      const claimed = claimManagedCommand(
+        this.dataDir,
+        request.requestId,
+        source.id,
+        fingerprint,
+        request.deviceId ?? null,
+        {
+          operation: "fork",
+          turnId: null,
+          nativeRequestId: null,
+          runtimeBootId: request.runtimeBootId,
+          expectedRevision: request.expectedRevision,
+          executionMode: "codex-managed",
+          workspaceId: source.workspace_id,
+        },
+      );
+      if (claimed) return claimed;
+      const result = {
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        reason,
+        sessionId: source.id,
+        requestId: request.requestId,
+        runtimeBootId: this.#bootId,
+      };
+      finishManagedCommand(this.dataDir, request.requestId, result);
+      return result;
+    };
+    const sourceModel = boundedText(history.thread.model, 256) ?? boundedText(source.model, 256);
+    if (!sourceModel) return rejectSourceSettings("native-model-unconfirmed");
+    const nativeSettings = isObject(source.native_settings) ? source.native_settings : {};
+    // Native null means unset or unavailable, and app-server cannot accept a null
+    // config override. Only a matching source selection can safely fill that gap.
+    const sourceEffort =
+      boundedText(history.thread.reasoningEffort, 64) ??
+      (source.model === sourceModel ? boundedText(source.effort, 64) : null) ??
+      (nativeSettings.model === sourceModel ? boundedText(nativeSettings.effort, 64) : null);
+    if (!sourceEffort) return rejectSourceSettings("native-effort-unconfirmed");
     const childId = createHash("sha256").update(`managed-fork:${request.requestId}`).digest("hex");
     openManagedLedger(this.dataDir, true)?.close();
     let release: (() => void) | undefined = acquireManagedSessionLease(this.dataDir, childId);
@@ -2920,6 +2973,8 @@ export class WebReadRequests {
       id: childId,
       source_session_id: source.id,
       native_id: null,
+      model: sourceModel,
+      effort: sourceEffort,
       adopted: false,
       released: false,
       archived: false,
@@ -3277,16 +3332,11 @@ export class WebReadRequests {
       const models = projectManagedModels(modelsResult);
       const requestedModel = record.model ?? null;
       const requestedEffort = record.effort ?? null;
-      const selected = requestedModel
-        ? models.find((model) => model.id === requestedModel)
-        : models.find((model) => model.isDefault === true);
-      if (requestedModel && !selected) throw new Error("unsupported-model");
-      if (requestedEffort && !requestedModel) throw new Error("effort-requires-model");
-      if (requestedEffort && !selected?.efforts.includes(requestedEffort))
-        throw new Error("unsupported-effort");
+      // Creating a new thread is an explicit model choice. Attaching an existing
+      // thread or its fork must also work when its inherited model left the picker;
+      // send and explicit settings changes validate their own model selection.
+      if (!nativeId && !fork) validateManagedModelSelection(record, models);
       const tier = record.service_tier ?? null;
-      if (tier && !selected?.serviceTiers.includes(tier))
-        throw new Error("unsupported-service-tier");
 
       let goal: Record<string, unknown> | null = null;
       if (nativeId) {
@@ -3454,16 +3504,52 @@ export class WebReadRequests {
       );
       if (managed) {
         this.#assertManagedHome(managed);
-        const events = readManagedEvents(
-          this.dataDir,
-          request.sessionId,
-          request.cursor,
-          request.limit,
-        );
+        const nativeHistory =
+          !!managed.native_id && !this.#managedRunners.get(managed.id)?.session.connected;
+        const nativePrefix = "codex-native-v1:";
+        if (request.cursor && nativeHistory !== request.cursor.startsWith(nativePrefix))
+          throw new Error("TRANSCRIPT_CURSOR_STALE");
+        let events;
+        if (nativeHistory) {
+          const identity = this.sessions.verifiedCodexControlDirectory(managed.native_id!);
+          if (!identity || identity.id !== managed.native_id!.toLowerCase())
+            throw new Error("unverified-session-identity");
+          const cwd = canonicalize(managed.cwd ?? identity.cwd);
+          const workspace = canonicalize(this.store.workspacePath(managed.workspace_id));
+          if (
+            !within(cwd, workspace) ||
+            pathIdentity(canonicalize(identity.cwd)) !== pathIdentity(cwd)
+          )
+            throw new Error("session-workspace-mismatch");
+          const page = await this.sessions.eventsForNative(
+            "codex",
+            managed.native_id!,
+            workspace,
+            request.cursor?.slice(nativePrefix.length) ?? null,
+            request.limit,
+            { codexDirectory: cwd },
+          );
+          events = {
+            ...page,
+            next_cursor: page.next_cursor ? nativePrefix + page.next_cursor : null,
+          };
+        } else {
+          events = readManagedEvents(
+            this.dataDir,
+            request.sessionId,
+            request.cursor,
+            request.limit,
+          );
+        }
         const latest = readManagedRecords(this.dataDir, this.store).find(
           (record) => record.id === request.sessionId,
         );
-        if (!latest || latest.workspace_id !== managed.workspace_id)
+        if (
+          !latest ||
+          latest.workspace_id !== managed.workspace_id ||
+          latest.native_id !== managed.native_id ||
+          latest.cwd !== managed.cwd
+        )
           throw new Error("session-unavailable");
         this.#assertManagedHome(latest);
         return events;
@@ -3505,7 +3591,11 @@ export class WebReadRequests {
       const workspaces = allWorkspaces.filter(
         (workspace) => enabled || managedWorkspaceIds.has(workspace.id),
       );
-      const aliasesByOwner = await managedCatalogAliases(this.store, this.sessions, catalog);
+      const { aliases: aliasesByOwner, nativeByOwner } = await managedCatalogProjection(
+        this.store,
+        this.sessions,
+        catalog,
+      );
       const aliases = new Set([...aliasesByOwner.values()].flatMap((owned) => [...owned]));
       const sessions = sessionRows.filter((session) => {
         if (!isSessionSummary(session)) return false;
@@ -3518,7 +3608,7 @@ export class WebReadRequests {
           agent: "codex",
           title: record.title,
           created_at: record.created_at,
-          updated_at: record.created_at,
+          updated_at: nativeByOwner.get(record.id)?.updated_at ?? record.created_at,
           message_count: null,
           git_branch: null,
           origin: "interactive",
@@ -3531,9 +3621,33 @@ export class WebReadRequests {
           forked_from_session_id: record.source_session_id ?? null,
         })),
       );
+      const needsRuntime =
+        sessions.some((session) => {
+          if (
+            !isSessionSummary(session) ||
+            !("agent" in session) ||
+            session.agent !== "codex" ||
+            this.#managedRunners.has(session.id)
+          )
+            return false;
+          const observation = this.#catalogObservations.get(session.id);
+          return (
+            !observation ||
+            Date.now() - observation.at >= 5000 ||
+            !["control-outcome-unconfirmed", "session-retiring"].includes(observation.reason ?? "")
+          );
+        }) ||
+        (enabled &&
+          Object.values(SESSION_COLLECTIONS).some((collection) =>
+            this.store.sessions
+              .list(collection)
+              .some((row) => row.agent === "codex" && row.workspace_id === collection),
+          ));
+      const runtime = needsRuntime ? await this.#preflight.check() : null;
       if (this.indexGeneration() !== generation || indexEnabled(this.dataDir) !== enabled)
         return { workspaces: [], sessions: [], indexEnabled: false };
       return {
+        codexRuntimeReason: runtime?.reason === "codex-cli-version-too-old" ? runtime.reason : null,
         workspaces: workspaces
           .filter((workspace) => registered.has(workspace.id))
           .map(({ id, name, path }) => ({ id, name, path })),
@@ -3577,14 +3691,21 @@ export class WebReadRequests {
                 }
               : unsafeObservation
                 ? observed
-                : reason
+                : runtime?.reason
                   ? {
-                      status: "idle",
-                      executionLocation: reason === "codex-owner-busy" ? "external" : null,
-                      ownershipReason: reason,
-                      reason,
+                      status: "unsupported",
+                      executionLocation: null,
+                      ownershipReason: null,
+                      reason: runtime.reason,
                     }
-                  : observed;
+                  : reason
+                    ? {
+                        status: "idle",
+                        executionLocation: reason === "codex-owner-busy" ? "external" : null,
+                        ownershipReason: reason,
+                        reason,
+                      }
+                    : observed;
           return continuation ? { ...session, continuation } : session;
         }),
         indexEnabled: enabled || managed.length > 0,
@@ -4826,6 +4947,21 @@ function managedPolicyCatalog() {
   ];
 }
 
+function validateManagedModelSelection(
+  record: Pick<ManagedRecord, "model" | "effort" | "service_tier">,
+  models: ManagedModelOption[],
+): void {
+  const selected = record.model
+    ? models.find((model) => model.id === record.model)
+    : models.find((model) => model.isDefault);
+  if (record.model && !selected) throw new Error("unsupported-model");
+  if (record.effort && !record.model) throw new Error("effort-requires-model");
+  if (record.effort && !selected?.efforts.includes(record.effort))
+    throw new Error("unsupported-effort");
+  if (record.service_tier && !selected?.serviceTiers.includes(record.service_tier))
+    throw new Error("unsupported-service-tier");
+}
+
 function projectManagedModels(value: unknown): ManagedModelOption[] {
   const rows = isObject(value) && Array.isArray(value.data) ? value.data : null;
   if (!rows) throw new Error("invalid-model-catalog");
@@ -4870,10 +5006,14 @@ function managedResumeParams(record: ManagedRecord, workspace: string): Record<s
         type: "workspaceWrite",
         writableRoots: [workspace],
         networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
       };
       params.sandbox = "workspace-write";
       config["sandbox_workspace_write.network_access"] = false;
       config["sandbox_workspace_write.writable_roots"] = [];
+      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
+      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
       break;
     case "full-access-on-request":
       params.approvalPolicy = "never";
@@ -4888,10 +5028,14 @@ function managedResumeParams(record: ManagedRecord, workspace: string): Record<s
         type: "workspaceWrite",
         writableRoots: [workspace],
         networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
       };
       params.sandbox = "workspace-write";
       config["sandbox_workspace_write.network_access"] = false;
       config["sandbox_workspace_write.writable_roots"] = [];
+      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
+      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
       break;
     default:
       throw new Error("unsupported-policy");
@@ -4910,10 +5054,14 @@ function managedTurnSettings(record: ManagedRecord, workspace: string): Record<s
         type: "workspaceWrite",
         writableRoots: [workspace],
         networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
       };
       params.sandbox = "workspace-write";
       config["sandbox_workspace_write.network_access"] = false;
       config["sandbox_workspace_write.writable_roots"] = [];
+      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
+      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
       break;
     case "full-access-on-request":
       params.approvalPolicy = "never";
@@ -4928,10 +5076,14 @@ function managedTurnSettings(record: ManagedRecord, workspace: string): Record<s
         type: "workspaceWrite",
         writableRoots: [workspace],
         networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
       };
       params.sandbox = "workspace-write";
       config["sandbox_workspace_write.network_access"] = false;
       config["sandbox_workspace_write.writable_roots"] = [];
+      config["sandbox_workspace_write.exclude_tmpdir_env_var"] = true;
+      config["sandbox_workspace_write.exclude_slash_tmp"] = true;
       break;
     default:
       throw new Error("unsupported-policy");
@@ -5149,6 +5301,28 @@ function followerAnswerPayload(
   return { answers: normalized };
 }
 
+function managedWritableRootsMatch(
+  cwd: unknown,
+  responseCwd: unknown,
+  extraRoots: unknown,
+): boolean {
+  if (typeof cwd !== "string" || !path.isAbsolute(cwd) || !Array.isArray(extraRoots)) return false;
+  try {
+    const expected = pathIdentity(canonicalize(cwd));
+    const effective = new Set<string>();
+    // Native WorkspaceWrite roots are additional to cwd. The caller already
+    // verified both response cwd fields against the authorized session directory.
+    for (const root of [responseCwd, ...extraRoots]) {
+      if (typeof root !== "string" || !path.isAbsolute(root) || !statSync(root).isDirectory())
+        return false;
+      effective.add(pathIdentity(canonicalize(root)));
+    }
+    return effective.size === 1 && effective.has(expected);
+  } catch {
+    return false;
+  }
+}
+
 function verifyManagedPolicy(record: ManagedRecord, response: Record<string, unknown>): void {
   const id = record.policy_id ?? "workspace-write-on-request";
   const full = id === "full-access-on-request";
@@ -5160,12 +5334,13 @@ function verifyManagedPolicy(record: ManagedRecord, response: Record<string, unk
     sandbox.type !== (full ? "dangerFullAccess" : "workspaceWrite")
   )
     throw new Error("codex-policy-mismatch");
+  // Native WorkspaceWrite otherwise adds TMPDIR and /tmp outside writableRoots.
   if (
     !full &&
     (sandbox.networkAccess !== false ||
-      !Array.isArray(sandbox.writableRoots) ||
-      sandbox.writableRoots.length !== 1 ||
-      sandbox.writableRoots.some((root) => root !== record.cwd))
+      sandbox.excludeTmpdirEnvVar !== true ||
+      sandbox.excludeSlashTmp !== true ||
+      !managedWritableRootsMatch(record.cwd, response.cwd, sandbox.writableRoots))
   )
     throw new Error("codex-sandbox-mismatch");
   if (record.service_tier && response.serviceTier !== record.service_tier)

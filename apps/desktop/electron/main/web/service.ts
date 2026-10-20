@@ -361,6 +361,8 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/managed/release": { lan: true, control: true },
     "/managed/reconcile": { lan: true, control: true },
     "/managed/action": { control: true },
+    // Explicit capability discovery starts a worker but never dispatches a command receipt.
+    "/managed/settings-prepare": {},
     "/artifact-tickets": { lan: true },
     "/attachments": { lan: true },
     "/attachments/delete": { lan: true },
@@ -3119,6 +3121,105 @@ export class WebAccessService {
       }
     }
   }
+  private async prepareClaudeSettings(
+    res: ConversationResponse,
+    hash: string,
+    body: Record<string, unknown>,
+  ) {
+    if (this.options.mode === "lan") throw new HttpError(403, "capability_unavailable");
+    if (Object.keys(body).some((key) => !["sessionId", "bootId", "expectedRevision"].includes(key)))
+      throw new HttpError(400, "invalid_input");
+    const device = this.fullAccess(hash, "advancedControl");
+    this.grant(hash, "settings");
+    const sessionId = this.field(body.sessionId);
+    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+    if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
+      throw new HttpError(400, "invalid_revision");
+    if (
+      !this.options.verifiedClaudeManaged ||
+      !this.options.claudeManagedRequest ||
+      !this.controlsEnabled(sessionId, device)
+    )
+      throw new HttpError(403, "session_control_not_allowed");
+    const workspaceId = await this.codexScope(sessionId, hash, false, false);
+    if (this.unconfirmed.has(sessionId)) throw new HttpError(409, "outcome_unknown");
+    if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
+    this.admission = true;
+    this.active.add(sessionId);
+    let started = false;
+    try {
+      const capabilities = (await this.runtime(
+        { operation: "capabilities", sessionId, experimentalEnabled: true },
+        undefined,
+        true,
+      )) as {
+        executionMode?: string;
+        features?: Record<string, { available?: boolean; reason?: string }>;
+      };
+      if (
+        capabilities.executionMode !== "claude-managed" ||
+        capabilities.features?.settings?.available !== true
+      )
+        throw new HttpError(
+          409,
+          continuationPreflightReason(
+            capabilities.features?.settings?.reason,
+            "capability_unavailable",
+          ),
+        );
+      const live = (await this.runtime(
+        { operation: "live", sessionId, experimentalEnabled: true },
+        undefined,
+        true,
+      )) as {
+        runtimeBootId?: string;
+        revision?: number;
+      };
+      if (!live.runtimeBootId || live.revision !== body.expectedRevision)
+        throw new HttpError(409, "stale_state");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
+      this.grant(hash, "settings");
+      if (!(await this.workspaceAllowed(workspaceId, device, true)))
+        throw new HttpError(403, "workspace_not_authorized");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
+      this.grant(hash, "settings");
+      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      const params = {
+        operation: "settings-prepare",
+        sessionId,
+        deviceId: device.id,
+        runtimeBootId: live.runtimeBootId,
+        expectedRevision: body.expectedRevision,
+        experimentalEnabled: true,
+      };
+      // Unlike set_* or a user turn, initialize has no command outcome to fence. A timeout
+      // leaves admission reserved until the real preparation settles, never permits overlap.
+      const pending = this.options.claudeManagedRequest(params).finally(() => {
+        this.active.delete(sessionId);
+        this.admission = false;
+        this.notifyControlChanged(sessionId);
+      });
+      started = true;
+      const settings = await this.runtime(params, pending, true);
+      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
+      this.grant(hash, "settings");
+      await this.codexScope(sessionId, hash, false, false);
+      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
+      this.grant(hash, "settings");
+      return this.json(res, 200, { sessionId, ...this.projectSettings(settings) });
+    } finally {
+      if (!started) {
+        this.active.delete(sessionId);
+        this.admission = false;
+      }
+    }
+  }
   private async controlReceipt(
     requestId: string,
     deviceId: string,
@@ -3793,7 +3894,14 @@ export class WebAccessService {
     if (lan && req.headers.origin !== origin) throw new HttpError(403, "invalid_origin");
     if (req.headers.origin && req.headers.origin !== origin)
       throw new HttpError(403, "invalid_origin");
-    if (!lan && req.headers["sec-fetch-site"] === "cross-site")
+    // External apps may open the public shell. This exception never covers API or embedded reads.
+    const navigationPath = (req.url || "/").split("?")[0];
+    const pageNavigation =
+      (req.method === "GET" || req.method === "HEAD") &&
+      (navigationPath === "/" || navigationPath === "/index.html") &&
+      req.headers["sec-fetch-mode"] === "navigate" &&
+      req.headers["sec-fetch-dest"] === "document";
+    if (!lan && req.headers["sec-fetch-site"] === "cross-site" && !pageNavigation)
       throw new HttpError(403, "cross_site_request");
     const cookieName = external ? "ak_web_secure" : "ak_web_local";
     let raw = lan
@@ -4092,6 +4200,11 @@ export class WebAccessService {
             `${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${external ? "; Secure" : ""}`,
           );
         return this.json(res, 200, { ok: true });
+      }
+      if (path === "/managed/settings-prepare") {
+        if (req.headers["x-agentkib-protocol"] !== "2")
+          throw new HttpError(409, "incompatible_protocol");
+        return this.prepareClaudeSettings(res, hash, body);
       }
       if (path === "/managed/action")
         return this.codexAction(res, hash, this.field(body.operation, 64), body, control, true);

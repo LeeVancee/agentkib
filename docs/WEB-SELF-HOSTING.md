@@ -24,6 +24,8 @@ Web 是 AgentKib 桌面应用的一部分，不是官方云服务。安装包包
 
 先在 Web 设置填写外部地址，例如 `https://agent.example.com`（仅 origin，不带路径），保存。必须使用该地址访问；服务严格核验 Host 和 Origin，不接受任意转发头作为信任依据。
 
+从其他 App、扫码或外部页面打开应用链接时，仅 `/` 与 `/index.html` 的 GET/HEAD 主文档导航允许跨站打开；浏览器必须提供 `navigate` / `document` 元数据。该例外只加载公开页面外壳，不授权读取会话；Host、Origin、接口鉴权、配对与 CSRF 校验不变，接口、资源、嵌入页面及非导航请求不享受例外。LAN listener 继续只提供接口，LAN 页面由托管入口加载。
+
 下面的 Caddy 配置应运行在 **AgentKib 所在电脑**，或通过你已配置的隧道让上游指向该电脑的 loopback 服务。域名需指向代理并满足证书签发要求。
 
 ```caddyfile

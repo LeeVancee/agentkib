@@ -508,7 +508,8 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const clock = Date.now.bind(Date);
       let offset = 0;
       vi.spyOn(Date, "now").mockImplementation(() => clock() + offset);
-      const f = fixture({ maintenanceIntervalMs: 10 });
+      let observed = true;
+      const f = fixture({ maintenanceIntervalMs: 10, isSessionObserved: () => observed });
       const session = f.create();
       await f.dispatch(session.id);
       const retained = f.runner(session.nativeId);
@@ -523,6 +524,18 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         sendEnabled: true,
         executionLocation: null,
         continuationNotice: "background-ended",
+      });
+      const frames = f.frames();
+      for (let i = 0; i < 3; i++) await f.owner.settingsState(session.id);
+      expect(retained.hasWorker).toBe(false);
+      expect(f.frames()).toEqual(frames);
+      observed = false;
+      expect(await f.owner.live(session.id, true)).toMatchObject({ continuationNotice: null });
+      observed = true;
+      f.owner.observeSession(session.id);
+      expect(await f.owner.live(session.id, true)).toMatchObject({
+        executionLocation: null,
+        continuationNotice: null,
       });
       await f.dispatch(session.id);
       expect(f.frames().filter((frame) => frame.started)).toHaveLength(2);

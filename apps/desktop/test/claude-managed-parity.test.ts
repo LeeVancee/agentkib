@@ -35,7 +35,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function fixture(version = "2.1.286", handshakeDelayMs = 0, mode = "ordinary") {
+function fixture(
+  version = "2.1.286",
+  handshakeDelayMs = 0,
+  mode = "ordinary",
+  publish?: (live: Record<string, unknown>) => void,
+) {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "agentkib-claude-owner-parity-")));
   const workspace = path.join(root, "workspace");
   const home = path.join(root, "home");
@@ -55,6 +60,12 @@ log({args:process.argv.slice(2)});
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
  const frame=JSON.parse(line); log(frame);
  if(frame.type==='control_request') {
+  // Keep the owned root alive so real tree cleanup can be confirmed after stdout closes.
+  if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='close-initialize') { fs.closeSync(1); return; }
+  if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='initialize-rejected') {
+   send({type:'control_response',response:{subtype:'error',request_id:frame.request_id,error:'Synthetic failed initialization'}});
+   return;
+  }
   if(frame.request.subtype==='initialize' && process.env.PARITY_MODE==='reset-init-failure' &&
      fs.readFileSync(process.env.PARITY_LOG,'utf8').trim().split('\n').filter(line=>JSON.parse(line).args).length>1) {
    send({type:'control_response',response:{subtype:'error',request_id:frame.request_id,error:'Synthetic failed initialization'}});
@@ -146,6 +157,14 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
       root,
       environment,
       randomUUID(),
+      publish
+        ? {
+            publish: (_id, type, _payload, live) => {
+              if (type === "state") publish(structuredClone(live));
+            },
+            alias: () => {},
+          }
+        : undefined,
     );
     cleanups.push(() => owner.shutdown());
     return owner;
@@ -231,6 +250,16 @@ async function control(
     ...fields,
   })) as Record<string, any>;
 }
+async function prepareSettings(owner: ClaudeManagedReadOwner, id: string) {
+  return owner.request({
+    operation: "settings-prepare",
+    sessionId: id,
+    deviceId: "browser-device-a",
+    runtimeBootId: owner.bootId,
+    expectedRevision: (await owner.live(id, true)).revision,
+    experimentalEnabled: true,
+  });
+}
 async function next(owner: ClaudeManagedReadOwner, id: string) {
   const list = (await owner.request({ operation: "schedule-list", sessionId: id })) as {
     sessions: Array<Record<string, any>>;
@@ -258,6 +287,227 @@ async function dispatch(owner: ClaudeManagedReadOwner, permit: Record<string, an
 describe.skipIf(!["darwin", "linux"].includes(process.platform))(
   "Claude remote owner parity (synthetic offline CLI)",
   () => {
+    it("reads idle settings without starting a worker and prepares only on an explicit settings request", async () => {
+      const f = fixture();
+      const created = await create(f.owner);
+      for (let i = 0; i < 3; i++) {
+        expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
+          available: true,
+          current: { model: null },
+          models: [],
+        });
+        expect(await f.owner.live(created.sessionId, true)).toMatchObject({
+          status: "idle",
+          executionLocation: null,
+        });
+      }
+      expect(f.frames()).toEqual([]);
+      expect(await prepareSettings(f.owner, created.sessionId)).toMatchObject({
+        current: { model: null },
+        models: [{ id: "fixture-model" }],
+        applicationStatus: "confirmed",
+      });
+      expect(f.frames().filter((frame) => frame.type === "control_request")).toHaveLength(1);
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      const database = openManagedLedger(f.root)!;
+      try {
+        expect(
+          database
+            .prepare("SELECT COUNT(*) AS count FROM managed_commands WHERE phase<>'resolved'")
+            .get(),
+        ).toEqual({ count: 0 });
+      } finally {
+        database.close();
+      }
+    });
+
+    it.each(["create", "fork"])(
+      "publishes terminal idle after explicit settings initialize succeeds for %s without a live refresh",
+      async (kind) => {
+        const states: Array<Record<string, unknown>> = [];
+        const f = fixture("2.1.286", 0, "ordinary", (state) => states.push(state));
+        const created =
+          kind === "create"
+            ? await create(f.owner)
+            : await control(f.owner, f.indexNative(), "fork");
+        const id = created.sessionId;
+        states.length = 0;
+        const settings = await prepareSettings(f.owner, id);
+        expect(settings).toMatchObject({
+          applicationStatus: "confirmed",
+          models: [{ id: "fixture-model" }],
+        });
+        expect(
+          states.some((state) => state.status === "starting" && state.sendEnabled === false),
+        ).toBe(true);
+        expect(states.at(-1)).toMatchObject({
+          sessionId: id,
+          status: "idle",
+          sendEnabled: true,
+          stopEnabled: false,
+          revision: settings.revision,
+        });
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+        expect(f.frames().filter((frame) => frame.type === "control_request")).toHaveLength(1);
+      },
+    );
+
+    it("does not publish an idle completion when explicit settings initialization fails", async () => {
+      const states: Array<Record<string, unknown>> = [];
+      const f = fixture("2.1.286", 0, "initialize-rejected", (state) => states.push(state));
+      const created = await create(f.owner);
+      await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow(/initialize/);
+      expect(states.at(-1)).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+      expect(states.some((state) => state.status === "idle" && state.sendEnabled === true)).toBe(
+        false,
+      );
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+    });
+
+    it.each([false, true])(
+      "publishes recovered idle after failed settings startup without replacing the startup error (publicationFails=%s)",
+      async (publicationFails) => {
+        const states: Array<Record<string, unknown>> = [];
+        const f = fixture("2.1.286", 0, "close-initialize", (state) => {
+          states.push(state);
+          if (publicationFails && state.status === "idle")
+            throw new Error("Synthetic terminal publication failed");
+        });
+        const created = await create(f.owner);
+        await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow(
+          /Claude (stream closed|process exited|stdin write failed)/,
+        );
+        expect(states.some((state) => state.status === "starting")).toBe(true);
+        expect(states.at(-1)).toMatchObject({
+          status: "idle",
+          sendEnabled: true,
+          executionLocation: null,
+        });
+        expect(f.frames().filter((frame) => frame.type === "control_request")).toHaveLength(1);
+        expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+      },
+    );
+
+    it("still reports a terminal publication error when settings initialization itself succeeds", async () => {
+      const failure = new Error("Synthetic terminal publication failed");
+      const f = fixture("2.1.286", 0, "ordinary", (state) => {
+        if (state.status === "idle") throw failure;
+      });
+      const created = await create(f.owner);
+      await expect(prepareSettings(f.owner, created.sessionId)).rejects.toBe(failure);
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+    });
+
+    it("publishes external occupancy when a fresh startup probe rejects after the cached idle preflight", async () => {
+      const states: Array<Record<string, unknown>> = [];
+      const f = fixture("2.1.286", 0, "ordinary", (state) => {
+        states.push(state);
+        if (state.status === "starting") f.setExternalOwner(String(state.sourceSessionId));
+      });
+      const created = await create(f.owner);
+      await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow(
+        /claude-owner-busy|active in an external process/,
+      );
+      expect(states.at(-1)).toMatchObject({
+        status: "idle",
+        sendEnabled: false,
+        executionLocation: "external",
+        ownershipReason: "claude-owner-busy",
+      });
+      expect(states.some((state) => state.status === "idle" && state.sendEnabled === true)).toBe(
+        false,
+      );
+      expect(f.frames()).toEqual([]);
+    });
+
+    it("publishes the unknown fence if another unresolved command appears before settings preparation returns", async () => {
+      const states: Array<Record<string, unknown>> = [];
+      let injected = false;
+      const f = fixture("2.1.286", 0, "ordinary", (state) => {
+        states.push(state);
+        if (
+          !injected &&
+          state.status === "starting" &&
+          Number(state.revision) > 0 &&
+          f.frames().some((frame) => frame.request?.subtype === "initialize")
+        ) {
+          injected = true;
+          const requestId = randomUUID();
+          claimManagedCommand(
+            f.root,
+            requestId,
+            String(state.sessionId),
+            "independent host mutation",
+            "browser-device-b",
+            { operation: "queue-add" },
+          );
+          dispatchManagedCommand(f.root, requestId);
+        }
+      });
+      const created = await create(f.owner);
+      const settings = await prepareSettings(f.owner, created.sessionId);
+      expect(injected).toBe(true);
+      expect(settings).toMatchObject({
+        applicationStatus: "pending",
+        writable: { model: { available: false } },
+      });
+      expect(states.at(-1)).toMatchObject({
+        status: "outcome-unknown",
+        sendEnabled: false,
+        reason: "control-outcome-unconfirmed",
+      });
+      expect(states.some((state) => state.status === "idle" && state.sendEnabled === true)).toBe(
+        false,
+      );
+      expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
+    });
+
+    it("persists confirmed setting options across a host restart without relaunching the CLI", async () => {
+      const f = fixture("2.1.286", 0, "inherited-plan");
+      const created = await create(f.owner);
+      await prepareSettings(f.owner, created.sessionId);
+      await f.owner.shutdown();
+      const before = f.frames();
+      const restored = f.makeOwner();
+      for (let i = 0; i < 3; i++) {
+        expect(await restored.settingsState(created.sessionId)).toMatchObject({
+          current: { model: "fixture-model", permissionMode: "plan" },
+          selected: { model: null, permissionMode: null },
+          models: [{ id: "fixture-model" }],
+          applicationStatus: "confirmed",
+        });
+        expect(await restored.live(created.sessionId, true)).toMatchObject({
+          executionLocation: null,
+          permission: { mode: "plan", previous: true },
+        });
+      }
+      expect(f.frames()).toEqual(before);
+    });
+
+    it("rejects stale and externally occupied explicit settings preparation before spawning", async () => {
+      const states: Array<Record<string, unknown>> = [];
+      const f = fixture("2.1.303", 0, "ordinary", (state) => states.push(state));
+      const created = await create(f.owner);
+      await expect(
+        f.owner.request({
+          operation: "settings-prepare",
+          sessionId: created.sessionId,
+          deviceId: "browser-device-a",
+          runtimeBootId: "stale-boot",
+          expectedRevision: 0,
+          experimentalEnabled: true,
+        }),
+      ).rejects.toThrow("invalid-managed-settings-prepare");
+      f.setExternalOwner(created.sourceSessionId);
+      await expect(prepareSettings(f.owner, created.sessionId)).rejects.toThrow(
+        /claude-owner-busy|active in an external process/,
+      );
+      expect(f.frames()).toEqual([]);
+      expect(states.some((state) => state.status === "idle" && state.sendEnabled === true)).toBe(
+        false,
+      );
+      expect(await f.owner.live(created.sessionId, true)).toMatchObject({ status: "idle" });
+    });
     it.each([
       { released: false, partial: false },
       { released: true, partial: false },
@@ -403,6 +653,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
         current: { model: null },
         applicationStatus: "pending",
       });
+      await prepareSettings(f.owner, created.sessionId);
       expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
         selected: { model: "fixture-model", effort: "high", permissionMode: "plan" },
         current: { model: "fixture-model" },
@@ -461,6 +712,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     it("applies effort to a resolved inherited model without selecting model or permissions", async () => {
       const f = fixture("2.1.286", 0, "model-alias");
       const created = await create(f.owner);
+      await prepareSettings(f.owner, created.sessionId);
       expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
         current: { model: "fixture-actual-model", permissionMode: "plan" },
         selected: { model: null, permissionMode: null },
@@ -503,7 +755,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       expect(f.frames().filter((frame) => frame.type === "user")).toEqual([]);
       await f.owner.shutdown();
       const restored = f.makeOwner();
-      await restored.settingsState(created.sessionId);
+      await prepareSettings(restored, created.sessionId);
       const args = f
         .frames()
         .filter((frame) => frame.args)
@@ -544,6 +796,7 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
     it("keeps native inherited permission separate from selection when only the model changes", async () => {
       const f = fixture("2.1.286", 0, "inherited-plan");
       const created = await create(f.owner);
+      await prepareSettings(f.owner, created.sessionId);
       expect(await f.owner.settingsState(created.sessionId)).toMatchObject({
         current: { permissionMode: "plan" },
         selected: { permissionMode: null },

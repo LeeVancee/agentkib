@@ -642,7 +642,14 @@ describe.skipIf(!["darwin", "linux"].includes(process.platform))(
       const created = await create(f.owner);
       const id = created.sessionId as string;
       // Preparing discovers the mode without sending a turn.
-      await f.owner.settingsState(id);
+      await f.owner.request({
+        operation: "settings-prepare",
+        sessionId: id,
+        deviceId,
+        runtimeBootId: f.owner.bootId,
+        expectedRevision: (await f.owner.live(id, true)).revision,
+        experimentalEnabled: true,
+      });
       expect((await liveOf(f.owner, id)).permission).toEqual({ mode: "auto" });
       f.events.length = 0;
       await f.owner.request({

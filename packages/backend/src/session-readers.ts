@@ -28,6 +28,7 @@ import {
   readEventDocument,
 } from "./session-document-providers";
 import { canonicalize, pathIdentity } from "./paths";
+import { within } from "./files";
 import { handoffActive, handoffCheckpoint, readHandoff } from "./handoff-work";
 
 export const SESSION_AGENTS = [
@@ -41,6 +42,9 @@ export const SESSION_AGENTS = [
   "cursor",
 ] as const;
 export type SessionAgent = (typeof SESSION_AGENTS)[number];
+/** One catalog call may share discovery; every metadata target still verifies its own header. */
+export type ClaudeControlMetadataShare = { current?: ReturnType<ClaudeSessions["list"]> };
+
 export interface NativeListing {
   sessions: NativeSession[];
   incomplete: boolean;
@@ -95,13 +99,30 @@ export class SessionReaders {
     return this.#antigravity.readHandoff(nativeRef);
   }
   verifiedClaudeControlTarget(nativeRef: string, workspace: string): string {
+    return this.#verifiedClaudeControlSource(nativeRef, workspace).transcript;
+  }
+  /** Display metadata follows the same native identity and workspace proof as control. */
+  verifiedClaudeControlMetadata(
+    nativeRef: string,
+    workspace: string,
+    share?: ClaudeControlMetadataShare,
+  ) {
+    const { session } = this.#verifiedClaudeControlSource(nativeRef, workspace, share);
+    return { title: session.title, created_at: session.created_at, updated_at: session.updated_at };
+  }
+  #verifiedClaudeControlSource(
+    nativeRef: string,
+    workspace: string,
+    share?: ClaudeControlMetadataShare,
+  ) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
       throw new Error("unverified-session-identity");
     const sessionId = nativeRef.toLowerCase();
     const expectedWorkspace = canonicalize(workspace);
-    const source = this.#claude
-      .list(null)
-      .sessions.find((candidate) => candidate.session.native_ref.toLowerCase() === sessionId);
+    const listing = share ? (share.current ??= this.#claude.list(null)) : this.#claude.list(null);
+    const source = listing.sessions.find(
+      (candidate) => candidate.session.native_ref.toLowerCase() === sessionId,
+    );
     if (
       !source ||
       source.session.sidechain ||
@@ -143,7 +164,7 @@ export class SessionReaders {
       throw new Error("unverified-session-identity");
     };
     verifyHeader();
-    return transcript;
+    return source;
   }
   claudeControlWorkspace(nativeRef: string, workspaceRoot: string): string {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
@@ -273,9 +294,43 @@ export class SessionReaders {
     workspace: string,
     cursor: string | null,
     limit: number,
+    options?: { codexDirectory: string },
   ): Promise<ConversationEventPage> {
     if (!nativeRef || nativeRef.length > 4096 || limit < 1 || limit > 100)
       throw new Error("invalid-request");
+    if (options) {
+      if (agent !== "codex") throw new Error("invalid-request");
+      const cwd = canonicalize(options.codexDirectory);
+      if (!lstatSync(cwd).isDirectory() || !within(cwd, canonicalize(workspace)))
+        throw new Error("session-workspace-mismatch");
+      const verify = () => {
+        const identity = this.verifiedCodexControlDirectory(nativeRef);
+        if (
+          !identity ||
+          identity.id !== nativeRef.toLowerCase() ||
+          pathIdentity(canonicalize(identity.cwd)) !== pathIdentity(cwd)
+        )
+          throw new Error("unverified-session-identity");
+      };
+      verify();
+      const source = this.#codex
+        .list(null, { matches: (ref) => ref.toLowerCase() === nativeRef.toLowerCase() })
+        .sessions.find(
+          (candidate) =>
+            candidate.session.native_ref.toLowerCase() === nativeRef.toLowerCase() &&
+            candidate.session.origin !== "auxiliary",
+        );
+      if (!source) throw new Error("session-unavailable");
+      const page = await this.#readEvents(
+        source.session,
+        workspace,
+        cursor,
+        limit,
+        source.transcript,
+      );
+      verify();
+      return page;
+    }
     const listing = await this.list(agent, workspace);
     const native = listing.sessions.find(
       (candidate) => candidate.native_ref === nativeRef && candidate.agent === agent,

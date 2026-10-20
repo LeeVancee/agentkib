@@ -25,9 +25,16 @@ const runtimeHandler = async (input: unknown): Promise<unknown> => {
       executionMode,
       status,
       features: Object.fromEntries(
-        ["steer", "queue-add", "queue-update", "rename", "attachments", "inspect", "resume"].map(
-          (name) => [name, { available: true }],
-        ),
+        [
+          "steer",
+          "queue-add",
+          "queue-update",
+          "rename",
+          "attachments",
+          "inspect",
+          "resume",
+          "fork",
+        ].map((name) => [name, { available: true }]),
       ),
     };
   if (p.operation === "live")
@@ -406,6 +413,99 @@ it("keeps an uncorrelated writer-lock result uncertain", async () => {
   const result = await http("/send", action());
   expect(result.status).toBe(502);
   expect(result.data).toEqual({ error: "outcome_unknown", controlOutcome: "unknown" });
+});
+it.each(["unsupported-model", "unsupported-effort"])(
+  "preserves the concrete model send rejection over HTTP: %s",
+  async (reason) => {
+    await pair();
+    status = "idle";
+    runtime.mockImplementation(async (input) => {
+      const p = input as { operation: string; requestId?: string };
+      return p.operation === "send"
+        ? {
+            accepted: false,
+            completed: false,
+            controlOutcome: "not-dispatched",
+            requestId: p.requestId,
+            runtimeBootId: "runtime",
+            error: reason,
+          }
+        : runtimeHandler(input);
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await http("/send", action());
+      expect(result.status).toBe(409);
+      expect(result.data).toEqual({ error: reason, controlOutcome: "not-dispatched" });
+    }
+  },
+);
+it.each(["native-model-unconfirmed", "native-effort-unconfirmed"])(
+  "preserves a pre-fork settings rejection over HTTP: %s",
+  async (reason) => {
+    await pair({ manage: true, advancedControl: true, organize: true });
+    status = "idle";
+    runtime.mockImplementation(async (input) => {
+      const p = input as { operation: string; requestId?: string };
+      return p.operation === "fork"
+        ? {
+            accepted: false,
+            completed: false,
+            controlOutcome: "not-dispatched",
+            requestId: p.requestId,
+            runtimeBootId: "runtime",
+            reason,
+          }
+        : runtimeHandler(input);
+    });
+    const result = await http("/codex/fork", action());
+    expect(result.status).toBe(409);
+    expect(result.data).toEqual({ error: reason, controlOutcome: "not-dispatched" });
+  },
+);
+it.each(["request", "runtime", "unknown"])(
+  "keeps a model rejection uncertain without matching %s proof",
+  async (variant) => {
+    await pair();
+    status = "idle";
+    runtime.mockImplementation(async (input) => {
+      const p = input as { operation: string; requestId?: string };
+      return p.operation === "send"
+        ? {
+            accepted: false,
+            completed: false,
+            controlOutcome: variant === "unknown" ? "unknown" : "not-dispatched",
+            requestId: variant === "request" ? "different-request" : p.requestId,
+            runtimeBootId: variant === "runtime" ? "different-runtime" : "runtime",
+            reason: "unsupported-model",
+          }
+        : runtimeHandler(input);
+    });
+    const result = await http("/send", action());
+    expect(result.status).toBe(502);
+    expect(result.data).toEqual({ error: "outcome_unknown", controlOutcome: "unknown" });
+  },
+);
+it("does not expose arbitrary runtime model errors as public HTTP reasons", async () => {
+  await pair();
+  status = "idle";
+  runtime.mockImplementation(async (input) => {
+    const p = input as { operation: string; requestId?: string };
+    return p.operation === "send"
+      ? {
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          requestId: p.requestId,
+          runtimeBootId: "runtime",
+          reason: "unsupported-model: private diagnostic",
+        }
+      : runtimeHandler(input);
+  });
+  const result = await http("/send", action());
+  expect(result.data).toEqual({
+    error: "control_preflight_rejected",
+    controlOutcome: "not-dispatched",
+  });
 });
 it("does not silently discard original queue attachments on text edits", async () => {
   await pair({ advancedControl: true });

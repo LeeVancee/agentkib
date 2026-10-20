@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { openManagedLedger } from "./managed-ledger";
+import type {
+  ClaudeObservedPermissionMode,
+  ClaudeRunnerOptionsSnapshot,
+} from "./claude-managed-runner";
 
 export const validClaudeDeviceId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_:-]{1,256}$/.test(value);
@@ -57,6 +61,11 @@ export type ClaudeHostState = {
   title: string | null;
   archived: boolean;
   settings: ClaudeSettings;
+  lastConfirmedOptions?: {
+    options: Omit<ClaudeRunnerOptionsSnapshot, "settingsAcknowledged">;
+    selection: ClaudeSettings;
+    permissionMode: ClaudeObservedPermissionMode | null;
+  };
   paused: boolean;
   reason: string | null;
   goal: ClaudeHostGoal | null;

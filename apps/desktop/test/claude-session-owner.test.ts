@@ -44,7 +44,8 @@ function fixture() {
   cleanups.push(() => commands.close());
   let agents: unknown = [];
   let agentsError = false;
-  let psError = false;
+  let psError: Error | null = null;
+  const psErrors: Error[] = [];
   const processes = new Map<number, { start: string; command: string; group: number }>();
   const run = vi.spyOn(commands, "run").mockImplementation(async (program, args, options) => {
     if (program === executable) {
@@ -56,7 +57,8 @@ function fixture() {
     expect(program).toBe("/bin/ps");
     expect(args).toEqual(["-axo", "pid=,pgid=,lstart=,command="]);
     expect(options?.env).toMatchObject({ TZ: "UTC", LC_ALL: "C" });
-    if (psError) throw new Error("ps unavailable");
+    const error = psErrors.shift() ?? psError;
+    if (error) throw error;
     return output(
       [...processes].map(([pid, p]) => ` ${pid} ${p.group} ${p.start} ${p.command}`).join("\n"),
     );
@@ -92,8 +94,11 @@ function fixture() {
     failAgents() {
       agentsError = true;
     },
-    failPs() {
-      psError = true;
+    failPs(error = new Error("ps unavailable")) {
+      psError = error;
+    },
+    failPsOnce(error: Error) {
+      psErrors.push(error);
     },
   };
 }
@@ -405,6 +410,77 @@ describe.skipIf(process.platform === "win32")("Claude session ownership probe", 
     await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
   });
 
+  it("retries one process scan deadline within the same observation", async () => {
+    const f = fixture();
+    f.failPsOnce(new Error("/bin/ps command timed out"));
+    await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
+    expect(f.run.mock.calls.map(([program]) => program)).toEqual([
+      f.executable,
+      "/bin/ps",
+      "/bin/ps",
+    ]);
+    // The retry does not turn the successful observation into a startup cache.
+    f.process(151, `claude --resume=${nativeId}`);
+    await expect(f.probe.check(nativeId)).resolves.toMatchObject({ pid: 151, source: "ps" });
+    expect(f.run).toHaveBeenCalledTimes(5);
+  });
+
+  it("uses fresh process identity and ownership after a process scan deadline", async () => {
+    const f = fixture();
+    f.failPsOnce(new Error("/bin/ps command timed out"));
+    f.process(152, `claude --resume=${nativeId} --print`);
+    await expect(f.probe.check(nativeId)).resolves.toEqual({
+      kind: "background",
+      pid: 152,
+      source: "ps",
+    });
+    expect(f.run.mock.calls.filter(([program]) => program === "/bin/ps")).toHaveLength(2);
+  });
+
+  it("keeps a shared observation's timeout retry within its one-read budget", async () => {
+    const f = fixture();
+    f.failPsOnce(new Error("/bin/ps command timed out"));
+    f.process(153, `claude --resume=${childId}`);
+    const share: ClaudeOwnerObservationShare = {};
+    await expect(f.probe.check(nativeId, null, share)).resolves.toEqual({ kind: "idle" });
+    await expect(f.probe.check(childId, null, share)).resolves.toMatchObject({
+      pid: 153,
+      source: "ps",
+    });
+    expect(f.run.mock.calls.filter(([program]) => program === "/bin/ps")).toHaveLength(2);
+  });
+
+  it("fails closed after a second process scan deadline", async () => {
+    const f = fixture();
+    f.failPs(new Error("/bin/ps command timed out"));
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+    expect(f.run.mock.calls.filter(([program]) => program === "/bin/ps")).toHaveLength(2);
+  });
+
+  it("does not retry a process scan permission failure", async () => {
+    const f = fixture();
+    f.failPs(new Error("/bin/ps command failed: Operation not permitted"));
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+    expect(f.run.mock.calls.filter(([program]) => program === "/bin/ps")).toHaveLength(1);
+  });
+
+  it("keeps unverified executable identity unavailable after a process scan deadline", async () => {
+    const f = fixture();
+    f.failPsOnce(new Error("/bin/ps command timed out"));
+    f.process(154, `/opt/unknown/versions/2.1.301 --resume=${nativeId}`);
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+    expect(f.run.mock.calls.filter(([program]) => program === "/bin/ps")).toHaveLength(2);
+  });
+
+  it("does not retry malformed process table output", async () => {
+    const f = fixture();
+    f.run.mockImplementation(async (program) =>
+      program === "/bin/ps" ? output("unparseable process row") : output([]),
+    );
+    await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+    expect(f.run.mock.calls.filter(([program]) => program === "/bin/ps")).toHaveLength(1);
+  });
+
   it("does not cache an idle result across later startup checks", async () => {
     const f = fixture();
     await expect(f.probe.check(nativeId)).resolves.toEqual({ kind: "idle" });
@@ -428,6 +504,7 @@ describe.skipIf(process.platform === "win32")("Claude session ownership probe", 
       program === "/bin/ps" ? { ...output(""), truncated: true } : output([]),
     );
     await expect(f.probe.check(nativeId)).rejects.toThrow("claude-owner-check-unavailable");
+    expect(f.run.mock.calls.filter(([program]) => program === "/bin/ps")).toHaveLength(1);
   });
 
   it("fails closed for a malformed registry record belonging to a live PID", async () => {

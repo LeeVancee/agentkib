@@ -236,11 +236,19 @@ export class ClaudeSessionOwnerProbe {
   }
 
   async #processes(): Promise<Map<number, Process>> {
-    const result = await this.commands.run("/bin/ps", ["-axo", "pid=,pgid=,lstart=,command="], {
-      env: { ...this.environment, TZ: "UTC", LC_ALL: "C", LANG: "C" },
-      timeout: 3000,
-      limit: 4 * 1024 * 1024,
-      strictOutput: true,
+    const read = () =>
+      this.commands.run("/bin/ps", ["-axo", "pid=,pgid=,lstart=,command="], {
+        env: { ...this.environment, TZ: "UTC", LC_ALL: "C", LANG: "C" },
+        timeout: 3000,
+        limit: 4 * 1024 * 1024,
+        strictOutput: true,
+      });
+    const result = await read().catch((error: unknown) => {
+      // A busy event loop can reach the command deadline before handling ps's exit.
+      // Retry that read once with a fresh process table; invalid/partial output and
+      // cancellation remain failures, and a second timeout still fails closed.
+      if (!(error instanceof Error) || error.message !== "/bin/ps command timed out") throw error;
+      return read();
     });
     if (!result.success || result.truncated) throw unavailable();
     const processes = new Map<number, Process>();

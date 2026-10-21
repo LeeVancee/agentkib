@@ -46,6 +46,8 @@ The Electron main process and packaged application use the TypeScript backend ex
 
 `pnpm dev` and packaged applications start only the TypeScript backend. Electron supplies the bundled Node runtime. Native file replacement and rollback use the staged Koffi module, unpacked from ASAR for installed apps. The build commands generate the shared protocol and stage required native artifacts in the order defined in `apps/desktop/package.json`.
 
+`apps/desktop/electron.vite.config.ts` configures electron-vite for the main process, preload, and React renderer. Development uses renderer HMR and watches the main/preload bundles. The backend and its workers retain an independent Vite build in `vite.backend.config.ts`, followed by native-module staging; restart `pnpm dev` after changing backend code. Vitest configuration lives in `vitest.config.ts`. Release jobs can still build the renderer (`build:web`) and Electron processes (`electron:build`) separately, and electron-builder packages the existing `dist/` and `dist-electron/` output directories.
+
 ### Start development
 
 ```bash
@@ -156,6 +158,8 @@ AgentKib 由多个协作部分组成一个桌面应用：
 | Runtime protocol      | 由 `apps/desktop/scripts/generate-runtime-protocol.mjs` 生成  | 在开发和构建前生成 Electron 与 TypeScript backend 的共享协议                       |
 
 `pnpm dev` 和正式安装版只启动 TypeScript backend。Electron 使用自带的 Node runtime。原生文件替换和回滚使用暂存的 Koffi 预编译模块，安装版会从 ASAR 解包。`pnpm dev`、`pnpm build` 和 `pnpm dist:electron` 会按照 `apps/desktop/package.json` 定义的顺序生成共享协议并暂存所需原生产物；不要手工编辑生成协议或其转出文件。
+
+`apps/desktop/electron.vite.config.ts` 统一配置 electron-vite 的主进程、preload 和 React renderer。开发环境支持 renderer HMR，并监听主进程和 preload 的重新构建。Backend 及其 worker 保留 `vite.backend.config.ts` 独立编译和原生模块暂存流程；修改 Backend 代码后需重启 `pnpm dev`。Vitest 配置位于 `vitest.config.ts`。发布流程仍可通过 `build:web` 和 `electron:build` 分别构建 renderer 与 Electron 进程，electron-builder 继续打包现有的 `dist/` 和 `dist-electron/` 目录。
 
 ### 启动开发环境
 

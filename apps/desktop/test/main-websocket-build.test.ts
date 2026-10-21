@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { build } from "vite";
+import { resolveConfig } from "electron-vite";
 import { describe, expect, it } from "vitest";
 
 const run = promisify(execFile);
@@ -14,13 +15,22 @@ describe("main process WebSocket bundle", () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "agentkib-main-ws-"));
     try {
       const output = path.join(directory, "build");
+      const resolved = await resolveConfig(
+        { root: desktopRoot, configFile: path.join(desktopRoot, "electron.vite.config.ts") },
+        "build",
+        "production",
+      );
+      const config = resolved.config!.main!;
       await build({
-        root: desktopRoot,
-        configFile: path.join(desktopRoot, "vite.main.config.ts"),
+        ...config,
         logLevel: "silent",
         build: {
+          ...config.build,
           outDir: output,
-          lib: { entry: path.join(import.meta.dirname, "fixtures/main-websocket.ts") },
+          lib: {
+            ...config.build!.lib,
+            entry: path.join(import.meta.dirname, "fixtures/main-websocket.ts"),
+          },
         },
       });
 

@@ -103,3 +103,9 @@ helper 的 7 项跳过对应 NSIS 编译器/执行门禁，PR 结果不能代替
 - Standards 与 Spec 新一轮独立审查均为 **no finding**；另一次 Spec 复核发现并修复上述同名分支/tag 歧义后，再审查为 no finding。独立 runner 回归 6/6 通过。某只读审查进程在缺少临时工具的首次全 helper 中遇到两项未修改启动探针超时，按名称隔离两项均通过；主代理有完整工具的组合结果另列。
 
 Windows x64/ARM64 CI 结果在执行后追加。不会将尚未执行的 Windows 用例标为已通过；不合并、不发布，不在本机下载安装包。
+
+
+### 本轮 CI 首次结果与夹具修正
+
+- `ea8b9c714` 的 [Windows x64 job](https://github.com/starroyhq/agentkib/actions/runs/39537579435/job/119017673104) 为 60 项：50 通过、1 失败、9 跳过。真实 Win32 诊断和 16 项卸载控制均通过，唯一失败为新增的 tag/branch 私有 Git 夹具：PR 浅克隆不含父提交，私有 bare 仓库借用对象却没有 shallow 边界，`rev-list -n 1` 返回 128。不是卸载断言失败，也未通过重跑掩盖。
+- 夹具改为只复制当前已有 commit 对象到私有 bare 并显式设置 shallow 边界，不创建新 commit、不读写真实仓库 refs；保留分支拒绝、轻量标签与 annotated 标签原断言。补齐 Git stderr 诊断，相关 6 项本地回归通过。旧 artifact-only run `39537578553` 在预检阶段取消，改用修正后的提交重新完整验证，避免混用旧源码结果。

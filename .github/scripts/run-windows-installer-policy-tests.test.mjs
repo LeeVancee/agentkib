@@ -210,23 +210,21 @@ test("release preflight resolves tags explicitly instead of accepting a version-
     return result;
   };
   const sha = git(["-C", repository, "rev-parse", "HEAD"]).stdout.trim();
-  const objectDirectory = git([
-    "-C",
-    repository,
-    "rev-parse",
-    "--git-path",
-    "objects",
-  ]).stdout.trim();
+  const commit = git(["-C", repository, "cat-file", "commit", sha]);
+  assert.equal(commit.status, 0, commit.stderr);
   assert.equal(git(["init", "--bare", directory]).status, 0);
-  // Share existing objects read-only. Every ref and new tag object below belongs
-  // to this private temporary Git store; no repository commit or ref is changed.
-  await writeFile(
-    path.join(directory, "objects/info/alternates"),
-    `${path.resolve(repository, objectDirectory).replaceAll("\\", "/")}\n`,
-  );
   const inStore = (arguments_, options) => git(["--git-dir", directory, ...arguments_], options);
+  // Copy just the existing commit, keeping refs and tag objects private. Mark
+  // its shallow boundary explicitly: PR checkouts need not contain its parents.
+  const copied = inStore(["hash-object", "-t", "commit", "-w", "--stdin"], {
+    input: commit.stdout,
+  });
+  assert.equal(copied.status, 0, copied.stderr);
+  assert.equal(copied.stdout.trim(), sha);
+  await writeFile(path.join(directory, "shallow"), `${sha}\n`);
   assert.equal(inStore(["update-ref", `refs/heads/${tag}`, sha]).status, 0);
-  assert.equal(inStore(["rev-list", "-n", "1", tag]).status, 0);
+  const branch = inStore(["rev-list", "-n", "1", tag]);
+  assert.equal(branch.status, 0, branch.stderr);
   assert.notEqual(inStore(["rev-list", "-n", "1", selectedReference]).status, 0);
 
   assert.equal(inStore(["update-ref", `refs/tags/${tag}`, sha]).status, 0);

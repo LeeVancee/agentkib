@@ -190,7 +190,6 @@ export async function initializeI18n(locale: SupportedLocale) {
       ),
       interpolation: { escapeValue: false },
       returnNull: false,
-      showSupportNotice: false,
     });
   } else {
     await i18n.changeLanguage(locale);

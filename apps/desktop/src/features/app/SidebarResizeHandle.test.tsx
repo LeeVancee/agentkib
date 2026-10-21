@@ -83,13 +83,13 @@ describe("shared sidebar resize handle", () => {
   it("previews a clamped drag and writes only on pointer release", async () => {
     const { container } = render(shell());
     const handle = screen.getByRole("separator");
-    fireEvent.pointerDown(handle, { button: 0, clientX: 250 });
+    fireEvent.pointerDown(handle, { button: 0, clientX: 250, pointerId: 1, isPrimary: true });
     expect(handle.setPointerCapture).toHaveBeenCalledWith(1);
-    fireEvent.pointerMove(handle, { clientX: 900 });
+    fireEvent.pointerMove(handle, { clientX: 900, pointerId: 1 });
     expect(handle).toHaveAttribute("aria-valuenow", "400");
     expect(container.querySelector(".app-shell")).toHaveClass("app-shell-sidebar-resizing");
     expect(saveWidth).not.toHaveBeenCalled();
-    fireEvent.pointerUp(handle, { clientX: 900 });
+    fireEvent.pointerUp(handle, { clientX: 900, pointerId: 1 });
     await waitFor(() => expect(saveWidth).toHaveBeenCalledExactlyOnceWith(400));
     expect(container.querySelector(".app-shell")).not.toHaveClass("app-shell-sidebar-resizing");
   });
@@ -99,8 +99,8 @@ describe("shared sidebar resize handle", () => {
     (event) => {
       render(shell());
       const handle = screen.getByRole("separator");
-      fireEvent.pointerDown(handle, { button: 0, clientX: 250 });
-      fireEvent.pointerMove(handle, { clientX: 320 });
+      fireEvent.pointerDown(handle, { button: 0, clientX: 250, pointerId: 1, isPrimary: true });
+      fireEvent.pointerMove(handle, { clientX: 320, pointerId: 1 });
       if (event === "blur") fireEvent(window, new Event("blur"));
       else if (event === "escape") fireEvent.keyDown(handle, { key: "Escape" });
       else if (event === "pointerCancel") fireEvent.pointerCancel(handle);
@@ -131,8 +131,8 @@ describe("shared sidebar resize handle", () => {
   it("cancels an unfinished drag when the layout unmounts", () => {
     const { unmount } = render(shell());
     const handle = screen.getByRole("separator");
-    fireEvent.pointerDown(handle, { button: 0, clientX: 250 });
-    fireEvent.pointerMove(handle, { clientX: 350 });
+    fireEvent.pointerDown(handle, { button: 0, clientX: 250, pointerId: 1, isPrimary: true });
+    fireEvent.pointerMove(handle, { clientX: 350, pointerId: 1 });
     unmount();
     expect(useSidebarWidthStore.getState()).toMatchObject({ dragging: false, width: 250 });
     expect(saveWidth).not.toHaveBeenCalled();

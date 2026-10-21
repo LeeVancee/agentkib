@@ -62,12 +62,39 @@ function upgradeBlock(source) {
   throw new Error("No complete atomic upgrade block was found");
 }
 
+function assertTrackedInclude(configuration) {
+  // Git's Windows checkout uses CRLF. The packaging contract is independent of
+  // checkout line endings, but the include must still be in the NSIS section.
+  assert.match(
+    configuration.replaceAll("\r\n", "\n"),
+    /^nsis:\n(?: {2}[^\n]*\n)* {2}include: scripts\/windows-installer\.nsh(?:\n|$)/m,
+  );
+}
+
+test("tracked include policy accepts LF and CRLF without accepting other paths", () => {
+  for (const ending of ["\n", "\r\n"]) {
+    const configuration = [
+      "nsis:",
+      "  oneClick: false",
+      "  include: scripts/windows-installer.nsh",
+      "",
+    ].join(ending);
+    assertTrackedInclude(configuration);
+    assert.throws(() =>
+      assertTrackedInclude(configuration.replace("windows-installer.nsh", "different.nsh")),
+    );
+    assert.throws(() =>
+      assertTrackedInclude(
+        configuration.replace("windows-installer.nsh", "windows-installer.nsh.bak"),
+      ),
+    );
+    assert.throws(() => assertTrackedInclude(configuration.replace("nsis:", "extraResources:")));
+  }
+});
+
 test("packaging uses the tracked include and retains the upstream atomic upgrade rollback", async () => {
   const configuration = await readFile(path.join(desktop, "electron-builder.yml"), "utf8");
-  assert.match(
-    configuration,
-    /nsis:\n(?: {2}[^\n]*\n)* {2}include: scripts\/windows-installer\.nsh/,
-  );
+  assertTrackedInclude(configuration);
   assert.equal(upgradeBlock(policy), upgradeBlock(upstream));
   assert.match(
     policy.slice(policy.lastIndexOf("${if} ${isUpdated}")),

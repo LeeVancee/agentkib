@@ -50,3 +50,5 @@
 - PR 的 Windows x64/ARM64 检查执行 PowerShell 控制与真实 Win32 文件诊断测试；另手动运行 `Desktop Package Artifacts`，选择该分支且留空 `release_tag`，以 artifact-only 路径验证两个架构的 NSIS 原生锁/升级回归和实际 AgentKib 安装、启动、覆盖安装、卸载与用户数据保留。
 - 禁止合并或发布，不创建/移动标签、不修改 v0.20.1 Release，也不下载安装包到本地验收。CI 结果将在实际运行后补充。
 - 首次提交 `7775282cd` 对应 [PR #135](https://github.com/starroyhq/agentkib/pull/135)。首次 [Windows x64 job](https://github.com/starroyhq/agentkib/actions/runs/39532216704/job/119000525284) 的真实 Win32 锁测试已通过，但配置契约只接受 LF，Windows CRLF checkout 导致配置测试及其稀疏 helper 子测试失败（34 通过、2 失败、7 跳过）。修复仅将 CRLF 规范化为 LF，同时补两种行尾及错误路径/错误配置节的负向回归，保留安装钩子、升级保护和残留断言。旧 artifact-only run `39532224889` 在打包前取消，随后用修复提交重新执行，避免把旧版本结果当作修复通过。
+- 提交 `00779f375` 的 [Windows x64 job](https://github.com/starroyhq/agentkib/actions/runs/39532538179/job/119001572852) 中配置行尾回归已通过，真实 Win32 诊断也通过；但升级块逐行去注释还受 CRLF 影响，导致与 npm 内 LF 模板的保护契约比较失败（35 通过、2 失败、7 跳过）。继续统一 policy/upstream 读取和升级块比较的行尾归一化，补双方 LF/CRLF 四种组合以及回滚调用被篡改必须拒绝的回归。对应旧 artifact-only run `39532544689` 也在平台构建前取消。
+- 对读取实际 CRLF 文件的临时源码 checkout 进行本地集成复验，配置、升级保护及稀疏 helper 测试通过。独立排查还修复了测试 NSIS 路径中 `$` 的字面量转义，并让实际 fixture 路径同时包含空格和 `$`，防止测试脚本把路径误识别为 NSIS 变量；不改变产品路径或删除行为。

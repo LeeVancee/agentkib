@@ -42,11 +42,18 @@ const templates = path.join(
   path.dirname(builderRequire.resolve("app-builder-lib/package.json")),
   "templates/nsis",
 );
-const policy = await readFile(includePath, "utf8");
-const upstream = await readFile(path.join(templates, "uninstaller.nsh"), "utf8");
+function normalizeLineEndings(source) {
+  return source.replaceAll("\r\n", "\n");
+}
+
+const policy = normalizeLineEndings(await readFile(includePath, "utf8"));
+const upstream = normalizeLineEndings(
+  await readFile(path.join(templates, "uninstaller.nsh"), "utf8"),
+);
 
 function upgradeBlock(source) {
-  const lines = source.slice(source.indexOf("${if} ${isUpdated}")).split("\n");
+  const normalized = normalizeLineEndings(source);
+  const lines = normalized.slice(normalized.indexOf("${if} ${isUpdated}")).split("\n");
   let depth = 0;
   for (let index = 0; index < lines.length; index += 1) {
     if (/^\s*\$\{if\}/i.test(lines[index])) depth += 1;
@@ -66,7 +73,7 @@ function assertTrackedInclude(configuration) {
   // Git's Windows checkout uses CRLF. The packaging contract is independent of
   // checkout line endings, but the include must still be in the NSIS section.
   assert.match(
-    configuration.replaceAll("\r\n", "\n"),
+    normalizeLineEndings(configuration),
     /^nsis:\n(?: {2}[^\n]*\n)* {2}include: scripts\/windows-installer\.nsh(?:\n|$)/m,
   );
 }
@@ -90,6 +97,22 @@ test("tracked include policy accepts LF and CRLF without accepting other paths",
     );
     assert.throws(() => assertTrackedInclude(configuration.replace("nsis:", "extraResources:")));
   }
+});
+
+test("atomic upgrade comparison accepts mixed checkout line endings and rejects changed rollback", () => {
+  const expected = upgradeBlock(upstream);
+  for (const policyEnding of ["\n", "\r\n"]) {
+    for (const upstreamEnding of ["\n", "\r\n"]) {
+      assert.equal(
+        upgradeBlock(policy.replaceAll("\n", policyEnding)),
+        upgradeBlock(upstream.replaceAll("\n", upstreamEnding)),
+      );
+    }
+  }
+  assert.notEqual(
+    upgradeBlock(policy.replace("Call un.restoreFiles", "Call un.atomicRMDir")),
+    expected,
+  );
 });
 
 test("packaging uses the tracked include and retains the upstream atomic upgrade rollback", async () => {
@@ -186,11 +209,27 @@ test(
 );
 
 function nsisString(value) {
-  return value.replaceAll("$", "$$").replaceAll('"', '$\\"');
+  return value.replaceAll("$", () => "$$").replaceAll('"', '$\\"');
 }
 
+function nsisCompilerString(value) {
+  // OutFile and !include take compiler paths, not runtime NSIS strings.
+  return value.replaceAll('"', '$\\"');
+}
+
+test("NSIS fixture paths preserve literal dollar signs and quotes", () => {
+  assert.equal(
+    nsisString(String.raw`D:\fixture $TEMP\quoted"name`),
+    String.raw`D:\fixture $$TEMP\quoted$\"name`,
+  );
+  assert.equal(
+    nsisCompilerString(String.raw`D:\fixture $TEMP\output.exe`),
+    String.raw`D:\fixture $TEMP\output.exe`,
+  );
+});
+
 async function compileFixture(t, { updated = false, inPlace = false, baseline = false } = {}) {
-  const directory = await mkdtemp(path.join(tmpdir(), "agentkib uninstall policy "));
+  const directory = await mkdtemp(path.join(tmpdir(), "agentkib uninstall $ policy "));
   const cleanup = [];
   t.after(async () => {
     for (const close of cleanup) await close();
@@ -233,9 +272,9 @@ async function compileFixture(t, { updated = false, inPlace = false, baseline = 
 !define BUILD_UNINSTALLER
 !define UNINSTALL_FILENAME "Uninstall AgentKib.exe"
 !define isUpdated '${updated ? "1 == 1" : "0 == 1"}'
-${baseline ? "" : `!include "${nsisString(includePath)}"`}
+${baseline ? "" : `!include "${nsisCompilerString(includePath)}"`}
 Name "AgentKib uninstall policy fixture"
-OutFile "${nsisString(creator)}"
+OutFile "${nsisCompilerString(creator)}"
 RequestExecutionLevel user
 SilentInstall silent
 ${loadLanguages}

@@ -159,9 +159,42 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
+  release-helpers:
+    name: Test release workflow helpers
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      # These tests include product-policy and workflow contracts. A sparse
+      # script checkout without its package dependencies cannot execute them.
+      # On an old-tag retry, validate the selected workflow's complete source.
+      - name: Checkout release workflow source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install helper test dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Test all release workflow helpers
+        run: node --test .github/scripts/*.test.mjs
+
   desktop:
     name: Build ${{ matrix.name }} ${{ matrix.arch }}
-    needs: preflight
+    needs: [preflight, release-helpers]
     runs-on: ${{ matrix.os }}
     # Allow branch builds to save dependency caches for subsequent runs.
     cache-mode: write
@@ -504,7 +537,7 @@ jobs:
 
   fedora-x64:
     name: Build Fedora x64 RPM
-    needs: preflight
+    needs: [preflight, release-helpers]
     runs-on: ubuntu-24.04
     container: fedora:42
     env:
@@ -599,6 +632,7 @@ jobs:
     name: Publish GitHub Release
     needs:
       - preflight
+      - release-helpers
       - desktop
       - fedora-x64
     if: needs.preflight.outputs.should_publish == 'true'
@@ -630,10 +664,6 @@ jobs:
           sparse-checkout: |
             .github/scripts
             apps/desktop/scripts
-
-      - name: Test release workflow helpers
-        shell: bash
-        run: node --test "$RELEASE_WORKFLOW_SCRIPTS_DIR"/*.test.mjs
 
       - name: Download platform artifacts
         uses: actions/download-artifact@v8

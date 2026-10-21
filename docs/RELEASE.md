@@ -72,6 +72,14 @@ already public. A product-code fix requires a new version and tag rather than
 moving an existing tag. Workflow artifacts remain available for diagnosing
 failed builds.
 
+Release-helper tests run in a separate, read-only job on every run, including
+artifact-only builds. They use the complete selected workflow checkout and its
+frozen dependencies, installed without lifecycle scripts; they do not use the
+immutable product tag's checkout or the publisher's sparse script checkout.
+Both platform builds and publication require this full helper suite to pass.
+This also validates newer helpers when retrying an older tag, without granting
+dependency installation or tests the publisher's write token.
+
 ### Windows uninstall failures
 
 The installer smoke copies the NSIS uninstaller into a private temporary

@@ -462,13 +462,12 @@ describe("composer sending shortcuts", () => {
   });
 
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
-    "shows the visible shortcut instruction in %s",
+    "omits the removed shortcut instruction in %s",
     (locale) => {
       doubles.session.locale = locale;
       const { input } = renderComposer();
-      const hint = screen.getByText(composerLayoutCopy[locale].sendShortcut);
-      expect(hint).toBeVisible();
-      expect(input).toHaveAttribute("aria-describedby", hint.id);
+      expect(screen.queryByText(composerLayoutCopy[locale].sendShortcut)).not.toBeInTheDocument();
+      expect(input).not.toHaveAttribute("aria-describedby");
     },
   );
   function continuationFixture() {

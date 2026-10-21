@@ -2,7 +2,11 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EmbeddedConversation } from "./conversation/conversation";
+import {
+  EmbeddedConversation as Conversation,
+  type EmbeddedConversationProps,
+} from "./conversation/conversation";
+
 import { WebClient, type Access, type Live } from "@agentkib/web-client";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import {
@@ -16,6 +20,18 @@ import {
   type DesktopConversationBridge,
 } from "@/core/conversation-bridge";
 
+function EmbeddedConversation(props: EmbeddedConversationProps) {
+  return (
+    <>
+      <header data-session-window-session={props.sessionId}>
+        <div data-session-window-status-slot />
+        <div data-session-window-files-slot />
+        <div data-session-window-pending-slot />
+      </header>
+      <Conversation {...props} />
+    </>
+  );
+}
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -246,7 +262,9 @@ describe("desktop embedded conversation", () => {
     expect(mutations()[0][1]).not.toHaveProperty("handoffConfirmed");
     expect(mutations()[0][1]).not.toHaveProperty("handoffFingerprint");
     await waitFor(() => expect(screen.getByRole("textbox", { name: "发送消息" })).toHaveValue(""));
-    expect(await screen.findByText(sessionContinuationCopy("zh-CN").running)).toBeVisible();
+    const running = await screen.findByText(sessionContinuationCopy("zh-CN").running);
+    expect(running).toBeVisible();
+    expect(running.closest("[data-session-window-status-slot]")).not.toBeNull();
     expect(vi.mocked(bridge.request).mock.calls.some(([path]) => path === "managed/adopt")).toBe(
       false,
     );

@@ -1,8 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import type { ArtifactEntry, ArtifactTicket } from "@agentkib/web-client";
 import { ArtifactBrowser } from "@/features/conversation/features/sessions/artifact-browser";
-import { ArtifactPanel } from "@/features/conversation/features/sessions/artifact-panel";
+import {
+  ArtifactPanel,
+  ArtifactWorkspace,
+} from "@/features/conversation/features/sessions/artifact-panel";
 
 let session: {
   client: { request: ReturnType<typeof vi.fn> };
@@ -103,7 +107,7 @@ describe("ArtifactBrowser", () => {
       expect.any(AbortSignal),
     );
     entries = [{ ...file("folder-id", "download", "output"), kind: "directory" }];
-    fireEvent.click(screen.getByRole("button", { name: "Project files" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Project files" }));
     fireEvent.click(await screen.findByRole("button", { name: /output/ }));
     await waitFor(() =>
       expect(session.client.request).toHaveBeenCalledWith(
@@ -155,7 +159,8 @@ describe("ArtifactBrowser", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "report.txt" }));
     await waitFor(() => expect(finish).toBeDefined());
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "extra" } });
+    await userEvent.click(screen.getByRole("combobox", { name: "Authorized directory" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Extra" }));
     await act(async () => {
       finish({ text: "Late private text" });
     });
@@ -303,8 +308,15 @@ describe("ArtifactBrowser", () => {
         removeEventListener: vi.fn(),
       })),
     );
-    const view = await show();
-    fireEvent.click(screen.getByRole("button", { name: "movie.mp4" }));
+    const view = render(<ArtifactBrowser />, {
+      wrapper: ({ children }) => (
+        <ArtifactWorkspace browser={children}>
+          <button>Continue chat</button>
+        </ArtifactWorkspace>
+      ),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Files & artifacts" }));
+    fireEvent.click(await screen.findByRole("button", { name: "movie.mp4" }));
     await waitFor(() => expect(view.container.querySelector("video")).not.toBeNull());
     const video = view.container.querySelector("video")!;
     video.currentTime = 21;
@@ -316,11 +328,13 @@ describe("ArtifactBrowser", () => {
     expect(screen.getByRole("complementary")).not.toHaveAttribute("aria-modal");
     expect(view.container.querySelector("video")).toBe(video);
     expect(video.currentTime).toBe(21);
+    screen.getByRole("button", { name: "Continue chat" }).focus();
     act(() => {
       wide = false;
       update();
     });
     expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByRole("dialog")).toContainElement(document.activeElement as HTMLElement);
     expect(view.container.querySelector("video")).toBe(video);
     expect(session.client.request.mock.calls.length).toBe(requests);
   });
@@ -371,10 +385,10 @@ describe("ArtifactBrowser", () => {
     opener.focus();
     fireEvent.click(opener);
     await screen.findByRole("button", { name: "report.txt" });
-    const close = screen.getByRole("button", { name: "Close files" });
-    close.focus();
-    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
-    expect(screen.getByRole("button", { name: "photo.png" })).toHaveFocus();
+    const firstControl = screen.getByRole("button", { name: "Refresh" });
+    firstControl.focus();
+    await userEvent.setup().tab({ shift: true });
+    await waitFor(() => expect(screen.getByRole("button", { name: "photo.png" })).toHaveFocus());
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(opener).toHaveFocus());
@@ -404,7 +418,7 @@ describe("ArtifactBrowser", () => {
       view.unmount();
     },
   );
-  it("restores focus only after removing inert when resized through sidebar and modal", async () => {
+  it("restores focus after revealing the background when resized through sidebar and modal", async () => {
     let wide = false;
     let update!: () => void;
     vi.stubGlobal(
@@ -434,12 +448,13 @@ describe("ArtifactBrowser", () => {
       wide = false;
       update();
     });
-    expect(opener.inert).toBe(true);
+    expect(opener.closest('[aria-hidden="true"]')).not.toBeNull();
     const realFocus = opener.focus.bind(opener);
     const attempts: boolean[] = [];
     vi.spyOn(opener, "focus").mockImplementation(() => {
-      attempts.push(Boolean(opener.inert));
-      if (!opener.inert) realFocus();
+      const hidden = Boolean(opener.closest('[aria-hidden="true"]'));
+      attempts.push(hidden);
+      if (!hidden) realFocus();
     });
     fireEvent.click(screen.getByRole("button", { name: "Close files" }));
     await waitFor(() => expect(opener).toHaveFocus());

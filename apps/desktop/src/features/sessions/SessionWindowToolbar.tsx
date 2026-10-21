@@ -1,10 +1,19 @@
 import { cn } from "cn";
 import { navigationStyles } from "@/components/navigationStyles";
-import { ArrowUpRight, LayoutDashboard, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
+import {
+  ArrowUpRight,
+  LayoutDashboard,
+  MoreHorizontal,
+  Plus,
+  RefreshCw,
+  SlidersHorizontal,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuSeparator,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -50,8 +59,14 @@ export function SessionWindowToolbar() {
         )}
       </div>
     );
+  const interactive =
+    hasDesktopConversation() &&
+    !selected.remote &&
+    selected.availability === "readable" &&
+    ["codex", "claude-code", "antigravity"].includes(selected.agent);
   return (
     <div
+      data-session-window-session={interactive ? selected.id : undefined}
       className={cn(
         navigationStyles.appToolbarContent,
         "session-window-toolbar gap-2 [&>button]:shrink-0 [&>div]:shrink-0",
@@ -64,11 +79,18 @@ export function SessionWindowToolbar() {
       >
         {displaySessionTitle(selected.title, tr)}
       </h1>
-      <div className="session-window-actions flex shrink-0 items-center gap-2 max-[1050px]:hidden">
+      {interactive && (
+        <div
+          data-session-window-status-slot
+          className="hidden min-w-0 shrink items-center sm:flex empty:hidden"
+        />
+      )}
+      <div className="session-window-actions flex shrink-0 items-center gap-2">
         {hasDesktopConversation() && hub.localEnabled && (
           <Button
             variant="outline"
             size="icon"
+            className="max-[1050px]:hidden"
             aria-label={tr("sessions.newConversation")}
             title={tr("sessions.newConversation")}
             onClick={createConversation}
@@ -76,10 +98,14 @@ export function SessionWindowToolbar() {
             <Plus size={17} />
           </Button>
         )}
+        {interactive && (
+          <div data-session-window-files-slot className="flex shrink-0 items-center empty:hidden" />
+        )}
         {canContinue && (
           <Button
             variant="outline"
             size="icon"
+            className="max-[1050px]:hidden"
             aria-label={tr("sessions.continueWorkspace")}
             title={tr("sessions.continueWorkspace")}
             onClick={continueSession}
@@ -90,6 +116,7 @@ export function SessionWindowToolbar() {
         <Button
           variant="outline"
           size="icon"
+          className="max-[1050px]:hidden"
           disabled={hub.refreshing}
           aria-label={tr("sessions.refresh")}
           title={tr("sessions.refresh")}
@@ -98,40 +125,59 @@ export function SessionWindowToolbar() {
           <RefreshCw size={15} className={hub.refreshing ? "animate-spin" : ""} />
         </Button>
       </div>
+      {interactive && (
+        <div data-session-window-pending-slot className="flex shrink-0 items-center empty:hidden" />
+      )}
       <div className="session-window-menu block shrink-0">
         <DropdownMenu>
           <DropdownMenuTrigger
             className={navigationStyles.appToolbarMore}
             aria-label={tr("common.moreActions")}
+            data-dialog-return-focus="true"
           >
             <MoreHorizontal size={18} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
-            {hasDesktopConversation() && hub.localEnabled && (
-              <DropdownMenuItem onClick={createConversation}>
-                <Plus size={15} />
-                {tr("sessions.newConversation")}
+            <DropdownMenuGroup>
+              {interactive && (
+                <>
+                  <DropdownMenuItem
+                    onClick={() =>
+                      useSessionViewStore.getState().requestPanel(selected.id, "actions")
+                    }
+                  >
+                    <SlidersHorizontal size={15} />
+                    {tr("sessions.conversationActions")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              {hasDesktopConversation() && hub.localEnabled && (
+                <DropdownMenuItem onClick={createConversation}>
+                  <Plus size={15} />
+                  {tr("sessions.newConversation")}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem
+                onClick={() => {
+                  useSessionViewStore.getState().setCreatingConversation(false);
+                  hub.select();
+                }}
+              >
+                <LayoutDashboard size={15} />
+                {tr("sessions.backOverview")}
               </DropdownMenuItem>
-            )}
-            <DropdownMenuItem
-              onClick={() => {
-                useSessionViewStore.getState().setCreatingConversation(false);
-                hub.select();
-              }}
-            >
-              <LayoutDashboard size={15} />
-              {tr("sessions.backOverview")}
-            </DropdownMenuItem>
-            {canContinue && (
-              <DropdownMenuItem onClick={continueSession}>
-                <ArrowUpRight size={15} />
-                {tr("sessions.continueWorkspace")}
+              {canContinue && (
+                <DropdownMenuItem onClick={continueSession}>
+                  <ArrowUpRight size={15} />
+                  {tr("sessions.continueWorkspace")}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem disabled={hub.refreshing} onClick={() => void hub.refresh()}>
+                <RefreshCw size={15} />
+                {tr("sessions.refresh")}
               </DropdownMenuItem>
-            )}
-            <DropdownMenuItem disabled={hub.refreshing} onClick={() => void hub.refresh()}>
-              <RefreshCw size={15} />
-              {tr("sessions.refresh")}
-            </DropdownMenuItem>
+            </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

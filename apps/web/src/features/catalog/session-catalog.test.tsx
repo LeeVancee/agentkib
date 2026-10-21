@@ -1,5 +1,5 @@
 import { sessionContinuationCopy } from "@agentkib/session-ui";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ConversationSessionSummary } from "@agentkib/web-client";
@@ -244,15 +244,20 @@ describe("SessionCatalog", () => {
           ]}
         />,
       );
-      expect(screen.getByRole("status", { name: copy.running })).toHaveClass("bg-primary");
-      expect(screen.getByRole("status", { name: copy.terminalBadge })).toHaveClass(
+      const runningSession = screen.getByRole("button", { name: /Codex · Running/ });
+      expect(runningSession).toHaveAccessibleName(new RegExp(copy.running));
+      expect(within(runningSession).getByTitle(copy.running)).toHaveClass("bg-primary");
+      const terminalSession = screen.getByRole("button", { name: /Claude Code · Terminal/ });
+      expect(terminalSession).toHaveAccessibleName(new RegExp(copy.terminalBadge));
+      expect(within(terminalSession).getByTitle(copy.terminalBadge)).toHaveClass(
         "bg-muted-foreground",
       );
       // Use elsewhere is confirmed after opening a session, never guessed in the list.
       expect(screen.queryByRole("status", { name: copy.busy("Claude Code") })).toBeNull();
       expect(screen.queryByRole("status", { name: copy.viewOnly })).toBeNull();
       expect(screen.getByRole("button", { name: /Running/ }).textContent).toContain("●");
-      expect(screen.getAllByRole("status")).toHaveLength(2);
+      // Static runtime metadata is included in each session's accessible name, not a live region.
+      expect(screen.queryAllByRole("status")).toHaveLength(0);
     },
   );
   it.each([

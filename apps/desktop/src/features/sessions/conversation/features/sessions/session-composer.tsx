@@ -13,6 +13,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ArrowUp,
+  AlertTriangle,
   CornerDownRight,
   ListPlus,
   MoreHorizontal,
@@ -99,7 +100,6 @@ export function SessionComposer({
   const submitPending = useRef(false);
   const composing = useRef(false);
   const enterSends = useEnterSends();
-  const shortcutHintId = useId();
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
   const [previewKey, setPreviewKey] = useState<string>();
@@ -443,20 +443,20 @@ export function SessionComposer({
       {isClaude && display.continuation === "terminal" && (
         <p className="px-3 text-xs leading-5 text-muted-foreground">{continuation.terminalHint}</p>
       )}
+      {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
       <form
-        className="w-full space-y-2 rounded-3xl border bg-background p-2 shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/20 md:p-3"
+        className="w-full space-y-2 rounded-3xl border border-border bg-background p-2 shadow-sm transition-colors focus-within:border-ring/40 md:p-3"
         onSubmit={(event) => {
           event.preventDefault();
           if (canSubmit && !compacting) void send("send");
         }}
       >
-        {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} compact />}
         <label className="sr-only" htmlFor="message">
           {t.message}
         </label>
         <Textarea
           id="message"
-          className="min-h-10 max-h-40 w-full resize-none overflow-y-auto border-0 bg-transparent px-3 pt-2.5 text-sm shadow-none focus-visible:ring-0"
+          className="min-h-10 max-h-40 w-full resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3 py-2 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:border-transparent focus-visible:ring-0"
           value={composerValue}
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
@@ -466,11 +466,6 @@ export function SessionComposer({
             if (isCodex || isClaude) void session.checkContinuation?.();
           }}
           disabled={busy || submitted}
-          aria-describedby={
-            enterSends && canSubmit && !compacting && !busy && !submitted
-              ? shortcutHintId
-              : undefined
-          }
           onCompositionStart={() => {
             composing.current = true;
           }}
@@ -501,11 +496,6 @@ export function SessionComposer({
             }
           }}
         />
-        {enterSends && canSubmit && !compacting && !busy && !submitted && (
-          <p id={shortcutHintId} className="px-3 text-xs leading-5 text-muted-foreground">
-            {layout.sendShortcut}
-          </p>
-        )}
         <HistoryReferenceChips />
         {uploads.length > 0 && (
           <ul className="space-y-2">
@@ -564,21 +554,6 @@ export function SessionComposer({
             />
           </Dialog>
         )}
-        {resources.some((item) => !item.available) && (
-          <p role="status" className="text-xs text-muted-foreground">
-            {copy.resourceRemoved}
-          </p>
-        )}
-        {resourceNeedsMessage && (
-          <p role="status" className="text-sm text-muted-foreground">
-            {layout.resourceNeedsMessage}
-          </p>
-        )}
-        {error && (
-          <p role="alert" className="text-xs text-destructive">
-            {error}
-          </p>
-        )}
         <div className="space-y-2">
           <Input
             ref={fileInput}
@@ -603,7 +578,7 @@ export function SessionComposer({
             />
           )}
           {access?.device?.accessMode !== "full" && (
-            <div className="flex min-w-0 items-center justify-between gap-2 px-2 pb-1">
+            <div className="@container flex min-w-0 items-center justify-between gap-2 px-2 pb-1">
               <Button
                 type="button"
                 variant="ghost"
@@ -630,30 +605,55 @@ export function SessionComposer({
             </div>
           )}
         </div>
-        {compacting && (
-          <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
-            {contextUsageCopy[locale].compactingDetail}
-          </p>
-        )}
-        {!canSend &&
-          !(connectionStatusInBanner && isClaude) &&
-          (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
-          !compacting &&
-          !connectionFailure &&
-          !display.loading && (
-            <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
-              {display.reason}
-            </p>
-          )}
-        {!isClaude && access?.device?.accessMode !== "full" && (
-          <Disclosure className="px-1 text-xs text-muted-foreground">
-            <DisclosureSummary className="min-h-11 cursor-pointer content-center">
-              {layout.help}
-            </DisclosureSummary>
-            <p className="pb-2 leading-5">{copy.composerHint}</p>
-          </Disclosure>
-        )}
       </form>
+      {resources.some((item) => !item.available) && (
+        <p role="status" className="px-3 text-xs text-muted-foreground">
+          {copy.resourceRemoved}
+        </p>
+      )}
+      {resourceNeedsMessage && (
+        <p role="status" className="px-3 text-sm text-muted-foreground">
+          {layout.resourceNeedsMessage}
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="px-3 text-xs text-destructive">
+          {error}
+        </p>
+      )}
+      {compacting && (
+        <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
+          {contextUsageCopy[locale].compactingDetail}
+        </p>
+      )}
+      {!isClaude && access?.device?.accessMode !== "full" && (
+        <Disclosure className="px-3 text-xs text-muted-foreground">
+          <DisclosureSummary className="min-h-11 cursor-pointer content-center">
+            {layout.help}
+          </DisclosureSummary>
+          <p className="pb-2 leading-5">{copy.composerHint}</p>
+        </Disclosure>
+      )}
+      {!canSend &&
+        !(connectionStatusInBanner && isClaude) &&
+        (!running || (live?.executionMode === "claude-follower" && display.tone === "warning")) &&
+        !compacting &&
+        !connectionFailure &&
+        !display.loading && (
+          <div
+            role="status"
+            className={`flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-5 ${
+              display.tone === "warning"
+                ? "border-amber-500/30 bg-amber-500/5 text-amber-900 dark:text-amber-200"
+                : "border-border bg-muted/40 text-muted-foreground"
+            }`}
+          >
+            {display.tone === "warning" && (
+              <AlertTriangle aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+            )}
+            <span className="min-w-0">{display.reason}</span>
+          </div>
+        )}
     </div>
   );
 }

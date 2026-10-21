@@ -127,7 +127,6 @@ export function DesktopConversationPane({
         "[&_.agentkib-conversation_.reader-scroll]:px-4",
         '[&_.agentkib-conversation_[data-message-role="user"]]:px-1',
         '[&_.agentkib-conversation_[data-message-role="assistant"]]:px-1',
-        "[&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:rounded-md [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:border [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:border-border [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:bg-background [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:hover:bg-muted",
       )}
     >
       {catalogError && (

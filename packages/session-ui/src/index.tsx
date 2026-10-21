@@ -39,7 +39,16 @@ export function toolStatusLabel(status: string | undefined, locale: string): str
 }
 
 const markdownComponents: Components = {
-  img: () => null,
+  img: ({ alt }) => (
+    <span
+      role="img"
+      aria-label={alt || "Image omitted"}
+      title={alt || "Image omitted"}
+      className="inline rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+    >
+      {alt || "Image omitted"}
+    </span>
+  ),
   a: ({ href, children }) =>
     href && /^https?:\/\//i.test(href) ? (
       <a href={href} target="_blank" rel="noreferrer noopener">

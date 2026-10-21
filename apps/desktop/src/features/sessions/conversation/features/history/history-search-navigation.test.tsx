@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   WebClient,
@@ -9,7 +10,7 @@ import {
   type HistoryLocatedRecord,
   type HistorySearchStatus,
 } from "@agentkib/web-client";
-import { EmbeddedConversation } from "../../conversation";
+import { EmbeddedConversation, type EmbeddedConversationHandle } from "../../conversation";
 import { historyCopy } from "./history-copy";
 import { codexCopy } from "../sessions/codex-copy";
 
@@ -193,8 +194,10 @@ function fixture(sourceId = "second") {
 }
 async function renderConversation(sourceId?: string) {
   const f = fixture(sourceId);
+  const controlsRef = createRef<EmbeddedConversationHandle>();
   render(
     <EmbeddedConversation
+      controlsRef={controlsRef}
       client={f.client}
       sessionId="first"
       locale="en-US"
@@ -205,10 +208,11 @@ async function renderConversation(sourceId?: string) {
   fireEvent.change(screen.getByRole("textbox", { name: "Send a message" }), {
     target: { value: "Keep my draft" },
   });
-  return f;
+  return { ...f, openSearch: () => act(() => controlsRef.current?.openPanel("search")) };
 }
-async function openSource() {
-  fireEvent.click(screen.getByRole("button", { name: c.title }));
+async function openSource(openSearch: () => void) {
+  openSearch();
+  await screen.findByRole("dialog", { name: c.title });
   fireEvent.change(screen.getByRole("textbox", { name: c.query }), { target: { value: "needle" } });
   fireEvent.click(await screen.findByRole("button", { name: /Source history/ }, { timeout: 3000 }));
   await screen.findByRole("region", { name: c.source });
@@ -230,7 +234,7 @@ async function renderUploadedDraft() {
   );
   expect(f.upload.mock.calls[0][1]).toBe(file);
   const attachmentRow = screen.getByText(file.name).closest("li")!;
-  await openSource();
+  await openSource(f.openSearch);
   fireEvent.click(screen.getByRole("button", { name: c.quote }));
   await screen.findByText(c.added);
   fireEvent.click(screen.getByRole("button", { name: c.close }));
@@ -242,7 +246,7 @@ async function renderUploadedDraft() {
 describe("history search conversation navigation", () => {
   it("references source content while preserving the real selected conversation and composer draft", async () => {
     const f = await renderConversation();
-    await openSource();
+    await openSource(f.openSearch);
     fireEvent.click(screen.getByRole("button", { name: c.quote }));
     await screen.findByText(c.added);
     fireEvent.click(screen.getByRole("button", { name: c.close }));
@@ -255,7 +259,7 @@ describe("history search conversation navigation", () => {
   });
   it("cancels cross-session opening without losing the real draft", async () => {
     const f = await renderConversation();
-    await openSource();
+    await openSource(f.openSearch);
     fireEvent.click(screen.getByRole("button", { name: c.openSession }));
     fireEvent.click(await screen.findByRole("button", { name: c.openCancel }));
     fireEvent.click(screen.getByRole("button", { name: c.close }));
@@ -264,7 +268,7 @@ describe("history search conversation navigation", () => {
   });
   it("opens a different source through the existing router only after confirmation", async () => {
     const f = await renderConversation();
-    await openSource();
+    await openSource(f.openSearch);
     fireEvent.click(screen.getByRole("button", { name: c.openSession }));
     const confirm = await screen.findByRole("button", { name: c.openDiscard });
     expect(f.changed).not.toHaveBeenCalled();
@@ -276,7 +280,7 @@ describe("history search conversation navigation", () => {
   });
   it("keeps an uploaded File, draft and reference when cross-session opening is cancelled", async () => {
     const f = await renderUploadedDraft();
-    await openSource();
+    await openSource(f.openSearch);
     fireEvent.click(screen.getByRole("button", { name: c.openSession }));
     fireEvent.click(await screen.findByRole("button", { name: c.openCancel }));
     fireEvent.click(screen.getByRole("button", { name: c.close }));
@@ -296,7 +300,7 @@ describe("history search conversation navigation", () => {
   });
   it("clears the uploaded attachment, draft and reference only after confirmed source navigation", async () => {
     const f = await renderUploadedDraft();
-    await openSource();
+    await openSource(f.openSearch);
     fireEvent.click(screen.getByRole("button", { name: c.openSession }));
     const confirm = await screen.findByRole("button", { name: c.openDiscard });
     expect(f.changed).not.toHaveBeenCalled();
@@ -321,7 +325,7 @@ describe("history search conversation navigation", () => {
   });
   it("opens the current source without clearing the real draft", async () => {
     const f = await renderConversation("first");
-    await openSource();
+    await openSource(f.openSearch);
     fireEvent.click(screen.getByRole("button", { name: c.openSession }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByRole("textbox", { name: "Send a message" })).toHaveValue("Keep my draft");

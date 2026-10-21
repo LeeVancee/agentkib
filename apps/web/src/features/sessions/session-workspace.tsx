@@ -197,7 +197,7 @@ export function SessionWorkspace() {
                 {access?.device?.files && (
                   <Button
                     variant={filesOpen ? "secondary" : "ghost"}
-                    className="size-11 p-0 md:w-auto md:px-3"
+                    className="size-11 rounded-lg p-0 text-muted-foreground aria-expanded:text-foreground sm:h-9 md:w-auto md:gap-1.5 md:px-2.5"
                     aria-label={copy.files}
                     aria-expanded={filesOpen}
                     onClick={() => setFilesOpen(!filesOpen)}
@@ -208,7 +208,7 @@ export function SessionWorkspace() {
                 )}
                 <Button
                   variant="ghost"
-                  className="size-11 p-0 md:w-auto md:px-3"
+                  className="size-11 rounded-lg p-0 text-muted-foreground aria-expanded:text-foreground sm:h-9 md:w-auto md:gap-1.5 md:px-2.5"
                   data-dialog-return-focus="true"
                   aria-label={copy.actions}
                   aria-expanded={actionsOpen}

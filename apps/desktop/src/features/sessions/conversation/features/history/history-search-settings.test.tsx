@@ -228,6 +228,7 @@ async function renderMainRouter(variant: "directory" | "embedded" | "global-sear
           client={f.client}
           sessionId="first"
           locale="en-US"
+          initialPanel="search"
           onSessionChange={vi.fn()}
         />
       ),
@@ -252,13 +253,16 @@ async function renderMainRouter(variant: "directory" | "embedded" | "global-sear
       </QueryClientProvider>,
     );
   });
-  if (variant === "embedded") await screen.findByText("first history");
-  if (variant === "global-search")
+  if (variant === "global-search") {
     fireEvent.change(await screen.findByRole("combobox"), {
       target: { value: "retained query" },
     });
-  fireEvent.click(await screen.findByRole("button", { name: c.title }));
-  await screen.findByText(c.disabled);
+  }
+  if (variant === "embedded") await screen.findByRole("dialog", { name: c.title });
+  else {
+    fireEvent.click(await screen.findByRole("button", { name: c.title }));
+    await screen.findByText(c.disabled);
+  }
   return { ...f, router };
 }
 beforeAll(() => initializeI18n("en-US"));

@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, FolderOpen, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  File,
+  FileText,
+  Folder,
+  FolderOpen,
+  Image,
+  LoaderCircle,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import {
   ApiError,
   type ArtifactEntry,
@@ -8,6 +19,16 @@ import {
 } from "@agentkib/web-client";
 import { ArtifactPreview } from "./artifact-viewers";
 import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
+import { SheetClose, SheetTitle } from "../../components/ui/sheet";
 import { artifactCopy } from "./artifact-copy";
 import { ArtifactPanel } from "./artifact-panel";
 import { useSession } from "./session-context";
@@ -20,6 +41,16 @@ type Diff = {
   encoding_lossy: boolean;
   truncated: boolean;
 };
+
+function formatFileSize(size: number, locale: string) {
+  const units = ["B", "KB", "MB", "GB"];
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit++;
+  }
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(size)} ${units[unit]}`;
+}
 
 export function ArtifactBrowser({
   open: controlledOpen,
@@ -327,193 +358,292 @@ export function ArtifactBrowser({
       )}
       {open && (
         <ArtifactPanel labelledBy={titleId} onClose={() => setOpen(false)}>
-          <header className="flex shrink-0 items-center gap-2 border-b p-3">
-            <h2 id={titleId} className="min-w-0 flex-1 text-base font-semibold">
+          <header className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3 py-1.5">
+            <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <SheetTitle id={titleId} className="min-w-0 flex-1 truncate text-[13px] font-semibold">
               {copy.title}
-            </h2>
-            <Button
-              variant="ghost"
-              className="size-11 shrink-0"
-              aria-label={copy.close}
-              onClick={() => setOpen(false)}
-            >
-              <X size={18} />
-            </Button>
-          </header>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-            <label className="block space-y-1 text-sm">
-              <span>{copy.directory}</span>
-              <select
-                className="block min-h-11 w-full min-w-0 rounded border bg-background p-2"
-                value={workspaceId}
-                onChange={(e) => setWorkspaceId(e.target.value)}
-              >
-                {roots.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {!roots.length && <p className="text-sm">{copy.authorize}</p>}
-            <div className="flex flex-wrap gap-1" role="group" aria-label={copy.views}>
-              {(["artifacts", "files", "diff"] as const).map((value) => (
-                <Button
-                  key={value}
-                  className="min-h-11 px-2"
-                  variant={tab === value ? "default" : "outline"}
-                  aria-pressed={tab === value}
-                  onClick={() => setTab(value)}
-                >
-                  {copy[value]}
-                </Button>
-              ))}
-            </div>
+            </SheetTitle>
             {!entry && (
               <Button
                 variant="ghost"
-                className="min-h-11"
+                size="icon"
+                className="size-8 shrink-0 rounded-md text-muted-foreground"
+                aria-label={copy.refresh}
+                title={copy.refresh}
                 disabled={loading || !workspaceId}
                 onClick={() => void load(tab === "files" ? listing?.directoryId : undefined)}
               >
-                {copy.refresh}
+                <RefreshCw
+                  className={`size-4 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`}
+                  aria-hidden="true"
+                />
               </Button>
             )}
-            {tab === "diff" && (
-              <>
-                <p className="text-xs text-muted-foreground">{copy.diffNote}</p>
-                <select
-                  aria-label={copy.diffKind}
-                  className="min-h-11 w-full rounded border bg-background p-2"
-                  value={kind}
-                  onChange={(e) => setKind(e.target.value)}
-                >
-                  <option value="worktree">{copy.worktree}</option>
-                  <option value="staged">{copy.staged}</option>
-                  <option value="commit">{copy.commit}</option>
-                </select>
-                {kind === "commit" && (
-                  <label className="block space-y-2 text-sm">
-                    {copy.commitSha}
-                    <input
-                      className="block min-h-11 w-full rounded border bg-background p-2"
-                      value={oid}
-                      onChange={(e) => setOid(e.target.value)}
-                    />
-                    <Button
-                      className="min-h-11"
-                      disabled={loading || !oid}
-                      onClick={() => void load()}
-                    >
-                      {copy.view}
-                    </Button>
-                  </label>
-                )}
-                {diff && (
-                  <>
-                    {(diff.binary || diff.submodule || diff.encoding_lossy || diff.truncated) && (
-                      <p className="text-sm">{copy.partial}</p>
-                    )}
-                    <pre className="max-h-[60dvh] max-w-full overflow-auto rounded border p-3 text-xs">
-                      {diff.patch || copy.noChanges}
-                    </pre>
-                  </>
-                )}
-                {diff === null && <p className="text-sm">{copy.noDiff}</p>}
-              </>
-            )}
-            {error && (
-              <p role="alert" className="break-words text-sm text-destructive">
-                {error}
-              </p>
-            )}
-            {loading && (
-              <p role="status" className="text-sm">
-                {copy.loading}
-              </p>
-            )}
-            {tab !== "diff" && !entry && (
-              <div className="min-w-0 rounded border p-2">
-                {tab === "files" && listing?.parentId && (
-                  <Button
-                    className="min-h-11"
-                    variant="ghost"
-                    disabled={loading}
-                    onClick={() => void load(listing.parentId)}
-                  >
-                    {copy.parent}
-                  </Button>
-                )}
-                {(tab === "files" ? (listing?.entries ?? []) : artifacts).map((item) => (
-                  <button
-                    key={item.id}
-                    disabled={loading}
-                    className="block min-h-11 w-full truncate rounded px-2 py-2 text-left text-sm hover:bg-muted focus-visible:outline-2"
-                    title={item.name}
-                    onClick={() => void preview(item)}
-                  >
-                    {item.kind === "directory" ? "📁 " : ""}
-                    {item.name}
-                  </button>
-                ))}
-                {!loading && !(tab === "files" ? listing?.entries.length : artifacts.length) && (
-                  <p className="p-2 text-sm">{copy.empty}</p>
-                )}
-                {tab === "artifacts" && cursor && (
-                  <Button
-                    className="min-h-11"
-                    variant="outline"
-                    disabled={loading}
-                    onClick={() => void load(undefined, cursor)}
-                  >
-                    {copy.earlier}
-                  </Button>
-                )}
-              </div>
-            )}
-            {tab !== "diff" && entry && (
-              <div className="min-w-0 space-y-3 [&_audio]:max-w-full">
-                <Button variant="ghost" className="min-h-11" onClick={backToList}>
-                  <ArrowLeft size={16} />
-                  {copy.back}
-                </Button>
-                <div className="space-y-2 text-sm">
-                  <strong className="block break-all">{entry.name}</strong>
-                  <span className="block text-xs text-muted-foreground">
-                    {entry.mime} · {entry.size.toLocaleString()} B
+            <SheetClose
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 rounded-md text-muted-foreground"
+                  aria-label={copy.close}
+                  title={copy.close}
+                />
+              }
+            >
+              <X className="size-4" aria-hidden="true" />
+            </SheetClose>
+          </header>
+          <Tabs
+            value={tab}
+            onValueChange={(value) => setTab(value as typeof tab)}
+            className="min-h-0 flex-1 gap-0"
+          >
+            <div className="shrink-0 border-b border-border/60 px-3 pt-2">
+              <div className="flex min-w-0 items-center">
+                <label className="flex min-w-0 flex-1 items-center gap-3">
+                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                    {copy.directory}
                   </span>
-                  <Button
-                    className="min-h-11"
-                    variant="outline"
-                    disabled={loading}
-                    onClick={() => void downloadFile()}
+                  <Select
+                    items={roots.map((workspace) => ({
+                      value: workspace.id,
+                      label: workspace.name,
+                    }))}
+                    value={workspaceId || null}
+                    onValueChange={(value) => value !== null && setWorkspaceId(value)}
                   >
-                    {copy.prepareDownload}
-                  </Button>
-                  {download && (
-                    <a
-                      href={download.url}
-                      download
-                      target={embedded ? "_blank" : undefined}
-                      rel="noreferrer"
-                      className="inline-flex min-h-11 items-center px-3 underline"
+                    <SelectTrigger
+                      aria-label={copy.directory}
+                      className="min-w-0 flex-1 rounded-md border-border/70 bg-background px-2 text-xs shadow-none focus-visible:ring-2"
                     >
-                      {copy.download}
-                    </a>
+                      <SelectValue className="min-w-0 truncate" placeholder={copy.directory} />
+                    </SelectTrigger>
+                    <SelectContent alignItemWithTrigger={false}>
+                      {roots.map((workspace) => (
+                        <SelectItem key={workspace.id} value={workspace.id}>
+                          {workspace.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              </div>
+              {!roots.length && (
+                <p className="pt-2 text-xs text-muted-foreground">{copy.authorize}</p>
+              )}
+              <TabsList
+                variant="line"
+                className="mt-2 grid h-9 w-full grid-cols-3 gap-0 p-0"
+                aria-label={copy.views}
+              >
+                {(["artifacts", "files", "diff"] as const).map((value) => (
+                  <TabsTrigger
+                    key={value}
+                    value={value}
+                    className="h-9 min-w-0 px-1 text-xs after:bg-primary group-data-horizontal/tabs:after:inset-x-3 group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-px group-data-[variant=line]/tabs-list:focus-visible:bg-accent"
+                  >
+                    {copy[value]}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+            <TabsContent
+              value={tab}
+              className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
+            >
+              {tab === "diff" && (
+                <>
+                  <p className="text-xs text-muted-foreground">{copy.diffNote}</p>
+                  <Select
+                    items={[
+                      { value: "worktree", label: copy.worktree },
+                      { value: "staged", label: copy.staged },
+                      { value: "commit", label: copy.commit },
+                    ]}
+                    value={kind}
+                    onValueChange={(value) => value !== null && setKind(value)}
+                  >
+                    <SelectTrigger
+                      aria-label={copy.diffKind}
+                      className="h-11 w-full bg-background text-sm sm:h-9"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent alignItemWithTrigger={false}>
+                      <SelectItem value="worktree">{copy.worktree}</SelectItem>
+                      <SelectItem value="staged">{copy.staged}</SelectItem>
+                      <SelectItem value="commit">{copy.commit}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {kind === "commit" && (
+                    <label className="block space-y-2 text-sm">
+                      {copy.commitSha}
+                      <Input
+                        className="block h-11 w-full rounded-lg border bg-background px-3 text-sm sm:h-9"
+                        value={oid}
+                        onChange={(e) => setOid(e.target.value)}
+                      />
+                      <Button
+                        className="min-h-11"
+                        disabled={loading || !oid}
+                        onClick={() => void load()}
+                      >
+                        {copy.view}
+                      </Button>
+                    </label>
+                  )}
+                  {diff && (
+                    <>
+                      {(diff.binary || diff.submodule || diff.encoding_lossy || diff.truncated) && (
+                        <p className="text-sm">{copy.partial}</p>
+                      )}
+                      <pre className="max-h-[60dvh] max-w-full overflow-auto rounded border p-3 text-xs">
+                        {diff.patch || copy.noChanges}
+                      </pre>
+                    </>
+                  )}
+                  {diff === null && <p className="text-sm">{copy.noDiff}</p>}
+                </>
+              )}
+              {error && (
+                <p role="alert" className="break-words text-sm text-destructive">
+                  {error}
+                </p>
+              )}
+              {loading && (
+                <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <LoaderCircle
+                    className="size-3.5 animate-spin motion-reduce:animate-none"
+                    aria-hidden="true"
+                  />
+                  {copy.loading}
+                </p>
+              )}
+              {tab !== "diff" && !entry && (
+                <div className="min-w-0 space-y-3">
+                  {tab === "files" && listing?.parentId && (
+                    <Button
+                      className="h-11 gap-2 px-2 text-xs text-muted-foreground sm:h-9"
+                      variant="ghost"
+                      disabled={loading}
+                      onClick={() => void load(listing.parentId)}
+                    >
+                      <ArrowLeft className="size-3.5" aria-hidden="true" />
+                      {copy.parent}
+                    </Button>
+                  )}
+                  <ul className="min-w-0 divide-y divide-border/60">
+                    {(tab === "files" ? (listing?.entries ?? []) : artifacts).map((item) => {
+                      const Icon =
+                        item.kind === "directory"
+                          ? Folder
+                          : item.previewKind === "image"
+                            ? Image
+                            : item.previewKind === "text"
+                              ? FileText
+                              : File;
+                      return (
+                        <li key={item.id} className="min-w-0">
+                          <Button
+                            variant="ghost"
+                            size="content"
+                            disabled={loading}
+                            className="group flex min-h-14 w-full min-w-0 items-center justify-start gap-3 rounded-lg px-2 py-2.5 text-left font-normal hover:bg-muted/60"
+                            aria-label={item.name}
+                            title={item.name}
+                            onClick={() => void preview(item)}
+                          >
+                            <Icon
+                              className="size-4 shrink-0 text-muted-foreground"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-sm">{item.name}</span>
+                            {item.kind === "file" && (
+                              <span
+                                className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+                                aria-hidden="true"
+                              >
+                                {formatFileSize(item.size, locale)}
+                              </span>
+                            )}
+                            <ChevronRight
+                              className="size-3.5 shrink-0 text-muted-foreground/50 group-hover:text-foreground"
+                              aria-hidden="true"
+                            />
+                          </Button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  {!loading && !(tab === "files" ? listing?.entries.length : artifacts.length) && (
+                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center text-muted-foreground">
+                      <FolderOpen className="size-5" aria-hidden="true" />
+                      <p className="text-xs">{copy.empty}</p>
+                    </div>
+                  )}
+                  {tab === "artifacts" && cursor && (
+                    <div className="space-y-2 border-t pt-3">
+                      <p className="text-xs leading-5 text-muted-foreground">{copy.earlierHint}</p>
+                      <Button
+                        className="min-h-11 w-full gap-2 rounded-lg text-xs sm:min-h-9"
+                        variant="ghost"
+                        disabled={loading}
+                        onClick={() => void load(undefined, cursor)}
+                      >
+                        {copy.earlier}
+                      </Button>
+                    </div>
                   )}
                 </div>
-                <ArtifactPreview
-                  entry={entry}
-                  ticket={ticket}
-                  text={text}
-                  onMediaRef={setMedia}
-                  onLoadedMetadata={restorePlayback}
-                  onMediaError={() => setError(copy.mediaError)}
-                  openLabel={copy.open}
-                />
-              </div>
-            )}
-          </div>
+              )}
+              {tab !== "diff" && entry && (
+                <div className="min-w-0 space-y-3 [&_audio]:max-w-full">
+                  <Button
+                    variant="ghost"
+                    className="h-11 gap-2 px-2 text-xs text-muted-foreground sm:h-9"
+                    onClick={backToList}
+                  >
+                    <ArrowLeft size={16} />
+                    {copy.back}
+                  </Button>
+                  <div className="space-y-2 text-sm">
+                    <strong className="block break-all">{entry.name}</strong>
+                    <span className="block text-xs text-muted-foreground">
+                      {entry.mime} · {formatFileSize(entry.size, locale)}
+                    </span>
+                    <Button
+                      className="min-h-11"
+                      variant="outline"
+                      disabled={loading}
+                      onClick={() => void downloadFile()}
+                    >
+                      {copy.prepareDownload}
+                    </Button>
+                    {download && (
+                      <a
+                        href={download.url}
+                        download
+                        target={embedded ? "_blank" : undefined}
+                        rel="noreferrer"
+                        className="inline-flex min-h-11 items-center px-3 underline"
+                      >
+                        {copy.download}
+                      </a>
+                    )}
+                  </div>
+                  <ArtifactPreview
+                    entry={entry}
+                    ticket={ticket}
+                    text={text}
+                    onMediaRef={setMedia}
+                    onLoadedMetadata={restorePlayback}
+                    onMediaError={() => setError(copy.mediaError)}
+                    openLabel={copy.open}
+                  />
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
         </ArtifactPanel>
       )}
     </>

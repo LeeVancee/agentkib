@@ -1,5 +1,6 @@
-import { SessionContinuationReadOnly } from "@agentkib/session-ui";
+import { SessionContinuationReadOnly, sessionContinuationCopy } from "@agentkib/session-ui";
 import { useCallback } from "react";
+import { toast } from "sonner";
 import { useSession } from "./session-context";
 
 export function SessionReadOnly({ reason }: { reason?: string | null }) {
@@ -8,6 +9,7 @@ export function SessionReadOnly({ reason }: { reason?: string | null }) {
   const agent = current?.agent;
   const accessStatus = access?.status;
   const deviceId = access?.device?.id;
+  const copy = sessionContinuationCopy(locale);
   const loadCommand = useCallback(
     async (signal: AbortSignal) => {
       if (
@@ -33,6 +35,7 @@ export function SessionReadOnly({ reason }: { reason?: string | null }) {
         locale={locale}
         reason={reason}
         loadCommand={loadCommand}
+        onCopied={() => toast.success(copy.commandCopied)}
         local
       />
     </div>

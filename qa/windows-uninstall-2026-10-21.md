@@ -81,7 +81,6 @@ helper 的 7 项跳过对应 NSIS 编译器/执行门禁，PR 结果不能代替
 - 对源提交的 PR 五项检查全部成功。后续证据提交只修改文档/QA；安装器、helper、工作流和回归测试代码与上述原生验收提交相同，最终 PR 检查另核对最新文档提交。
 - 首次 v0.20.1 具体锁拥有者仍无法从旧快照追溯；本次证实了处理链修复在真实 Windows 临时/持续锁和实际安装包上的行为，不把 CI 成功推断为历史 Win32 拒绝者已查明。
 
-
 ## PR #135 独立审查与修复（2026-10-21）
 
 固定审查基线为 `edd282035b9f62f8355dded67770721d41ddce37`，初始 PR HEAD 为 `9aa2e9aa47cce699905e9c3d69400bf54042c162`。按 code-review 的 Standards / Spec 两轴及安全边界独立复核，确认并修复以下问题；原始首次失败的具体锁拥有者仍不可追溯。
@@ -102,14 +101,12 @@ helper 的 7 项跳过对应 NSIS 编译器/执行门禁，PR 结果不能代替
 - `pnpm typecheck`、`pnpm lint`、`pnpm format:check` 通过（lint 有既有警告）；四个改动 JavaScript 文件的 `oxfmt --check`、相关 PowerShell AST、YAML 解析及 `git diff --check` 通过。
 - Standards 与 Spec 新一轮独立审查均为 **no finding**；另一次 Spec 复核发现并修复上述同名分支/tag 歧义后，再审查为 no finding。独立 runner 回归 6/6 通过。某只读审查进程在缺少临时工具的首次全 helper 中遇到两项未修改启动探针超时，按名称隔离两项均通过；主代理有完整工具的组合结果另列。
 
-Windows x64/ARM64 CI 结果在执行后追加。不会将尚未执行的 Windows 用例标为已通过；不合并、不发布，不在本机下载安装包。
-
+下文按实际执行顺序记录 Windows x64/ARM64 CI 结果，各阶段未执行的用例均明确说明。本轮不合并、不发布，不在本机下载安装包。
 
 ### 本轮 CI 首次结果与夹具修正
 
 - `ea8b9c714` 的 [Windows x64 job](https://github.com/starroyhq/agentkib/actions/runs/39537579435/job/119017673104) 为 60 项：50 通过、1 失败、9 跳过。真实 Win32 诊断和 16 项卸载控制均通过，唯一失败为新增的 tag/branch 私有 Git 夹具：PR 浅克隆不含父提交，私有 bare 仓库借用对象却没有 shallow 边界，`rev-list -n 1` 返回 128。不是卸载断言失败，也未通过重跑掩盖。
 - 夹具改为只复制当前已有 commit 对象到私有 bare 并显式设置 shallow 边界，不创建新 commit、不读写真实仓库 refs；保留分支拒绝、轻量标签与 annotated 标签原断言。补齐 Git stderr 诊断，相关 6 项本地回归通过。旧 artifact-only run `39537578553` 在预检阶段取消，改用修正后的提交重新完整验证，避免混用旧源码结果。
-
 
 ### 修正后 PR 双架构结果
 
@@ -125,10 +122,36 @@ Windows x64/ARM64 CI 结果在执行后追加。不会将尚未执行的 Windows
 - 同一提交的 [主 CI 39537916640](https://github.com/starroyhq/agentkib/actions/runs/39537916640/job/119018852738) 全部成功：桌面 376 文件通过、3 跳过，7297 测试通过、60 跳过；Web 64 文件、1399 测试全部通过；Linux helper 50 通过、0 失败、10 项原生相关跳过；format、lint、typecheck 和构建均通过。PR 五项检查全部成功。
 - artifact-only [预检 job](https://github.com/starroyhq/agentkib/actions/runs/39537916009/job/119018849158) 也成功运行同样的桌面/Web 全量测试与检查；后续平台构建仍使用此固定提交，不混用旧版本证据。
 
-
 ### 原生 ACL 夹具运行时修正
 
 - `18609fe5b` 的 [Windows x64 原生 job](https://github.com/starroyhq/agentkib/actions/runs/39537916009/job/119021621522) 强制执行 15 项，14 通过、1 失败、0 跳过。临时锁、持续锁后原卸载入口重试、备份失败不删除、原子升级/回滚及在位回退均已通过；唯一失败在 ACL 设置前，`powershell.exe` 的 `Get-Acl` 无法自动加载 `Microsoft.PowerShell.Security`，实际安装器冒烟因门禁失败未执行，不能记为通过。
 - 夹具原来从 PowerShell 7 Actions shell 经 Node 再启动 Windows PowerShell 5.1；其模块自动加载失败与微软说明的[中间进程继承 PSModulePath 导致跨版本模块冲突](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath)机制一致。改为与现有控制 harness 相同的 `AGENTKIB_PWSH || pwsh`，统一锁和 ACL 夹具运行时，不删 ACL 拒绝/精确读取/恢复断言，不改产品卸载代码及预算。
 - 将相同的 checksum-pinned 强制 NSIS runner 加入 Windows PR 两个架构 job；以后 ACL、锁与回滚回归会在 PR 中执行，实际安装器冒烟仍由打包 job 另外验证。未增加跳过、超时或依赖版本。
 - 本地相关两套件共 21 项：13 通过、0 失败、8 项 Windows 原生相关跳过，同版 NSIS `/WX` 编译实际通过；oxfmt、YAML 与 diff 检查通过。Standards / Spec 独立复审均 no finding。旧 artifact-only run `39537916009` 在确认此夹具失败后取消，后续以修正提交重新验证，不把重跑当作修复。
+
+### 原生门禁前置后的双架构复验
+
+测试提交：`85e5a846fda0bb9b5beb5726388c2153c2f058cb`；[Windows run 39539487793](https://github.com/starroyhq/agentkib/actions/runs/39539487793) 全部成功。
+
+| 架构 | helper 组合 | 强制 NSIS 原生策略 | 后端与类型 |
+| --- | --- | --- | --- |
+| [x64](https://github.com/starroyhq/agentkib/actions/runs/39539487793/job/119023704499) | 51 通过、0 失败、9 项 NSIS 初次跳过 | **15 通过、0 失败、0 跳过** | 950 通过、11 跳过；typecheck 通过 |
+| [ARM64](https://github.com/starroyhq/agentkib/actions/runs/39539487793/job/119023704191) | 51 通过、0 失败、9 项 NSIS 初次跳过 | **15 通过、0 失败、0 跳过** | 950 通过、11 跳过；typecheck 通过 |
+
+第一次 helper 中的 NSIS 跳过已由同 job 后续强制套件补齐，不作为未执行后直接放行。两架构实际执行并通过拒绝根目录枚举、精确文件仍可读、卸载失败保留原入口/数据、恢复原 ACL 后从入口再卸载成功，以及持续锁恢复、备份失败前置中止和升级回滚/在位保护。没有放宽任何断言或超时。
+
+### 最终 artifact-only 安装卸载与复审结论
+
+[run 39539489411](https://github.com/starroyhq/agentkib/actions/runs/39539489411) 使用固定源码 `85e5a846fda0bb9b5beb5726388c2153c2f058cb`，预检和七个平台 job 全部成功。`release_tag` 留空；[Publish GitHub Release](https://github.com/starroyhq/agentkib/actions/runs/39539489411/job/119028340297) 明确 **skipped**，未创建/移动发布标签，未合并 PR 或发布版本。
+
+| 架构 | 打包后强制策略 | 实际安装器冒烟 | 真实卸载退出码 | 单调监督耗时 |
+| --- | --- | --- | --- | --- |
+| [Windows x64](https://github.com/starroyhq/agentkib/actions/runs/39539489411/job/119026514911) | **15/15，0 跳过** | 安装、启动、覆盖安装、卸载与数据保留全部通过，约 28 秒 | 0 | **1705ms** |
+| [Windows ARM64](https://github.com/starroyhq/agentkib/actions/runs/39539489411/job/119026514982) | **15/15，0 跳过** | 同上全部通过，约 63 秒；沿用 preview 的 SkipQuota | 0 | **8182ms** |
+
+- 两份诊断 artifact（x64 `12318739054`、ARM64 `12318754526`，各约 2KB）只在内存读取 `summary.json`；没有下载安装包到本机。`outcome=passed`，退出码 0，监督耗时均小于原 120000ms；`returned`/`finished` 的安装文件与相关进程数均为 0，快照无采集失败标志，未出现清理未确认/失败标志。用户数据保留的证据是实际脚本 sentinel 断言通过，不把它误称为 JSON 独立字段。
+- x64 真实进程时间 `2026-10-21T03:49:37.8718943Z` → `03:49:39.5528204Z`；ARM64 `03:52:04.5405835Z` → `03:52:12.6964746Z`。表内单调监督耗时还包含准备和清理，不能与旧版包含同步诊断快照的墙钟耗时直接作性能对比。
+- 同一提交的 [主 CI 39539487820](https://github.com/starroyhq/agentkib/actions/runs/39539487820/job/119023704115) 全部成功：桌面 7297 通过、60 跳过（376 文件通过、3 跳过），Web 1399 全通过（64 文件）；helper 50 通过、10 项原生相关跳过；format、lint、typecheck 和构建通过。artifact 预检也再次通过桌面/Web 同样的全量组合。Windows PR 的原生门禁、后端和类型检查见前表；Linux 两架构通过 [run 39539487705](https://github.com/starroyhq/agentkib/actions/runs/39539487705)。
+- Standards / Spec 独立审查及两处 CI 夹具修正后的独立复审均为 **no finding**；原子升级/回滚、在位回退、用户数据与 EXE 删除断言、四语提示、内部会话安全和任务范围均保留。原 5000ms/120000ms 预算未放宽。最后的证据提交仅修改此 QA 文件，代码与上述固定验收提交完全相同，最终 PR 检查另核对该文档提交。
+- 本机临时 PowerShell、NSIS 编译器和 pnpm userconfig 已删除，确认没有自有验证进程残留；无关四处未跟踪内容保持原样。只按现有锁文件补齐本地依赖，没有修改依赖声明、锁文件或用户凭据配置。
+- 覆盖限制延续前节：首次 v0.20.1 的具体 Win32 拒绝者不可从旧证据追溯；ARM64 quota sidecar 未覆盖，NSIS 编译器可经系统仿真执行，CI 不等同于代表性物理设备验收。这些不作为已完成的人工验收或历史根因结论。

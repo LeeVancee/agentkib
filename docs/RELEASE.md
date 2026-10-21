@@ -102,7 +102,7 @@ After packaging, both Windows release jobs require native NSIS tests for
 temporary/persistent file locks and atomic upgrade rollback; these tests cannot
 silently skip for a missing compiler. See the
 [v0.20.1 failure investigation](../qa/windows-uninstall-2026-10-21.md) for the
-original evidence and outstanding native verification.
+original evidence and Windows CI verification.
 
 ## Build artifacts without publishing
 

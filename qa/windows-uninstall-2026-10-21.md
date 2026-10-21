@@ -38,9 +38,9 @@
 - 本轮只涉及安装器、release helper、测试与文档；未修改应用 TypeScript/React 运行逻辑，因此没有重跑桌面/Web 全量业务测试。相关安装器及 helper 套件、三项仓库检查均已完成；真实 Windows 部分仍见下节。
 - 首次本地验证结束后确认没有临时 PowerShell/NSIS 进程残留，已移除临时运行时、编译器和 pnpm userconfig。当时 HEAD 为 `990727df2f4649b4c6e34605b255a8b9b8ee9062`，尚未提交或推送；原有四处无关未跟踪内容保持不变。
 
-## 尚未覆盖与用户环境影响
+## 首次本地阶段限制与用户环境影响
 
-- 真实 Win32 DELETE/Restart Manager、NSIS 锁文件和真实 AgentKib Windows x64/ARM64 安装卸载：本机无法执行，原生用例已接入 Windows CI，但按本轮要求未提交、未推送，故本轮尚未在 CI 运行修改后的代码。
+- 首次本地阶段没有 Windows，尚不能运行 Win32 DELETE/Restart Manager、NSIS 锁文件和实际 AgentKib 双架构安装卸载。后续用户授权提交并通过 CI 补验，结果记录在下节。
 - 不修改或替换已发布 v0.20.1 的标签和安装包。本地改动只有经过后续提交、CI 和新版本发布后才会影响安装卸载行为。
 - 没有读取真实账号凭据、改变会话安全校验、跨 Agent 继续或 Codex follower；原有无关工作区文件保留。
 
@@ -48,7 +48,35 @@
 
 - 按后续用户授权提交补丁并创建 PR，使用最新 `main`（`edd282035`）为基线，分支 `codex/windows-uninstall-verification`，只纳入本轮安装卸载修复、测试、工作流及文档。
 - PR 的 Windows x64/ARM64 检查执行 PowerShell 控制与真实 Win32 文件诊断测试；另手动运行 `Desktop Package Artifacts`，选择该分支且留空 `release_tag`，以 artifact-only 路径验证两个架构的 NSIS 原生锁/升级回归和实际 AgentKib 安装、启动、覆盖安装、卸载与用户数据保留。
-- 禁止合并或发布，不创建/移动标签、不修改 v0.20.1 Release，也不下载安装包到本地验收。CI 结果将在实际运行后补充。
+- 禁止合并或发布，不创建/移动标签、不修改 v0.20.1 Release，也不下载安装包到本地验收。实际 CI 结果如下。
 - 首次提交 `7775282cd` 对应 [PR #135](https://github.com/starroyhq/agentkib/pull/135)。首次 [Windows x64 job](https://github.com/starroyhq/agentkib/actions/runs/39532216704/job/119000525284) 的真实 Win32 锁测试已通过，但配置契约只接受 LF，Windows CRLF checkout 导致配置测试及其稀疏 helper 子测试失败（34 通过、2 失败、7 跳过）。修复仅将 CRLF 规范化为 LF，同时补两种行尾及错误路径/错误配置节的负向回归，保留安装钩子、升级保护和残留断言。旧 artifact-only run `39532224889` 在打包前取消，随后用修复提交重新执行，避免把旧版本结果当作修复通过。
 - 提交 `00779f375` 的 [Windows x64 job](https://github.com/starroyhq/agentkib/actions/runs/39532538179/job/119001572852) 中配置行尾回归已通过，真实 Win32 诊断也通过；但升级块逐行去注释还受 CRLF 影响，导致与 npm 内 LF 模板的保护契约比较失败（35 通过、2 失败、7 跳过）。继续统一 policy/upstream 读取和升级块比较的行尾归一化，补双方 LF/CRLF 四种组合以及回滚调用被篡改必须拒绝的回归。对应旧 artifact-only run `39532544689` 也在平台构建前取消。
 - 对读取实际 CRLF 文件的临时源码 checkout 进行本地集成复验，配置、升级保护及稀疏 helper 测试通过。独立排查还修复了测试 NSIS 路径中 `$` 的字面量转义，并让实际 fixture 路径同时包含空格和 `$`，防止测试脚本把路径误识别为 NSIS 变量；不改变产品路径或删除行为。
+
+### PR 原生诊断结果
+
+测试提交：`e9056f7899e7cd4c10e6c8f587f7ab9db9306e53`；[Windows run 39533173836](https://github.com/starroyhq/agentkib/actions/runs/39533173836) 全部成功。
+
+| 架构 | helper | Win32 原生诊断 | 后端稳定性与类型 |
+| --- | --- | --- | --- |
+| [x64](https://github.com/starroyhq/agentkib/actions/runs/39533173836/job/119003621945) | 39 通过、0 失败、7 跳过 | 实际 DELETE 访问、属性保持、Restart Manager、真实共享锁均通过 | 950 通过、11 跳过；typecheck 通过 |
+| [ARM64](https://github.com/starroyhq/agentkib/actions/runs/39533173836/job/119003621761) | 39 通过、0 失败、7 跳过 | 实际 DELETE 访问、属性保持、Restart Manager、真实共享锁均通过 | 950 通过、11 跳过；typecheck 通过 |
+
+helper 的 7 项跳过对应 NSIS 编译器/执行门禁，PR 结果不能代替打包后的强制策略和安装器验证；后者另记。
+
+### Artifact-only 原生安装卸载结果
+
+[打包验证 run 39533181454](https://github.com/starroyhq/agentkib/actions/runs/39533181454)，源提交仍为 `e9056f7899e7cd4c10e6c8f587f7ab9db9306e53`，`release_tag` 留空。两个 Windows job 均成功，使用 `node ./.release-helpers/.github/scripts/run-windows-installer-policy-tests.mjs` 强制原生策略门禁，然后运行真实安装包冒烟。
+
+| 架构 | NSIS 原生策略 | 实际安装器冒烟 | 真实卸载阶段 | 结束状态 |
+| --- | --- | --- | --- | --- |
+| [x64](https://github.com/starroyhq/agentkib/actions/runs/39533181454/job/119006451704) | 13 通过、0 失败、0 跳过 | 安装、启动、覆盖安装、卸载通过，约 36 秒 | 退出 0，9.027 秒 | 安装文件和相关进程均无残留，用户数据保留断言通过 |
+| [ARM64](https://github.com/starroyhq/agentkib/actions/runs/39533181454/job/119006451677) | 13 通过、0 失败、0 跳过 | 安装、启动、覆盖安装、卸载通过，约 60.5 秒 | 退出 0，8.693 秒 | 安装文件和相关进程均无残留，用户数据保留断言通过 |
+
+- 策略测试实际覆盖临时共享锁释放后重试成功、持续锁在五秒预算内明确失败、原子升级成功/失败恢复，以及在位升级与上游行为的差分保护；没有通过延长超时或放宽残留断言获得成功。
+- 实际启动均要求 `runtime-handshake`、`window-shown`、`home-data-ready` 和进程退出 0。用户数据证据是覆盖安装和卸载后的 sentinel 存在断言及整项通过；诊断 JSON 没有单独的用户数据字段，不把它误称为直接 JSON 字段证据。
+- 两份小型诊断 artifact（x64 `12317076393`、ARM64 `12316682635`）仅内存读取 `summary.json`。真实副本退出码均为 0，`returned`/`finished` 快照文件数和相关进程数均为 0，没有 `uninstallerCleanupPending` 或 `uninstallerCleanupFailed`。
+- x64 卸载时间：`2026-10-21T02:40:49.0426901Z` → `02:40:58.0693347Z`；ARM64：`02:43:24.6480913Z` → `02:43:33.3408928Z`，均在原 120 秒总预算内。
+- ARM64 保留既有 preview 的 `-SkipQuota`，不覆盖 quota sidecar；AgentKib 安装包以 `--arm64` 构建并在 Windows ARM64 runner 上执行。NSIS 工具本身可通过系统仿真运行，不将其称为 ARM64 原生编译器，也不等同于代表性物理硬件验收。
+- 对源提交的 PR 五项检查全部成功。后续证据提交只修改文档/QA；安装器、helper、工作流和回归测试代码与上述原生验收提交相同，最终 PR 检查另核对最新文档提交。
+- 首次 v0.20.1 具体锁拥有者仍无法从旧快照追溯；本次证实了处理链修复在真实 Windows 临时/持续锁和实际安装包上的行为，不把 CI 成功推断为历史 Win32 拒绝者已查明。

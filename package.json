@@ -1,6 +1,9 @@
 {
   "name": "agentkib",
   "private": true,
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
   "scripts": {
     "verify:windows:mcp-cleanup": "pnpm --filter @agentkib/desktop verify:windows:mcp-cleanup",
     "diagnose:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/diagnose-windows.ps1",

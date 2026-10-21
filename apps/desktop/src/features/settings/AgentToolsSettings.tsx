@@ -10,7 +10,6 @@ import {
   Copy,
   Download,
   ExternalLink,
-  Github,
   Info,
   LoaderCircle,
   PackageCheck,
@@ -20,6 +19,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { AgentIcon } from "@/features/agents/AgentIcon";
+import { GitHubIcon } from "@/components/GitHubIcon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -838,7 +838,7 @@ function AppUpdateSetting({
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => void api.openExternal(PROJECT_URL)}>
-              <Github size={15} /> GitHub
+              <GitHubIcon size={15} /> GitHub
             </Button>
             <Button variant="outline" onClick={() => void api.openExternal(RELEASES_URL)}>
               <ScrollText size={15} />

@@ -215,6 +215,7 @@ export function SessionReader() {
                 <Button
                   variant="ghost"
                   key={a.requestId}
+                  aria-label={`${t.approval} · ${approvalSummary(a, locale, t.unknownTool)} #${a.requestId}`}
                   className="mx-5 my-2 h-auto min-h-8 min-w-0 shrink-0 justify-start whitespace-normal border border-amber-500/25 bg-amber-500/5 text-left text-xs text-amber-700 dark:text-amber-300 [&>svg:last-child]:ml-auto"
                   onClick={() => setModal(a)}
                 >

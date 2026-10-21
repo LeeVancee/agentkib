@@ -424,6 +424,7 @@ function CatalogPage({
                 section === id && navigationStyles.appSidebarItemActive,
               )}
               aria-current={section === id ? "page" : undefined}
+              aria-label={count === undefined ? label : `${label} ${badgeLabel ?? count}`}
               onClick={() => onSection(id)}
             >
               <Icon size={15} />

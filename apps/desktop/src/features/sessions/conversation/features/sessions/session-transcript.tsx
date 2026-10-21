@@ -157,6 +157,7 @@ function EventRow({
         <Button
           type="button"
           variant="ghost"
+          aria-label={`${event.tool_name || labels.unknownTool} ${toolStatusLabel(event.tool_status, locale)}`}
           className="group/tool flex h-auto min-w-0 max-w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-normal text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => onTool(event)}
         >
@@ -258,6 +259,7 @@ function MessageBlock({
                     variant="ghost"
                     aria-expanded={open}
                     aria-controls={bodyId}
+                    aria-label={`${labels.process} ${segment.toolCount} ${labels.tools}${segment.failedToolCount > 0 ? ` · ${segment.failedToolCount} ${labels.failed}` : ""}`}
                     className="flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-none px-3 py-2 text-left text-xs font-normal transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                     onClick={() => onToggleProcess(segment.key, open)}
                   >

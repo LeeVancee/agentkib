@@ -16,7 +16,6 @@ import {
   CircleAlert,
   Download,
   Eye,
-  Github,
   History,
   Library,
   LoaderCircle,
@@ -27,6 +26,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useAppDialogs } from "@/components/AppDialogProvider";
+import { GitHubIcon } from "@/components/GitHubIcon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -450,6 +450,14 @@ export function SkillHubPage({
     );
   }, [candidates, catalog, query, tr]);
   const activeDeployments = deployments.filter((item) => item.status !== "inactive");
+  const workspaceUsageCount =
+    activeDeployments.length +
+    groupSkillObservations(
+      inventory.observations.filter(
+        (item) =>
+          !activeDeployments.some((deployment) => observationMatchesDeployment(item, deployment)),
+      ),
+    ).length;
   const successHasDeployments = Boolean(
     success?.skills.some((skill) =>
       activeDeployments.some(
@@ -499,25 +507,23 @@ export function SkillHubPage({
           }}
         >
           <TabsList className="segmented-control !h-auto" variant="default">
-            <TabsTrigger className="segmented-control-item h-9 gap-2" value="library">
+            <TabsTrigger
+              className="segmented-control-item h-9 gap-2"
+              value="library"
+              aria-label={`${tr("skills.library")} ${installed.length}`}
+            >
               <Library size={15} />
               {tr("skills.library")}
               <Badge variant="secondary">{installed.length}</Badge>
             </TabsTrigger>
-            <TabsTrigger className="segmented-control-item h-9 gap-2" value="workspace">
+            <TabsTrigger
+              className="segmented-control-item h-9 gap-2"
+              value="workspace"
+              aria-label={`${tr("skills.workspaceUsage")} ${workspaceUsageCount}`}
+            >
               <Sparkles size={15} />
               {tr("skills.workspaceUsage")}
-              <Badge variant="secondary">
-                {activeDeployments.length +
-                  groupSkillObservations(
-                    inventory.observations.filter(
-                      (item) =>
-                        !activeDeployments.some((deployment) =>
-                          observationMatchesDeployment(item, deployment),
-                        ),
-                    ),
-                  ).length}
-              </Badge>
+              <Badge variant="secondary">{workspaceUsageCount}</Badge>
             </TabsTrigger>
             <TabsTrigger className="segmented-control-item h-9 gap-2" value="discover">
               <Search size={15} />
@@ -986,7 +992,7 @@ export function SkillHubPage({
           <Card className="rounded-2xl">
             <CardHeader className="p-4 pb-2">
               <div className="flex items-center gap-2 font-semibold">
-                <Github size={17} />
+                <GitHubIcon size={17} />
                 {tr("skills.addFromGithub")}
               </div>
               <p className="text-sm text-muted-foreground">{tr("skills.githubDescription")}</p>

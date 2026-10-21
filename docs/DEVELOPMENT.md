@@ -10,7 +10,7 @@ This guide covers local development, validation, and packaging for the current E
 
 ### Prerequisites
 
-- Node.js 22
+- Node.js 22.22.2 or later in the 22.x series (Node.js 24.15+ and 26+ are also supported by the test dependencies)
 - pnpm 12.10.1, as pinned by the root `packageManager` field
 - Git
 
@@ -123,7 +123,7 @@ Do not publish local packages as official releases. Maintainers should follow th
 
 ### 环境要求
 
-- Node.js 22
+- Node.js 22.22.2 或更新的 22.x 版本（测试依赖也支持 Node.js 24.15+ 和 26+）
 - 根目录 `packageManager` 固定的 pnpm 12.10.1
 - Git
 

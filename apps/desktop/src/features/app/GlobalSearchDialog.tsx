@@ -398,6 +398,9 @@ export function GlobalSearchDialog({
                             role="option"
                             tabIndex={-1}
                             title={result.title}
+                            aria-label={[result.label, result.description]
+                              .filter(Boolean)
+                              .join(" ")}
                             aria-selected={active?.id === result.id}
                             variant="bare"
                             size="content"

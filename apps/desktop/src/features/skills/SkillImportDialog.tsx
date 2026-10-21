@@ -286,7 +286,7 @@ export function SkillImportDialog({
           <DialogDescription>{tr("skills.imports.description")}</DialogDescription>
         </DialogHeader>
         {error !== undefined && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-destructive-text">
             {localizeMessage(error)}
           </p>
         )}
@@ -476,7 +476,7 @@ export function SkillImportDialog({
                   <Badge variant="outline">{tr(`skills.imports.status.${item.status}`)}</Badge>
                 </div>
                 <ImportItemIdentity libraryId={item.library_id} paths={item.paths} />
-                {item.error && <p className="text-destructive">{item.error}</p>}
+                {item.error && <p className="text-destructive-text">{item.error}</p>}
               </div>
             ))}
           </div>

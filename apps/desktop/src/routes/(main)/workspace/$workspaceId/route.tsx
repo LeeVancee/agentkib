@@ -487,12 +487,12 @@ function WorkspaceLayout() {
           />
         )}
       {draftError?.workspaceId === workspaceId && draftError.project === project && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {tr(draftError.key)}
         </p>
       )}
       {planFeedback?.workspaceId === workspaceId && planFeedback.project === project && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {planFeedback.message}
         </p>
       )}
@@ -510,7 +510,7 @@ function WorkspaceLayout() {
         {currentLoadFailure && (
           <div
             role="alert"
-            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive-text"
           >
             <div className="grid gap-1">
               <strong>{tr("workspace.scanFailed")}</strong>

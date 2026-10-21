@@ -124,12 +124,12 @@ export function McpPortField({
         {tr("mcp.portCurrent", { port: draft.confirmedPort })}
       </p>
       {invalid && (
-        <p id={`${id}-error`} role="alert" className="text-xs text-destructive">
+        <p id={`${id}-error`} role="alert" className="text-xs text-destructive-text">
           {tr("mcp.portInvalid")}
         </p>
       )}
       {draft.unconfirmed && (
-        <p id={`${id}-unconfirmed`} className="max-w-64 text-xs text-destructive">
+        <p id={`${id}-unconfirmed`} className="max-w-64 text-xs text-destructive-text">
           {tr("mcp.portUnconfirmed")}
         </p>
       )}

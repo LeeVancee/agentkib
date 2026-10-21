@@ -65,7 +65,7 @@ async function renderRoute() {
       </Suspense>,
     );
   });
-  await screen.findByText("Context health");
+  await screen.findByText("Diagnostics");
 }
 
 describe("overview pending changes", () => {

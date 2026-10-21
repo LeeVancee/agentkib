@@ -114,7 +114,7 @@ export function QuotaDisplaySettings({
       </div>
       {saveError && (
         <div
-          className="border-t border-border-subtle px-3 py-2 text-xs text-destructive"
+          className="border-t border-border-subtle px-3 py-2 text-xs text-destructive-text"
           role="alert"
         >
           {saveError}

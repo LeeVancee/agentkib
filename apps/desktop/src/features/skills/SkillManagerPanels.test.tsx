@@ -1577,7 +1577,8 @@ describe("Skill deployment action hierarchy", () => {
         />,
       );
       const apply = await screen.findByRole("button", { name: label });
-      expect(apply.className).toContain("bg-destructive");
+      expect(apply.className).toContain("bg-[var(--destructive-soft)]");
+      expect(apply.className).toContain("text-destructive-text");
       expect(apply.hasAttribute("disabled")).toBe(true);
       expect(screen.getByRole("note").textContent).toContain("reviewer");
       expect(screen.getByRole("note").textContent).toContain(warning);

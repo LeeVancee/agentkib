@@ -121,7 +121,7 @@ export function InsightsPage({
             role="alert"
             className="grid justify-items-center gap-3 px-6 py-10 text-center text-sm"
           >
-            <CircleAlert size={20} className="text-destructive" />
+            <CircleAlert size={20} className="text-destructive-icon" />
             <strong>{tr("insights.loadFailed")}</strong>
             <p className="text-muted-foreground">{localizeMessage(viewQuery.error)}</p>
             <Button
@@ -156,7 +156,7 @@ export function InsightsPage({
             {error && (
               <div
                 role="alert"
-                className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-text"
               >
                 <CircleAlert size={16} />
                 {error}

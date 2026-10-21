@@ -99,7 +99,7 @@ export function WorkspaceDetailsPanel({
           </Button>
           <Button
             variant="outline"
-            className="text-destructive"
+            className="text-destructive-text"
             onClick={() => void onExclude(workspace.id)}
           >
             <Trash2 size={15} />

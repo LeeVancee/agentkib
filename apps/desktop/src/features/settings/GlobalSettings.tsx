@@ -210,7 +210,7 @@ export function GlobalSettings({
               <span
                 className={cn(
                   "font-medium",
-                  discovery?.errors.length ? "text-destructive" : "text-emerald-600",
+                  discovery?.errors.length ? "text-destructive-text" : "text-emerald-600",
                 )}
               >
                 {discovery
@@ -252,7 +252,7 @@ export function GlobalSettings({
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="text-destructive hover:bg-destructive/10"
+                      className="text-destructive-text hover:bg-destructive/10"
                       aria-label={tr("common.remove")}
                       onClick={() => void onRemoveRoot(root.id)}
                     >
@@ -454,7 +454,7 @@ function DiscoveryDiagnostics({ discovery }: { discovery?: DiscoveryReport }) {
                       ? "text-emerald-600 dark:text-emerald-400"
                       : source.status === "partial"
                         ? "text-amber-700 dark:text-amber-300"
-                        : "text-destructive",
+                        : "text-destructive-text",
                   )}
                 >
                   {discoverySourceStatusLabel(source.status, tr)}

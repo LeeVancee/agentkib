@@ -21,7 +21,11 @@ export function RecentActivitySection({
     <section aria-label={tr("home.recentActivity")}>
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-base font-semibold">{tr("home.recentActivity")}</h2>
-        <Button variant="link" className="h-auto p-0 text-xs text-primary" onClick={onShowActivity}>
+        <Button
+          variant="link"
+          className="h-auto p-0 text-xs text-primary-text"
+          onClick={onShowActivity}
+        >
           {tr("home.viewAll")}
         </Button>
       </div>
@@ -74,7 +78,7 @@ export function RecentWorkspacesCard({
         <h2 className="text-base font-semibold">{tr("home.recentWorkspaces")}</h2>
         <Button
           variant="link"
-          className="h-auto p-0 text-xs text-primary"
+          className="h-auto p-0 text-xs text-primary-text"
           onClick={onShowWorkspaces}
         >
           {tr("home.viewAll")}
@@ -168,7 +172,7 @@ function WorkspaceRow({
         </span>
       </div>
       {workspace.status === "attention" ? (
-        <Badge variant="secondary" className="gap-1 bg-primary/10 text-primary">
+        <Badge variant="secondary" className="gap-1 bg-primary/10 text-primary-text">
           <CircleAlert size={13} />
           {tr("status.workspace.attention")}
         </Badge>

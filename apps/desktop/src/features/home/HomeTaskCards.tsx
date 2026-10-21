@@ -60,7 +60,9 @@ export function ContinueWorkCard({
                   })}
                 </span>
               </span>
-              <span className="text-xs font-medium text-blue-600">{tr("home.openSession")}</span>
+              <span className="text-xs font-medium text-primary-text">
+                {tr("home.openSession")}
+              </span>
             </Button>
           ))
         ) : (

@@ -48,9 +48,9 @@ export function QuotaWindowRow({
         <span
           className={cn(
             "text-[19px] font-bold tabular-nums",
-            severity === "healthy" && "text-primary",
+            severity === "healthy" && "text-primary-text",
             severity === "warning" && "text-[var(--amber)]",
-            severity === "danger" && "text-[var(--red)]",
+            severity === "danger" && "text-destructive-text",
           )}
         >
           {Math.round(remaining)}%

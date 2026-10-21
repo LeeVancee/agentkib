@@ -284,7 +284,7 @@ export function RemoteGatewaysSettings({
                 </div>
               )}
               {gateway.last_error && (
-                <small className="whitespace-pre-wrap text-xs text-destructive">
+                <small className="whitespace-pre-wrap text-xs text-destructive-text">
                   {gateway.last_error}
                 </small>
               )}

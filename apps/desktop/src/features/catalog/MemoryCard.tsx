@@ -77,7 +77,7 @@ export function MemoryCard({
       )}
       {record.source_agent && <small>{tr("memory.source", { source: record.source_agent })}</small>}
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {error}
         </p>
       )}
@@ -106,7 +106,7 @@ export function MemoryCard({
             {editing ? tr("memory.cancelEdit") : tr("common.edit")}
           </Button>
           <Button
-            className="border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/10"
+            className="border border-destructive/30 bg-destructive/5 text-destructive-text hover:bg-destructive/10"
             disabled={busy}
             onClick={() => void review("rejected")}
           >
@@ -117,7 +117,7 @@ export function MemoryCard({
       {record.status === "approved" && (
         <footer>
           <Button
-            className="border border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/10"
+            className="border border-destructive/30 bg-destructive/5 text-destructive-text hover:bg-destructive/10"
             disabled={busy}
             onClick={() => void review("invalidated")}
           >

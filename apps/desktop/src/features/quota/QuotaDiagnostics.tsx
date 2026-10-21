@@ -42,7 +42,7 @@ export function QuotaDiagnostics({ status }: { status?: QuotaCollectorStatus }) 
         value={status.last_success_at ? formatDateTime(status.last_success_at, locale) : "—"}
       />
       {status.error_key && (
-        <div className="flex flex-col gap-2 bg-destructive/5 px-5 py-4 text-sm text-destructive">
+        <div className="flex flex-col gap-2 bg-destructive/5 px-5 py-4 text-sm text-destructive-text">
           <strong>{tr(status.error_key)}</strong>
           {status.error_detail && (
             <Collapsible>

@@ -61,7 +61,7 @@ function ConversationTranscriptForSession({
             key={group.key}
           >
             {(timestamp || (group.turnId && !group.complete)) && (
-              <div className="session-hub-turn-meta flex items-center justify-end gap-2 px-1 text-[11px] text-muted-foreground/70 [&_time:focus-visible]:rounded-sm [&_time:focus-visible]:outline-2 [&_time:focus-visible]:outline-ring [&_time:focus-visible]:outline-offset-[3px]">
+              <div className="session-hub-turn-meta flex items-center justify-end gap-2 px-1 text-[11px] text-muted-foreground [&_time:focus-visible]:rounded-sm [&_time:focus-visible]:outline-2 [&_time:focus-visible]:outline-ring [&_time:focus-visible]:outline-offset-[3px]">
                 {group.turnId && !group.complete && (
                   <span className="session-hub-partial-turn">{tr("sessions.partialTurn")}</span>
                 )}
@@ -97,7 +97,7 @@ function ConversationTranscriptForSession({
                         <span>{tr("sessions.toolCalls", { count: segment.toolCount })}</span>
                       )}
                       {segment.failedToolCount > 0 && (
-                        <span className="text-destructive">
+                        <span className="text-destructive-text">
                           {tr("sessions.processFailed", { count: segment.failedToolCount })}
                         </span>
                       )}

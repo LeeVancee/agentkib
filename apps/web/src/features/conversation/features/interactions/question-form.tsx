@@ -1,4 +1,4 @@
-import { codexCopy } from "../sessions/codex-copy";
+import { codexCopyForSurface } from "../sessions/codex-copy";
 import { Textarea } from "../../components/ui/textarea";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
@@ -258,7 +258,9 @@ export function QuestionForm({
                         setCustom((previous) => ({ ...previous, [q.id]: event.target.value }))
                       }
                     />
-                    <p className="text-xs text-muted-foreground">{codexCopy[locale].secret}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {codexCopyForSurface(locale, "web").secret}
+                    </p>
                   </div>
                 ) : (
                   <Textarea

@@ -133,7 +133,7 @@ describe("Claude terminal connection management", () => {
       live: { ...state.session.live!, status: "outcome-unknown" },
     } as SessionController;
     view.rerender(<ClaudeBridgePanel active />);
-    expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成连接码" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "断开终端连接" }));
     expect(
       state.request.mock.calls.some(([request]) => request.operation === "bridge-disconnect"),
@@ -161,7 +161,7 @@ describe("Claude terminal connection management", () => {
     );
     render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成连接码" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "断开终端连接" }));
     expect(
       state.request.mock.calls.some(([request]) => request.operation === "bridge-disconnect"),
@@ -175,8 +175,8 @@ describe("Claude terminal connection management", () => {
     expect(state.request).not.toHaveBeenCalled();
     view.rerender(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText("one-time-code", { selector: "code" });
     expect(state.request.mock.calls.map(([request]) => request.operation)).toEqual([
       "bridge-status",
@@ -187,7 +187,7 @@ describe("Claude terminal connection management", () => {
   it("clears the revoked connection code after a successful disconnect", async () => {
     const view = render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText("one-time-code", { selector: "code" });
     expect(screen.getByRole("button", { name: "断开终端连接" })).toBeDisabled();
     state.session.live = { ...state.session.live!, executionMode: "claude-follower" };
@@ -209,7 +209,7 @@ describe("Claude terminal connection management", () => {
     fireEvent.click(screen.getByRole("button", { name: "复制安装命令" }));
     await screen.findByText("复制安装命令 · 已复制");
     expect(writeText).toHaveBeenLastCalledWith("Install isolated plugin");
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText("one-time-code", { selector: "code" });
     fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
     await screen.findByText("复制连接命令 · 已复制");
@@ -259,7 +259,7 @@ describe("Claude terminal connection management", () => {
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
       render(<ClaudeBridgePanel active />);
       await screen.findByText("Install isolated plugin");
-      fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+      fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
       await screen.findByText("one-time-code", { selector: "code" });
       fireEvent.click(screen.getByRole("button", { name: "复制连接码" }));
       fireEvent.click(screen.getByRole("button", { name: "复制连接命令" }));
@@ -272,7 +272,7 @@ describe("Claude terminal connection management", () => {
   it("keeps a valid code through explicit status refresh, busy and uncertain transitions", async () => {
     const view = render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText("one-time-code", { selector: "code" });
     fireEvent.click(screen.getByRole("button", { name: "检查连接" }));
     await waitFor(() => expect(state.request).toHaveBeenCalledTimes(3));
@@ -302,10 +302,10 @@ describe("Claude terminal connection management", () => {
         .mockReturnValueOnce(replacement.promise);
       render(<ClaudeBridgePanel active />);
       await act(async () => {});
-      fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+      fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
       await act(async () => {});
       await act(async () => vi.advanceTimersByTime(2500));
-      fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+      fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
       async function settlePrevious() {
         await act(async () => {
           if (outcome === "rejected") previous.reject(new Error("previous lookup failed"));
@@ -321,7 +321,7 @@ describe("Claude terminal connection management", () => {
       if (order === "before") {
         await settlePrevious();
         expect(screen.getByText("正在检查连接…")).toBeVisible();
-        expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "生成连接码" })).toBeDisabled();
         expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       }
       await act(async () => replacement.resolve({ ...challenge, challenge: "replacement-code" }));
@@ -334,7 +334,7 @@ describe("Claude terminal connection management", () => {
         operation: "bridge-status",
         sessionId: "s",
       });
-      expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "生成连接码" })).toBeEnabled();
     },
   );
   it("continues polling while an invalidated lookup is unresolved and preserves the newer result", async () => {
@@ -349,10 +349,10 @@ describe("Claude terminal connection management", () => {
       .mockReturnValueOnce(latest.promise);
     render(<ClaudeBridgePanel active />);
     await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await act(async () => {});
     await act(async () => vi.advanceTimersByTime(2500));
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await act(async () => {});
     await act(async () => vi.advanceTimersByTime(2500));
     expect(state.request).toHaveBeenCalledTimes(5);
@@ -416,26 +416,26 @@ describe("Claude terminal connection management", () => {
   it("retains the code but disables a new challenge after a failed status refresh", async () => {
     render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText("one-time-code", { selector: "code" });
     state.request.mockRejectedValueOnce(new Error("status unavailable"));
     fireEvent.click(screen.getByRole("button", { name: "检查连接" }));
     await screen.findByRole("alert");
     expect(screen.getByText("one-time-code", { selector: "code" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成连接码" })).toBeDisabled();
   });
   it.each([
-    ["platform-unsupported", "连接终端仅支持 macOS。请在 macOS 主机上操作。"],
+    ["platform-unsupported", "连接终端仅支持 macOS。请在 macOS 电脑上操作。"],
     [
       "claude-bridge-unavailable",
-      "终端桥接服务无法启动。请检查主机日志并重新启动 AgentKib 后重试。",
+      "终端连接服务无法启动。请检查这台电脑日志并重新启动 AgentKib 后重试。",
     ],
   ])("explains %s and the required CLI version", async (reason, explanation) => {
     state.request.mockResolvedValue({ ...status(), supported: false, reason });
     render(<ClaudeBridgePanel active />);
     expect(await screen.findByText(explanation)).toBeVisible();
     expect(screen.getByRole("status")).toHaveTextContent("需要 Claude Code 2.1.301");
-    expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成连接码" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "断开终端连接" })).toBeDisabled();
   });
   it("polls connection failures after code expiry and clears the code only on a confirmed connection", async () => {
@@ -448,7 +448,7 @@ describe("Claude terminal connection management", () => {
     );
     render(<ClaudeBridgePanel active />);
     await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await act(async () => {});
     expect(screen.getByText("one-time-code", { selector: "code" })).toBeVisible();
     result = { ...result, connectionError: "bridge-version-mismatch" };
@@ -468,7 +468,7 @@ describe("Claude terminal connection management", () => {
     state.request.mockResolvedValue({ ...status(), connected: true });
     render(<ClaudeBridgePanel active />);
     await act(async () => {});
-    const generate = screen.getByRole("button", { name: "生成一次性连接码" });
+    const generate = screen.getByRole("button", { name: "生成连接码" });
     expect(generate).toBeDisabled();
     expect(screen.getByText("若要生成新的连接码，请先断开当前终端连接。")).toBeVisible();
     fireEvent.click(generate);
@@ -490,7 +490,7 @@ describe("Claude terminal connection management", () => {
     );
     const view = render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     state.session = {
       ...state.session,
       selected: "other",
@@ -512,7 +512,7 @@ describe("Claude terminal connection management", () => {
     );
     render(<ClaudeBridgePanel active />);
     await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await act(async () => {});
     expect(screen.getByText("one-time-code", { selector: "code" })).toBeVisible();
     act(() => vi.advanceTimersByTime(120_000));
@@ -522,7 +522,7 @@ describe("Claude terminal connection management", () => {
   it.each(["offline", "revoked"])("clears a challenge when %s", async (reason) => {
     const view = render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    fireEvent.click(screen.getByRole("button", { name: "生成一次性连接码" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成连接码" }));
     await screen.findByText("one-time-code", { selector: "code" });
     state.session = {
       ...state.session,
@@ -547,11 +547,11 @@ describe("Claude terminal connection management", () => {
     state.request.mockResolvedValue({ ...status(), supported: false });
     const view = render(<ClaudeBridgePanel active />);
     await screen.findByText("Install isolated plugin");
-    expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成连接码" })).toBeDisabled();
     state.request.mockResolvedValue(status("wrong"));
     fireEvent.click(screen.getByRole("button", { name: "检查连接" }));
     await screen.findByRole("alert");
-    expect(screen.getByRole("button", { name: "生成一次性连接码" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成连接码" })).toBeDisabled();
     view.unmount();
   });
 });

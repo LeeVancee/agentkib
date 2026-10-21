@@ -94,7 +94,7 @@ export function McpPolicyEditor({
         {tr(serverId === null ? "mcp.manage.builtins" : "mcp.manage.toolPolicy")}
       </h3>
       {error && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive-text">
           {error}
         </p>
       )}

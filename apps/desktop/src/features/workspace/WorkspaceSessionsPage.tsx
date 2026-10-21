@@ -438,7 +438,7 @@ export function WorkspaceSessionsPage({
             </span>
           </div>
           {enableError && (
-            <p role="alert" className="text-sm text-destructive break-words">
+            <p role="alert" className="text-sm text-destructive-text break-words">
               {enableError}
             </p>
           )}
@@ -871,7 +871,7 @@ export function WorkspaceSessionsPage({
                 ) : (
                   <div
                     role="alert"
-                    className="rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                    className="rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive-text"
                   >
                     {error}
                   </div>

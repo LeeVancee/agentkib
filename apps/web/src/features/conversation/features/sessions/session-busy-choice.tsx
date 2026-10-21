@@ -3,7 +3,7 @@ import type { ContinuationComposerDraft } from "./continuation-draft";
 import { SessionContinuationChoice } from "@agentkib/session-ui";
 import { useSession } from "./session-context";
 import { useSessionNavigate } from "./session-navigation";
-import { managedControlCopy } from "./managed-control-copy";
+import { managedControlCopyForSurface } from "./managed-control-copy";
 
 export function SessionBusyChoice({
   onReturn,
@@ -50,12 +50,12 @@ export function SessionBusyChoice({
       />
       {unavailableReason && (
         <p role="status" className="px-3 text-xs text-muted-foreground">
-          {codexReason(session.locale, unavailableReason).text}
+          {codexReason(session.locale, unavailableReason, "web").text}
         </p>
       )}
       {!session.access?.device?.manage && (
         <p className="px-3 text-xs text-muted-foreground">
-          {managedControlCopy[session.locale].management}
+          {managedControlCopyForSurface(session.locale, "web").management}
         </p>
       )}
     </div>

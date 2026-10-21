@@ -546,12 +546,12 @@ export function HistorySearchPanel({
       {status && <HistoryCoverageStatus status={status} locale={locale} />}
       {status?.enabled === false && <p role="status">{c.disabled}</p>}
       {!queryValid && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {c.queryLimit}
         </p>
       )}
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {error}
         </p>
       )}
@@ -806,7 +806,7 @@ export function HistorySearchLauncher({
         {historyCopy[locale].title}
       </Button>
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {historyCopy[locale].error}
         </p>
       )}

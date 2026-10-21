@@ -66,7 +66,7 @@ export function QuotaAutoRefreshPrompt({
               {tr("quota.notNow")}
             </Button>
           </div>
-          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+          {error && <p className="mt-2 text-xs text-destructive-text">{error}</p>}
         </div>
       </div>
     </section>

@@ -216,7 +216,7 @@ export function McpManagementPanel({
         </Button>
       </div>
       {(error || query.error) && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive-text">
           {error || localizeMessage(query.error)}
         </p>
       )}

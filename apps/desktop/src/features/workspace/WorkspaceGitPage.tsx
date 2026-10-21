@@ -481,7 +481,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                       variant="outline"
                       className={cn(
                         "max-w-32 truncate px-1.5 py-0 text-[10px]",
-                        ref.kind === "remote-branch" && "text-sky-600",
+                        ref.kind === "remote-branch" && "text-primary-text",
                         ref.kind === "tag" && "text-amber-600",
                       )}
                     >
@@ -524,7 +524,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                   </div>
                 )}
                 {!filesLoading && filesError && (
-                  <div className="flex min-h-9 items-center gap-2 px-2 text-xs text-destructive">
+                  <div className="flex min-h-9 items-center gap-2 px-2 text-xs text-destructive-text">
                     <CircleAlert size={14} />
                     <span className="min-w-0 flex-1">{tr("git.filesFailed")}</span>
                     <Button variant="ghost" onClick={() => void filesQuery.refetch()}>
@@ -671,7 +671,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
         </Button>
       </div>
       {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
           <CircleAlert size={15} />
           {error}
         </div>
@@ -810,7 +810,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                             variant="outline"
                             className={cn(
                               "max-w-32 gap-1 truncate px-1.5 py-0 text-[10px]",
-                              ref.kind === "remote-branch" && "text-sky-600",
+                              ref.kind === "remote-branch" && "text-primary-text",
                               ref.kind === "tag" && "text-amber-600",
                             )}
                           >
@@ -911,7 +911,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                               : entry.change.path}
                           </small>
                         </span>
-                        <em className="text-xs not-italic text-primary">
+                        <em className="text-xs not-italic text-primary-text">
                           {changeCode(entry.change, entry.kind)}
                         </em>
                         <ChevronRight size={14} />
@@ -1043,7 +1043,7 @@ function GitDiffPane({
         </div>
       )}
       {!untracked && diffState.status === "error" && (
-        <div className="flex min-h-32 flex-col items-center justify-center gap-1.5 text-center text-destructive">
+        <div className="flex min-h-32 flex-col items-center justify-center gap-1.5 text-center text-destructive-text">
           <CircleAlert size={18} />
           <span>{tr("git.diffFailed")}</span>
           <small className="max-w-[460px] text-xs text-muted-foreground">{diffState.message}</small>
@@ -1079,7 +1079,7 @@ function GitDiffPane({
                 "block min-h-[19px] whitespace-pre px-3",
                 line.startsWith("+") && !line.startsWith("+++") && "bg-green-500/10 text-green-700",
                 line.startsWith("-") && !line.startsWith("---") && "bg-red-500/10 text-red-700",
-                line.startsWith("@@") && "bg-primary/10 text-primary",
+                line.startsWith("@@") && "bg-primary/10 text-primary-text",
               )}
             >
               {line || " "}

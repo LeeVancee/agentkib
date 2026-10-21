@@ -271,7 +271,7 @@ export function QuotaPage({
           <div
             role="alert"
             aria-atomic="true"
-            className="mt-3 flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+            className="mt-3 flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text"
           >
             <CircleAlert size={16} />
             {error}

@@ -253,7 +253,7 @@ export function SkillSyncDialog({
           </div>
         )}
         {(error || preparation.error) && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-destructive-text">
             {localizeMessage(error ?? preparation.error)}
           </p>
         )}
@@ -278,7 +278,7 @@ export function SkillSyncDialog({
                   {item.modified.length} / −{item.removed.length}
                 </p>
                 {item.conflicts.map((conflict) => (
-                  <p key={conflict} className="text-sm text-destructive">
+                  <p key={conflict} className="text-sm text-destructive-text">
                     {conflict}
                   </p>
                 ))}
@@ -377,7 +377,7 @@ export function SkillSyncDialog({
             {report.results.map((item, index) => (
               <div key={index} className="rounded-lg border p-3">
                 <p className="break-all text-xs">{item.path ?? item.library_id}</p>
-                <p className={item.success ? "text-sm" : "text-sm text-destructive"}>
+                <p className={item.success ? "text-sm" : "text-sm text-destructive-text"}>
                   {item.error ?? resultLabel(item.status, tr)}
                 </p>
               </div>
@@ -496,7 +496,7 @@ export function SkillSyncPolicyDialog({
           <DialogDescription>{tr("skills.sync.scheduleNotice")}</DialogDescription>
         </DialogHeader>
         {(error || query.error) && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-destructive-text">
             {localizeMessage(error ?? query.error)}
           </p>
         )}
@@ -743,7 +743,7 @@ export function SkillSyncRunsDialog({
           <DialogDescription>{tr("skills.sync.recoveryNotice")}</DialogDescription>
         </DialogHeader>
         {(error || query.error) && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-destructive-text">
             {localizeMessage(error ?? query.error)}
           </p>
         )}
@@ -757,7 +757,7 @@ export function SkillSyncRunsDialog({
               <p
                 key={index}
                 className={
-                  item.success ? "break-all text-sm" : "break-all text-sm text-destructive"
+                  item.success ? "break-all text-sm" : "break-all text-sm text-destructive-text"
                 }
               >
                 {item.path ?? item.library_id} · {item.error ?? resultLabel(item.status, tr)}

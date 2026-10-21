@@ -214,7 +214,7 @@ export function AppRuntimeBridge() {
       role="alert"
       className="fixed left-1/2 top-16 z-50 flex max-w-[min(560px,calc(100vw-32px))] -translate-x-1/2 items-center gap-3 rounded-xl border border-destructive/30 bg-background/95 px-4 py-3 text-sm shadow-lg backdrop-blur"
     >
-      <AlertTriangle className="shrink-0 text-destructive" size={18} aria-hidden="true" />
+      <AlertTriangle className="shrink-0 text-destructive-icon" size={18} aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <p className="font-medium">{tr("runtime.startFailed")}</p>
         {runtimeStatus.error && (

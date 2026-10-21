@@ -222,7 +222,7 @@ function MessageBlock({
           <time
             dateTime={message.time}
             tabIndex={0}
-            className="mb-2 px-1 text-[11px] text-muted-foreground/70 focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
+            className="mb-2 px-1 text-[11px] text-muted-foreground focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
           >
             {new Date(message.time).toLocaleString(locale)}
           </time>
@@ -272,7 +272,7 @@ function MessageBlock({
                       {segment.toolCount} {labels.tools}
                     </span>
                     {segment.failedToolCount > 0 && (
-                      <span className="text-destructive">
+                      <span className="text-destructive-text">
                         · {segment.failedToolCount} {labels.failed}
                       </span>
                     )}

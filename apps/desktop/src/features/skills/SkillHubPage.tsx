@@ -136,7 +136,7 @@ function statusLabel(status: InstalledSkill["status"], translate = tr) {
 }
 
 function statusClass(status: InstalledSkill["status"]) {
-  if (status === "update-available") return "border-blue-300 bg-blue-50 text-blue-800";
+  if (status === "update-available") return "border-primary/30 bg-primary/10 text-primary-text";
   if (status === "modified") return "border-amber-300 bg-amber-50 text-amber-800";
   if (status === "unmanaged") return "border-border bg-muted/50 text-muted-foreground";
   return "border-emerald-300 bg-emerald-50 text-emerald-800";
@@ -563,7 +563,7 @@ export function SkillHubPage({
         </p>
       )}
       {error && (
-        <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
           <CircleAlert className="mt-0.5 shrink-0" size={16} />
           <span>{error}</span>
         </div>

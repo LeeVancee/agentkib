@@ -1,6 +1,6 @@
 import { Disclosure, DisclosureSummary } from "../../components/ui/disclosure";
 import { codexReason } from "./codex-copy";
-import { managedErrorCopy } from "./managed-error-copy";
+import { managedErrorCopyForSurface } from "./managed-error-copy";
 import { managedText } from "./managed-copy";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSessionNavigate } from "./session-navigation";
@@ -71,17 +71,17 @@ export function ManagedTasks({
   const [errorDetail, setErrorDetail] = useState("");
   function reportError(value: unknown) {
     if (value instanceof ApiError) {
-      const reason = codexReason(locale, value.code.replaceAll("_", "-"));
+      const reason = codexReason(locale, value.code.replaceAll("_", "-"), "web");
       setError(
         value.controlOutcome === "unknown"
-          ? managedErrorCopy[locale].unconfirmed
+          ? managedErrorCopyForSurface(locale, "web").unconfirmed
           : reason.technical
-            ? managedErrorCopy[locale].failed
+            ? managedErrorCopyForSurface(locale, "web").failed
             : reason.text,
       );
       setErrorDetail(value.code);
     } else {
-      setError(managedErrorCopy[locale].connection);
+      setError(managedErrorCopyForSurface(locale, "web").connection);
       setErrorDetail("");
     }
   }
@@ -135,6 +135,7 @@ export function ManagedTasks({
             locale,
             "Cannot read the saved request identity.",
             "无法读取已保存的请求标识。",
+            "web",
           ),
         );
       }
@@ -177,7 +178,12 @@ export function ManagedTasks({
         }
         setError(
           result.status === "not-dispatched"
-            ? managedText(locale, "The request was not dispatched.", "该请求未发送到执行端。")
+            ? managedText(
+                locale,
+                "The request was not dispatched.",
+                "该请求未发送到执行端。",
+                "web",
+              )
             : "",
         );
         await refresh(true);
@@ -346,14 +352,15 @@ export function ManagedTasks({
         <p className="text-sm text-muted-foreground">
           {managedText(
             locale,
-            "AgentKib must stay running on the host (the computer running the Agent). Tasks use workspace access and request approval when needed.",
-            "AgentKib 需要在主机（运行 Agent 的电脑）上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
+            "AgentKib must stay running on this computer (the computer running the Agent). Tasks use workspace access and request approval when needed.",
+            "AgentKib 需要在这台电脑上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
+            "web",
           )}
         </p>
       )}
       {create && (
         <label>
-          {managedText(locale, "Agent", "执行工具")}
+          {managedText(locale, "Agent", "执行工具", "web")}
           <select
             className="mt-2 w-full rounded border bg-background p-2"
             value={agent}
@@ -366,11 +373,13 @@ export function ManagedTasks({
         </label>
       )}
       {error && (
-        <div role="alert" className="break-words text-sm text-destructive">
+        <div role="alert" className="break-words text-sm text-destructive-text">
           <p>{error}</p>
           {errorDetail && (
             <Disclosure className="mt-2">
-              <DisclosureSummary>{managedErrorCopy[locale].details}</DisclosureSummary>
+              <DisclosureSummary>
+                {managedErrorCopyForSurface(locale, "web").details}
+              </DisclosureSummary>
               <code>{errorDetail}</code>
             </Disclosure>
           )}
@@ -383,6 +392,7 @@ export function ManagedTasks({
               locale,
               "The previous outcome is unconfirmed. Wait for the saved request's status before another operation.",
               "上次操作结果尚未确认。请等待系统确认已保存的请求，再执行新的操作。",
+              "web",
             )}
           </p>
           <p>
@@ -390,24 +400,27 @@ export function ManagedTasks({
               locale,
               "The saved request status is checked automatically. Refreshing does not run the operation again.",
               "正在自动查询已保存请求的处理状态；刷新不会重新执行操作。",
+              "web",
             )}
           </p>
         </div>
       )}
       {!create ? null : !options ? (
-        <p role="status">{managedText(locale, "Loading…", "正在读取…")}</p>
+        <p role="status">{managedText(locale, "Loading…", "正在读取…", "web")}</p>
       ) : (
         <>
           {!options.available && (
             <div role="status">
               <p>
                 {options.reason
-                  ? codexReason(locale, options.reason).text
-                  : managedText(locale, "Agent unavailable", "执行工具暂不可用")}
+                  ? codexReason(locale, options.reason, "web").text
+                  : managedText(locale, "Agent unavailable", "执行工具暂不可用", "web")}
               </p>
               {options.reason && (
                 <Disclosure className="mt-2">
-                  <DisclosureSummary>{managedErrorCopy[locale].details}</DisclosureSummary>
+                  <DisclosureSummary>
+                    {managedErrorCopyForSurface(locale, "web").details}
+                  </DisclosureSummary>
                   <code>{options.reason}</code>
                 </Disclosure>
               )}
@@ -416,7 +429,7 @@ export function ManagedTasks({
           {
             <>
               <label>
-                {managedText(locale, "Workspace", "工作区")}
+                {managedText(locale, "Workspace", "工作区", "web")}
                 <select
                   className="mt-2 w-full rounded border bg-background p-2"
                   value={workspaceId}
@@ -433,8 +446,9 @@ export function ManagedTasks({
                 <p>
                   {managedText(
                     locale,
-                    "Authorize a workspace in desktop Web settings first.",
-                    "请先在桌面 Web 设置中授权工作区。",
+                    "Authorize a workspace in Web settings in AgentKib on this computer first.",
+                    "请先在这台电脑上的 AgentKib 的 Web 设置中授权工作区。",
+                    "web",
                   )}
                 </p>
               )}
@@ -446,7 +460,7 @@ export function ManagedTasks({
                     </p>
                   )}
                   <label>
-                    {managedText(locale, "Model", "模型")}
+                    {managedText(locale, "Model", "模型", "web")}
                     <select
                       className="mt-2 w-full rounded border bg-background p-2"
                       value={model}
@@ -455,7 +469,9 @@ export function ManagedTasks({
                         setEffort("");
                       }}
                     >
-                      <option value="">{managedText(locale, "Host default", "主机默认")}</option>
+                      <option value="">
+                        {managedText(locale, "Computer default", "这台电脑默认", "web")}
+                      </option>
                       {options.models?.map((m) => (
                         <option key={m.id} value={m.id}>
                           {m.name || m.id}
@@ -465,13 +481,13 @@ export function ManagedTasks({
                   </label>
                   {!!options.models?.find((m) => m.id === model)?.efforts?.length && (
                     <label>
-                      {managedText(locale, "Reasoning effort", "思考强度")}
+                      {managedText(locale, "Reasoning effort", "思考强度", "web")}
                       <select
                         className="mt-2 w-full rounded border bg-background p-2"
                         value={effort}
                         onChange={(e) => setEffort(e.target.value)}
                       >
-                        <option value="">{managedText(locale, "Default", "默认")}</option>
+                        <option value="">{managedText(locale, "Default", "默认", "web")}</option>
                         {options.models
                           .find((m) => m.id === model)!
                           .efforts!.map((value) => (
@@ -492,7 +508,9 @@ export function ManagedTasks({
                       setPermissionMode(event.target.value as ClaudePermissionMode | "")
                     }
                   >
-                    <option value="">{managedText(locale, "Host default", "主机默认")}</option>
+                    <option value="">
+                      {managedText(locale, "Computer default", "这台电脑默认", "web")}
+                    </option>
                     {options.permissionModes
                       .filter((item) => ["default", "plan", "acceptEdits"].includes(item.id))
                       .map((item) => (
@@ -507,8 +525,9 @@ export function ManagedTasks({
                 <p className="text-xs text-muted-foreground">
                   {managedText(
                     locale,
-                    "Uses the host Claude Code model and tool permissions by default. Creating a task does not start a model request.",
-                    "默认沿用主机 Claude Code 的模型与工具权限。创建任务不会调用模型。",
+                    "Uses the Claude Code model and tool permissions from this computer by default. Creating a task does not start a model request.",
+                    "默认沿用这台电脑上的 Claude Code 的模型与工具权限。创建任务不会调用模型。",
+                    "web",
                   )}
                 </p>
               )}
@@ -516,7 +535,7 @@ export function ManagedTasks({
                 disabled={busy || uncertain || !options.available || !workspaceId}
                 onClick={() => void run()}
               >
-                {managedText(locale, "Create", "创建")}
+                {managedText(locale, "Create", "创建", "web")}
               </Button>
             </>
           }
@@ -531,7 +550,7 @@ export function ManagedTasks({
       {showTrigger && (
         <Button variant="ghost" size="sm" className="min-h-11" onClick={() => setOpen(true)}>
           {create && <Plus size={16} />}
-          {managedText(locale, "New task", "新建任务")}
+          {managedText(locale, "New task", "新建任务", "web")}
         </Button>
       )}
       <Dialog
@@ -544,7 +563,7 @@ export function ManagedTasks({
         }}
       >
         <DialogContent closeLabel={dictionaries[locale].close}>
-          <DialogTitle>{managedText(locale, "New task", "新建任务")}</DialogTitle>
+          <DialogTitle>{managedText(locale, "New task", "新建任务", "web")}</DialogTitle>
           {content}
         </DialogContent>
       </Dialog>

@@ -13,11 +13,11 @@ export const webSettingsCopy = {
     pairingCodeHint: "配对码用于发起浏览器配对，仍需在这台电脑上确认并授予权限。",
     invitationCodeHint: "邀请码用于将这台电脑登记到远程连接服务，不是浏览器的配对码或授权码。",
     diagnostics: "连接诊断",
-    connectionApplyHint: "桥接服务地址与程序路径由上方远程访问按钮应用，不随“保存设置”保存。",
-    generateAccess: "生成八位授权码",
+    connectionApplyHint: "连接服务地址与程序路径由上方远程访问按钮应用，不随“保存设置”保存。",
+    generateAccess: "生成授权码",
     codeScope:
-      "有效授权码无需桌面再次确认，即按所选档位授权全部 AgentKib 工作区：“只读”可查看会话历史与文件；“完整远控”另含任务控制、审批与上传。授权后可随时在下方调整档位或撤销。仅分享给可信设备。",
-    fullAccess: "完整远控权限",
+      "有效授权码无需桌面再次确认，即按所选档位授权全部 AgentKib 工作区：“只读”可查看会话历史与文件；“完整控制”另含任务控制、审批与上传。授权后可随时在下方调整档位或撤销。仅分享给可信设备。",
+    fullAccess: "完整控制",
     readOnlyAccess: "只读（查看会话与文件）",
     accessLevel: "授权档位",
     acceptance: "本地隔离验收模式：控制仅限以下会话，不代表正式验收通过。",
@@ -57,7 +57,7 @@ export const webSettingsCopy = {
     loading: "正在读取 Web 设置…",
     unavailable: "Web 设置不可用",
     warning:
-      "实验功能仅在通过验证的主机与会话上可用；停止仅表示中断当前轮次，不保证后台命令已结束。",
+      "实验功能仅在通过验证的这台电脑与会话上可用；停止仅表示中断当前轮次，不保证后台命令已结束。",
     read: "历史读取",
   },
   "zh-TW": {
@@ -74,11 +74,11 @@ export const webSettingsCopy = {
     pairingCodeHint: "配對碼用於發起瀏覽器配對，仍需在這台電腦上確認並授予權限。",
     invitationCodeHint: "邀請碼用於將這台電腦登記到遠端連線服務，不是瀏覽器的配對碼或授權碼。",
     diagnostics: "連線診斷",
-    connectionApplyHint: "橋接服務位址與程式路徑由上方遠端存取按鈕套用，不隨「儲存設定」儲存。",
-    generateAccess: "產生八位授權碼",
+    connectionApplyHint: "連線服務位址與程式路徑由上方遠端存取按鈕套用，不隨「儲存設定」儲存。",
+    generateAccess: "產生授權碼",
     codeScope:
-      "有效授權碼無需桌面再次確認，即依所選等級授權全部 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整遠端操作」另含任務控制、審批與上傳。授權後可隨時在下方調整等級或撤銷。僅分享給可信裝置。",
-    fullAccess: "完整遠端操作權限",
+      "有效授權碼無需桌面再次確認，即依所選等級授權全部 AgentKib 工作區：「唯讀」可查看對話紀錄與檔案；「完整控制」另含任務控制、審批與上傳。授權後可隨時在下方調整等級或撤銷。僅分享給可信裝置。",
+    fullAccess: "完整控制",
     readOnlyAccess: "唯讀（查看對話與檔案）",
     accessLevel: "授權等級",
     acceptance: "本機隔離驗收模式：操作僅限以下對話，不代表正式驗收通過。",
@@ -118,7 +118,7 @@ export const webSettingsCopy = {
     loading: "正在讀取 Web 設定…",
     unavailable: "Web 設定無法使用",
     warning:
-      "實驗功能僅在通過驗證的主機與對話上可用；停止僅表示中斷目前輪次，不保證背景命令已結束。",
+      "實驗功能僅在通過驗證的這台電腦與對話上可用；停止僅表示中斷目前輪次，不保證背景命令已結束。",
     read: "歷史讀取",
   },
   "en-US": {
@@ -141,11 +141,11 @@ export const webSettingsCopy = {
       "An invitation registers this computer with the remote connection service. It is not a browser pairing or access code.",
     diagnostics: "Connection diagnostics",
     connectionApplyHint:
-      "Apply bridge service and executable changes using the remote access button above. “Save settings” does not apply them.",
+      "Apply connection service and executable changes using the remote access button above. “Save settings” does not apply them.",
     generateAccess: "Generate 8-digit access code",
     codeScope:
-      "A valid access code authorizes all AgentKib workspaces at the selected level without another desktop confirmation. Read-only allows session history and files; full remote access adds task control, approvals and uploads. Change the level or revoke access below at any time. Share only with trusted devices.",
-    fullAccess: "Full remote access",
+      "A valid access code authorizes all AgentKib workspaces at the selected level without another desktop confirmation. Read-only allows session history and files; full control adds task control, approvals and uploads. Change the level or revoke access below at any time. Share only with trusted devices.",
+    fullAccess: "Full control",
     readOnlyAccess: "Read-only (sessions and files)",
     accessLevel: "Access level",
     acceptance:
@@ -188,7 +188,7 @@ export const webSettingsCopy = {
     loading: "Loading Web settings…",
     unavailable: "Web settings unavailable",
     warning:
-      "Experimental controls require a verified host and session. Stopping interrupts a turn; background commands may still run.",
+      "Experimental controls require a verified computer and session. Stopping interrupts a turn; background commands may still run.",
     read: "Read history",
   },
   "ja-JP": {
@@ -213,8 +213,8 @@ export const webSettingsCopy = {
       "中継サービスと実行ファイルの変更は、上のリモートアクセスボタンで適用します。「設定を保存」では適用されません。",
     generateAccess: "8 桁の認証コードを生成",
     codeScope:
-      "有効な認証コードで、選択したレベルに応じて全 AgentKib ワークスペースへのアクセスを許可します。デスクトップでの再確認は不要です。「閲覧のみ」は会話履歴とファイルの閲覧、「完全なリモートアクセス」はタスク操作・承認・アップロードも含みます。レベルの変更や取り消しは下でいつでも行えます。信頼できる端末にのみ共有してください。",
-    fullAccess: "完全なリモートアクセス",
+      "有効な認証コードで、選択したレベルに応じて全 AgentKib ワークスペースへのアクセスを許可します。デスクトップでの再確認は不要です。「閲覧のみ」は会話履歴とファイルの閲覧、「フルコントロール」はタスク操作・承認・アップロードも含みます。レベルの変更や取り消しは下でいつでも行えます。信頼できる端末にのみ共有してください。",
+    fullAccess: "フルコントロール",
     readOnlyAccess: "閲覧のみ（会話とファイル）",
     accessLevel: "アクセスレベル",
     acceptance:
@@ -256,7 +256,7 @@ export const webSettingsCopy = {
     loading: "Web 設定を読み込み中…",
     unavailable: "Web 設定を利用できません",
     warning:
-      "実験的な操作は検証済みのホストと会話のみで利用できます。停止は現在のターンを中断します。",
+      "実験的な操作は検証済みのこのコンピューターと会話のみで利用できます。停止は現在のターンを中断しますが、バックグラウンドコマンドの終了を保証するものではありません。",
     read: "履歴の閲覧",
   },
 };

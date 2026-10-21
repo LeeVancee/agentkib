@@ -1,6 +1,6 @@
 export const lanSettingsCopy = {
   "zh-CN": {
-    title: "托管网页局域网访问",
+    title: "局域网直连",
     enabled: "启用局域网直连",
     scope:
       "在同一局域网用 Chromium 打开 remote.agentkib.com，直接连接本机。Cloudflare 只提供网页，不中继会话。授权包含全部已登记及以后新增的工作区。",
@@ -19,7 +19,7 @@ export const lanSettingsCopy = {
       "浏览器需要允许本地网络访问；刷新或关闭网页后需重新配对。明文风险与配对校验是两回事，配对不能防止网络窃听。",
   },
   "zh-TW": {
-    title: "託管網頁區域網路存取",
+    title: "區域網路直連",
     enabled: "啟用區域網路直連",
     scope:
       "在同一區域網路以 Chromium 開啟 remote.agentkib.com，直接連接本機。Cloudflare 僅提供網頁，不中繼對話。授權包含全部已登記及以後新增的工作區。",
@@ -38,7 +38,7 @@ export const lanSettingsCopy = {
       "瀏覽器需要允許本機網路存取；重新整理或關閉網頁後需重新配對。明文風險與配對驗證不同，配對無法防止網路竊聽。",
   },
   "en-US": {
-    title: "Hosted Web LAN access",
+    title: "LAN direct connection",
     enabled: "Enable LAN direct connection",
     scope:
       "Open remote.agentkib.com in Chromium on the same LAN to connect directly to this computer. Cloudflare serves only the website, not conversation traffic. Access includes all registered and future workspaces.",
@@ -58,7 +58,7 @@ export const lanSettingsCopy = {
       "Allow local network access in your browser. Reloading or closing the page requires pairing again. Pairing verifies access; it does not protect plaintext traffic from eavesdropping.",
   },
   "ja-JP": {
-    title: "ホスト型 Web の LAN アクセス",
+    title: "LAN 直接接続",
     enabled: "LAN 直接接続を有効化",
     scope:
       "同じ LAN 上の Chromium で remote.agentkib.com を開き、このコンピューターに直接接続します。Cloudflare は Web ページのみを配信し、会話を中継しません。登録済みおよび今後追加される全ワークスペースが対象です。",

@@ -351,7 +351,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
                 className={cn(
                   "segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 grid-rows-[22px_auto_auto] items-center content-start justify-items-center gap-1.5 px-1 pt-6 text-center focus-visible:ring-2 focus-visible:ring-ring",
                   reached && "text-foreground",
-                  current && "text-[var(--blue)]",
+                  current && "text-primary-text",
                 )}
                 key={milestone.code}
               >

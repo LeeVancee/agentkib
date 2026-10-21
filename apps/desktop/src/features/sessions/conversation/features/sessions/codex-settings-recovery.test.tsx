@@ -61,7 +61,7 @@ afterEach(cleanup);
 
 describe("Codex settings recovery on desktop", () => {
   it.each([
-    ["unsupported-model", /current model is not in the host's verified model list/],
+    ["unsupported-model", /current model is not in the model list verified on this computer/],
     ["unsupported-effort", /current model does not support the selected reasoning effort/],
   ] as const)(
     "opens the existing settings dialog for %s without submitting",

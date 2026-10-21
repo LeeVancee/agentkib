@@ -1,4 +1,5 @@
 import type { SupportedLocale as Locale } from "@/core/types";
+import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
 
 export const contextUsageCopy = {
   "zh-CN": {
@@ -10,7 +11,7 @@ export const contextUsageCopy = {
       "尚未取得 Claude Code 的上下文用量报告。继续会话后，以 CLI 实际报告为准；此状态不表示额度耗尽。",
     compacting: "正在压缩上下文",
     compactingDetail: "上下文正在压缩，用量待更新，暂时无法发送或修改执行设置。",
-    pendingDetail: "主机尚未上报本轮上下文用量。",
+    pendingDetail: "这台电脑尚未上报本轮上下文用量。",
     staleDetail: "这是上次上报的用量，等待新的原生报告。",
     unavailableDetail: "当前原生接口未提供可用的上下文窗口用量。",
     permission: "当前浏览器未获上下文用量查看授权。",
@@ -30,7 +31,7 @@ export const contextUsageCopy = {
       "尚未取得 Claude Code 的上下文用量報告。繼續對話後，以 CLI 實際報告為準；此狀態不表示額度耗盡。",
     compacting: "正在壓縮上下文",
     compactingDetail: "上下文正在壓縮，用量待更新，暫時無法傳送或修改執行設定。",
-    pendingDetail: "主機尚未上報本回合上下文用量。",
+    pendingDetail: "這台電腦尚未上報本回合上下文用量。",
     staleDetail: "這是上次上報的用量，等待新的原生報告。",
     unavailableDetail: "目前原生介面未提供可用的上下文視窗用量。",
     permission: "目前瀏覽器未獲上下文用量檢視授權。",
@@ -51,7 +52,7 @@ export const contextUsageCopy = {
     compacting: "Compacting context",
     compactingDetail:
       "Context is compacting. Usage awaits an update; sending and changing execution settings are unavailable.",
-    pendingDetail: "The host has not reported context usage for this turn yet.",
+    pendingDetail: "The computer has not reported context usage for this turn yet.",
     staleDetail: "This is the last reported usage. Awaiting a new native report.",
     unavailableDetail:
       "The native interface does not currently provide usable context-window usage.",
@@ -86,8 +87,12 @@ export const contextUsageCopy = {
   },
 } satisfies Record<Locale, Record<string, string>>;
 
-export function contextUsageReason(locale: Locale, reason?: string) {
-  const copy = contextUsageCopy[locale];
+export function contextUsageReason(
+  locale: Locale,
+  reason?: string,
+  surface: SessionSurface = "desktop",
+) {
+  const copy = contextUsageCopyForSurface(locale, surface);
   if (reason === "permission_denied" || reason === "permission-denied") return copy.permission;
   if (reason === "offline" || reason === "disconnected") return copy.offline;
   if (reason === "compacting" || reason === "context-compacting") return copy.compactingDetail;
@@ -103,4 +108,8 @@ export function contextUsageReason(locale: Locale, reason?: string) {
   if (reason === "invalid-token-usage" || reason === "invalid-usage") return copy.invalid;
   if (reason === "unsupported" || reason === "usage-unsupported") return copy.unsupported;
   return undefined;
+}
+
+export function contextUsageCopyForSurface(locale: Locale, surface: SessionSurface = "desktop") {
+  return surfaceCopy(contextUsageCopy[locale], surface, locale);
 }

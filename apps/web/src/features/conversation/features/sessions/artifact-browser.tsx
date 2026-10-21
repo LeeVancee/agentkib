@@ -506,7 +506,7 @@ export function ArtifactBrowser({
                 </>
               )}
               {error && (
-                <p role="alert" className="break-words text-sm text-destructive">
+                <p role="alert" className="break-words text-sm text-destructive-text">
                   {error}
                 </p>
               )}

@@ -157,6 +157,58 @@ describe("WorkspaceDoctorPage", () => {
     expect(await screen.findByText("OpenCode")).toBeTruthy();
   });
 
+  it("keeps not-applicable counts and issue evidence fully readable", async () => {
+    const detail = "Synthetic configuration content mismatch";
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+      ...report,
+      summary: { ...report.summary, error_count: 1 },
+      matrix: [
+        {
+          agent: "claude-code",
+          detected: true,
+          installed: true,
+          enabled: true,
+          writable: true,
+          instructions: { status: "not-applicable", expected: 2, actual: 0 },
+          skills: { status: "healthy", expected: 1, actual: 1 },
+          mcp: { status: "healthy", expected: 1, actual: 1 },
+        },
+      ],
+      issues: [
+        {
+          id: "synthetic-drift",
+          code: "managed.drift",
+          severity: "error",
+          repairable: false,
+          agent: "claude-code",
+          asset_kind: "instructions",
+          evidence: [
+            {
+              path: "/example/project/AGENTS.md",
+              detail,
+              expected: "a".repeat(64),
+              actual: "b".repeat(64),
+            },
+          ],
+        },
+      ],
+    });
+    const onRepair = vi.fn();
+    render(<WorkspaceDoctorPage workspace={workspace} onRepair={onRepair} onDiagnosed={vi.fn()} />);
+
+    const count = await screen.findByText("0 / 2");
+    expect(count.closest("small")?.className).not.toMatch(/\bopacity-\d+/);
+    expect(count.parentElement?.className).toContain("text-muted-foreground");
+    const article = screen.getByText(detail).closest("article")!;
+    expect(article.querySelector("header + p")?.className).not.toMatch(/\bopacity-\d+/);
+    const hashes = article.querySelector("small")!;
+    expect(hashes.textContent).toContain("aaaaaaaaaaaa…");
+    expect(hashes.textContent).toContain("bbbbbbbbbbbb…");
+    expect(hashes.className).not.toMatch(/\bopacity-\d+/);
+    expect(onRepair).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Review .*Repairs/ })).toBeNull();
+  });
+
   it("shows the one-time repair verification result", async () => {
     vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
       ...report,

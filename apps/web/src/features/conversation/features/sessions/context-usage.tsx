@@ -5,8 +5,8 @@ import type { Locale } from "../../i18n";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
-import { codexCopy } from "./codex-copy";
-import { contextUsageCopy, contextUsageReason } from "./context-usage-copy";
+import { codexCopyForSurface } from "./codex-copy";
+import { contextUsageCopyForSurface, contextUsageReason } from "./context-usage-copy";
 
 export function contextUsagePercent(usage?: ContextUsage) {
   if (
@@ -194,19 +194,19 @@ export function ContextUsageDetails({
   locale,
   online,
 }: ContextUsageView & { locale: Locale; online: boolean }) {
-  const copy = contextUsageCopy[locale];
+  const copy = contextUsageCopyForSurface(locale, "web");
   const message = compacting
     ? copy.compactingDetail
     : !online && usage?.reason !== "permission_denied" && usage?.reason !== "permission-denied"
       ? copy.offline
       : awaitingCliReport
         ? copy.awaitingCliReportDetail
-        : (contextUsageReason(locale, usage?.reason) ??
+        : (contextUsageReason(locale, usage?.reason, "web") ??
           (state === "pending"
             ? copy.pendingDetail
             : state === "stale"
               ? copy.staleDetail
-              : codexCopy[locale].contextUnknown));
+              : codexCopyForSurface(locale, "web").contextUnknown));
   return (
     <div className="space-y-2 text-sm">
       {state !== "ready" && <p role="status">{message}</p>}
@@ -244,9 +244,9 @@ export function ContextUsageIndicator({
   online: boolean;
   view: ContextUsageView;
 }) {
-  const copy = contextUsageCopy[locale];
+  const copy = contextUsageCopyForSurface(locale, "web");
   const [opened, setOpened] = useState<string>();
-  const title = codexCopy[locale].contextUsage;
+  const title = codexCopyForSurface(locale, "web").contextUsage;
   const label = view.compacting
     ? copy.compacting
     : view.awaitingCliReport
@@ -274,7 +274,7 @@ export function ContextUsageIndicator({
         <Dialog
           panel
           title={title}
-          closeLabel={codexCopy[locale].close}
+          closeLabel={codexCopyForSurface(locale, "web").close}
           onClose={() => setOpened(undefined)}
         >
           <ContextUsageDetails {...view} locale={locale} online={online} />

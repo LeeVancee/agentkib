@@ -137,9 +137,9 @@ export function WorkspacesPage({
         />
         <span>{discoveryStatus.label}</span>
         {discoveryStatus.reportedAt && (
-          <span className="text-muted-foreground/70">{discoveryStatus.reportedAt}</span>
+          <span className="text-muted-foreground">{discoveryStatus.reportedAt}</span>
         )}
-        <span className="text-muted-foreground/70">·</span>
+        <span className="text-muted-foreground">·</span>
         <span>{tr("workspace.discoveryDetailsLink")}</span>
       </Button>
       <div className="grid items-start gap-5 min-[1024px]:grid-cols-[minmax(360px,1fr)_minmax(0,1.25fr)]">
@@ -244,7 +244,7 @@ export function WorkspacesLoadError({
       role="alert"
       className="grid min-h-64 place-content-center justify-items-center gap-3 rounded-2xl border border-destructive/30 bg-card p-8 text-center"
     >
-      <FolderGit2 size={26} className="text-destructive" />
+      <FolderGit2 size={26} className="text-destructive-icon" />
       <h2 className="text-base font-semibold">{tr("nav.workspaces")}</h2>
       <p className="max-w-md text-sm text-muted-foreground">{tr("errors.generic")}</p>
       <Button disabled={retrying} onClick={onRetry}>

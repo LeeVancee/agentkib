@@ -48,7 +48,7 @@ export function ConversationEventRow({
     <article data-event-id={event.id} className={messageClassName}>
       {!hub && (
         <header
-          className={`mb-2.5 flex items-center gap-1.5 text-xs ${coloredUser ? "text-primary-foreground/70" : "text-muted-foreground"}`}
+          className={`mb-2.5 flex items-center gap-1.5 text-xs ${coloredUser ? "text-primary-foreground" : "text-muted-foreground"}`}
         >
           {isUser ? <UserRound size={14} /> : <Bot size={14} />}
           <strong className={coloredUser ? "text-primary-foreground" : "text-foreground"}>
@@ -63,7 +63,7 @@ export function ConversationEventRow({
       />
       {(event.attachment_count > 0 || event.truncated) && (
         <footer
-          className={`mt-3 flex gap-2 ${hub ? "text-sm" : "text-xs"} ${coloredUser ? "text-primary-foreground/70" : "text-muted-foreground"}`}
+          className={`mt-3 flex gap-2 ${hub ? "text-sm" : "text-xs"} ${coloredUser ? "text-primary-foreground" : "text-muted-foreground"}`}
         >
           {event.attachment_count > 0 && (
             <span>{tr("conversations.attachments", { count: event.attachment_count })}</span>

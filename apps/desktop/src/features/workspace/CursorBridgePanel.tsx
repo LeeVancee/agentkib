@@ -290,7 +290,7 @@ export function CursorBridgePanel({
         </div>
       )}
       {error !== "" && (
-        <p role="alert" className="m-0 text-destructive">
+        <p role="alert" className="m-0 text-destructive-text">
           {localizeMessage(error)}
         </p>
       )}

@@ -349,7 +349,7 @@ export function SessionHandoffDialog({
           </Button>
         </header>
         {error && (
-          <div className="mx-5 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <div className="mx-5 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
             <CircleAlert size={15} />
             {error}
           </div>
@@ -455,7 +455,7 @@ export function SessionHandoffDialog({
                 className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
                   draft.mcp_available
                     ? "border-blue-500/25 bg-blue-500/5 text-foreground"
-                    : "border-destructive/30 bg-destructive/5 text-destructive"
+                    : "border-destructive/30 bg-destructive/5 text-destructive-text"
                 }`}
               >
                 <CircleAlert className="mt-0.5 shrink-0" size={14} />
@@ -499,7 +499,7 @@ export function SessionHandoffDialog({
             )}
             {reasoningExcluded && (
               <div className="flex items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-sm text-foreground">
-                <ShieldCheck className="mt-0.5 shrink-0 text-blue-600" size={14} />
+                <ShieldCheck className="mt-0.5 shrink-0 text-primary-text" size={14} />
                 {tr("handoff.reasoningPrivacy", { count: reasoningExcluded.count })}
               </div>
             )}
@@ -801,7 +801,7 @@ function CapabilityStatus({ status }: { status: ContinuationCapabilityStatus }) 
             ? "bg-amber-500/10 text-amber-700"
             : status === "unsupported"
               ? "bg-muted text-muted-foreground"
-              : "bg-blue-500/10 text-blue-700"
+              : "bg-primary/10 text-primary-text"
       }`}
     >
       {tr(`handoff.capabilities.status.${status}`)}

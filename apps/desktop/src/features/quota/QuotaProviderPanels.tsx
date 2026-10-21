@@ -69,10 +69,10 @@ export function ProviderTabs({
                     <em
                       className={cn(
                         "text-[13px] font-bold not-italic",
-                        isActive && "text-primary",
+                        isActive && "text-primary-text",
                         !isActive && severity === "healthy" && "text-green-600",
                         !isActive && severity === "warning" && "text-amber-600",
-                        !isActive && severity === "danger" && "text-red-600",
+                        !isActive && severity === "danger" && "text-destructive-text",
                       )}
                     >
                       {Math.round(remaining)}%
@@ -141,7 +141,7 @@ export function QuotaProviderDetail({
           <span
             className={cn(
               snapshot.freshness === "stale" && "text-amber-600",
-              snapshot.freshness === "unavailable" && "text-red-600",
+              snapshot.freshness === "unavailable" && "text-destructive-text",
             )}
           >
             {tr(`quota.freshness.${snapshot.freshness}`)}

@@ -96,7 +96,7 @@ export function WorkspaceOpenWith({
                     <OpenerIcon category={opener.category} />
                     <strong className="truncate text-sm">{opener.name}</strong>
                     {opener.preferred && (
-                      <em className="text-xs not-italic text-primary">
+                      <em className="text-xs not-italic text-primary-text">
                         {tr("workspaceOpener.default")}
                       </em>
                     )}

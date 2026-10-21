@@ -338,7 +338,7 @@ export function WorkspaceStoragePage({
         </div>
       )}
       {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
           <CircleAlert size={16} />
           {error}
         </div>

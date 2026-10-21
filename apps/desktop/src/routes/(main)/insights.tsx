@@ -93,7 +93,7 @@ function InsightsRoute() {
       {bannerError && (
         <div
           role="alert"
-          className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-text"
         >
           <CircleAlert size={16} />
           {bannerError}

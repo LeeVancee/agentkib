@@ -262,7 +262,7 @@ export function SessionContinuationChoice({
         <div className="flex min-w-0 basis-full flex-col items-start gap-1.5 sm:basis-auto sm:flex-1">
           <button
             type="button"
-            className={`${continuationButtonClass} bg-primary text-primary-foreground hover:bg-primary/90`}
+            className={`${continuationButtonClass} bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]`}
             aria-describedby={hintId}
             disabled={disabled || forkDisabled}
             onClick={onFork}
@@ -322,7 +322,7 @@ export function SessionContinuationStatus({
     <span
       role="status"
       aria-busy={loading || undefined}
-      className={`inline-flex max-w-full items-center gap-1.5 text-xs ${active || loading ? "text-primary" : "text-muted-foreground"} ${className ?? ""}`}
+      className={`inline-flex max-w-full items-center gap-1.5 text-xs ${active || loading ? "text-primary-text" : "text-muted-foreground"} ${className ?? ""}`}
     >
       <span
         aria-hidden="true"

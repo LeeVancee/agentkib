@@ -1,3 +1,4 @@
+import { surfaceCopy, surfaceText, type SessionSurface } from "./session-surface-copy";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import { claudeConnectionReason } from "./claude-connection-copy";
 import { localizedUnavailableReasonText } from "../../live-status";
@@ -9,8 +10,8 @@ const zh = {
   keep: "保持当前设置",
   pendingInfo: "汇总本页已查看会话的待处理事项及当前访问尚未确认的请求。",
   title: "Codex 控制",
-  capabilities: "主机能力",
-  unavailable: "主机未提供或尚未验证此能力",
+  capabilities: "这台电脑能力",
+  unavailable: "这台电脑未提供或尚未验证此能力",
   permission: "当前访问没有附件上传权限。",
   inspect: "检查会话状态",
   steer: "追加到当前轮次",
@@ -31,7 +32,7 @@ const zh = {
   model: "模型",
   effort: "思考强度",
   mode: "协作模式",
-  default: "主机默认",
+  default: "这台电脑默认",
   plan: "计划",
   normal: "执行",
   apply: "应用到下一轮",
@@ -60,14 +61,14 @@ const zh = {
   close: "关闭",
   text: "消息内容",
   conversationSettings: "会话设置",
-  restoreDefaults: "恢复主机默认",
+  restoreDefaults: "恢复这台电脑默认",
   serviceTier: "服务档位",
   executionPolicy: "执行策略",
   contextUsage: "上下文用量",
-  contextUnknown: "主机尚未提供上下文窗口用量",
+  contextUnknown: "这台电脑尚未提供上下文窗口用量",
   settingUnavailable: "此会话暂不支持修改该设置",
   settingsWhileRunning: "当前轮次结束后才能修改设置",
-  settingsSaved: "设置已由主机确认",
+  settingsSaved: "设置已由这台电脑确认",
   goals: "持续目标",
   goalObjective: "目标内容",
   goalBudget: "Token 预算（可选）",
@@ -76,7 +77,7 @@ const zh = {
   goalPause: "暂停",
   goalResume: "恢复并继续执行",
   goalClear: "清除目标",
-  goalUnavailable: "主机尚未提供目标管理",
+  goalUnavailable: "这台电脑尚未提供目标管理",
   goalStatus: "状态",
   goalUsage: "消耗",
   goalElapsed: "运行时间",
@@ -86,7 +87,7 @@ const zh = {
   skillsPlugins: "技能、插件与应用",
   resourceSearch: "搜索可用资源",
   resourceEmpty: "没有可用资源",
-  resourceUnavailable: "主机尚未提供受控上下文引用",
+  resourceUnavailable: "这台电脑尚未提供受控上下文引用",
   resourceRemoved: "资源已失效，请重新选择",
   fullAccessRequired: "请使用新的完整授权码连接后操作",
   directoryReference: "文件夹仅作为引用，不会递归上传",
@@ -103,8 +104,8 @@ export const codexCopy: Record<Locale, Copy> = {
     keep: "保持目前設定",
     pendingInfo: "彙整此頁已查看對話的待處理事項及目前存取尚未確認的請求。",
     title: "Codex 控制",
-    capabilities: "主機能力",
-    unavailable: "主機未提供或尚未驗證此能力",
+    capabilities: "這台電腦能力",
+    unavailable: "這台電腦未提供或尚未驗證此能力",
     permission: "目前存取沒有附件上傳權限。",
     inspect: "檢查對話狀態",
     steer: "追加到目前輪次",
@@ -125,7 +126,7 @@ export const codexCopy: Record<Locale, Copy> = {
     model: "模型",
     effort: "思考強度",
     mode: "協作模式",
-    default: "主機預設",
+    default: "這台電腦預設",
     plan: "計畫",
     normal: "執行",
     apply: "套用至下一輪",
@@ -153,14 +154,14 @@ export const codexCopy: Record<Locale, Copy> = {
     close: "關閉",
     text: "訊息內容",
     conversationSettings: "對話設定",
-    restoreDefaults: "恢復主機預設",
+    restoreDefaults: "恢復這台電腦預設",
     serviceTier: "服務等級",
     executionPolicy: "執行策略",
     contextUsage: "上下文用量",
-    contextUnknown: "主機尚未提供上下文視窗用量",
+    contextUnknown: "這台電腦尚未提供上下文視窗用量",
     settingUnavailable: "此對話暫不支援修改此設定",
     settingsWhileRunning: "目前輪次結束後才能修改設定",
-    settingsSaved: "設定已由主機確認",
+    settingsSaved: "設定已由這台電腦確認",
     goals: "持續目標",
     goalObjective: "目標內容",
     goalBudget: "Token 預算（選填）",
@@ -169,7 +170,7 @@ export const codexCopy: Record<Locale, Copy> = {
     goalPause: "暫停",
     goalResume: "恢復並繼續執行",
     goalClear: "清除目標",
-    goalUnavailable: "主機尚未提供目標管理",
+    goalUnavailable: "這台電腦尚未提供目標管理",
     goalStatus: "狀態",
     goalUsage: "用量",
     goalElapsed: "執行時間",
@@ -179,7 +180,7 @@ export const codexCopy: Record<Locale, Copy> = {
     skillsPlugins: "技能、外掛與應用程式",
     resourceSearch: "搜尋可用資源",
     resourceEmpty: "沒有可用資源",
-    resourceUnavailable: "主機尚未提供受控上下文引用",
+    resourceUnavailable: "這台電腦尚未提供受控上下文引用",
     resourceRemoved: "資源已失效，請重新選取",
     fullAccessRequired: "請使用新的完整授權碼連線後操作",
     directoryReference: "資料夾僅作為引用，不會遞迴上傳",
@@ -196,8 +197,8 @@ export const codexCopy: Record<Locale, Copy> = {
     pendingInfo:
       "Pending actions from sessions viewed on this page and unconfirmed requests from this access.",
     title: "Codex controls",
-    capabilities: "Host capabilities",
-    unavailable: "The host does not provide or has not verified this capability",
+    capabilities: "Computer capabilities",
+    unavailable: "The computer does not provide or has not verified this capability",
     permission: "This access does not include permission to upload attachments.",
     inspect: "Inspect session state",
     steer: "Add to current turn",
@@ -218,7 +219,7 @@ export const codexCopy: Record<Locale, Copy> = {
     model: "Model",
     effort: "Reasoning effort",
     mode: "Collaboration mode",
-    default: "Host default",
+    default: "Computer default",
     plan: "Plan",
     normal: "Execute",
     apply: "Apply to next turn",
@@ -248,14 +249,14 @@ export const codexCopy: Record<Locale, Copy> = {
     close: "Close",
     text: "Message text",
     conversationSettings: "Session settings",
-    restoreDefaults: "Restore host defaults",
+    restoreDefaults: "Restore computer defaults",
     serviceTier: "Service tier",
     executionPolicy: "Execution policy",
     contextUsage: "Context usage",
-    contextUnknown: "The host has not reported context-window usage",
+    contextUnknown: "The computer has not reported context-window usage",
     settingUnavailable: "This session cannot change this setting",
     settingsWhileRunning: "Settings can be changed after the current turn finishes",
-    settingsSaved: "The host confirmed these settings",
+    settingsSaved: "The computer confirmed these settings",
     goals: "Persistent goal",
     goalObjective: "Objective",
     goalBudget: "Token budget (optional)",
@@ -264,7 +265,7 @@ export const codexCopy: Record<Locale, Copy> = {
     goalPause: "Pause",
     goalResume: "Resume and continue",
     goalClear: "Clear goal",
-    goalUnavailable: "The host does not provide goal management",
+    goalUnavailable: "The computer does not provide goal management",
     goalStatus: "Status",
     goalUsage: "Usage",
     goalElapsed: "Elapsed time",
@@ -274,7 +275,7 @@ export const codexCopy: Record<Locale, Copy> = {
     skillsPlugins: "Skills, plugins and apps",
     resourceSearch: "Search available resources",
     resourceEmpty: "No resources available",
-    resourceUnavailable: "The host does not provide controlled context references",
+    resourceUnavailable: "The computer does not provide controlled context references",
     resourceRemoved: "This resource is no longer valid. Select it again.",
     fullAccessRequired: "Reconnect with a new full-access code to use this control",
     directoryReference: "Folders are referenced without recursively uploading their contents",
@@ -291,8 +292,8 @@ export const codexCopy: Record<Locale, Copy> = {
     pendingInfo:
       "このページで閲覧した会話の対応待ち項目と、現在のアクセスで未確認のリクエストを表示します。",
     title: "Codex 操作",
-    capabilities: "ホストの機能",
-    unavailable: "ホストで未提供または未検証の機能です",
+    capabilities: "このコンピューターの機能",
+    unavailable: "このコンピューターで未提供または未検証の機能です",
     permission: "現在のアクセスでは添付ファイルをアップロードできません。",
     inspect: "会話の状態を確認",
     steer: "現在のターンに追加",
@@ -313,7 +314,7 @@ export const codexCopy: Record<Locale, Copy> = {
     model: "モデル",
     effort: "推論の強度",
     mode: "協調モード",
-    default: "ホストの既定値",
+    default: "このコンピューターの既定値",
     plan: "計画",
     normal: "実行",
     apply: "次のターンに適用",
@@ -342,14 +343,14 @@ export const codexCopy: Record<Locale, Copy> = {
     close: "閉じる",
     text: "メッセージ内容",
     conversationSettings: "会話の設定",
-    restoreDefaults: "ホストの既定値に戻す",
+    restoreDefaults: "このコンピューターの既定値に戻す",
     serviceTier: "サービス階層",
     executionPolicy: "実行ポリシー",
     contextUsage: "コンテキスト使用量",
-    contextUnknown: "ホストからコンテキストウィンドウの使用量が提供されていません",
+    contextUnknown: "このコンピューターからコンテキストウィンドウの使用量が提供されていません",
     settingUnavailable: "この会話ではこの設定を変更できません",
     settingsWhileRunning: "現在のターンが終了してから設定を変更できます",
-    settingsSaved: "ホストが設定を確認しました",
+    settingsSaved: "このコンピューターが設定を確認しました",
     goals: "継続目標",
     goalObjective: "目標",
     goalBudget: "Token 予算（任意）",
@@ -358,7 +359,7 @@ export const codexCopy: Record<Locale, Copy> = {
     goalPause: "一時停止",
     goalResume: "再開して続行",
     goalClear: "目標をクリア",
-    goalUnavailable: "ホストは目標管理を提供していません",
+    goalUnavailable: "このコンピューターは目標管理を提供していません",
     goalStatus: "状態",
     goalUsage: "使用量",
     goalElapsed: "経過時間",
@@ -368,7 +369,7 @@ export const codexCopy: Record<Locale, Copy> = {
     skillsPlugins: "スキル、プラグイン、アプリ",
     resourceSearch: "利用可能なリソースを検索",
     resourceEmpty: "利用可能なリソースはありません",
-    resourceUnavailable: "ホストは制御されたコンテキスト参照を提供していません",
+    resourceUnavailable: "このコンピューターは制御されたコンテキスト参照を提供していません",
     resourceRemoved: "リソースが無効になりました。選択し直してください。",
     fullAccessRequired: "新しいフルアクセスコードで再接続してください",
     directoryReference: "フォルダーは再帰アップロードせず参照として追加されます",
@@ -379,7 +380,7 @@ export const codexCopy: Record<Locale, Copy> = {
 const reasons: Record<Locale, Record<string, string>> = {
   "zh-CN": {
     "unsupported-model":
-      "当前模型不在主机已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
+      "当前模型不在这台电脑已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
     "native-model-unconfirmed":
       "无法确认源会话的模型，本次分支尚未创建。请先在 Codex 中明确源会话的模型和思考强度，再刷新重试。",
     "native-effort-unconfirmed":
@@ -390,13 +391,13 @@ const reasons: Record<Locale, Record<string, string>> = {
       "会话目录是文件系统根目录或用户主目录，为保护文件，目前仅可查看。请在具体项目目录中使用 Codex 新建会话。",
     "codex-session-directory-missing": "会话目录已不存在，目前仅可查看。请恢复该目录后刷新重试。",
     "codex-session-directory-not-directory":
-      "会话路径不是目录，目前仅可查看。请在主机上检查该路径。",
+      "会话路径不是目录，目前仅可查看。请在这台电脑上检查该路径。",
     "codex-session-directory-unavailable":
-      "无法读取会话目录，目前仅可查看。请检查主机上的目录权限后重试。",
+      "无法读取会话目录，目前仅可查看。请检查这台电脑上的目录权限后重试。",
     "codex-session-directory-unverified":
       "无法确认这条会话自己的目录，目前仅可查看。请在 Codex 中检查会话后刷新重试。",
     "codex-context-outside-workspace":
-      "会话目录不在已登记的工作区内，目前仅可查看。请在主机上检查工作区与会话目录。",
+      "会话目录不在已登记的工作区内，目前仅可查看。请在这台电脑上检查工作区与会话目录。",
     "codex-workspace-mismatch":
       "Codex 返回的工作目录与会话目录不一致，已停止本次操作。请检查会话状态后重试。",
     "codex-sandbox-mismatch":
@@ -410,11 +411,11 @@ const reasons: Record<Locale, Record<string, string>> = {
       "无法确认这条会话是否正在 Claude Code 中使用，目前仅可查看。请刷新重试。",
     "claude-cli-unavailable": "未找到 Claude Code，安装后可以在这里继续",
     "codex-protocol-incompatible": "当前 Codex 原生协议与会话快照不兼容，请更新客户端后重试。",
-    "codex-connection-failed": "暂时无法连接 Codex，请检查主机状态后重试。",
+    "codex-connection-failed": "暂时无法连接 Codex，请检查这台电脑状态后重试。",
     "codex-owner-changed": "Codex 的运行状态已变化，正在重新检查。",
     "session-compacting": "上下文正在压缩，请等待上下文压缩完成后继续。",
     "settings-not-applied": "设置尚未由 Codex 确认，请先发送一轮应用设置，再开始或恢复目标。",
-    "collaboration-modes-unavailable": "主机尚未提供已验证的 Codex 协作模式列表。",
+    "collaboration-modes-unavailable": "这台电脑尚未提供已验证的 Codex 协作模式列表。",
     "session-busy": "此操作需要会话空闲，请等待当前轮次结束。",
     "session-requires-running-turn": "此操作仅在轮次运行中可用。",
     "no-active-turn": "当前没有可停止的轮次。",
@@ -437,11 +438,11 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib 发起的这一轮结束后，Claude 仍在继续工作（例如后台子代理完成）。AgentKib 只跟踪自己发起的轮次，所以 AgentKib 停止了会话，以保持此处显示与已保存的会话一致。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。",
     "claude-protocol-violation":
       "AgentKib 无法解析 Claude Code 的输出，为安全起见已停止会话。Claude Code 自己保存着此前的会话（最后几条消息可能缺失）。该会话在 AgentKib 中保持只读，请在 Claude Code 终端里继续。若反复出现，请更新 AgentKib 并反馈 Claude Code 的版本。",
-    permission_denied: "此浏览器尚未获得对应权限，请在桌面授权。",
+    permission_denied: "此浏览器尚未获得对应权限，请在这台电脑上的 AgentKib 授权。",
   },
   "zh-TW": {
     "unsupported-model":
-      "目前模型不在主機已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
+      "目前模型不在這台電腦已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
     "native-model-unconfirmed":
       "無法確認來源對話的模型，本次分支尚未建立。請先在 Codex 中明確設定來源對話的模型和思考強度，再重新整理後重試。",
     "native-effort-unconfirmed":
@@ -453,13 +454,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-session-directory-missing":
       "對話目錄已不存在，目前僅可查看。請還原該目錄後重新整理再試。",
     "codex-session-directory-not-directory":
-      "對話路徑不是目錄，目前僅可查看。請在主機上檢查該路徑。",
+      "對話路徑不是目錄，目前僅可查看。請在這台電腦上檢查該路徑。",
     "codex-session-directory-unavailable":
-      "無法讀取對話目錄，目前僅可查看。請檢查主機上的目錄權限後重試。",
+      "無法讀取對話目錄，目前僅可查看。請檢查這台電腦上的目錄權限後重試。",
     "codex-session-directory-unverified":
       "無法確認這段對話自己的目錄，目前僅可查看。請在 Codex 中檢查對話後重新整理再試。",
     "codex-context-outside-workspace":
-      "對話目錄不在已登記的工作區內，目前僅可查看。請在主機上檢查工作區與對話目錄。",
+      "對話目錄不在已登記的工作區內，目前僅可查看。請在這台電腦上檢查工作區與對話目錄。",
     "codex-workspace-mismatch":
       "Codex 傳回的工作目錄與對話目錄不一致，已停止本次操作。請檢查對話狀態後重試。",
     "codex-sandbox-mismatch":
@@ -473,11 +474,11 @@ const reasons: Record<Locale, Record<string, string>> = {
       "無法確認這段對話是否正在 Claude Code 中使用，目前僅可查看。請重新整理再試。",
     "claude-cli-unavailable": "找不到 Claude Code，安裝後可以在這裡繼續",
     "codex-protocol-incompatible": "目前 Codex 原生協定與對話快照不相容，請更新客戶端後重試。",
-    "codex-connection-failed": "暫時無法連線至 Codex，請檢查主機狀態後重試。",
+    "codex-connection-failed": "暫時無法連線至 Codex，請檢查這台電腦狀態後重試。",
     "codex-owner-changed": "Codex 的執行狀態已變更，正在重新檢查。",
     "session-compacting": "上下文正在壓縮，請等待上下文壓縮完成後繼續。",
     "settings-not-applied": "設定尚未由 Codex 確認，請先傳送一回合套用設定，再開始或恢復目標。",
-    "collaboration-modes-unavailable": "主機尚未提供已驗證的 Codex 協作模式清單。",
+    "collaboration-modes-unavailable": "這台電腦尚未提供已驗證的 Codex 協作模式清單。",
     "session-busy": "此操作需要對話閒置，請等待目前輪次結束。",
     "session-requires-running-turn": "此操作僅在輪次執行中可用。",
     "no-active-turn": "目前沒有可停止的輪次。",
@@ -500,11 +501,11 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib 發起的這一輪結束後，Claude 仍在繼續工作（例如背景子代理完成）。AgentKib 只追蹤自己發起的回合，所以 AgentKib 停止了對話，以保持此處顯示與已儲存的對話一致。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。",
     "claude-protocol-violation":
       "AgentKib 無法解析 Claude Code 的輸出，為安全起見已停止對話。Claude Code 自己保存著先前的對話（最後幾則訊息可能缺失）。該對話在 AgentKib 中保持唯讀，請在 Claude Code 終端機裡繼續。若反覆出現，請更新 AgentKib 並回報 Claude Code 的版本。",
-    permission_denied: "此瀏覽器尚未取得對應權限，請在桌面授權。",
+    permission_denied: "此瀏覽器尚未取得對應權限，請在這台電腦上的 AgentKib 授權。",
   },
   "en-US": {
     "unsupported-model":
-      "The current model is not in the host's verified model list. This message was not sent. Change the next-turn model before sending again.",
+      "The current model is not in the model list verified on this computer. This message was not sent. Change the next-turn model before sending again.",
     "native-model-unconfirmed":
       "The source session's model could not be confirmed. No branch was created. Set the source session's model and reasoning effort in Codex, then refresh to retry.",
     "native-effort-unconfirmed":
@@ -516,13 +517,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-session-directory-missing":
       "The session directory no longer exists. This session is view only. Restore the directory, then refresh to retry.",
     "codex-session-directory-not-directory":
-      "The session path is not a directory. This session is view only. Check that path on the host.",
+      "The session path is not a directory. This session is view only. Check that path on this computer.",
     "codex-session-directory-unavailable":
-      "The session directory could not be read. This session is view only. Check its permissions on the host, then retry.",
+      "The session directory could not be read. This session is view only. Check its permissions on this computer, then retry.",
     "codex-session-directory-unverified":
       "The session's own directory could not be verified. This session is view only. Check the session in Codex, then refresh to retry.",
     "codex-context-outside-workspace":
-      "The session directory is outside the registered workspace. This session is view only. Check the workspace and session directory on the host.",
+      "The session directory is outside the registered workspace. This session is view only. Check the workspace and session directory on this computer.",
     "codex-workspace-mismatch":
       "Codex returned a working directory that differs from the session directory. The operation was stopped. Check the session state, then retry.",
     "codex-sandbox-mismatch":
@@ -537,14 +538,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     "claude-cli-unavailable": "Claude Code was not found. Install it to continue here.",
     "codex-protocol-incompatible":
       "The Codex native protocol or session snapshot is incompatible. Update the client and retry.",
-    "codex-connection-failed": "Codex could not be reached. Check the host and retry.",
+    "codex-connection-failed": "Codex could not be reached. Check this computer and retry.",
     "codex-owner-changed": "The Codex execution state changed. Checking it again.",
     "session-compacting":
       "Context is compacting. Wait for context compaction to finish before continuing.",
     "settings-not-applied":
       "Codex has not confirmed these settings. Send a turn to apply them before starting or resuming the goal.",
     "collaboration-modes-unavailable":
-      "The host has not provided a verified Codex collaboration mode list.",
+      "The computer has not provided a verified Codex collaboration mode list.",
     "session-busy": "This operation requires an idle session. Wait for the current turn to finish.",
     "session-requires-running-turn": "This operation is only available while a turn is running.",
     "no-active-turn": "There is no active turn to stop.",
@@ -572,11 +573,12 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Claude kept working after the turn AgentKib started had ended (for example a background sub-agent finished). AgentKib only follows turns it starts, so AgentKib stopped the session to keep this view consistent with the saved session. This session is read-only in AgentKib; continue it in the Claude Code terminal.",
     "claude-protocol-violation":
       "AgentKib could not follow Claude Code's output and stopped the session to stay safe. Claude Code keeps the session up to that point (the last messages may be missing). This session is read-only in AgentKib; continue it in the Claude Code terminal. If this keeps happening, update AgentKib and report the Claude Code version.",
-    permission_denied: "This browser needs the corresponding desktop permission.",
+    permission_denied:
+      "This browser needs the corresponding permission. Grant it in AgentKib on this computer.",
   },
   "ja-JP": {
     "unsupported-model":
-      "現在のモデルはホストで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
+      "現在のモデルはこのコンピューターで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
     "native-model-unconfirmed":
       "元の会話のモデルを確認できないため、分岐は作成されていません。Codex で元の会話のモデルと思考強度を明示してから、再読み込みしてお試しください。",
     "native-effort-unconfirmed":
@@ -588,13 +590,13 @@ const reasons: Record<Locale, Record<string, string>> = {
     "codex-session-directory-missing":
       "会話のディレクトリが存在しないため、閲覧のみです。ディレクトリを復元してから再読み込みしてください。",
     "codex-session-directory-not-directory":
-      "会話のパスがディレクトリではないため、閲覧のみです。ホスト上の該当パスを確認してください。",
+      "会話のパスがディレクトリではないため、閲覧のみです。このコンピューター上の該当パスを確認してください。",
     "codex-session-directory-unavailable":
-      "会話のディレクトリを読み取れないため、閲覧のみです。ホスト上のアクセス権を確認してから再試行してください。",
+      "会話のディレクトリを読み取れないため、閲覧のみです。このコンピューター上のアクセス権を確認してから再試行してください。",
     "codex-session-directory-unverified":
       "この会話自体のディレクトリを確認できないため、閲覧のみです。Codex で会話を確認してから再読み込みしてください。",
     "codex-context-outside-workspace":
-      "会話のディレクトリが登録済みワークスペースの外にあるため、閲覧のみです。ホスト上のワークスペースと会話のディレクトリを確認してください。",
+      "会話のディレクトリが登録済みワークスペースの外にあるため、閲覧のみです。このコンピューター上のワークスペースと会話のディレクトリを確認してください。",
     "codex-workspace-mismatch":
       "Codex が返した作業ディレクトリが会話のディレクトリと一致しないため、操作を停止しました。会話の状態を確認してから再試行してください。",
     "codex-sandbox-mismatch":
@@ -610,13 +612,14 @@ const reasons: Record<Locale, Record<string, string>> = {
       "Claude Code が見つかりません。インストールすると、ここで続けられます。",
     "codex-protocol-incompatible":
       "Codex のネイティブプロトコルまたは会話スナップショットに互換性がありません。更新後に再試行してください。",
-    "codex-connection-failed": "Codex に接続できません。ホストの状態を確認して再試行してください。",
+    "codex-connection-failed":
+      "Codex に接続できません。このコンピューターの状態を確認して再試行してください。",
     "codex-owner-changed": "Codex の実行状態が変わりました。再確認しています。",
     "session-compacting": "コンテキストを圧縮中です。圧縮が完了するまでお待ちください。",
     "settings-not-applied":
       "設定は Codex で未確認です。ターンを送信して反映した後、目標を開始または再開してください。",
     "collaboration-modes-unavailable":
-      "ホストは検証済みの Codex 協調モード一覧を提供していません。",
+      "このコンピューターは検証済みの Codex 協調モード一覧を提供していません。",
     "session-busy": "この操作は待機中に利用できます。現在のターンの終了をお待ちください。",
     "session-requires-running-turn": "この操作はターンの実行中のみ利用できます。",
     "no-active-turn": "停止できるターンはありません。",
@@ -643,7 +646,8 @@ const reasons: Record<Locale, Record<string, string>> = {
       "AgentKib が開始したターンが終わった後も Claude が作業を続けました（例: バックグラウンドのサブエージェントの完了）。AgentKib は自分で開始したターンだけを追うため、保存済みの会話と表示を一致させるために AgentKib が会話を停止しました。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。",
     "claude-protocol-violation":
       "AgentKib は Claude Code の出力を解釈できなかったため、安全のため会話を停止しました。Claude Code はそれまでの会話を保存しています（最後の数件は欠けている可能性があります）。この会話は AgentKib では読み取り専用です。続きは Claude Code のターミナルで行ってください。繰り返し発生する場合は、AgentKib を更新し、Claude Code のバージョンを報告してください。",
-    permission_denied: "このブラウザーにはデスクトップで対応する権限を付与する必要があります。",
+    permission_denied:
+      "このブラウザーには対応する権限が必要です。このコンピューター上の AgentKib で権限を付与してください。",
   },
 };
 const claudeStopCodes = [
@@ -651,18 +655,22 @@ const claudeStopCodes = [
   "claude-unrequested-turn",
   "claude-protocol-violation",
 ];
-export function codexReason(locale: Locale, reason?: string): { text: string; technical?: string } {
+export function codexReason(
+  locale: Locale,
+  reason?: string,
+  surface: SessionSurface = "desktop",
+): { text: string; technical?: string } {
   const continuation = sessionContinuationCopy(locale);
   if (reason === "codex-owner-busy") return { text: continuation.busy("Codex") };
   if (reason === "codex-cli-version-too-old") return { text: continuation.codexVersionTooOld };
-  const claudeReason = claudeConnectionReason(locale, reason);
+  const claudeReason = claudeConnectionReason(locale, reason, surface);
   if (claudeReason) return { text: claudeReason };
   if (
     reason === "unverified-installation" ||
     reason === "open-in-original-client" ||
     reason === "handoff-required"
   ) {
-    return { text: localizedUnavailableReasonText(reason, locale) };
+    return { text: surfaceText(localizedUnavailableReasonText(reason, locale), surface, locale) };
   }
   // A stopped Claude session stores `<code>: <detail>`; the code is explained, the detail is
   // shown as the technical text.
@@ -670,11 +678,18 @@ export function codexReason(locale: Locale, reason?: string): { text: string; te
   const code = reason && separator > 0 ? reason.slice(0, separator) : undefined;
   if (reason && code && claudeStopCodes.includes(code))
     return {
-      text: reasons[locale][code]!,
+      text: surfaceText(reasons[locale][code]!, surface, locale),
       ...(reason.length > separator + 2 ? { technical: reason.slice(separator + 2) } : {}),
     };
   const text = reason ? reasons[locale][reason] : undefined;
   return text
-    ? { text }
-    : { text: codexCopy[locale].unavailable, ...(reason ? { technical: reason } : {}) };
+    ? { text: surfaceText(text, surface, locale) }
+    : {
+        text: codexCopyForSurface(locale, surface).unavailable,
+        ...(reason ? { technical: reason } : {}),
+      };
+}
+
+export function codexCopyForSurface(locale: Locale, surface: SessionSurface = "desktop") {
+  return surfaceCopy(codexCopy[locale], surface, locale);
 }

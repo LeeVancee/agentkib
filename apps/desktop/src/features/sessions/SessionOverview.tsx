@@ -126,7 +126,9 @@ export function SessionOverview() {
                 <strong className="font-semibold" title={item.path}>
                   {item.name}
                 </strong>
-                {hub.errors[item.id] && <p className="text-destructive">{hub.errors[item.id]}</p>}
+                {hub.errors[item.id] && (
+                  <p className="text-destructive-text">{hub.errors[item.id]}</p>
+                )}
                 {hub.statuses
                   .filter((status) => status.workspace_id === item.id)
                   .map((status) => (
@@ -142,7 +144,7 @@ export function SessionOverview() {
                           : tr("sessions.neverIndexed")}
                       </small>
                       {(status.error_key || status.error_detail) && (
-                        <p className="text-destructive">
+                        <p className="text-destructive-text">
                           {status.error_key
                             ? tr(status.error_key)
                             : localizeMessage(status.error_detail ?? "")}

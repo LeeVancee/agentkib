@@ -86,7 +86,7 @@ export function NativeImportRecoveryPanel({
       <strong>{tr("handoff.recovery.title")}</strong>
       <p className="text-xs text-muted-foreground">{tr("handoff.recovery.detail")}</p>
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {error}
         </p>
       )}

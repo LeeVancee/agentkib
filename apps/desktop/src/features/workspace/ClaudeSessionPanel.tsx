@@ -943,10 +943,10 @@ export function ClaudeSessionPanel({
         <DialogTitle>Claude Code</DialogTitle>
         <p className="text-xs text-muted-foreground">
           {text(
-            "沿用主机 CLI 的模型和工具权限。离开后会等当前轮次结束，再自动结束后台进程。",
-            "Uses the host CLI model and tool permissions. After you leave, the background process ends when the current turn finishes.",
-            "沿用主機 CLI 的模型與工具權限。離開後會等目前輪次結束，再自動結束背景程序。",
-            "ホスト CLI のモデルとツール権限を使用します。離れた後は、現在のターンの完了を待ってバックグラウンドプロセスを終了します。",
+            "沿用这台电脑上 CLI 的模型和工具权限。离开后会等当前轮次结束，再自动结束后台进程。",
+            "Uses the CLI model and tool permissions on this computer. After you leave, the background process ends when the current turn finishes.",
+            "沿用這台電腦上 CLI 的模型與工具權限。離開後會等目前輪次結束，再自動結束背景程序。",
+            "このコンピューターの CLI のモデルとツール権限を使用します。離れた後は、現在のターンの完了を待ってバックグラウンドプロセスを終了します。",
           )}
         </p>
         <div className="flex flex-wrap gap-2">
@@ -1051,7 +1051,7 @@ export function ClaudeSessionPanel({
           </Select>
         </label>
         {errorCopy && (
-          <div role="alert" className="text-destructive break-words">
+          <div role="alert" className="text-destructive-text break-words">
             <p>{errorCopy.text}</p>
             <TechnicalDetails label={detailsLabel} value={errorCopy.technical} />
           </div>

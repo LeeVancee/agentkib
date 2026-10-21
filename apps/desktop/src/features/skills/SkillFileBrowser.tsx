@@ -232,7 +232,7 @@ export function SkillFileBrowser({
           </div>
         )}
         {error !== undefined && (
-          <p role="alert" className="break-words text-sm text-destructive">
+          <p role="alert" className="break-words text-sm text-destructive-text">
             {localizeMessage(error)}
           </p>
         )}

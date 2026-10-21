@@ -141,7 +141,7 @@ export function SkillVersionDialog({
             {tr("common.loading")}
           </p>
         ) : current?.error ? (
-          <div role="alert" className="grid gap-2 text-sm text-destructive">
+          <div role="alert" className="grid gap-2 text-sm text-destructive-text">
             <p>{localizeMessage(current.error)}</p>
             <Button
               variant="outline"
@@ -202,7 +202,7 @@ export function SkillVersionDialog({
           </div>
         )}
         {error !== undefined && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-destructive-text">
             {localizeMessage(error)}
           </p>
         )}

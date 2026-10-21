@@ -219,7 +219,7 @@ export function SettingsNotice({
         tone === "default" && "border-border/60 bg-muted/20 text-muted-foreground",
         tone === "warning" &&
           "border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-300",
-        tone === "error" && "border-destructive/30 bg-destructive/5 text-destructive",
+        tone === "error" && "border-destructive/30 bg-destructive/5 text-destructive-text",
         className,
       )}
       {...props}
@@ -249,7 +249,7 @@ export function SettingsStatus({
         tone === "neutral" && "text-muted-foreground",
         tone === "success" && "text-emerald-600 dark:text-emerald-400",
         tone === "warning" && "text-amber-700 dark:text-amber-300",
-        tone === "error" && "text-destructive",
+        tone === "error" && "text-destructive-text",
         className,
       )}
     >

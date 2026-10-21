@@ -352,13 +352,13 @@ describe("remote connections UI", () => {
       ).toBe(false),
     );
     fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.manual") }));
-    fireEvent.change(screen.getByLabelText("Host IPv4 address and port"), {
+    fireEvent.change(screen.getByLabelText("Computer IPv4 address and port"), {
       target: { value: "192.168.1.5:42987" },
     });
     fireEvent.change(screen.getByLabelText("One-time pairing code"), {
       target: { value: "12345678" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Pair a host" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pair a computer" }));
     await waitFor(() =>
       expect(run).toHaveBeenCalledWith({
         operation: "pair",
@@ -403,7 +403,7 @@ it("keeps an enabled LAN listener visible while its settings are collapsed", asy
   expect(await screen.findByText("LAN HTTP access is running")).toBeTruthy();
   expect(screen.getAllByText("LAN direct connection is not encrypted")).toHaveLength(1);
   expect(screen.getByText(/capture the access token/)).toBeTruthy();
-  const summary = screen.getByRole("button", { name: "LAN access (advanced)" });
+  const summary = screen.getByRole("button", { name: "LAN direct connection" });
   expect(summary.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(screen.getByRole("button", { name: "Manage LAN access" }));
   expect(summary.getAttribute("aria-expanded")).toBe("true");

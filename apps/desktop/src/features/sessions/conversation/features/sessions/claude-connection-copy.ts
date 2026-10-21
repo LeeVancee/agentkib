@@ -1,3 +1,4 @@
+import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
 type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP";
 
 const zh = {
@@ -9,18 +10,18 @@ const zh = {
   managedUnconfirmed:
     "上次操作及后台进程状态尚未确认，暂时无法在 AgentKib 中继续。你可以回到 Claude Code 继续这条会话；不会自动重发消息。",
   connectionLimit: "终端连接数量已达上限。请先断开不再使用的连接，再重试。",
-  connectionRejected: "连接请求被拒绝。请检查终端与主机状态后重新连接。",
+  connectionRejected: "连接请求被拒绝。请检查终端与这台电脑状态后重新连接。",
 
   handoff: "可以继续",
   handoffInfo: "直接输入即可继续这条会话。",
   released: "后台进程已结束",
   releasedInfo: "后台进程已结束，下次发送时会自动继续",
   lostTitle: "终端连接已断开",
-  hostDisconnected: "与主机的连接已中断",
-  hostDisconnectedInfo: "暂时无法核实终端状态。请检查与主机的连接，恢复后再操作。",
+  hostDisconnected: "与这台电脑的连接已中断",
+  hostDisconnectedInfo: "暂时无法核实终端状态。请检查与这台电脑的连接，恢复后再操作。",
   manage: "管理终端连接",
-  platformUnsupported: "连接终端仅支持 macOS。请在 macOS 主机上操作。",
-  bridgeUnavailable: "终端桥接服务无法启动。请检查主机日志并重新启动 AgentKib 后重试。",
+  platformUnsupported: "连接终端仅支持 macOS。请在 macOS 电脑上操作。",
+  bridgeUnavailable: "终端连接服务无法启动。请检查这台电脑日志并重新启动 AgentKib 后重试。",
   requiredVersion: "需要 Claude Code",
   copyInstall: "复制安装命令",
   copyCommand: "复制连接命令",
@@ -40,7 +41,8 @@ const zh = {
   history: "仅可查看",
   notConnected: "未连接",
   info: "审批和提问在终端中处理。关闭 AgentKib 不会停止终端。",
-  disconnected: "尚未连接终端。请在桌面打开连接指引，并在目标 Claude Code 会话中连接。",
+  disconnected:
+    "尚未连接终端。请在这台电脑上的 AgentKib 打开连接指引，并在目标 Claude Code 会话中连接。",
   lost: "终端连接已断开，正在重新检查会话状态。",
   approval: "正在等待工具审批，请在终端处理。",
   question: "正在等待问题回答，请在终端处理。",
@@ -49,15 +51,15 @@ const zh = {
   permissionUnconfirmed: "终端曾请求工具审批，当前授权或执行状态尚未核实，请查看终端。",
   attachments: "终端连接尚未验证附件输入，请在终端添加附件。",
   sendUnverified: "消息发送和停止请在终端处理，AgentKib 会同步显示。",
-  generate: "生成一次性连接码",
+  generate: "生成连接码",
   disconnect: "断开终端连接",
   refresh: "检查连接",
   loading: "正在检查连接…",
-  failed: "无法完成连接操作，请检查主机状态后重试。",
+  failed: "无法完成连接操作，请检查这台电脑状态后重试。",
   expires: "连接码有效至",
   expired: "连接码已过期，请重新生成。",
   instructions: "先按以下指引安装插件，再在目标终端执行连接命令；连接本身不会发送消息。",
-  localOnly: "插件安装和连接管理仅在本机桌面提供。",
+  localOnly: "插件安装和连接管理仅在这台电脑上的 AgentKib 提供。",
 };
 type Copy = { [K in keyof typeof zh]: string };
 export const claudeConnectionCopy: Record<Locale, Copy> = {
@@ -71,18 +73,18 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     managedUnconfirmed:
       "上次操作與背景程序狀態尚未確認，暫時無法在 AgentKib 中繼續。你可以回到 Claude Code 繼續這段對話；不會自動重送訊息。",
     connectionLimit: "終端連線數量已達上限。請先中斷不再使用的連線，再重試。",
-    connectionRejected: "連線要求遭拒。請檢查終端與主機狀態後重新連接。",
+    connectionRejected: "連線要求遭拒。請檢查終端與這台電腦狀態後重新連接。",
 
     handoff: "可以繼續",
     handoffInfo: "直接輸入即可繼續這段對話。",
     released: "背景程序已結束",
     releasedInfo: "背景程序已結束，下次傳送訊息時會自動繼續",
     lostTitle: "終端連線已中斷",
-    hostDisconnected: "與主機的連線已中斷",
-    hostDisconnectedInfo: "暫時無法核實終端狀態。請檢查與主機的連線，恢復後再操作。",
+    hostDisconnected: "與這台電腦的連線已中斷",
+    hostDisconnectedInfo: "暫時無法核實終端狀態。請檢查與這台電腦的連線，恢復後再操作。",
     manage: "管理終端連線",
-    platformUnsupported: "連接終端僅支援 macOS。請在 macOS 主機上操作。",
-    bridgeUnavailable: "終端橋接服務無法啟動。請檢查主機記錄並重新啟動 AgentKib 後重試。",
+    platformUnsupported: "連接終端僅支援 macOS。請在 macOS 電腦上操作。",
+    bridgeUnavailable: "終端連線服務無法啟動。請檢查這台電腦記錄並重新啟動 AgentKib 後重試。",
     requiredVersion: "需要 Claude Code",
     copyInstall: "複製安裝命令",
     copyCommand: "複製連線命令",
@@ -102,7 +104,8 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     history: "僅可查看",
     notConnected: "未連線",
     info: "核准和提問在終端中處理。關閉 AgentKib 不會停止終端。",
-    disconnected: "尚未連接終端。請在桌面開啟連線指引，並在目標 Claude Code 對話中連接。",
+    disconnected:
+      "尚未連接終端。請在這台電腦上的 AgentKib 開啟連線指引，並在目標 Claude Code 對話中連接。",
     lost: "終端連線已中斷，正在重新檢查對話狀態。",
     approval: "正在等待工具審批，請在終端處理。",
     question: "正在等待問題回答，請在終端處理。",
@@ -111,15 +114,15 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     permissionUnconfirmed: "終端曾要求工具審批，目前授權或執行狀態尚未核實，請查看終端。",
     attachments: "終端連線尚未驗證附件輸入，請在終端新增附件。",
     sendUnverified: "訊息傳送和停止請在終端處理，AgentKib 會同步顯示。",
-    generate: "產生一次性連線碼",
+    generate: "產生連線碼",
     disconnect: "中斷終端連線",
     refresh: "檢查連線",
     loading: "正在檢查連線…",
-    failed: "無法完成連線操作，請檢查主機狀態後重試。",
+    failed: "無法完成連線操作，請檢查這台電腦狀態後重試。",
     expires: "連線碼有效至",
     expired: "連線碼已過期，請重新產生。",
     instructions: "先依照以下指引安裝外掛，再於目標終端執行連線命令；連線本身不會傳送訊息。",
-    localOnly: "外掛安裝與連線管理僅在本機桌面提供。",
+    localOnly: "外掛安裝與連線管理僅在這台電腦上的 AgentKib 提供。",
   },
   "en-US": {
     disconnectBeforeCode:
@@ -137,7 +140,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     connectionLimit:
       "The terminal connection limit was reached. Disconnect unused connections and retry.",
     connectionRejected:
-      "The connection request was rejected. Check the terminal and host, then reconnect.",
+      "The connection request was rejected. Check the terminal and computer, then reconnect.",
 
     handoff: "Ready to continue",
     handoffInfo: "Type a message to continue this session.",
@@ -145,13 +148,13 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     releasedInfo:
       "The background process ended. It will resume automatically when you send your next message.",
     lostTitle: "Terminal disconnected",
-    hostDisconnected: "Host connection lost",
+    hostDisconnected: "Computer connection lost",
     hostDisconnectedInfo:
-      "The terminal's state cannot be checked. Restore the connection to the host before continuing.",
+      "The terminal's state cannot be checked. Restore the connection to this computer before continuing.",
     manage: "Manage terminal connection",
-    platformUnsupported: "Connecting the terminal requires macOS. Use a macOS host.",
+    platformUnsupported: "Connecting the terminal requires macOS. Use a macOS computer.",
     bridgeUnavailable:
-      "The terminal bridge could not start. Check the host logs and restart AgentKib before retrying.",
+      "The terminal bridge could not start. Check the logs on this computer and restart AgentKib before retrying.",
     requiredVersion: "Requires Claude Code",
     copyInstall: "Copy install command",
     copyCommand: "Copy connection command",
@@ -172,7 +175,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     notConnected: "Not connected",
     info: "Handle approvals and questions in the terminal. Closing AgentKib does not stop the terminal.",
     disconnected:
-      "The terminal is not connected. Open the desktop connection guide and connect from the target Claude Code session.",
+      "The terminal is not connected. Open the connection guide in AgentKib on this computer and connect from the target Claude Code session.",
     lost: "The terminal disconnected. Rechecking the session state.",
     approval: "Waiting for tool approval. Please handle it in the terminal.",
     question: "Waiting for an answer. Please respond in the terminal.",
@@ -185,17 +188,17 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
       "Attachment input is not verified for terminal connections. Add attachments in the terminal.",
     sendUnverified:
       "Send messages and stop turns in the terminal. AgentKib keeps the session in sync.",
-    generate: "Generate one-time connection code",
+    generate: "Generate connection code",
     disconnect: "Disconnect terminal",
     refresh: "Check connection",
     loading: "Checking connection…",
-    failed: "The connection operation failed. Check the host state and try again.",
+    failed: "The connection operation failed. Check the state of this computer and try again.",
     expires: "Connection code expires at",
     expired: "The connection code expired. Generate a new one.",
     instructions:
       "Install the plugin using the guide below, then run its connection command in the target terminal. Connecting does not send a message.",
     localOnly:
-      "Plugin installation and connection management are available on the local desktop only.",
+      "Plugin installation and connection management are only available in AgentKib on this computer.",
   },
   "ja-JP": {
     disconnectBeforeCode:
@@ -213,7 +216,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     connectionLimit:
       "ターミナルの接続数が上限に達しました。未使用の接続を切断して再試行してください。",
     connectionRejected:
-      "接続要求が拒否されました。ターミナルとホストを確認して再接続してください。",
+      "接続要求が拒否されました。ターミナルとこのコンピューターを確認して再接続してください。",
 
     handoff: "続行可能",
     handoffInfo: "メッセージを入力すると、この会話を続けられます。",
@@ -221,14 +224,14 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     releasedInfo:
       "バックグラウンドプロセスを終了しました。次のメッセージ送信時に自動で続行します。",
     lostTitle: "ターミナルとの接続が切断",
-    hostDisconnected: "ホストとの接続が切れました",
+    hostDisconnected: "このコンピューターとの接続が切れました",
     hostDisconnectedInfo:
-      "ターミナルの状態を確認できません。ホストとの接続を復旧してから操作してください。",
+      "ターミナルの状態を確認できません。このコンピューターとの接続を復旧してから操作してください。",
     manage: "ターミナル接続を管理",
     platformUnsupported:
-      "ターミナルへの接続は macOS のみ対応です。macOS ホストで操作してください。",
+      "ターミナルへの接続は macOS のみ対応です。macOS のコンピューターで操作してください。",
     bridgeUnavailable:
-      "ターミナルブリッジを起動できません。ホストのログを確認し、AgentKib を再起動して再試行してください。",
+      "ターミナルブリッジを起動できません。このコンピューターのログを確認し、AgentKib を再起動して再試行してください。",
     requiredVersion: "必要な Claude Code",
     copyInstall: "インストールコマンドをコピー",
     copyCommand: "接続コマンドをコピー",
@@ -249,7 +252,7 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     notConnected: "未接続",
     info: "承認と質問はターミナルで対応してください。AgentKib を閉じてもターミナルは停止しません。",
     disconnected:
-      "ターミナルに未接続です。デスクトップの接続ガイドを開き、対象の Claude Code 会話から接続してください。",
+      "ターミナルに未接続です。このコンピューター上の AgentKib で接続ガイドを開き、対象の Claude Code 会話から接続してください。",
     lost: "ターミナルとの接続が切れました。会話の状態を再確認しています。",
     approval: "ツールの承認待ちです。ターミナルで処理してください。",
     question: "回答待ちです。ターミナルで回答してください。",
@@ -261,21 +264,26 @@ export const claudeConnectionCopy: Record<Locale, Copy> = {
     attachments: "ターミナル接続の添付入力は未検証です。ターミナルで追加してください。",
     sendUnverified:
       "メッセージの送信とターンの停止はターミナルで行ってください。AgentKib に同期して表示されます。",
-    generate: "一回限りの接続コードを生成",
+    generate: "接続コードを生成",
     disconnect: "ターミナルとの接続を解除",
     refresh: "接続を確認",
     loading: "接続を確認中…",
-    failed: "接続操作に失敗しました。ホストの状態を確認して再試行してください。",
+    failed: "接続操作に失敗しました。このコンピューターの状態を確認して再試行してください。",
     expires: "接続コードの有効期限",
     expired: "接続コードの期限が切れました。再生成してください。",
     instructions:
       "以下のガイドでプラグインをインストールし、対象ターミナルで接続コマンドを実行してください。接続自体はメッセージを送信しません。",
-    localOnly: "プラグインのインストールと接続管理はローカルのデスクトップでのみ利用できます。",
+    localOnly:
+      "プラグインのインストールと接続管理は、このコンピューター上の AgentKib でのみ利用できます。",
   },
 };
 
-export function claudeConnectionReason(locale: Locale, reason?: string) {
-  const copy = claudeConnectionCopy[locale];
+export function claudeConnectionReason(
+  locale: Locale,
+  reason?: string,
+  surface: SessionSurface = "desktop",
+) {
+  const copy = claudeConnectionCopyForSurface(locale, surface);
   switch (reason) {
     case "expired-bridge-challenge":
       return copy.expired;
@@ -317,4 +325,11 @@ export function claudeConnectionReason(locale: Locale, reason?: string) {
     default:
       return undefined;
   }
+}
+
+export function claudeConnectionCopyForSurface(
+  locale: Locale,
+  surface: SessionSurface = "desktop",
+) {
+  return surfaceCopy(claudeConnectionCopy[locale], surface, locale);
 }

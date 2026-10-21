@@ -18,7 +18,7 @@ export function AppErrorFallback({ error, reset }: ErrorComponentProps) {
     <div className="grid min-h-full place-items-center p-6">
       <Card className="w-full max-w-xl border-destructive/25 bg-card shadow-sm">
         <CardContent className="grid justify-items-center gap-5 px-6 py-10 text-center sm:px-10">
-          <span className="grid size-14 place-items-center rounded-2xl bg-destructive/10 text-destructive">
+          <span className="grid size-14 place-items-center rounded-2xl bg-destructive/10 text-destructive-icon">
             <AlertTriangle size={27} />
           </span>
           <div className="grid gap-2">

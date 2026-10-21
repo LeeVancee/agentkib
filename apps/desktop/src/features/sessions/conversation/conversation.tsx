@@ -221,7 +221,7 @@ function EmbeddedShell() {
         />
         <PendingCenter compact />
         {session.error && (
-          <p role="alert" className="px-4 py-2 text-sm text-destructive">
+          <p role="alert" className="px-4 py-2 text-sm text-destructive-text">
             {session.incompatible ? session.t.lanIncompatible : session.t.error}{" "}
             <Button variant="outline" onClick={() => void session.refresh(true)}>
               {session.t.retry}

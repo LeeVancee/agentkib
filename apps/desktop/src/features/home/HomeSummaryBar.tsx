@@ -27,7 +27,7 @@ export function HomeSummaryBar({
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border bg-muted/55 px-5 py-3 text-sm">
         <Button
           variant="bare"
-          className="h-auto gap-2 rounded-md px-2 py-1 font-semibold text-primary hover:bg-primary/10 hover:text-primary"
+          className="h-auto gap-2 rounded-md px-2 py-1 font-semibold text-primary-text hover:bg-primary/10 hover:text-primary-text"
           onClick={onShowPending}
           disabled={issuesPending}
           aria-label={issuesPending ? tr("common.loading") : undefined}
@@ -46,7 +46,7 @@ export function HomeSummaryBar({
             key={label}
             variant="bare"
             size="content"
-            className="h-auto gap-1.5 rounded-md px-2 py-1 text-sm hover:bg-primary/10 hover:text-primary"
+            className="h-auto gap-1.5 rounded-md px-2 py-1 text-sm hover:bg-primary/10 hover:text-primary-text"
             onClick={onClick}
           >
             <strong className="tabular-nums">{pending ? "…" : value}</strong>

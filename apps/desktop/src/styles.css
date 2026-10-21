@@ -25,6 +25,9 @@
   --color-border: var(--border);
   --color-border-subtle: var(--border-subtle);
   --color-destructive: var(--destructive);
+  --color-destructive-text: var(--destructive-text);
+  --color-destructive-icon: var(--destructive-icon);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -33,6 +36,8 @@
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
+  --color-primary-text: var(--primary-text);
+  --color-tab-inactive-foreground: var(--tab-inactive-foreground);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
@@ -59,6 +64,18 @@
   --panel-2: var(--secondary);
   --surface-hover: var(--muted);
   --border-strong: var(--input);
+  /* Text, solid controls and decorative icons have separate contrast budgets. */
+  --primary-text: var(--primary);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --activity-icon: var(--sidebar-accent-foreground);
+  --tab-inactive-foreground: color-mix(in srgb, var(--foreground) 60%, transparent);
+  --destructive-text: var(--destructive);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, transparent);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 10%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
   --accent-2: var(--primary);
   --accent-strong: color-mix(in oklch, var(--primary) 82%, black);
   --accent-soft: color-mix(in srgb, var(--primary) 7%, transparent);
@@ -123,10 +140,10 @@
   --secondary: #0e142b;
   --secondary-foreground: #ffffff;
   --muted: #ffffff;
-  --muted-foreground: #0e142b;
+  --muted-foreground: #626a7e;
   --accent: #ffffff;
-  --accent-foreground: #2e67ff;
-  --destructive: #ff6c35;
+  --accent-foreground: var(--primary-text);
+  --destructive: #bd3a48;
   --destructive-foreground: #ffffff;
   --border: #e7e4e4;
   --border-subtle: color-mix(in oklch, var(--border) 56%, var(--background));
@@ -137,9 +154,17 @@
   --sidebar-primary: #2e67ff;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #ffffff;
-  --sidebar-accent-foreground: #2e67ff;
+  --sidebar-accent-foreground: var(--primary-text);
   --sidebar-border: #ffffff;
   --sidebar-ring: #2e6aff;
+  --primary-text: #285ae0;
+  --primary-hover: var(--primary);
+  --primary-hover-strong: var(--primary);
+  --primary-selected-bg: #ebf0ff;
+  --destructive-text: var(--destructive);
+  --destructive-icon: #ff6c35;
+  --destructive-soft: color-mix(in srgb, var(--destructive) 5%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 10%, transparent);
 }
 
 :root:not([data-theme]),
@@ -155,11 +180,11 @@
   --secondary: #ffffff;
   --secondary-foreground: #0e142b;
   --muted: #181818;
-  --muted-foreground: #7b7e8c;
+  --muted-foreground: color-mix(in srgb, #7b7e8c 92%, white);
   --accent: #000e39;
-  --accent-foreground: #2b65ff;
+  --accent-foreground: var(--primary-text);
   --destructive: #ff6c35;
-  --destructive-foreground: #ffffff;
+  --destructive-foreground: #000000;
   --border: #26272e;
   --border-subtle: color-mix(in oklch, var(--border) 64%, var(--background));
   --input: #162151;
@@ -169,9 +194,19 @@
   --sidebar-primary: #2e6aff;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #000e39;
-  --sidebar-accent-foreground: #2b65ff;
+  --sidebar-accent-foreground: var(--primary-text);
   --sidebar-border: #323e62;
   --sidebar-ring: #2e6aff;
+  --primary-text: color-mix(in srgb, var(--primary) 65%, white);
+  --tab-inactive-foreground: var(--muted-foreground);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: color-mix(in srgb, var(--destructive) 70%, white);
+  --destructive-icon: #ff6c35;
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, white);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 20%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 30%, transparent);
 }
 
 :root[data-theme="light"][data-accent-theme="minimal-neutral"] {
@@ -186,7 +221,7 @@
   --secondary: oklch(0.87 0 0);
   --secondary-foreground: oklch(0.145 0 0);
   --muted: oklch(0.95 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  --muted-foreground: #666666;
   --accent: oklch(0.95 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -203,6 +238,15 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --primary-text: var(--primary);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: color-mix(in srgb, var(--destructive) 60%, black);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, transparent);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 10%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
 }
 
 :root[data-theme="dark"][data-accent-theme="minimal-neutral"] {
@@ -221,7 +265,7 @@
   --accent: oklch(0.371 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
+  --destructive-foreground: #171717;
   --border: oklch(0.269 0 0);
   --border-subtle: color-mix(in oklch, var(--border) 64%, var(--background));
   --input: oklch(0.269 0 0);
@@ -234,9 +278,19 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(0.275 0 0);
   --sidebar-ring: oklch(0.439 0 0);
+  --primary-text: var(--primary);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: color-mix(in srgb, var(--destructive) 65%, white);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, white);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 20%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 30%, transparent);
 }
 
 :root[data-theme="light"][data-accent-theme="claude"] {
+  --tab-inactive-foreground: var(--muted-foreground);
   --background: oklch(0.9818 0.0054 95.0986);
   --foreground: oklch(0.3438 0.0269 95.7226);
   --card: oklch(0.9818 0.0054 95.0986);
@@ -244,11 +298,11 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.2671 0.0196 98.939);
   --primary: oklch(0.6171 0.1375 39.0427);
-  --primary-foreground: oklch(1 0 0);
+  --primary-foreground: #181818;
   --secondary: oklch(0.9245 0.0138 92.9892);
   --secondary-foreground: oklch(0.4334 0.0177 98.6048);
   --muted: oklch(0.9341 0.0153 90.239);
-  --muted-foreground: oklch(0.6059 0.0075 97.4233);
+  --muted-foreground: oklch(0.5 0.0075 97.4233);
   --accent: oklch(0.9245 0.0138 92.9892);
   --accent-foreground: oklch(0.2671 0.0196 98.939);
   --destructive: oklch(0.1908 0.002 106.5859);
@@ -259,11 +313,20 @@
   --sidebar: oklch(0.9663 0.008 98.8792);
   --sidebar-foreground: oklch(0.359 0.0051 106.6524);
   --sidebar-primary: oklch(0.6171 0.1375 39.0427);
-  --sidebar-primary-foreground: oklch(0.9881 0 0);
+  --sidebar-primary-foreground: #181818;
   --sidebar-accent: oklch(0.9245 0.0138 92.9892);
   --sidebar-accent-foreground: oklch(0.325 0 0);
   --sidebar-border: var(--border-subtle);
   --sidebar-ring: oklch(0.7731 0 0);
+  --primary-text: color-mix(in srgb, var(--primary) 75%, black);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: var(--destructive);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, transparent);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 10%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
 }
 
 :root[data-theme="dark"][data-accent-theme="claude"] {
@@ -274,7 +337,7 @@
   --popover: oklch(0.3085 0.0035 106.6039);
   --popover-foreground: oklch(0.9211 0.004 106.4781);
   --primary: oklch(0.6724 0.1308 38.7559);
-  --primary-foreground: oklch(1 0 0);
+  --primary-foreground: #181818;
   --secondary: oklch(0.9818 0.0054 95.0986);
   --secondary-foreground: oklch(0.3085 0.0035 106.6039);
   --muted: oklch(0.2213 0.0038 106.707);
@@ -294,9 +357,20 @@
   --sidebar-accent-foreground: oklch(0.8074 0.0142 93.0137);
   --sidebar-border: var(--border-subtle);
   --sidebar-ring: oklch(0.7731 0 0);
+  --primary-text: color-mix(in srgb, var(--primary) 70%, white);
+  --primary-hover: color-mix(in srgb, var(--primary) 90%, white);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: color-mix(in srgb, var(--destructive) 50%, white);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, white);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 20%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 30%, transparent);
+  --destructive-foreground: #181818;
 }
 
 :root[data-theme="light"][data-accent-theme="sakura"] {
+  --tab-inactive-foreground: var(--muted-foreground);
+  --activity-icon: #b33e5d;
   --background: #fff9f6;
   --foreground: #5c4b43;
   --card: #ffffff;
@@ -304,15 +378,15 @@
   --popover: #ffffff;
   --popover-foreground: #5c4b43;
   --primary: #ff7ea5;
-  --primary-foreground: #ffffff;
+  --primary-foreground: #1a1412;
   --secondary: #f3ebe6;
   --secondary-foreground: #5c4b43;
   --muted: #faf3f0;
-  --muted-foreground: #a18e84;
+  --muted-foreground: color-mix(in srgb, #a18e84 75%, black);
   --accent: #ffdbe4;
-  --accent-foreground: #b33e5d;
+  --accent-foreground: var(--primary-text);
   --destructive: #e5484d;
-  --destructive-foreground: #fdfcfd;
+  --destructive-foreground: #1a1412;
   --border: #ebe0da;
   --border-subtle: color-mix(in oklch, var(--border) 56%, var(--background));
   --input: #ebe0da;
@@ -320,11 +394,20 @@
   --sidebar: #fcf7f5;
   --sidebar-foreground: #5c4b43;
   --sidebar-primary: #ff7ea5;
-  --sidebar-primary-foreground: #ffffff;
+  --sidebar-primary-foreground: #1a1412;
   --sidebar-accent: #ffdbe4;
-  --sidebar-accent-foreground: #b33e5d;
+  --sidebar-accent-foreground: var(--primary-text);
   --sidebar-border: #f0e4de;
   --sidebar-ring: #ff7ea5;
+  --primary-text: color-mix(in srgb, var(--primary) 60%, black);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: color-mix(in srgb, var(--destructive) 60%, black);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, transparent);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 10%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
 }
 
 :root[data-theme="dark"][data-accent-theme="sakura"] {
@@ -343,7 +426,7 @@
   --accent: #3d252a;
   --accent-foreground: #ffb3c6;
   --destructive: #e5484d;
-  --destructive-foreground: #fdfcfd;
+  --destructive-foreground: #1a1412;
   --border: #332a26;
   --border-subtle: color-mix(in oklch, var(--border) 64%, var(--background));
   --input: #332a26;
@@ -356,9 +439,19 @@
   --sidebar-accent-foreground: #ffb3c6;
   --sidebar-border: #2d2421;
   --sidebar-ring: #ff7ea5;
+  --primary-text: var(--primary);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: color-mix(in srgb, var(--destructive) 55%, white);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, white);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 20%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 30%, transparent);
 }
 
 :root[data-theme="light"][data-accent-theme="ocean-breeze"] {
+  --tab-inactive-foreground: var(--muted-foreground);
   --background: #f0f8ff;
   --foreground: #374151;
   --card: #ffffff;
@@ -366,15 +459,15 @@
   --popover: #ffffff;
   --popover-foreground: #374151;
   --primary: #22c55e;
-  --primary-foreground: #ffffff;
+  --primary-foreground: #0f172a;
   --secondary: #e0f2fe;
   --secondary-foreground: #4b5563;
   --muted: #f3f4f6;
-  --muted-foreground: #6b7280;
+  --muted-foreground: color-mix(in srgb, #6b7280 95%, black);
   --accent: #d1fae5;
   --accent-foreground: #374151;
   --destructive: #ef4444;
-  --destructive-foreground: #ffffff;
+  --destructive-foreground: #0f172a;
   --border: #e5e7eb;
   --border-subtle: color-mix(in oklch, var(--border) 56%, var(--background));
   --input: #e5e7eb;
@@ -382,14 +475,24 @@
   --sidebar: #e0f2fe;
   --sidebar-foreground: #374151;
   --sidebar-primary: #22c55e;
-  --sidebar-primary-foreground: #ffffff;
+  --sidebar-primary-foreground: #0f172a;
   --sidebar-accent: #d1fae5;
   --sidebar-accent-foreground: #374151;
   --sidebar-border: #e5e7eb;
   --sidebar-ring: #22c55e;
+  --primary-text: color-mix(in srgb, var(--primary) 60%, black);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: color-mix(in srgb, var(--destructive) 60%, black);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, transparent);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 10%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 20%, transparent);
 }
 
 :root[data-theme="dark"][data-accent-theme="ocean-breeze"] {
+  --activity-icon: #a1a1aa;
   --background: #0f172a;
   --foreground: #d1d5db;
   --card: #1e293b;
@@ -401,9 +504,9 @@
   --secondary: #2d3748;
   --secondary-foreground: #a1a1aa;
   --muted: #19212e;
-  --muted-foreground: #6b7280;
+  --muted-foreground: color-mix(in srgb, #6b7280 65%, white);
   --accent: #374151;
-  --accent-foreground: #a1a1aa;
+  --accent-foreground: color-mix(in srgb, #a1a1aa 80%, white);
   --destructive: #ef4444;
   --destructive-foreground: #0f172a;
   --border: #4b5563;
@@ -415,9 +518,18 @@
   --sidebar-primary: #34d399;
   --sidebar-primary-foreground: #0f172a;
   --sidebar-accent: #374151;
-  --sidebar-accent-foreground: #a1a1aa;
+  --sidebar-accent-foreground: var(--accent-foreground);
   --sidebar-border: #4b5563;
   --sidebar-ring: #34d399;
+  --primary-text: var(--primary);
+  --primary-hover: color-mix(in srgb, var(--primary) 80%, transparent);
+  --primary-hover-strong: color-mix(in srgb, var(--primary) 90%, transparent);
+  --primary-selected-bg: var(--accent);
+  --destructive-text: color-mix(in srgb, var(--destructive) 60%, white);
+  --destructive-icon: var(--destructive);
+  --destructive-hover: color-mix(in srgb, var(--destructive) 90%, white);
+  --destructive-soft: color-mix(in srgb, var(--destructive) 20%, transparent);
+  --destructive-soft-hover: color-mix(in srgb, var(--destructive) 30%, transparent);
 }
 
 @layer base {
@@ -544,7 +656,7 @@ button {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--background);
-  color: var(--destructive);
+  color: var(--destructive-text);
   font-size: 14px;
 }
 .app-shell::before {
@@ -701,7 +813,7 @@ button {
   color: var(--muted-foreground);
 }
 .markdown-content a {
-  color: var(--primary);
+  color: var(--primary-text);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -894,15 +1006,15 @@ button {
 }
 
 .segmented-control-item:hover {
-  background: var(--primary) !important;
-  color: var(--primary-foreground) !important;
+  background: var(--primary-selected-bg) !important;
+  color: var(--primary-text) !important;
 }
 
 .segmented-control-item[data-state="on"],
 .segmented-control-item[aria-pressed="true"],
 .segmented-control-item[data-active] {
-  background: var(--primary) !important;
-  color: var(--primary-foreground) !important;
+  background: var(--primary-selected-bg) !important;
+  color: var(--primary-text) !important;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--primary) 28%, transparent);
 }
 
@@ -941,14 +1053,19 @@ button {
     color 160ms ease;
   -webkit-app-region: no-drag;
 }
+:root:not([data-accent-theme]),
+:root[data-accent-theme="vtron"] {
+  --activity-icon: var(--primary);
+}
+
 .activity-bar-item:hover,
 .activity-bar-search:hover {
   background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
+  color: var(--activity-icon);
 }
 .activity-bar-item-active {
   background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
+  color: var(--activity-icon);
 }
 .activity-bar-item-active::before {
   position: absolute;

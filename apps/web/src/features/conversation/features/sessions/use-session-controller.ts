@@ -19,7 +19,7 @@ import {
   type PendingControl,
 } from "./pending-controls";
 import { blockedWhileCompacting } from "./session-activity";
-import { contextUsageCopy } from "./context-usage-copy";
+import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { retryBusyRead } from "./session-read-retry";
 import { useSessionLive } from "./use-session-live";
 import { capabilityAccessBinding, useSessionCapabilities } from "./use-session-capabilities";
@@ -2244,14 +2244,14 @@ export function useSessionController({
     !!live.turnId;
   const terminalReasonText =
     live?.executionMode === "claude-follower"
-      ? claudeConnectionReason(locale, live.reason)
+      ? claudeConnectionReason(locale, live.reason, "web")
       : undefined;
   const liveText =
     live?.reason === "control-outcome-unconfirmed"
       ? t.controlUnconfirmed
       : (terminalReasonText ??
         (live?.activity === "compacting"
-          ? contextUsageCopy[locale].compacting
+          ? contextUsageCopyForSurface(locale, "web").compacting
           : live?.status === "idle" && live.reason !== "handoff-required"
             ? t.idle
             : live?.questions?.length

@@ -924,7 +924,7 @@ describe("Claude managed workflow", () => {
     render(<WebApplication />);
     fireEvent.click(await screen.findByRole("button", { name: "新建任务" }));
     fireEvent.change(screen.getByLabelText("执行工具"), { target: { value: "claude-code" } });
-    await screen.findByText(/沿用主机 Claude Code/);
+    await screen.findByText(/沿用运行 AgentKib 的电脑上的 Claude Code/);
     expect(screen.queryByLabelText("模型")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
     await screen.findByText("Secret history");

@@ -35,13 +35,13 @@ export function PermissionModeNotice({
     <span>
       {message}
       {mode !== null && permission.previous === true && (
-        <span className="mt-1 block opacity-80">{copy.previous}</span>
+        <span className="mt-1 block">{copy.previous}</span>
       )}
     </span>
   );
   const color =
     mode === "bypassPermissions"
-      ? "border-destructive/40 bg-destructive/10 text-destructive"
+      ? "border-destructive/40 bg-destructive/10 text-destructive-text"
       : "border-amber-500/25 bg-amber-500/5 text-amber-700 dark:text-amber-300";
   if (compact) {
     const summary = permissionModeSummaryCopy[locale];

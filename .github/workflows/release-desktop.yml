@@ -344,6 +344,10 @@ jobs:
           sudo apt-get install -y "$package"
           .github/scripts/smoke-test-linux-installed.sh
 
+      - name: Test native Windows uninstall policy
+        if: runner.os == 'Windows'
+        run: node ./.release-helpers/.github/scripts/run-windows-installer-policy-tests.mjs
+
       - name: Smoke test Windows x64 installer
         if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: pwsh

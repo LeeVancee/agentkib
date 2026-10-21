@@ -30,8 +30,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - name: Test packaged startup readiness probe
-        run: node --test .github/scripts/run-desktop-startup-smoke.test.mjs
+      - name: Test release helpers and Windows uninstall observation
+        run: node --test .github/scripts/*.test.mjs
       - run: pnpm typecheck
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
@@ -57,8 +57,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - name: Test packaged startup readiness probe
-        run: node --test .github/scripts/run-desktop-startup-smoke.test.mjs
+      - name: Test release helpers and Windows uninstall observation
+        run: node --test .github/scripts/*.test.mjs
       - run: pnpm typecheck
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build

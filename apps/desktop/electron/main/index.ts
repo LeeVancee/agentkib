@@ -60,6 +60,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const isDevelopmentApp = process.env.AGENTKIB_DEV === "1" || !app.isPackaged;
+const devServerUrl = process.env.ELECTRON_RENDERER_URL ?? process.env.VITE_DEV_SERVER_URL;
 const appDisplayName = isDevelopmentApp ? "AgentKib Dev" : "AgentKib";
 const appFlavor = isDevelopmentApp ? "ai.agentkib.dev" : "ai.agentkib";
 app.setName(appDisplayName);
@@ -257,9 +258,7 @@ async function startApplication(): Promise<void> {
   const sharedWebOptions = {
     historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),
     conversationHub,
-    desktopOrigin: process.env.VITE_DEV_SERVER_URL
-      ? new URL(process.env.VITE_DEV_SERVER_URL).origin
-      : "app://bundle",
+    desktopOrigin: devServerUrl ? new URL(devServerUrl).origin : "app://bundle",
     sharedControl,
     receiptRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.controlReceipt, params),
     workspaceRequest: () =>
@@ -1056,9 +1055,7 @@ async function createMainWindow(): Promise<void> {
     return { action: "deny" };
   });
   window.webContents.on("will-navigate", (event, targetUrl) => {
-    const allowedOrigin = process.env.VITE_DEV_SERVER_URL
-      ? new URL(process.env.VITE_DEV_SERVER_URL).origin
-      : "app://bundle";
+    const allowedOrigin = devServerUrl ? new URL(devServerUrl).origin : "app://bundle";
     if (new URL(targetUrl).origin !== allowedOrigin) event.preventDefault();
   });
   window.once("ready-to-show", () => {
@@ -1147,7 +1144,7 @@ function persistCloseBehaviorBestEffort(value: "minimize-to-tray" | "quit"): voi
 }
 
 function rendererUrl(surface?: "quota-popover"): string {
-  const base = process.env.VITE_DEV_SERVER_URL ?? "app://bundle/index.html";
+  const base = devServerUrl ?? "app://bundle/index.html";
   if (!surface) return base;
   const url = new URL(base);
   url.searchParams.set("surface", surface);

@@ -45,7 +45,7 @@ export default defineConfig({
       formats: ["cjs"],
       fileName: (_format, name) => `${name}.cjs`,
     },
-    rollupOptions: {
+    rolldownOptions: {
       external: (id) => id === "electron" || id.startsWith("node:") || builtinModules.includes(id),
       output: { chunkFileNames: "backend-[name]-[hash].cjs" },
     },

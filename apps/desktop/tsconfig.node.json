@@ -11,5 +11,11 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["vite*.config.ts", "electron/**/*.ts", "src/core/types.ts", "src/core/remote-types.ts"]
+  "include": [
+    "electron.vite.config.ts",
+    "vite*.config.ts",
+    "electron/**/*.ts",
+    "src/core/types.ts",
+    "src/core/remote-types.ts"
+  ]
 }

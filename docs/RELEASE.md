@@ -102,7 +102,12 @@ change attributes, terminate owners, or collect command lines or credentials.
 A failed collection is explicitly marked incomplete; an empty owner list
 does not prove that another process never held the file earlier.
 
-Windows platform checks run the PowerShell control and diagnostic regressions.
+Windows platform checks run the PowerShell control and diagnostic regressions,
+then require the native NSIS policy suite on both architectures using the same
+checksum-pinned compiler. Its fixtures use PowerShell 7, matching the Actions
+shell, so inherited module paths cannot load incompatible Windows PowerShell
+5.1 security modules. See Microsoft's
+[PSModulePath inheritance documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath).
 After packaging, both Windows release jobs require native NSIS tests for
 temporary/persistent file locks and atomic upgrade rollback; these tests cannot
 silently skip for a missing compiler. The sole legacy exception is an explicitly

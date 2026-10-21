@@ -19,6 +19,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const runFile = promisify(execFile);
+// Use the same PowerShell edition as the control harness and Actions shell.
+// Windows PowerShell 5.1 cannot load inherited PowerShell 7 security modules.
+const powershell = process.env.AGENTKIB_PWSH || "pwsh";
 const repository = process.env.AGENTKIB_SOURCE_ROOT
   ? path.resolve(process.env.AGENTKIB_SOURCE_ROOT)
   : fileURLToPath(new URL("../../", import.meta.url));
@@ -384,7 +387,7 @@ try {
 } finally { $stream.Dispose() }
 `;
   const child = spawn(
-    "powershell.exe",
+    powershell,
     [
       "-NoProfile",
       "-NonInteractive",
@@ -421,7 +424,7 @@ async function denyDirectoryListing(app) {
   const savedAcl = path.join(app.directory, "installation-acl.sddl");
   const runAclScript = (source) =>
     runFile(
-      "powershell.exe",
+      powershell,
       [
         "-NoProfile",
         "-NonInteractive",

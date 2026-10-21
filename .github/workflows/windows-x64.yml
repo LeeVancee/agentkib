@@ -32,6 +32,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Test release helpers and Windows uninstall observation
         run: node --test .github/scripts/*.test.mjs
+      - name: Test native Windows uninstall policy
+        run: node .github/scripts/run-windows-installer-policy-tests.mjs
       - run: pnpm typecheck
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
@@ -59,6 +61,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Test release helpers and Windows uninstall observation
         run: node --test .github/scripts/*.test.mjs
+      - name: Test native Windows uninstall policy
+        run: node .github/scripts/run-windows-installer-policy-tests.mjs
       - run: pnpm typecheck
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build

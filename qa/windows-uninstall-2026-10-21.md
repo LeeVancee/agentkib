@@ -109,3 +109,26 @@ Windows x64/ARM64 CI 结果在执行后追加。不会将尚未执行的 Windows
 
 - `ea8b9c714` 的 [Windows x64 job](https://github.com/starroyhq/agentkib/actions/runs/39537579435/job/119017673104) 为 60 项：50 通过、1 失败、9 跳过。真实 Win32 诊断和 16 项卸载控制均通过，唯一失败为新增的 tag/branch 私有 Git 夹具：PR 浅克隆不含父提交，私有 bare 仓库借用对象却没有 shallow 边界，`rev-list -n 1` 返回 128。不是卸载断言失败，也未通过重跑掩盖。
 - 夹具改为只复制当前已有 commit 对象到私有 bare 并显式设置 shallow 边界，不创建新 commit、不读写真实仓库 refs；保留分支拒绝、轻量标签与 annotated 标签原断言。补齐 Git stderr 诊断，相关 6 项本地回归通过。旧 artifact-only run `39537578553` 在预检阶段取消，改用修正后的提交重新完整验证，避免混用旧源码结果。
+
+
+### 修正后 PR 双架构结果
+
+测试提交：`18609fe5bca355cffcb91c933f2a1921b6c4cd94`；[Windows run 39537916737](https://github.com/starroyhq/agentkib/actions/runs/39537916737) 成功。
+
+| 架构 | helper 完整组合 | 原生诊断与控制 | 后端稳定性/类型 |
+| --- | --- | --- | --- |
+| [x64](https://github.com/starroyhq/agentkib/actions/runs/39537916737/job/119018755033) | 60 项：51 通过、0 失败、9 跳过 | Win32 DELETE/Restart Manager/真实锁、16 项卸载控制均实际通过 | 33 文件，950 通过、11 跳过；typecheck 通过 |
+| [ARM64](https://github.com/starroyhq/agentkib/actions/runs/39537916737/job/119018754613) | 60 项：51 通过、0 失败、9 跳过 | Win32 DELETE/Restart Manager/真实锁、16 项卸载控制均实际通过 | 33 文件，950 通过、11 跳过；typecheck 通过 |
+
+9 项跳过均为尚未提供 NSIS 编译器的策略编译/执行及强制门禁；实际打包 job 必须以强制模式全部执行，不能用此 PR 结果代替。Linux Ubuntu ARM64 与 Fedora x64 检查均通过（[run 39537916683](https://github.com/starroyhq/agentkib/actions/runs/39537916683)）。
+
+- 同一提交的 [主 CI 39537916640](https://github.com/starroyhq/agentkib/actions/runs/39537916640/job/119018852738) 全部成功：桌面 376 文件通过、3 跳过，7297 测试通过、60 跳过；Web 64 文件、1399 测试全部通过；Linux helper 50 通过、0 失败、10 项原生相关跳过；format、lint、typecheck 和构建均通过。PR 五项检查全部成功。
+- artifact-only [预检 job](https://github.com/starroyhq/agentkib/actions/runs/39537916009/job/119018849158) 也成功运行同样的桌面/Web 全量测试与检查；后续平台构建仍使用此固定提交，不混用旧版本证据。
+
+
+### 原生 ACL 夹具运行时修正
+
+- `18609fe5b` 的 [Windows x64 原生 job](https://github.com/starroyhq/agentkib/actions/runs/39537916009/job/119021621522) 强制执行 15 项，14 通过、1 失败、0 跳过。临时锁、持续锁后原卸载入口重试、备份失败不删除、原子升级/回滚及在位回退均已通过；唯一失败在 ACL 设置前，`powershell.exe` 的 `Get-Acl` 无法自动加载 `Microsoft.PowerShell.Security`，实际安装器冒烟因门禁失败未执行，不能记为通过。
+- 夹具原来从 PowerShell 7 Actions shell 经 Node 再启动 Windows PowerShell 5.1；其模块自动加载失败与微软说明的[中间进程继承 PSModulePath 导致跨版本模块冲突](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath)机制一致。改为与现有控制 harness 相同的 `AGENTKIB_PWSH || pwsh`，统一锁和 ACL 夹具运行时，不删 ACL 拒绝/精确读取/恢复断言，不改产品卸载代码及预算。
+- 将相同的 checksum-pinned 强制 NSIS runner 加入 Windows PR 两个架构 job；以后 ACL、锁与回滚回归会在 PR 中执行，实际安装器冒烟仍由打包 job 另外验证。未增加跳过、超时或依赖版本。
+- 本地相关两套件共 21 项：13 通过、0 失败、8 项 Windows 原生相关跳过，同版 NSIS `/WX` 编译实际通过；oxfmt、YAML 与 diff 检查通过。Standards / Spec 独立复审均 no finding。旧 artifact-only run `39537916009` 在确认此夹具失败后取消，后续以修正提交重新验证，不把重跑当作修复。

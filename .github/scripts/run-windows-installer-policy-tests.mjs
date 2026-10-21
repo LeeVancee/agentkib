@@ -64,7 +64,7 @@ async function runNativePolicyTests() {
   const desktopRequire = createRequire(packagePath);
   const builderRequire = createRequire(desktopRequire.resolve("electron-builder"));
   const { getMakeNsisPath } = builderRequire("app-builder-lib/out/toolsets/windows.js");
-  // Packaging has already resolved this checksum-pinned toolset in this job.
+  // Resolve the checksum-pinned toolset, reusing the packaging cache if present.
   const compiler = await getMakeNsisPath(undefined, undefined);
   const result = spawnSync(
     process.execPath,

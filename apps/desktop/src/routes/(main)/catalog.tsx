@@ -855,7 +855,7 @@ export function McpHubPage({
       {error && (
         <div
           role="alert"
-          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text"
         >
           <CircleAlert size={16} />
           {error}
@@ -873,6 +873,7 @@ export function McpHubPage({
         open={advanced.open}
         onOpenChange={(open) => setAdvanced((current) => ({ ...current, open }))}
       >
+        <h2>{tr("mcp.manage.advancedSections")}</h2>
         <div className="grid gap-4 rounded-2xl border border-border bg-card p-5 md:grid-cols-[minmax(0,1fr)_auto]">
           <div className="grid gap-1.5">
             <span className="text-xs font-semibold uppercase tracking-[.12em] text-muted-foreground">
@@ -884,7 +885,7 @@ export function McpHubPage({
             <span
               className={cn(
                 "font-medium",
-                runtime?.mcp_hub?.running ? "text-emerald-600" : "text-destructive",
+                runtime?.mcp_hub?.running ? "text-emerald-600" : "text-destructive-text",
               )}
             >
               {tr(runtime?.mcp_hub?.running ? "mcp.running" : "mcp.stopped")}
@@ -936,7 +937,7 @@ export function McpHubPage({
                 placeholder={tr("mcp.searchPlaceholder")}
               />
               <Button
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
+                className="bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]"
                 disabled={busy}
                 onClick={() => void searchRegistry()}
               >
@@ -970,7 +971,7 @@ export function McpHubPage({
                 </article>
               ))}
               {registryQuery.isError && (
-                <p role="alert" className="py-6 text-sm text-destructive">
+                <p role="alert" className="py-6 text-sm text-destructive-text">
                   {tr("mcp.registrySearchFailed")} {localizeMessage(registryQuery.error)}
                 </p>
               )}
@@ -1089,7 +1090,7 @@ export function McpHubPage({
                     <span
                       className={cn(
                         "inline-flex items-center gap-1 rounded-md text-xs font-medium",
-                        item.state === "running" ? "text-emerald-600" : "text-destructive",
+                        item.state === "running" ? "text-emerald-600" : "text-destructive-text",
                       )}
                     >
                       {tr(`mcp.runtime.${item.state}`)}

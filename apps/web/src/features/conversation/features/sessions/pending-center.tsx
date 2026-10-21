@@ -10,7 +10,7 @@ import {
   subscribePending,
   type PendingControl,
 } from "./pending-controls";
-import { codexCopy } from "./codex-copy";
+import { codexCopyForSurface } from "./codex-copy";
 import { catalogCopy } from "../catalog/catalog-copy";
 
 export function PendingCenter({ compact = false }: { compact?: boolean }) {
@@ -27,7 +27,7 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
     setModal,
     refresh,
   } = useSession();
-  const copy = codexCopy[locale];
+  const copy = codexCopyForSurface(locale, "web");
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState<PendingControl[]>([]);
   const [failed, setFailed] = useState(false);

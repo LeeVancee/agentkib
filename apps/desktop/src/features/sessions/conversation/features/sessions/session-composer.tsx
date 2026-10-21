@@ -456,7 +456,7 @@ export function SessionComposer({
         </label>
         <Textarea
           id="message"
-          className="min-h-10 max-h-40 w-full resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3 py-2 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:border-transparent focus-visible:ring-0"
+          className="min-h-10 max-h-40 w-full resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3 py-2 text-sm shadow-none placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:ring-0"
           value={composerValue}
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
@@ -617,7 +617,7 @@ export function SessionComposer({
         </p>
       )}
       {error && (
-        <p role="alert" className="px-3 text-xs text-destructive">
+        <p role="alert" className="px-3 text-xs text-destructive-text">
           {error}
         </p>
       )}

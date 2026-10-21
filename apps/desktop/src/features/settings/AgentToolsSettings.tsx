@@ -578,7 +578,7 @@ function AgentToolCard({
     current: "border-emerald-500/35 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
     "update-available": "border-amber-500/35 bg-amber-500/8 text-amber-700 dark:text-amber-300",
     uninstalled: "border-border bg-muted/50 text-muted-foreground",
-    conflict: "border-destructive/35 bg-destructive/8 text-destructive",
+    conflict: "border-destructive/35 bg-destructive/8 text-destructive-text",
     unknown: "border-border bg-muted/50 text-muted-foreground",
   }[tool.state];
   const installation = primaryInstallation(tool);
@@ -684,7 +684,9 @@ function AgentToolCard({
         <div
           className={cn(
             "col-span-full flex items-start gap-1 pl-9 text-[11px]",
-            tool.state === "conflict" ? "text-destructive" : "text-amber-700 dark:text-amber-300",
+            tool.state === "conflict"
+              ? "text-destructive-text"
+              : "text-amber-700 dark:text-amber-300",
           )}
         >
           <DetailIcon size={12} className="mt-0.5" />
@@ -812,7 +814,7 @@ function AppUpdateSetting({
                   className={cn(
                     "gap-1",
                     status === "failed"
-                      ? "border-destructive/30 text-destructive"
+                      ? "border-destructive/30 text-destructive-text"
                       : "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
                   )}
                 >
@@ -829,7 +831,7 @@ function AppUpdateSetting({
               <p
                 className={cn(
                   "mt-1 text-sm text-muted-foreground",
-                  status === "failed" && "text-destructive",
+                  status === "failed" && "text-destructive-text",
                 )}
               >
                 {description}
@@ -946,7 +948,9 @@ function InstallationDiagnosticsDialog({
                         </p>
                       )}
                       {installation.error && (
-                        <p className="mt-1 break-words text-destructive">{installation.error}</p>
+                        <p className="mt-1 break-words text-destructive-text">
+                          {installation.error}
+                        </p>
                       )}
                     </li>
                   ))}

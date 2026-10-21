@@ -15,7 +15,7 @@ import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
-import { codexCopy, codexReason } from "./codex-copy";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { subscribeSessionInvalidation } from "./session-events";
 import { ContextUsageDetails, ContextUsageGauge, useContextUsage } from "./context-usage";
 import { sessionAgentCopy } from "./session-agent-copy";
@@ -80,7 +80,7 @@ export function CodexComposerControls({
     noticeReason,
     settingsChangedHere,
   } = useSession();
-  const copy = codexCopy[locale];
+  const copy = codexCopyForSurface(locale, "web");
   const isClaude = current?.agent === "claude-code";
   const agentCopy = sessionAgentCopy[locale];
   const feature = (name: string) =>
@@ -102,10 +102,10 @@ export function CodexComposerControls({
     !isClaude || feature("resources")?.available === true || feature("context")?.available === true;
   const layout = composerLayoutCopy[locale];
   const term = (value: string) => composerTerm(locale, value);
-  const reason = (code?: string) => codexReason(locale, code).text;
+  const reason = (code?: string) => codexReason(locale, code, "web").text;
   const reasonTitle = (code?: string) => (code ? reason(code) : undefined);
   const reasonDetail = (code?: string) => {
-    const value = codexReason(locale, code);
+    const value = codexReason(locale, code, "web");
     return (
       <div className="text-xs text-muted-foreground">
         {value.text}
@@ -1041,7 +1041,7 @@ export function CodexComposerControls({
                   </p>
                 )}
               {mutationError && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" className="text-xs text-destructive-text">
                   {reason(mutationError)}
                 </p>
               )}
@@ -1184,7 +1184,7 @@ export function CodexComposerControls({
                 </div>
               )}
               {mutationError && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" className="text-xs text-destructive-text">
                   {reason(mutationError)}
                 </p>
               )}
@@ -1448,7 +1448,7 @@ export function CodexComposerControls({
         </span>
       ))}
       {resourceWarning && (
-        <span role="alert" className="text-xs text-destructive">
+        <span role="alert" className="text-xs text-destructive-text">
           {resourceWarning}
         </span>
       )}

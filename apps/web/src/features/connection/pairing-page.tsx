@@ -68,7 +68,7 @@ export function PairingPage() {
         </aside>
         {pairingError && (
           <div className="grid gap-2">
-            <p id="pairing-error" role="alert" className="text-sm text-destructive">
+            <p id="pairing-error" role="alert" className="text-sm text-destructive-text">
               {pairingErrorText(locale, pairingError, direct ? "access" : "pairing")}
             </p>
             <Button
@@ -110,7 +110,7 @@ export function PairingPage() {
     </PairingLayout>
   ) : access.status === "ended" ? (
     <main className="mx-auto flex w-full max-w-lg flex-col gap-5 overflow-auto p-6 md:p-10">
-      <div className="grid size-14 place-items-center rounded-2xl bg-destructive/10 text-destructive">
+      <div className="grid size-14 place-items-center rounded-2xl bg-destructive/10 text-destructive-icon">
         <Unlink size={30} />
       </div>
       <h1>{t.ended}</h1>

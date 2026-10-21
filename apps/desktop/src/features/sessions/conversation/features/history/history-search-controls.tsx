@@ -107,7 +107,7 @@ export function HistoryReferenceChips() {
         </pre>
       </Disclosure>
       {!validHistoryMessage(session.message, references) && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive-text">
           {c.messageLimit}
         </p>
       )}

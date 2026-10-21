@@ -83,7 +83,7 @@ describe("asset draft removal", () => {
       const remove = await screen.findByRole("button", {
         name: tr("assets.removeDraftItem", { name }),
       });
-      expect(remove).toHaveClass("text-destructive");
+      expect(remove).toHaveClass("text-destructive-text");
       expect(remove).not.toHaveClass("bg-primary");
       fireEvent.click(remove);
       const current = useWorkspaceStore.getState();

@@ -133,14 +133,14 @@ export function RemoteAccountSettings() {
           )}
         </>
       )}
-      {status && !status.secureStorage && <p className="text-destructive">{c.storage}</p>}
+      {status && !status.secureStorage && <p className="text-destructive-text">{c.storage}</p>}
       {errorText && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive-text">
           {errorText}
         </p>
       )}
       {failed && status && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive-text">
           {c.unavailable}
         </p>
       )}

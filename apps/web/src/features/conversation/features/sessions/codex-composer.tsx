@@ -9,10 +9,10 @@ import { Dialog } from "../../components/dialog";
 import { Textarea } from "../../components/ui/textarea";
 import { useSession } from "./session-context";
 import { ContextUsageGauge } from "./context-usage";
-import { contextUsageCopy } from "./context-usage-copy";
+import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
-import { codexCopy, codexReason } from "./codex-copy";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
 import { PermissionModeNotice } from "./permission-mode-notice";
@@ -50,9 +50,9 @@ export function CodexComposer() {
     notice,
   } = session;
   const isClaude = current?.agent === "claude-code";
-  const copy = codexCopy[locale];
+  const copy = codexCopyForSurface(locale, "web");
   const layout = composerLayoutCopy[locale];
-  const display = sessionDisplayState(session);
+  const display = sessionDisplayState(session, "web");
   const textarea = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (!textarea.current) return;
@@ -243,7 +243,7 @@ export function CodexComposer() {
     !canSend &&
     !running &&
     !compacting &&
-    display.reason === codexReason(locale, "codex-connection-failed").text;
+    display.reason === codexReason(locale, "codex-connection-failed", "web").text;
   useEffect(() => {
     if (!connectionFailure) return;
     toast.error(display.reason, { id: connectionToastId });
@@ -371,7 +371,7 @@ export function CodexComposer() {
         </p>
       )}
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className="text-xs text-destructive-text">
           {error}
         </p>
       )}
@@ -464,7 +464,7 @@ export function CodexComposer() {
       </div>
       {compacting && (
         <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
-          {contextUsageCopy[locale].compactingDetail}
+          {contextUsageCopyForSurface(locale, "web").compactingDetail}
         </p>
       )}
       {!canSend && !running && !compacting && !connectionFailure && !display.loading && (

@@ -228,9 +228,9 @@ describe("SessionHubPage", () => {
     expect(screen.queryByRole("button", { name: "Refresh history" })).toBeNull();
     for (const [label, count] of [
       ["All sessions", "3"],
-      ["Readable records", "2"],
+      ["History available", "2"],
       ["Archived", "1"],
-      ["Metadata only", "1"],
+      ["No history content", "1"],
     ]) {
       const metric = screen.getByText(label).parentElement;
       expect(metric).not.toBeNull();

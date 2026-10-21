@@ -474,7 +474,7 @@ describe("shared session continuation status and copy", () => {
 
     view.rerender(<SessionContinuationStatus label={copy.running} active className="gap-2" />);
     expect(screen.getByRole("status")).toHaveTextContent(expected.running);
-    expect(screen.getByRole("status")).toHaveClass("text-primary", "gap-2");
+    expect(screen.getByRole("status")).toHaveClass("text-primary-text", "gap-2");
     expect(screen.getByRole("status")).not.toHaveAttribute("aria-busy");
 
     view.rerender(<SessionContinuationStatus label={copy.viewOnly} />);

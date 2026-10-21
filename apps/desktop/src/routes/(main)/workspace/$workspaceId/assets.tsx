@@ -287,7 +287,7 @@ function Assets({
                 <p
                   id={`${formId}-skill-name-error`}
                   role="alert"
-                  className="text-xs text-destructive"
+                  className="text-xs text-destructive-text"
                 >
                   {tr(skillNameError, { name: existingSkill?.name })}
                 </p>
@@ -323,7 +323,7 @@ function Assets({
                 <p
                   id={`${formId}-skill-path-error`}
                   role="alert"
-                  className="text-xs text-destructive"
+                  className="text-xs text-destructive-text"
                 >
                   {tr(skillPathError)}
                 </p>
@@ -331,7 +331,7 @@ function Assets({
             </div>
             <Button
               type="submit"
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
+              className="bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]"
             >
               {tr("common.add")}
             </Button>
@@ -410,7 +410,7 @@ function Assets({
                 <p
                   id={`${formId}-connection-name-error`}
                   role="alert"
-                  className="text-xs text-destructive"
+                  className="text-xs text-destructive-text"
                 >
                   {tr(connectionNameError, { name: existingConnection?.name })}
                 </p>
@@ -470,7 +470,7 @@ function Assets({
                 <p
                   id={`${formId}-endpoint-error`}
                   role="alert"
-                  className="text-xs text-destructive"
+                  className="text-xs text-destructive-text"
                 >
                   {tr(endpointError)}
                 </p>
@@ -478,7 +478,7 @@ function Assets({
             </div>
             <Button
               type="submit"
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
+              className="bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]"
             >
               {tr("common.add")}
             </Button>

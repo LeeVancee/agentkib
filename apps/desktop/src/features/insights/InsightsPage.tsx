@@ -16,7 +16,6 @@ import type { AgentKind, HeatmapPoint, InsightsQuery, WorkspaceSummary } from "@
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
-import { cn } from "cn";
 import { useInsightsRefreshJob, useInsightsView } from "./insights-query";
 import { InsightsFilters } from "./InsightsFilters";
 import {
@@ -121,7 +120,7 @@ export function InsightsPage({
             role="alert"
             className="grid justify-items-center gap-3 px-6 py-10 text-center text-sm"
           >
-            <CircleAlert size={20} className="text-destructive" />
+            <CircleAlert size={20} className="text-destructive-icon" />
             <strong>{tr("insights.loadFailed")}</strong>
             <p className="text-muted-foreground">{localizeMessage(viewQuery.error)}</p>
             <Button
@@ -138,13 +137,7 @@ export function InsightsPage({
   }
 
   return (
-    <div
-      className={cn(
-        "relative grid gap-5",
-        stale && "[&>*:not(:first-child)]:opacity-60 [&>*:not(:first-child)]:transition-opacity",
-      )}
-      aria-busy={stale || undefined}
-    >
+    <div className="relative grid gap-5" aria-busy={stale || undefined}>
       <section className="grid gap-3">
         {(stale || error) && (
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -156,7 +149,7 @@ export function InsightsPage({
             {error && (
               <div
                 role="alert"
-                className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-text"
               >
                 <CircleAlert size={16} />
                 {error}

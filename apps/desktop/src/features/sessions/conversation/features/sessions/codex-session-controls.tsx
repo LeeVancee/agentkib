@@ -1126,7 +1126,7 @@ export function CodexComposerControls({
                   </p>
                 )}
               {mutationError && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" className="text-xs text-destructive-text">
                   {reason(mutationError)}
                 </p>
               )}
@@ -1270,7 +1270,7 @@ export function CodexComposerControls({
                 </div>
               )}
               {mutationError && (
-                <p role="alert" className="text-xs text-destructive">
+                <p role="alert" className="text-xs text-destructive-text">
                   {reason(mutationError)}
                 </p>
               )}
@@ -1544,7 +1544,7 @@ export function CodexComposerControls({
         </span>
       ))}
       {resourceWarning && (
-        <span role="alert" className="text-xs text-destructive">
+        <span role="alert" className="text-xs text-destructive-text">
           {resourceWarning}
         </span>
       )}

@@ -1,8 +1,10 @@
+import { surfaceCopy, type SessionSurface } from "./session-surface-copy";
+
 const en = {
   title: "Files & artifacts",
   close: "Close files",
   directory: "Authorized directory",
-  authorize: "Authorize directories in desktop Web settings.",
+  authorize: "Authorize directories in Web settings in AgentKib on this computer.",
   views: "File views",
   artifacts: "Task artifacts",
   files: "Project files",
@@ -38,7 +40,7 @@ const zh: Copy = {
   title: "文件与产物",
   close: "关闭文件面板",
   directory: "已授权目录",
-  authorize: "请在桌面 Web 设置中授权目录。",
+  authorize: "请在这台电脑上的 AgentKib 的 Web 设置中授权目录。",
   views: "文件视图",
   artifacts: "会话产物",
   files: "项目文件",
@@ -73,7 +75,7 @@ const tw: Copy = {
   title: "檔案與產物",
   close: "關閉檔案面板",
   directory: "已授權目錄",
-  authorize: "請在桌面 Web 設定中授權目錄。",
+  authorize: "請在這台電腦上的 AgentKib 的 Web 設定中授權目錄。",
   views: "檔案檢視",
   artifacts: "對話產物",
   files: "專案檔案",
@@ -108,7 +110,7 @@ const ja: Copy = {
   title: "ファイルと成果物",
   close: "ファイルパネルを閉じる",
   directory: "許可済みディレクトリ",
-  authorize: "デスクトップの Web 設定でディレクトリを許可してください。",
+  authorize: "このコンピューター上の AgentKib の Web 設定でディレクトリを許可してください。",
   views: "ファイル表示",
   artifacts: "会話の成果物",
   files: "プロジェクトファイル",
@@ -139,6 +141,10 @@ const ja: Copy = {
   denied: "ファイルへのアクセスが許可されていません。",
   loadError: "ファイルを読み込めません。再試行してください。",
 };
-export function artifactCopy(locale: string): Copy {
-  return locale === "en-US" ? en : locale === "zh-TW" ? tw : locale === "ja-JP" ? ja : zh;
+export function artifactCopy(locale: string, surface: SessionSurface = "desktop"): Copy {
+  const language =
+    locale === "en-US" || locale === "zh-TW" || locale === "ja-JP" ? locale : "zh-CN";
+  const copy =
+    language === "en-US" ? en : language === "zh-TW" ? tw : language === "ja-JP" ? ja : zh;
+  return surfaceCopy(copy, surface, language);
 }

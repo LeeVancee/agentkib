@@ -155,7 +155,7 @@ export function SessionDialogs() {
                     className={
                       modal.method !== "session/request_permission" &&
                       (d === "accept" || d === "allow")
-                        ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                        ? "bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]"
                         : "border"
                     }
                     disabled={busy}

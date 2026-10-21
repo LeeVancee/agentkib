@@ -130,6 +130,27 @@ describe("SessionDirectory", () => {
   });
   afterEach(cleanup);
 
+  it.each([
+    ["zh-CN", "有历史内容", "无历史内容"],
+    ["zh-TW", "有歷史內容", "無歷史內容"],
+    ["en-US", "History available", "No history content"],
+    ["ja-JP", "履歴あり", "履歴なし"],
+  ] as const)(
+    "describes history availability without changing record counts in %s",
+    async (locale, available, unavailable) => {
+      await initializeI18n(locale);
+      useSessionViewStore.setState({ filter: "all" });
+      try {
+        render(<SessionOverview />);
+        expect(within(screen.getByText(available).parentElement!).getByText("3")).toBeVisible();
+        expect(within(screen.getByText(unavailable).parentElement!).getByText("1")).toBeVisible();
+        expect(hub.select).not.toHaveBeenCalled();
+      } finally {
+        await initializeI18n("en-US");
+      }
+    },
+  );
+
   it("keeps same-named workspace groups separate and exposes paths and the current session", () => {
     render(<SessionDirectory />);
     expect(screen.getAllByRole("button", { name: /Design kit/ })).toHaveLength(2);
@@ -179,7 +200,7 @@ describe("SessionDirectory", () => {
     await user.keyboard("{ArrowDown}");
     (await screen.findByRole("menuitem", { name: "Session history" })).focus();
     await user.keyboard("{ArrowRight}");
-    (await screen.findByRole("menuitemradio", { name: "Metadata only" })).focus();
+    (await screen.findByRole("menuitemradio", { name: "No history content" })).focus();
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("button", { name: /Inspect token layout/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Missing transcript/ })).toBeTruthy();
@@ -204,7 +225,9 @@ describe("SessionDirectory", () => {
     expect(useSessionViewStore.getState().filter).toBe("metadata");
     expect(screen.getByRole("button", { name: /Missing transcript/ })).toBeTruthy();
     await user.click(
-      screen.getByRole("button", { name: `${tr("sessions.clearRecordFilter")}: Metadata only` }),
+      screen.getByRole("button", {
+        name: `${tr("sessions.clearRecordFilter")}: No history content`,
+      }),
     );
     expect(useSessionViewStore.getState().filter).toBe("current");
     expect(screen.queryByRole("button", { name: /Missing transcript/ })).toBeNull();

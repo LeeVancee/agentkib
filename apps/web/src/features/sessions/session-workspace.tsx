@@ -106,7 +106,7 @@ export function SessionWorkspace() {
     }
   }
   const copy = webLayoutCopy[locale];
-  const status = sessionDisplayState(session);
+  const status = sessionDisplayState(session, "web");
   return (
     <SessionPanelsContext
       value={{
@@ -330,7 +330,7 @@ export function SessionWorkspace() {
             {accessCopy.description}
           </p>
           {logoutFailed && (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-sm text-destructive-text">
               {accessCopy.failed}
             </p>
           )}

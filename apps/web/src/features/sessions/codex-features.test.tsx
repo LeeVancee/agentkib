@@ -6,7 +6,7 @@ import { CodexComposer } from "@/features/conversation/features/sessions/codex-c
 import { NativeDecisions } from "@/features/conversation/features/interactions/native-decisions";
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries } from "@/features/conversation/i18n";
-import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
@@ -248,7 +248,7 @@ describe("Codex composer", () => {
     fireEvent.click(screen.getByRole("button", { name: /GPT-6 Sol/ }));
     expect(screen.getByLabelText("思考强度")).toHaveValue("high");
     expect(screen.getByDisplayValue("加速")).toHaveValue("fast");
-    fireEvent.click(screen.getByRole("button", { name: "恢复主机默认" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复运行 AgentKib 的电脑默认" }));
     await waitFor(() =>
       expect(state.codexAction).toHaveBeenCalledWith("settings", { restoreDefaults: true }),
     );
@@ -352,7 +352,7 @@ describe("Codex composer", () => {
     render(<CodexComposer />);
     fireEvent.click(await screen.findByRole("button", { name: /Model/ }));
     expect(screen.getByLabelText("模型")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "恢复主机默认" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复运行 AgentKib 的电脑默认" })).toBeDisabled();
     expect(screen.getByText("当前轮次结束后才能修改设置")).toBeVisible();
   });
 
@@ -454,7 +454,7 @@ it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     };
     const view = render(<CodexTools open ownership={<span>Legacy ownership controls</span>} />);
     await screen.findByText("Pending turn");
-    const copy = codexCopy[locale];
+    const copy = codexCopyForSurface(locale, "web");
     const obsoleteResume = {
       "zh-CN": "恢复执行",
       "zh-TW": "恢復執行",

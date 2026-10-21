@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import type { ArtifactEntry, ArtifactTicket } from "@agentkib/web-client";
 import { ArtifactBrowser } from "@/features/conversation/features/sessions/artifact-browser";
+import { artifactCopy } from "@/features/conversation/features/sessions/artifact-copy";
 import {
   ArtifactPanel,
   ArtifactWorkspace,
@@ -92,6 +93,29 @@ describe("ArtifactBrowser", () => {
     expect(screen.queryByRole("button", { name: "Files & artifacts" })).not.toBeInTheDocument();
     expect(session.client.request).not.toHaveBeenCalled();
   });
+  it.each([
+    ["zh-CN", "请在电脑上的 AgentKib 的 Web 设置中授权目录。"],
+    ["zh-TW", "請在電腦上的 AgentKib 的 Web 設定中授權目錄。"],
+    ["en-US", "Authorize directories in Web settings in AgentKib on your computer."],
+    ["ja-JP", "コンピューター上の AgentKib の Web 設定でディレクトリを許可してください。"],
+  ] as const)(
+    "points an empty authorized-directory list to the computer application in %s",
+    async (locale, notice) => {
+      session.locale = locale;
+      session.client.request.mockResolvedValue({ workspaces: [] });
+      render(<ArtifactBrowser />);
+      fireEvent.click(screen.getByRole("button", { name: artifactCopy(locale).title }));
+      expect(await screen.findByText(notice)).toBeVisible();
+      expect(session.client.request).toHaveBeenCalledWith(
+        "files/workspaces",
+        undefined,
+        expect.any(AbortSignal),
+      );
+      expect(session.client.request.mock.calls.every(([path]) => path === "files/workspaces")).toBe(
+        true,
+      );
+    },
+  );
   it("loads session references, opaque directory ids and revision-bound text", async () => {
     await show();
     expect(session.client.request).toHaveBeenCalledWith(

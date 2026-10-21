@@ -2,7 +2,7 @@ import { NativeScope } from "./native-scope";
 import { useState } from "react";
 import type { Approval } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
-import { codexCopy } from "../sessions/codex-copy";
+import { codexCopyForSurface } from "../sessions/codex-copy";
 import type { Locale } from "../../i18n";
 const labels: Record<Locale, Record<string, string>> = {
   "zh-CN": {
@@ -63,7 +63,7 @@ export function NativeDecisions({
   busy: boolean;
   submit: (decision: unknown) => void;
 }) {
-  const copy = codexCopy[locale];
+  const copy = codexCopyForSurface(locale, "web");
   const [confirmed, setConfirmed] = useState<string>();
   if (!approval.decisionOptions?.length) return null;
   return (

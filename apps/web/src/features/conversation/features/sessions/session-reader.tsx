@@ -7,7 +7,7 @@ import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
 import { useSessionPanels } from "./session-panels";
 import { ContextUsageGauge } from "./context-usage";
-import { contextUsageCopy } from "./context-usage-copy";
+import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { SessionComposer } from "./session-composer";
 import { Button } from "../../components/ui/button";
 import { Textarea } from "../../components/ui/textarea";
@@ -49,7 +49,7 @@ export function SessionReader() {
   const enterSends = useEnterSends();
   const composing = useRef(false);
   const submitPending = useRef(false);
-  const banner = claudeSessionBanner(session);
+  const banner = claudeSessionBanner(session, "web");
   const panels = useSessionPanels();
   const forkSource = current?.forked_from_session_id
     ? session.sessions?.find((item) => item.id === current.forked_from_session_id)
@@ -253,9 +253,9 @@ export function SessionReader() {
                   className="mx-auto w-full max-w-3xl px-5 py-2 text-xs leading-6 text-muted-foreground"
                 >
                   {notice === "notDispatched" && session.actionUnavailableReason
-                    ? codexReason(locale, session.actionUnavailableReason).text
+                    ? codexReason(locale, session.actionUnavailableReason, "web").text
                     : current?.agent === "codex" && notice === "notDispatched" && noticeReason
-                      ? codexReason(locale, noticeReason).text
+                      ? codexReason(locale, noticeReason, "web").text
                       : t[notice]}
                 </p>
               )}
@@ -356,7 +356,7 @@ export function SessionReader() {
                   </div>
                   {live?.activity === "compacting" && (
                     <p role="status" className="mt-2 text-xs text-muted-foreground">
-                      {contextUsageCopy[locale].compactingDetail}
+                      {contextUsageCopyForSurface(locale, "web").compactingDetail}
                     </p>
                   )}
                 </form>

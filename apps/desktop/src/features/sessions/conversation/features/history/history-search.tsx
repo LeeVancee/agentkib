@@ -610,12 +610,12 @@ export function HistorySearchPanel({
         </div>
       )}
       {!queryValid && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {c.queryLimit}
         </p>
       )}
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {error}
         </p>
       )}
@@ -894,7 +894,7 @@ export function HistorySearchLauncher({
         {historyCopy[locale].title}
       </Button>
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {historyCopy[locale].error}
         </p>
       )}

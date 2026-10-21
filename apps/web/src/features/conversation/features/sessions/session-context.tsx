@@ -1,7 +1,7 @@
 import { HistorySearchControls } from "../history/history-search-controls";
 import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
 import { Toaster } from "sonner";
-import { codexCopy } from "./codex-copy";
+import { codexCopyForSurface } from "./codex-copy";
 import {
   useSessionController,
   type SessionController,
@@ -30,7 +30,7 @@ export function SessionProvider({
             "--normal-border": "var(--border)",
           } as CSSProperties
         }
-        toastOptions={{ closeButtonAriaLabel: codexCopy[value.locale].close }}
+        toastOptions={{ closeButtonAriaLabel: codexCopyForSurface(value.locale, "web").close }}
       />
     </SessionContext>
   );

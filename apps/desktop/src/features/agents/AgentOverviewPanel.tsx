@@ -191,7 +191,7 @@ export function AgentOverviewPanel({
       )}
       {installation?.warnings.map((warning) => (
         <div
-          className="flex items-center gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+          className="flex items-center gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive-text"
           key={warning}
         >
           <CircleAlert size={16} />

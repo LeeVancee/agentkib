@@ -35,7 +35,7 @@ export function HistoryError({ error, onRetry }: { error: unknown; onRetry?: () 
   return (
     <div
       role="alert"
-      className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/5 p-4 text-sm text-destructive"
+      className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/5 p-4 text-sm text-destructive-text"
     >
       <CircleAlert size={17} className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">

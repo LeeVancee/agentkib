@@ -16,7 +16,7 @@ import {
   type SessionSettings,
 } from "@agentkib/web-client";
 import { WebApplication } from "@/router";
-import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
 import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
 import { webLayoutCopy } from "@/features/conversation/features/sessions/web-layout-copy";
 import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
@@ -68,7 +68,7 @@ class ClaudeEventSource {
 
 const available = { available: true };
 const unavailable = { available: false };
-const copy = codexCopy["zh-CN"];
+const copy = codexCopyForSurface("zh-CN", "web");
 function createHost({
   staleSettingsAfterMutation = false,
   unmanaged = false,
@@ -495,7 +495,7 @@ describe("original Claude terminal over Web", () => {
     expect(screen.getByText("审批和提问在终端中处理")).toBeVisible();
     expect(document.querySelector("aside.info")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "生成一次性连接码" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成连接码" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "发送消息" }), {
       target: { value: "Continue original terminal" },
     });

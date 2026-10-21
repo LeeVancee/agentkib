@@ -7,7 +7,7 @@ import {
 import { SessionBusyChoice } from "./session-busy-choice";
 import { SessionReadOnly } from "./session-read-only";
 import { isSendEnter, useEnterSends } from "./composer-shortcuts";
-import { claudeConnectionCopy } from "./claude-connection-copy";
+import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
 import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useRef, useState } from "react";
@@ -39,10 +39,10 @@ import {
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { ContextUsageGauge } from "./context-usage";
-import { contextUsageCopy } from "./context-usage-copy";
+import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
-import { codexCopy, codexReason } from "./codex-copy";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
 import { PermissionModeNotice } from "./permission-mode-notice";
@@ -90,9 +90,9 @@ export function SessionComposer({
   const returnKey = JSON.stringify([selected, live?.ownershipReason, live?.reason]);
   const [returnedFor, setReturnedFor] = useState<string | null>(null);
   useEffect(() => setReturnedFor(null), [returnKey]);
-  const copy = codexCopy[locale];
+  const copy = codexCopyForSurface(locale, "web");
   const layout = composerLayoutCopy[locale];
-  const display = sessionDisplayState(session);
+  const display = sessionDisplayState(session, "web");
   const composerValue = message;
   const setComposerText = setMessage;
   const [uploads, setUploads] = useState<Upload[]>([]);
@@ -238,7 +238,7 @@ export function SessionComposer({
           failed: true,
         })),
       );
-      setError(codexReason(locale, capabilities.features.attachments?.reason).text);
+      setError(codexReason(locale, capabilities.features.attachments?.reason, "web").text);
     }
   }, [
     selected,
@@ -330,7 +330,7 @@ export function SessionComposer({
     !canSend &&
     !running &&
     !compacting &&
-    display.reason === codexReason(locale, "codex-connection-failed").text;
+    display.reason === codexReason(locale, "codex-connection-failed", "web").text;
   useEffect(() => {
     if (!connectionFailure) return;
     toast.error(display.reason, { id: connectionToastId });
@@ -456,7 +456,7 @@ export function SessionComposer({
         </label>
         <Textarea
           id="message"
-          className="min-h-10 max-h-40 w-full resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3 py-2 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:border-transparent focus-visible:ring-0"
+          className="min-h-10 max-h-40 w-full resize-none overflow-y-auto rounded-none border-0 bg-transparent px-3 py-2 text-sm shadow-none placeholder:text-muted-foreground focus-visible:border-transparent focus-visible:ring-0"
           value={composerValue}
           maxLength={MAX_MESSAGE_LENGTH}
           rows={1}
@@ -589,7 +589,7 @@ export function SessionComposer({
                   uploadPermission
                     ? copy.attachmentNote
                     : isClaude && live?.executionMode === "claude-follower"
-                      ? claudeConnectionCopy[locale].attachments
+                      ? claudeConnectionCopyForSurface(locale, "web").attachments
                       : capabilities?.features.attachments?.reason || copy.permission
                 }
                 onClick={() => fileInput.current?.click()}
@@ -617,13 +617,13 @@ export function SessionComposer({
         </p>
       )}
       {error && (
-        <p role="alert" className="px-3 text-xs text-destructive">
+        <p role="alert" className="px-3 text-xs text-destructive-text">
           {error}
         </p>
       )}
       {compacting && (
         <p role="status" className="px-3 text-xs leading-5 text-muted-foreground">
-          {contextUsageCopy[locale].compactingDetail}
+          {contextUsageCopyForSurface(locale, "web").compactingDetail}
         </p>
       )}
       {!isClaude && access?.device?.accessMode !== "full" && (

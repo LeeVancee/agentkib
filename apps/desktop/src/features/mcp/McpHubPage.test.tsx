@@ -205,6 +205,30 @@ describe("McpHubPage management", () => {
     vi.mocked(api.saveMcpConfiguration).mockResolvedValue(state());
   });
   afterEach(cleanup);
+  it.each([
+    ["zh-CN", "高级设置", "官方目录、运行实例与网络", "官方目录"],
+    ["zh-TW", "進階設定", "官方目錄、執行實例與網路", "官方目錄"],
+    [
+      "en-US",
+      "Advanced settings",
+      "Official directory, runtimes and network",
+      "Official directory",
+    ],
+    ["ja-JP", "詳細設定", "公式ディレクトリ・実行インスタンス・ネットワーク", "公式ディレクトリ"],
+  ] as const)(
+    "labels the advanced section and directory without starting a search in %s",
+    async (locale, advanced, sections, directory) => {
+      await initializeI18n(locale);
+      renderHub();
+      const toggle = screen.getByRole("button", { name: advanced });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByRole("heading", { name: sections })).toBeNull();
+      fireEvent.click(toggle);
+      expect(await screen.findByRole("heading", { name: sections })).toBeVisible();
+      expect(screen.getByRole("heading", { name: directory })).toBeVisible();
+      expect(api.searchMcpRegistry).not.toHaveBeenCalled();
+    },
+  );
   it("requires confirmation before stopping a service in every scope", async () => {
     const confirmation = deferred<boolean>();
     dialogs.confirm.mockReturnValueOnce(confirmation.promise).mockResolvedValueOnce(true);
@@ -236,7 +260,7 @@ describe("McpHubPage management", () => {
       name: `${tr("mcp.uninstall")} ${installation.name}`,
     });
     expect(uninstall).toHaveAttribute("title", `${tr("mcp.uninstall")} ${installation.name}`);
-    expect(uninstall).toHaveClass("bg-destructive/10");
+    expect(uninstall).toHaveClass("bg-[var(--destructive-soft)]", "text-destructive-text");
     expect(screen.getByText(tr("mcp.checkUpdatesHint"))).toBeVisible();
     expect(api.searchMcpRegistry).not.toHaveBeenCalled();
   });

@@ -42,10 +42,7 @@ export function ProviderTabs({
             <TabsTrigger
               key={provider.id}
               value={provider.id}
-              className={cn(
-                "relative grid h-auto min-h-[86px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-none",
-                unavailable && "opacity-60",
-              )}
+              className="relative grid h-auto min-h-[86px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-none"
             >
               <ProviderIcon provider={provider} />
               <span className="min-w-0 grid gap-0.5">
@@ -53,7 +50,7 @@ export function ProviderTabs({
                 <small
                   className={cn(
                     "truncate text-[11px] text-muted-foreground",
-                    isActive && "text-foreground/70",
+                    isActive && "text-quota-active-foreground",
                   )}
                 >
                   {provider.identity?.account_email ??
@@ -69,10 +66,10 @@ export function ProviderTabs({
                     <em
                       className={cn(
                         "text-[13px] font-bold not-italic",
-                        isActive && "text-primary",
+                        isActive && "text-primary-text",
                         !isActive && severity === "healthy" && "text-green-600",
                         !isActive && severity === "warning" && "text-amber-600",
-                        !isActive && severity === "danger" && "text-red-600",
+                        !isActive && severity === "danger" && "text-destructive-text",
                       )}
                     >
                       {Math.round(remaining)}%
@@ -141,7 +138,7 @@ export function QuotaProviderDetail({
           <span
             className={cn(
               snapshot.freshness === "stale" && "text-amber-600",
-              snapshot.freshness === "unavailable" && "text-red-600",
+              snapshot.freshness === "unavailable" && "text-destructive-text",
             )}
           >
             {tr(`quota.freshness.${snapshot.freshness}`)}

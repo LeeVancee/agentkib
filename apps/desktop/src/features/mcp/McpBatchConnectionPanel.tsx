@@ -206,7 +206,7 @@ export function McpBatchConnectionPanel({
         {tr("mcp.manage.checkPreview")}
       </Button>
       {error && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive-text">
           {error}
         </p>
       )}

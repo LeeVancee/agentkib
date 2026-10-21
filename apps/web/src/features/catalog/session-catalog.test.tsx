@@ -55,6 +55,23 @@ const sessions = [
 afterEach(cleanup);
 
 describe("SessionCatalog", () => {
+  it.each([
+    ["zh-CN", "项目信息不可用，请更新电脑上的 AgentKib。"],
+    ["zh-TW", "專案資訊不可用，請更新電腦上的 AgentKib。"],
+    ["en-US", "Project information unavailable. Update AgentKib on your computer."],
+    ["ja-JP", "プロジェクト情報を取得できません。コンピューター上の AgentKib を更新してください。"],
+  ] as const)(
+    "directs a legacy Web catalog to update the computer application in %s",
+    (locale, notice) => {
+      const onSelect = vi.fn();
+      render(
+        <SessionCatalog sessions={sessions} selected="" onSelect={onSelect} locale={locale} />,
+      );
+      expect(screen.getByRole("status")).toHaveTextContent(notice);
+      expect(onSelect).not.toHaveBeenCalled();
+    },
+  );
+
   it("reorders rows after an accepted catalog update without changing selection", () => {
     const props = { sessions, workspaces, selected: "primary", onSelect: vi.fn() };
     const view = render(<SessionCatalog {...props} />);

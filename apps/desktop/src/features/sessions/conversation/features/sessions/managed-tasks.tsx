@@ -346,8 +346,8 @@ export function ManagedTasks({
         <p className="text-sm text-muted-foreground">
           {managedText(
             locale,
-            "AgentKib must stay running on the host (the computer running the Agent). Tasks use workspace access and request approval when needed.",
-            "AgentKib 需要在主机（运行 Agent 的电脑）上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
+            "AgentKib must stay running on this computer (the computer running the Agent). Tasks use workspace access and request approval when needed.",
+            "AgentKib 需要在这台电脑上保持运行。任务使用工作区权限，需要审批时等待你的确认。",
           )}
         </p>
       )}
@@ -366,7 +366,7 @@ export function ManagedTasks({
         </label>
       )}
       {error && (
-        <div role="alert" className="break-words text-sm text-destructive">
+        <div role="alert" className="break-words text-sm text-destructive-text">
           <p>{error}</p>
           {errorDetail && (
             <Disclosure className="mt-2">
@@ -433,8 +433,8 @@ export function ManagedTasks({
                 <p>
                   {managedText(
                     locale,
-                    "Authorize a workspace in desktop Web settings first.",
-                    "请先在桌面 Web 设置中授权工作区。",
+                    "Authorize a workspace in Web settings in AgentKib on this computer first.",
+                    "请先在这台电脑上的 AgentKib 的 Web 设置中授权工作区。",
                   )}
                 </p>
               )}
@@ -455,7 +455,9 @@ export function ManagedTasks({
                         setEffort("");
                       }}
                     >
-                      <option value="">{managedText(locale, "Host default", "主机默认")}</option>
+                      <option value="">
+                        {managedText(locale, "Computer default", "这台电脑默认")}
+                      </option>
                       {options.models?.map((m) => (
                         <option key={m.id} value={m.id}>
                           {m.name || m.id}
@@ -492,7 +494,9 @@ export function ManagedTasks({
                       setPermissionMode(event.target.value as ClaudePermissionMode | "")
                     }
                   >
-                    <option value="">{managedText(locale, "Host default", "主机默认")}</option>
+                    <option value="">
+                      {managedText(locale, "Computer default", "这台电脑默认")}
+                    </option>
                     {options.permissionModes
                       .filter((item) => ["default", "plan", "acceptEdits"].includes(item.id))
                       .map((item) => (
@@ -507,8 +511,8 @@ export function ManagedTasks({
                 <p className="text-xs text-muted-foreground">
                   {managedText(
                     locale,
-                    "Uses the host Claude Code model and tool permissions by default. Creating a task does not start a model request.",
-                    "默认沿用主机 Claude Code 的模型与工具权限。创建任务不会调用模型。",
+                    "Uses the Claude Code model and tool permissions from this computer by default. Creating a task does not start a model request.",
+                    "默认沿用这台电脑上的 Claude Code 的模型与工具权限。创建任务不会调用模型。",
                   )}
                 </p>
               )}

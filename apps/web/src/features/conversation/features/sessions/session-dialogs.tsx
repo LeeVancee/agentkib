@@ -1,6 +1,6 @@
 import { NativeScope } from "../interactions/native-scope";
 import { NativeDecisions } from "../interactions/native-decisions";
-import { codexCopy } from "./codex-copy";
+import { codexCopyForSurface } from "./codex-copy";
 import { PreferencesDialog } from "../preferences/preferences-dialog";
 import { SessionDetailsDialog } from "../catalog/session-details-dialog";
 import { Button } from "../../components/ui/button";
@@ -72,7 +72,7 @@ export function SessionDialogs() {
         <Dialog panel closeLabel={t.close} title={t.approval} onClose={() => setModal(undefined)}>
           <p>
             {modal.decisionOptions?.length
-              ? codexCopy[locale].native
+              ? codexCopyForSurface(locale, "web").native
               : modal.method === "claude/can_use_tool"
                 ? t.claudeDecisionInfo
                 : t.decisionInfo}
@@ -155,7 +155,7 @@ export function SessionDialogs() {
                     className={
                       modal.method !== "session/request_permission" &&
                       (d === "accept" || d === "allow")
-                        ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                        ? "bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]"
                         : "border"
                     }
                     disabled={busy}

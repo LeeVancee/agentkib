@@ -456,7 +456,7 @@ export function GlobalSearchDialog({
                 </p>
               )}
               {Object.entries(sessions.errors).map(([id, error]) => (
-                <div role="status" key={id} className="p-3 text-sm text-destructive">
+                <div role="status" key={id} className="p-3 text-sm text-destructive-text">
                   <span>
                     {workspaceName(id)}: {error}
                   </span>
@@ -471,7 +471,7 @@ export function GlobalSearchDialog({
                 </p>
               )}
               {assets.error && (
-                <div role="status" className="p-3 text-sm text-destructive">
+                <div role="status" className="p-3 text-sm text-destructive-text">
                   {assets.error}
                   <Button variant="ghost" size="sm" onClick={assets.retry}>
                     {tr("sessions.retry")}

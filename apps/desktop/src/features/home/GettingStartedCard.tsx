@@ -135,7 +135,7 @@ export function GettingStartedCard({
       {errorMessage && (
         <div
           role="alert"
-          className="border-t border-destructive/20 bg-destructive/5 px-5 py-2.5 text-xs text-destructive"
+          className="border-t border-destructive/20 bg-destructive/5 px-5 py-2.5 text-xs text-destructive-text"
         >
           {errorMessage}
         </div>

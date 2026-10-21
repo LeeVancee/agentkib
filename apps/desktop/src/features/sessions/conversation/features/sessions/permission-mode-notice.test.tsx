@@ -29,10 +29,32 @@ describe("compact Claude permission notice", () => {
         fireEvent.click(trigger);
         expect(trigger).toHaveAttribute("aria-expanded", "true");
         expect(explanation).toBeVisible();
-        if (mode !== null)
-          expect(screen.getByText(permissionModeCopy[locale].previous)).toBeVisible();
+        if (mode !== null) {
+          const previous = screen.getByText(permissionModeCopy[locale].previous);
+          expect(previous).toBeVisible();
+          expect(previous.className).not.toMatch(/\bopacity-\d+/);
+        }
         fireEvent.click(trigger);
         expect(explanation).not.toBeVisible();
+        view.unmount();
+      }
+    },
+  );
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "keeps the previous-mode explanation fully readable without compact disclosure in %s",
+    (locale) => {
+      for (const mode of ["auto", "dontAsk", "bypassPermissions"] as const) {
+        const view = render(
+          <PermissionModeNotice permission={{ mode, previous: true }} locale={locale} />,
+        );
+        const notice = screen.getByRole("status");
+        expect(notice).toHaveTextContent(permissionModeCopy[locale][mode]);
+        const previous = screen.getByText(permissionModeCopy[locale].previous);
+        expect(previous).toBeVisible();
+        expect(previous.className).not.toMatch(/\bopacity-\d+/);
+        expect(notice.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+        expect(screen.queryByRole("button")).toBeNull();
         view.unmount();
       }
     },

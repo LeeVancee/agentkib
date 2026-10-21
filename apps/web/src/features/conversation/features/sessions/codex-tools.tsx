@@ -12,9 +12,9 @@ import { Input } from "../../components/ui/input";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
-import { codexCopy, codexReason } from "./codex-copy";
+import { codexCopyForSurface, codexReason } from "./codex-copy";
 import { blockedWhileCompacting } from "./session-activity";
-import { contextUsageCopy } from "./context-usage-copy";
+import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { subscribeSessionInvalidation } from "./session-events";
 import { sessionAgentCopy } from "./session-agent-copy";
 
@@ -46,7 +46,7 @@ export function CodexTools({
     live,
     refresh,
   } = session;
-  const copy = codexCopy[locale];
+  const copy = codexCopyForSurface(locale, "web");
   const agentCopy = sessionAgentCopy[locale];
   const isClaude = current?.agent === "claude-code";
   const queueReadable =
@@ -193,8 +193,9 @@ export function CodexTools({
   };
   const reason = (action: SessionAction) =>
     live?.activity === "compacting" && blockedWhileCompacting(action)
-      ? contextUsageCopy[locale].compactingDetail
-      : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason).text;
+      ? contextUsageCopyForSurface(locale, "web").compactingDetail
+      : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason, "web")
+          .text;
   async function run(
     action: SessionAction,
     fields: Omit<
@@ -420,7 +421,7 @@ export function CodexTools({
             <h3>{copy.capabilities}</h3>
             <p className="break-words text-xs text-muted-foreground">
               {capabilities
-                ? `${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason).text}` : ""}`
+                ? `${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason, "web").text}` : ""}`
                 : copy.unavailable}
             </p>
             <ul className="space-y-1 text-xs text-muted-foreground">
@@ -432,8 +433,9 @@ export function CodexTools({
                 )
                 .map(([action, feature]) => (
                   <li key={action}>
-                    {actionLabels[action] ?? action}: {codexReason(locale, feature?.reason).text}
-                    {codexReason(locale, feature?.reason).technical && (
+                    {actionLabels[action] ?? action}:{" "}
+                    {codexReason(locale, feature?.reason, "web").text}
+                    {codexReason(locale, feature?.reason, "web").technical && (
                       <details>
                         <summary>{copy.context}</summary>
                         <code className="break-all">{feature?.reason}</code>

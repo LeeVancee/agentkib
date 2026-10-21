@@ -62,7 +62,7 @@ export function ArtifactBrowser({
   showTrigger?: boolean;
 } = {}) {
   const { client, access, current, selected, locale, embedded } = useSession();
-  const copy = artifactCopy(locale);
+  const copy = artifactCopy(locale, "web");
   const titleId = useId();
   const [localOpen, setLocalOpen] = useState(false);
   const open = (controlledOpen ?? localOpen) && Boolean(access?.device?.files);
@@ -506,7 +506,7 @@ export function ArtifactBrowser({
                 </>
               )}
               {error && (
-                <p role="alert" className="break-words text-sm text-destructive">
+                <p role="alert" className="break-words text-sm text-destructive-text">
                   {error}
                 </p>
               )}

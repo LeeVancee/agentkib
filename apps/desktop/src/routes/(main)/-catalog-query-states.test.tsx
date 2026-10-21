@@ -183,6 +183,24 @@ beforeEach(async () => {
 });
 afterEach(cleanup);
 
+it.each([
+  ["zh-CN", "指令", "钩子与配置档", "搜索指令、技能、MCP、钩子…"],
+  ["zh-TW", "指令", "鉤子與設定檔", "搜尋指令、技能、MCP、鉤子…"],
+  ["en-US", "Instructions", "Hooks & Profiles", "Search Instructions, Skills, MCP, Hooks…"],
+  ["ja-JP", "指示", "フックとプロファイル", "指示、スキル、MCP、フックを検索…"],
+] as const)(
+  "renders the approved resource terms in navigation and search in %s",
+  async (locale, instructions, hooks, search) => {
+    await initializeI18n(locale);
+    start();
+    const navigation = within(screen.getByRole("navigation"));
+    expect(await navigation.findByRole("button", { name: `${instructions} 0` })).toBeVisible();
+    expect(navigation.getByRole("button", { name: `${hooks} 0` })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: search })).toBeVisible();
+    expect(doubles.scan).not.toHaveBeenCalled();
+  },
+);
+
 async function openAssetWorkspace() {
   fireEvent.click(await screen.findByRole("button", { name: /Policy Alpha/ }));
   fireEvent.click(screen.getByRole("button", { name: tr("catalog.openWorkspace") }));

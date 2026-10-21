@@ -69,7 +69,7 @@ export function McpRuntimeProbe({
         </div>
       )}
       {error !== undefined && (
-        <p role="alert" className="flex items-start gap-1 text-xs text-destructive">
+        <p role="alert" className="flex items-start gap-1 text-xs text-destructive-text">
           <CircleAlert size={13} className="shrink-0" />
           {localizeMessage(error)}
         </p>

@@ -21,7 +21,7 @@ import {
 } from "@agentkib/session-catalog";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { dictionaries, type Locale } from "../../i18n";
-import { catalogCopy } from "./catalog-copy";
+import { catalogCopyForSurface } from "./catalog-copy";
 import { interactionCopy } from "../interactions/question-form";
 
 export interface CatalogWorkspace {
@@ -50,7 +50,7 @@ export function SessionCatalog({
   status?: CatalogStatus;
 }) {
   const t = dictionaries[locale],
-    c = catalogCopy[locale];
+    c = catalogCopyForSurface(locale, "web");
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState("all");
   const [filter, setFilter] = useState<"current" | "archived" | "metadata" | "all">("current");

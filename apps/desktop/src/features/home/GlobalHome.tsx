@@ -217,7 +217,7 @@ export function GlobalHome({
       )}
 
       {addError && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-destructive-text">
           {localizeMessage(addError.reason)}
         </p>
       )}

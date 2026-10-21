@@ -202,7 +202,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
         )}
       </div>
       {error && (
-        <div className="mx-5 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div className="mx-5 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
           {error}
         </div>
       )}

@@ -538,7 +538,7 @@ export function AppSidebar(props: {
                   )}
                   {!props.workspaces?.length && props.workspacesError && (
                     <div className="grid justify-items-start gap-2 px-3 py-4">
-                      <p role="alert" className="text-sm text-destructive">
+                      <p role="alert" className="text-sm text-destructive-text">
                         {props.workspacesError}
                       </p>
                       <Button

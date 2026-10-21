@@ -1,4 +1,5 @@
 import type { SupportedLocale as Locale } from "@/core/types";
+import { surfaceText, type SessionSurface } from "./session-surface-copy";
 const copy: Record<string, [string, string]> = {
   "无法读取已保存的请求标识。": [
     "無法讀取已儲存的請求識別碼。",
@@ -24,11 +25,10 @@ const copy: Record<string, [string, string]> = {
   新建任务: ["新增任務", "タスクを作成"],
   执行工具: ["執行工具", "実行ツール"],
   执行工具暂不可用: ["執行工具暫不可用", "実行ツールは現在利用できません"],
-  "AgentKib 需要在主机（运行 Agent 的电脑）上保持运行。任务使用工作区权限，需要审批时等待你的确认。":
-    [
-      "AgentKib 需要在主機（執行 Agent 的電腦）上保持執行。任務使用工作區權限，需要審批時等待你的確認。",
-      "AgentKib をホスト（Agent を実行するコンピューター）で起動しておく必要があります。タスクはワークスペースの権限を使用し、必要に応じて承認を待ちます。",
-    ],
+  "AgentKib 需要在这台电脑上保持运行。任务使用工作区权限，需要审批时等待你的确认。": [
+    "AgentKib 需要在這台電腦上保持執行。任務使用工作區權限，需要審批時等待你的確認。",
+    "AgentKib をこのコンピューターで起動しておく必要があります。タスクはワークスペースの権限を使用し、必要に応じて承認を待ちます。",
+  ],
   "上次操作结果尚未确认。请等待系统确认已保存的请求，再执行新的操作。": [
     "上次操作結果尚未確認。請等待系統確認已儲存的請求，再執行新操作。",
     "前回の結果は未確認です。保存済みリクエストの処理状況を確認してから次の操作を行ってください。",
@@ -40,24 +40,31 @@ const copy: Record<string, [string, string]> = {
   "正在读取…": ["正在讀取…", "読み込み中…"],
   "Codex 暂不可用": ["Codex 暫不可用", "Codex は現在利用できません"],
   工作区: ["工作區", "ワークスペース"],
-  "请先在桌面 Web 设置中授权工作区。": [
-    "請先在桌面 Web 設定中授權工作區。",
-    "先にデスクトップの Web 設定でワークスペースを許可してください。",
+  "请先在这台电脑上的 AgentKib 的 Web 设置中授权工作区。": [
+    "請先在這台電腦上的 AgentKib 的 Web 設定中授權工作區。",
+    "先にこのコンピューター上の AgentKib の Web 設定でワークスペースを許可してください。",
   ],
   模型: ["模型", "モデル"],
-  主机默认: ["主機預設", "ホストの既定値"],
+  这台电脑默认: ["這台電腦預設", "このコンピューターの既定値"],
   思考强度: ["思考強度", "推論の強度"],
   默认: ["預設", "既定値"],
   创建: ["建立", "作成"],
-  "默认沿用主机 Claude Code 的模型与工具权限。创建任务不会调用模型。": [
-    "預設沿用主機 Claude Code 的模型與工具權限。建立任務不會呼叫模型。",
-    "既定ではホストの Claude Code のモデルとツール権限を使用します。タスクを作成してもモデルは呼び出しません。",
+  "默认沿用这台电脑上的 Claude Code 的模型与工具权限。创建任务不会调用模型。": [
+    "預設沿用這台電腦上的 Claude Code 的模型與工具權限。建立任務不會呼叫模型。",
+    "既定ではこのコンピューターの Claude Code のモデルとツール権限を使用します。タスクを作成してもモデルは呼び出しません。",
   ],
 };
-export function managedText(locale: Locale, english: string, chinese: string) {
-  return locale === "en-US"
-    ? english
-    : locale === "zh-CN"
-      ? chinese
-      : (copy[chinese]?.[locale === "zh-TW" ? 0 : 1] ?? chinese);
+export function managedText(
+  locale: Locale,
+  english: string,
+  chinese: string,
+  surface: SessionSurface = "desktop",
+) {
+  const text =
+    locale === "en-US"
+      ? english
+      : locale === "zh-CN"
+        ? chinese
+        : (copy[chinese]?.[locale === "zh-TW" ? 0 : 1] ?? chinese);
+  return surfaceText(text, surface, locale);
 }

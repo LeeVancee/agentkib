@@ -15,6 +15,32 @@ afterEach(() => {
 });
 
 describe("hosted remote entry", () => {
+  it.each([
+    ["zh-CN", "局域网直连", "电脑上的 AgentKib"],
+    ["zh-TW", "區域網路直連", "電腦上的 AgentKib"],
+    ["en-US", "LAN direct connection", "AgentKib on your computer"],
+    ["ja-JP", "LAN 直接接続", "コンピューター上の AgentKib"],
+  ] as const)("names the current LAN setting in %s", async (locale, setting, app) => {
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    render(<WebApplication hosted initialLocale={locale} />);
+    const note = await screen.findByText(hostedCopy[locale].lanNote);
+    expect(note).toHaveTextContent(setting);
+    expect(note).toHaveTextContent(app);
+    const steps = screen.getAllByRole("listitem");
+    expect(steps).toHaveLength(3);
+    for (const step of steps) {
+      expect(step).toHaveTextContent(app);
+      expect(step.textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
+    }
+    if (locale === "zh-CN") expect(steps[0]).toHaveTextContent("“允许手机访问这台电脑”");
+    expect(screen.getByRole("link", { name: hostedCopy[locale].lan })).toHaveAttribute(
+      "href",
+      "/connect",
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it.each(Object.keys(hostedCopy) as Locale[])(
     "shows guidance without accessing a computer in %s",
     async (locale) => {
@@ -44,7 +70,9 @@ describe("hosted remote entry", () => {
     fireEvent.change(await screen.findByLabelText("语言"), { target: { value: "en-US" } });
     fireEvent.click(screen.getByRole("link", { name: "Local network connection" }));
     expect(await screen.findByRole("heading", { name: "Local network connection" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Connect to desktop AgentKib" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Connect to AgentKib on your computer" }),
+    ).toBeDisabled();
   });
 
   it("accepts an old QR address only after validating private LAN HTTP", async () => {
@@ -53,7 +81,7 @@ describe("hosted remote entry", () => {
     expect(await screen.findByLabelText("电脑的局域网地址")).toHaveValue(
       "http://192.168.1.10:1422",
     );
-    expect(screen.getByRole("button", { name: "连接桌面 AgentKib" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "连接电脑上的 AgentKib" })).toBeDisabled();
     expect(location.hash).toBe("#/connect");
   });
 
@@ -81,14 +109,14 @@ describe("hosted remote entry", () => {
       "http://192.168.1.10:1422",
     );
     fireEvent.click(screen.getByRole("checkbox"));
-    expect(screen.getByRole("button", { name: "连接桌面 AgentKib" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "连接电脑上的 AgentKib" })).toBeEnabled();
     history.replaceState(null, "", "/#connect=http%3A%2F%2F192.168.1.11%3A1422");
     fireEvent(window, new HashChangeEvent("hashchange"));
     await waitFor(() =>
       expect(screen.getByLabelText("电脑的局域网地址")).toHaveValue("http://192.168.1.11:1422"),
     );
     expect(screen.getByRole("checkbox")).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "连接桌面 AgentKib" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "连接电脑上的 AgentKib" })).toBeDisabled();
     expect(location.hash).toBe("#/connect");
     expect(fetcher).not.toHaveBeenCalled();
   });

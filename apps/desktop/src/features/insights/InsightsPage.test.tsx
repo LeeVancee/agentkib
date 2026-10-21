@@ -81,6 +81,12 @@ describe("InsightsPage", () => {
     const { container, rerender } = render(<InsightsPage section="overview" workspaces={[]} />);
     expect(screen.getByRole("status").textContent).toBe(tr("insights.refreshing"));
     expect(container.firstElementChild!.getAttribute("aria-busy")).toBe("true");
+    // 占位数据仍然可读；祖先透明度会把已达标的次要文字再次调淡。
+    const legend = screen.getByText(tr("insights.less"));
+    for (let element: HTMLElement | null = legend; element; element = element.parentElement) {
+      expect(element.className).not.toMatch(/(?:^|\s)(?:\[[^\s]+\]:)?opacity-\d/);
+    }
+    expect(screen.getByRole("heading", { name: tr("insights.heatmap") })).toBeTruthy();
     state.view = { ...state.view, isPlaceholderData: false };
     rerender(<InsightsPage section="overview" workspaces={[]} />);
     expect(screen.queryByRole("status")).toBeNull();

@@ -220,7 +220,7 @@ describe("MCP row action hierarchy", () => {
       );
       expect(dialog).toHaveTextContent(tr("mcp.manage.removeConfirm", { name: "Blender" }));
       expect(within(dialog).getByRole("button", { name: tr("common.confirm") })).toHaveClass(
-        "text-destructive",
+        "text-destructive-text",
       );
       await user.click(within(dialog).getByRole("button", { name: tr("common.cancel") }));
       expect(api.removeMcpConfiguration).not.toHaveBeenCalled();

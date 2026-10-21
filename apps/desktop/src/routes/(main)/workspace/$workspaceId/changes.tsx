@@ -149,7 +149,7 @@ export function Changes({
           </code>
         </div>
         <Button
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
+          className="bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]"
           disabled={busy || workspaceBusy}
           onClick={() =>
             void runLocked(async () => {
@@ -304,7 +304,7 @@ export function Changes({
               className={cn(
                 "inline-flex items-center rounded-md px-2 py-1 text-xs font-medium",
                 file.risk === "high"
-                  ? "text-destructive"
+                  ? "text-destructive-text"
                   : file.risk === "medium"
                     ? "text-amber-700"
                     : "text-muted-foreground",
@@ -349,7 +349,7 @@ export function Changes({
                 className={cn(
                   "inline-flex items-center rounded-md px-2 py-1 text-xs font-medium",
                   change.risk === "high"
-                    ? "text-destructive"
+                    ? "text-destructive-text"
                     : change.risk === "medium"
                       ? "text-amber-700"
                       : "text-muted-foreground",
@@ -370,7 +370,7 @@ export function Changes({
         {error && (
           <div
             role="alert"
-            className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+            className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text"
           >
             {error}
           </div>
@@ -404,7 +404,7 @@ export function Changes({
             )}
             {hasChanges && (
               <Button
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
+                className="bg-primary text-primary-foreground hover:bg-[var(--primary-hover-strong)]"
                 onClick={() =>
                   void (origin === "handoff" && canApplyAndContinue ? applyAndContinue() : apply())
                 }

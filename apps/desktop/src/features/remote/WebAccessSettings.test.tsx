@@ -82,7 +82,7 @@ it("supports keyboard access to advanced settings without losing unsaved values"
   trigger.focus();
   await user.keyboard("{Enter}");
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
-  const broker = screen.getByLabelText("Bridge service (official or self-hosted)");
+  const broker = screen.getByLabelText("Connection service (official or self-hosted)");
   fireEvent.change(broker, { target: { value: "https://self-hosted.example.com" } });
   trigger.focus();
   await user.keyboard(" ");
@@ -90,7 +90,8 @@ it("supports keyboard access to advanced settings without losing unsaved values"
   expect(screen.queryByRole("switch", { name: "Enable local Web service" })).toBeNull();
   await user.keyboard("{Enter}");
   expect(
-    (screen.getByLabelText("Bridge service (official or self-hosted)") as HTMLInputElement).value,
+    (screen.getByLabelText("Connection service (official or self-hosted)") as HTMLInputElement)
+      .value,
   ).toBe("https://self-hosted.example.com");
   expect(document.activeElement).toBe(trigger);
   expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
@@ -280,7 +281,8 @@ it.each(["https://remote.agentkib.com", "https://api.remote.agentkib.com"])(
     const advanced = screen.getByText("Advanced connection and permissions");
     fireEvent.click(advanced);
     expect(
-      (screen.getByLabelText("Bridge service (official or self-hosted)") as HTMLInputElement).value,
+      (screen.getByLabelText("Connection service (official or self-hosted)") as HTMLInputElement)
+        .value,
     ).toBe(legacyUrl);
     expect(
       (screen.getByRole("button", { name: "Enable remote access" }) as HTMLButtonElement).disabled,
@@ -462,7 +464,7 @@ it("marks a ready connection enabled and restores setup only after changing its 
   ).toBe(false);
   fireEvent.change(connector, { target: { value: "" } });
   expect(screen.queryByLabelText("Invitation (first connection only)")).toBeNull();
-  fireEvent.change(screen.getByLabelText("Bridge service (official or self-hosted)"), {
+  fireEvent.change(screen.getByLabelText("Connection service (official or self-hosted)"), {
     target: { value: "https://bridge.example.com" },
   });
   expect(screen.getByLabelText("Invitation (first connection only)")).toBeTruthy();
@@ -481,7 +483,7 @@ it("shows code-only full access without confirmation or per-workspace grants for
   });
   render(<WebAccessSettings />);
   expect(await screen.findByText("Trusted phone")).toBeTruthy();
-  expect(screen.getByText("Full remote access")).toBeTruthy();
+  expect(screen.getByText("Full control")).toBeTruthy();
   expect(screen.getByText(/authorizes all AgentKib workspaces at the selected level/)).toBeTruthy();
   expect(screen.queryByText("Pending browsers")).toBeNull();
   fireEvent.click(screen.getByText("Advanced connection and permissions"));
@@ -493,6 +495,41 @@ it("shows code-only full access without confirmation or per-workspace grants for
   fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
   await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: "revoke", id: "full" }));
 });
+
+it.each([
+  ["zh-CN", "完整控制", "生成授权码", "授权档位"],
+  ["zh-TW", "完整控制", "產生授權碼", "授權等級"],
+  ["en-US", "Full control", "Generate 8-digit access code", "Access level"],
+  ["ja-JP", "フルコントロール", "8 桁の認証コードを生成", "アクセスレベル"],
+] as const)(
+  "uses the approved remote terms while keeping full grants unchanged in %s",
+  async (locale, fullControl, generate, level) => {
+    const { remoteEntryCopy } = await import("./remote-entry-copy");
+    request.mockResolvedValue({
+      ...status,
+      config: { ...status.config, enabled: true },
+      running: true,
+      pairingMode: "code",
+    });
+    await act(() => changeLocale(locale));
+    try {
+      render(<WebAccessSettings />);
+      fireEvent.click(
+        await screen.findByRole("button", { name: remoteEntryCopy[locale].advanced }),
+      );
+      expect(screen.getByRole("combobox", { name: level })).toHaveTextContent(fullControl);
+      fireEvent.click(screen.getByRole("button", { name: generate }));
+      await waitFor(() =>
+        expect(request).toHaveBeenCalledWith({ operation: "generate-code", access: "full" }),
+      );
+      expect(
+        request.mock.calls.every(([body]) => ["status", "generate-code"].includes(body.operation)),
+      ).toBe(true);
+    } finally {
+      await act(() => changeLocale("en-US"));
+    }
+  },
+);
 
 it("generates a read-only code and changes an authorized device's access level", async () => {
   const user = userEvent.setup();
@@ -528,7 +565,7 @@ it("generates a read-only code and changes an authorized device's access level",
   );
 
   await user.click(screen.getByRole("combobox", { name: "Access level: Tablet" }));
-  await user.click(await screen.findByRole("option", { name: "Full remote access" }));
+  await user.click(await screen.findByRole("option", { name: "Full control" }));
   await waitFor(() =>
     expect(request).toHaveBeenCalledWith({ operation: "set-access", id: "tablet", access: "full" }),
   );
@@ -591,7 +628,7 @@ it("keeps legacy grant settings explicitly separate on code-only hosts", async (
   fireEvent.click(screen.getByText("Advanced connection and permissions"));
   expect(screen.getByText("Legacy browser permissions")).toBeTruthy();
   expect(screen.getByRole("checkbox", { name: "Private project" })).toBeTruthy();
-  expect(screen.queryByText("Full remote access")).toBeNull();
+  expect(screen.queryByText("Full control")).toBeNull();
   expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "configure" }));
 });
 
@@ -633,13 +670,13 @@ it("shows the experimental-control warning in the selected locale without mixed 
   const { remoteEntryCopy } = await import("./remote-entry-copy");
   const warnings = {
     "zh-CN":
-      "实验功能仅在通过验证的主机与会话上可用；停止仅表示中断当前轮次，不保证后台命令已结束。",
+      "实验功能仅在通过验证的这台电脑与会话上可用；停止仅表示中断当前轮次，不保证后台命令已结束。",
     "zh-TW":
-      "實驗功能僅在通過驗證的主機與對話上可用；停止僅表示中斷目前輪次，不保證背景命令已結束。",
+      "實驗功能僅在通過驗證的這台電腦與對話上可用；停止僅表示中斷目前輪次，不保證背景命令已結束。",
     "en-US":
-      "Experimental controls require a verified host and session. Stopping interrupts a turn; background commands may still run.",
+      "Experimental controls require a verified computer and session. Stopping interrupts a turn; background commands may still run.",
     "ja-JP":
-      "実験的な操作は検証済みのホストと会話のみで利用できます。停止は現在のターンを中断します。",
+      "実験的な操作は検証済みのこのコンピューターと会話のみで利用できます。停止は現在のターンを中断しますが、バックグラウンドコマンドの終了を保証するものではありません。",
   };
   request.mockResolvedValue({ ...status, experimentalAvailable: true });
   await act(() => changeLocale("en-US"));
@@ -691,7 +728,7 @@ it("keeps unsaved settings visible outside advanced controls and saves once whil
   expect(request.mock.calls.filter(([input]) => input.operation === "configure")).toHaveLength(1);
   expect(screen.getByRole("button", { name: "Saving settings…" })).toBeDisabled();
   expect(directories).toBeDisabled();
-  expect(screen.getByLabelText("Bridge service (official or self-hosted)")).toBeDisabled();
+  expect(screen.getByLabelText("Connection service (official or self-hosted)")).toBeDisabled();
   expect(screen.getByLabelText("Custom frpc executable (optional)")).toBeDisabled();
   expect(screen.getByLabelText("Preview bandwidth (KiB/s; save settings to apply)")).toBeDisabled();
   expect(screen.getByLabelText("Invitation (first connection only)")).toBeDisabled();
@@ -856,7 +893,7 @@ it("refreshes untouched fields but preserves edited ports and an intentionally c
     "aria-checked",
     "true",
   );
-  expect(screen.getByLabelText("Bridge service (official or self-hosted)")).toHaveValue(
+  expect(screen.getByLabelText("Connection service (official or self-hosted)")).toHaveValue(
     "https://new.example.com",
   );
   expect(screen.getByLabelText("Custom frpc executable (optional)")).toHaveValue("");

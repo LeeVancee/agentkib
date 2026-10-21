@@ -242,7 +242,7 @@ export function McpImportPanel({
       )}
       {migrated && <p role="status">{tr("mcp.manage.reloadHint")}</p>}
       {error && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive-text">
           {error}
         </p>
       )}

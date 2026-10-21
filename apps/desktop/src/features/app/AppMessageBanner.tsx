@@ -12,7 +12,7 @@ export function AppMessageBanner() {
   return (
     <div
       role="alert"
-      className="mx-7 mt-3 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+      className="mx-7 mt-3 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text"
     >
       <CircleAlert size={17} className="mt-0.5 shrink-0" aria-hidden="true" />
       <span className="min-w-0 flex-1 break-words">{message}</span>

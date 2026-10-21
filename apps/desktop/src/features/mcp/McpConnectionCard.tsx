@@ -296,7 +296,10 @@ export function McpConnectionCard({
               </p>
             )}
             {loadedKey === contextKey && infoError !== undefined && (
-              <div role="alert" className="grid justify-items-start gap-2 text-sm text-destructive">
+              <div
+                role="alert"
+                className="grid justify-items-start gap-2 text-sm text-destructive-text"
+              >
                 <p>{localizeMessage(infoError)}</p>
                 <Button variant="outline" onClick={() => setRetry((value) => value + 1)}>
                   {tr("mcp.connection.retry")}
@@ -317,7 +320,9 @@ export function McpConnectionCard({
                     {currentInfo.url}
                   </code>
                   <span
-                    className={currentInfo.hub_running ? "text-emerald-600" : "text-destructive"}
+                    className={
+                      currentInfo.hub_running ? "text-emerald-600" : "text-destructive-text"
+                    }
                   >
                     {tr(currentInfo.hub_running ? "mcp.running" : "mcp.connection.hubStopped")}
                   </span>
@@ -430,7 +435,8 @@ export function McpConnectionCard({
                                     "flex px-3 py-0.5",
                                     line.type === "added" &&
                                       "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-                                    line.type === "removed" && "bg-destructive/10 text-destructive",
+                                    line.type === "removed" &&
+                                      "bg-destructive/10 text-destructive-text",
                                   )}
                                 >
                                   <span className="w-5 shrink-0">
@@ -462,7 +468,7 @@ export function McpConnectionCard({
                           </Label>
                         )}
                         {error !== undefined && (
-                          <p role="alert" className="text-sm text-destructive">
+                          <p role="alert" className="text-sm text-destructive-text">
                             {localizeMessage(error)}
                           </p>
                         )}
@@ -539,7 +545,7 @@ export function McpConnectionCard({
                   </div>
                 )}
                 {error !== undefined && (
-                  <p role="alert" className="flex items-start gap-2 text-sm text-destructive">
+                  <p role="alert" className="flex items-start gap-2 text-sm text-destructive-text">
                     <CircleAlert size={15} className="mt-0.5 shrink-0" />
                     {localizeMessage(error)}
                   </p>

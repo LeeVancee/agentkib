@@ -78,7 +78,7 @@ function SessionShell() {
       {error && (
         <div
           role="alert"
-          className="flex shrink-0 items-center justify-between gap-3 border-b border-destructive/20 bg-destructive/5 px-5 py-2 text-sm text-destructive"
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-destructive/20 bg-destructive/5 px-5 py-2 text-sm text-destructive-text"
         >
           <span>
             {connection.type === "lan-http"

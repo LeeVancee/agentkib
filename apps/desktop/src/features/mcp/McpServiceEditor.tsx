@@ -159,7 +159,7 @@ export function McpServiceEditor({
       </div>
       {!entry && <p className="text-sm">{tr("mcp.manage.disabledByDefault")}</p>}
       {error && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive-text">
           {error}
         </p>
       )}

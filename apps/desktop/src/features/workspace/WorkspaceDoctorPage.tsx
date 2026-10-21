@@ -176,7 +176,7 @@ export function WorkspaceDoctorPage({
       {(repairError || error) && (
         <div
           role="alert"
-          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text"
         >
           <CircleAlert size={16} />
           {repairError || localizeMessage(error)}
@@ -267,7 +267,7 @@ export function WorkspaceDoctorPage({
                     </span>
                   )}
                 </header>
-                <p className="m-0 mt-1 text-xs opacity-80">
+                <p className="m-0 mt-1 text-xs">
                   {issue.agent ? `${agentLabel(issue.agent)} · ` : ""}
                   {issue.asset_kind
                     ? tr(`status.asset.${issue.asset_kind}`)
@@ -281,7 +281,7 @@ export function WorkspaceDoctorPage({
                     {evidence.path && <code className="font-mono">{evidence.path}</code>}
                     <span>{evidence.detail}</span>
                     {evidence.expected && (
-                      <small className="opacity-75">
+                      <small>
                         {tr("doctor.expected")}: {shortHash(evidence.expected)} ·{" "}
                         {tr("doctor.actual")}: {shortHash(evidence.actual ?? tr("doctor.missing"))}
                       </small>
@@ -346,7 +346,7 @@ function DoctorCell({ value }: { value: DoctorAssetStatus }) {
         <Icon size={14} />
         <strong>{tr(`doctor.status.${value.status}`)}</strong>
       </span>
-      <small className="text-[11px] opacity-75">
+      <small className="text-[11px]">
         {value.actual} / {value.expected}
       </small>
     </span>

@@ -4,7 +4,7 @@ import { CodexComposer } from "@/features/conversation/features/sessions/codex-c
 import { useSession } from "@/features/conversation/features/sessions/session-context";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
 import { composerLayoutCopy } from "@/features/conversation/features/sessions/composer-layout-copy";
-import { codexCopy } from "@/features/conversation/features/sessions/codex-copy";
+import { codexCopyForSurface } from "@/features/conversation/features/sessions/codex-copy";
 import { publishSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
@@ -94,6 +94,64 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("responsive composer behavior", () => {
+  it.each([
+    ["zh-CN", "电脑上的 AgentKib 尚未开启执行控制。"],
+    ["zh-TW", "電腦上的 AgentKib 尚未啟用執行控制。"],
+    ["en-US", "Execution control is not enabled in AgentKib on your computer."],
+    ["ja-JP", "コンピューター上の AgentKib で実行操作が有効になっていません。"],
+  ] as const)(
+    "identifies the computer application when execution control is off in %s",
+    async (locale, notice) => {
+      state.locale = locale;
+      state.t = dictionaries[locale];
+      state.access = { ...state.access!, experimentalEnabled: false };
+      state.canSend = false;
+      state.controlReady = false;
+      state.message = "Keep this draft";
+      render(<CodexComposer />);
+      expect(await screen.findByText(notice)).toBeVisible();
+      const send = screen.getByRole("button", { name: state.t.send });
+      expect(send).toBeDisabled();
+      fireEvent.click(send);
+      expect(state.control).not.toHaveBeenCalled();
+      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.setMessage).not.toHaveBeenCalled();
+      expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
+    },
+  );
+
+  it.each([
+    ["zh-CN", "连接协议不兼容。请更新电脑上的 AgentKib 并重新连接。"],
+    ["zh-TW", "連線協定不相容。請更新電腦上的 AgentKib 並重新連線。"],
+    [
+      "en-US",
+      "The connection protocol is incompatible. Update AgentKib on your computer and reconnect.",
+    ],
+    [
+      "ja-JP",
+      "接続プロトコルに互換性がありません。コンピューター上の AgentKib を更新して再接続してください。",
+    ],
+  ] as const)(
+    "directs an incompatible Web connection to update AgentKib in %s without sending",
+    async (locale, reason) => {
+      state.locale = locale;
+      state.t = dictionaries[locale];
+      state.access = { ...state.access!, protocolVersion: 1 };
+      state.canSend = false;
+      state.controlReady = false;
+      state.message = "Keep this draft";
+      render(<CodexComposer />);
+
+      expect(await screen.findByText(reason)).toBeVisible();
+      const send = screen.getByRole("button", { name: state.t.send });
+      expect(send).toBeDisabled();
+      fireEvent.click(send);
+      expect(state.control).not.toHaveBeenCalled();
+      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.setMessage).not.toHaveBeenCalled();
+      expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
+    },
+  );
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "keeps the complete settings label when no model is reported in %s",
     async (locale) => {
@@ -106,9 +164,13 @@ describe("responsive composer behavior", () => {
       });
       render(<CodexComposer />);
       await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalled());
-      const button = screen.getByRole("button", { name: codexCopy[locale].conversationSettings });
+      const button = screen.getByRole("button", {
+        name: codexCopyForSurface(locale, "web").conversationSettings,
+      });
       expect(button).toHaveClass("h-11", "shrink-0");
-      expect(screen.getByText(codexCopy[locale].conversationSettings)).not.toHaveClass("truncate");
+      expect(
+        screen.getByText(codexCopyForSurface(locale, "web").conversationSettings),
+      ).not.toHaveClass("truncate");
     },
   );
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
@@ -133,22 +195,22 @@ describe("responsive composer behavior", () => {
   it.each([
     [
       "zh-CN",
-      "当前模型不在主机已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
+      "当前模型不在运行 AgentKib 的电脑已验证的模型列表中，本次消息尚未发送。请更改下一轮模型后再发送。",
       "更改下一轮模型",
     ],
     [
       "zh-TW",
-      "目前模型不在主機已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
+      "目前模型不在執行 AgentKib 的電腦已驗證的模型清單中，本次訊息尚未傳送。請變更下一輪模型後再傳送。",
       "變更下一輪模型",
     ],
     [
       "en-US",
-      "The current model is not in the host's verified model list. This message was not sent. Change the next-turn model before sending again.",
+      "The current model is not in the model list verified on the computer running AgentKib. This message was not sent. Change the next-turn model before sending again.",
       "Change next-turn model",
     ],
     [
       "ja-JP",
-      "現在のモデルはホストで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
+      "現在のモデルはAgentKib を実行しているコンピューターで検証済みのモデル一覧にありません。このメッセージは送信されていません。次のターンのモデルを変更してから送信してください。",
       "次のターンのモデルを変更",
     ],
   ] as const)(
@@ -172,15 +234,19 @@ describe("responsive composer behavior", () => {
       await screen.findByRole("button", { name: /unlisted-model/ });
       vi.mocked(state.client.codexSessionSettings).mockClear();
       fireEvent.click(screen.getByRole("button", { name: action }));
-      const dialog = screen.getByRole("dialog", { name: codexCopy[locale].conversationSettings });
+      const dialog = screen.getByRole("dialog", {
+        name: codexCopyForSurface(locale, "web").conversationSettings,
+      });
       await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledWith("s"));
       expect(state.codexAction).not.toHaveBeenCalled();
       expect(state.control).not.toHaveBeenCalled();
       expect(state.setMessage).not.toHaveBeenCalled();
-      fireEvent.change(within(dialog).getByLabelText(codexCopy[locale].model), {
+      fireEvent.change(within(dialog).getByLabelText(codexCopyForSurface(locale, "web").model), {
         target: { value: "model" },
       });
-      fireEvent.click(within(dialog).getByRole("button", { name: codexCopy[locale].apply }));
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: codexCopyForSurface(locale, "web").apply }),
+      );
       await waitFor(() =>
         expect(state.codexAction).toHaveBeenCalledWith(
           "settings",
@@ -263,13 +329,21 @@ describe("responsive composer behavior", () => {
     render(<CodexComposer />);
     fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
     expect(screen.getByLabelText("模型")).toBeDisabled();
-    expect(screen.getByRole("button", { name: codexCopy["zh-CN"].apply })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "恢复主机默认" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").apply }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复运行 AgentKib 的电脑默认" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     fireEvent.click(screen.getByRole("button", { name: "持续目标" }));
-    expect(screen.getByRole("button", { name: codexCopy["zh-CN"].goalUpdate })).toBeDisabled();
-    expect(screen.getByRole("button", { name: codexCopy["zh-CN"].goalPause })).toBeDisabled();
-    expect(screen.getByRole("button", { name: codexCopy["zh-CN"].goalClear })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").goalUpdate }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").goalPause }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: codexCopyForSurface("zh-CN", "web").goalClear }),
+    ).toBeDisabled();
     expect(state.codexAction).not.toHaveBeenCalled();
   });
   it("opens unknown context usage with a keyboard-focusable button", async () => {
@@ -280,7 +354,7 @@ describe("responsive composer behavior", () => {
     expect(usage).toHaveFocus();
     fireEvent.click(usage);
     expect(screen.getByRole("dialog", { name: "上下文用量" })).toHaveTextContent(
-      codexCopy["zh-CN"].contextUnknown,
+      codexCopyForSurface("zh-CN", "web").contextUnknown,
     );
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     await waitFor(() => expect(usage).toHaveFocus());
@@ -315,10 +389,14 @@ describe("responsive composer behavior", () => {
       });
       expect(high).toHaveValue("high");
       expect(within(dialog).getByText("owner_channel_unavailable")).toBeInTheDocument();
-      const apply = within(dialog).getByRole("button", { name: codexCopy[locale].apply });
+      const apply = within(dialog).getByRole("button", {
+        name: codexCopyForSurface(locale, "web").apply,
+      });
       expect(apply.closest(".dialog-body")).toBeNull();
       expect(
-        within(dialog).getByRole("combobox", { name: new RegExp(codexCopy[locale].mode) }),
+        within(dialog).getByRole("combobox", {
+          name: new RegExp(codexCopyForSurface(locale, "web").mode),
+        }),
       ).toBeDisabled();
     },
   );
@@ -387,7 +465,9 @@ describe("native Plan and Goal projection", () => {
     expect(screen.getByRole("option", { name: "Codex 模式待确认" })).toBeDisabled();
     expect(screen.getByRole("option", { name: "执行" })).toHaveValue("default");
     expect(screen.getByText(composerLayoutCopy["zh-CN"].settingsPending)).toBeVisible();
-    expect(screen.queryByText(codexCopy["zh-CN"].settingsSaved)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(codexCopyForSurface("zh-CN", "web").settingsSaved),
+    ).not.toBeInTheDocument();
     state = {
       ...state,
       live: {

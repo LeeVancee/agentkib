@@ -11,18 +11,29 @@ let pairingMode: Access["pairingMode"];
 let connectionType = "same-origin";
 let pairingError: string | undefined;
 let busy = false;
+let accessStatus: Access["status"] = "unpaired";
 const refresh = vi.fn();
+const pair = vi.fn();
+const post = vi.fn();
 vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: () => ({
     t: dictionaries[locale],
     locale,
-    access: { status: "unpaired", pairingMode },
+    access: {
+      status: accessStatus,
+      pairingMode,
+      pending:
+        accessStatus === "pending"
+          ? { id: "pending", verification: "123456", expiresAt: "2026-10-22T00:00:00Z" }
+          : undefined,
+    },
     connection: { type: connectionType },
     code: "12345678",
     name: "Test browser",
     setCode: vi.fn(),
     setName: vi.fn(),
-    pair: vi.fn(),
+    pair,
+    post,
     busy,
     pairingError,
     refresh,
@@ -32,8 +43,43 @@ afterEach(cleanup);
 beforeEach(() => {
   pairingError = undefined;
   busy = false;
+  accessStatus = "unpaired";
   refresh.mockReset();
+  pair.mockReset();
+  post.mockReset();
 });
+
+it.each([
+  ["zh-CN", "电脑上的 AgentKib"],
+  ["zh-TW", "電腦上的 AgentKib"],
+  ["en-US", "AgentKib on your computer"],
+  ["ja-JP", "コンピューター上の AgentKib"],
+] as const)(
+  "identifies the computer application throughout confirmation pairing in %s",
+  (value, app) => {
+    locale = value;
+    connectionType = "same-origin";
+    pairingMode = "confirmation";
+    const view = render(<PairingPage />);
+    for (const key of ["connect", "pairTitle", "pairInfo", "scope", "pending"] as const) {
+      for (const node of screen.getAllByText(dictionaries[value][key])) {
+        expect(node, key).toHaveTextContent(app);
+      }
+    }
+    expect(view.container.textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
+    accessStatus = "pending";
+    view.rerender(<PairingPage />);
+    for (const key of ["connect", "pending", "verify", "scope"] as const) {
+      for (const node of screen.getAllByText(dictionaries[value][key])) {
+        expect(node, key).toHaveTextContent(app);
+      }
+    }
+    expect(screen.getByText("123456")).toBeVisible();
+    expect(view.container.textContent).not.toMatch(/桌面|デスクトップ|\bdesktop\b/i);
+    expect(pair).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  },
+);
 
 it.each(Object.keys(codePairingCopy) as Locale[])(
   "shows direct full access and removes the confirmation step in %s",

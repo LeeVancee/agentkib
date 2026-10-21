@@ -261,7 +261,7 @@ export function SkillDetailDialog({
           </DialogDescription>
         </DialogHeader>
         {error !== undefined ? (
-          <p role="alert" className="text-destructive">
+          <p role="alert" className="text-destructive-text">
             {localizeMessage(error)}
           </p>
         ) : !detail ? (
@@ -613,7 +613,7 @@ export function SkillDeploymentDialog({
         {action.operation === "undeploy" && !recovery && !report && (
           <p
             role="note"
-            className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"
+            className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive-text"
           >
             {tr("skills.manager.withdrawWarning", {
               name: action.deployment?.display_name ?? action.deployment?.package_name ?? "",
@@ -621,7 +621,7 @@ export function SkillDeploymentDialog({
           </p>
         )}
         {errors.length > 0 && (
-          <div role="alert" className="text-sm text-destructive">
+          <div role="alert" className="text-sm text-destructive-text">
             {errors.map(localizeMessage).join(" · ")}
           </div>
         )}
@@ -754,7 +754,7 @@ export function SkillDeploymentDialog({
                     </p>
                   )}
                   {target.conflicts.map((conflict) => (
-                    <p key={conflict} className="mt-1 text-sm text-destructive">
+                    <p key={conflict} className="mt-1 text-sm text-destructive-text">
                       {conflict}
                     </p>
                   ))}
@@ -830,7 +830,7 @@ export function SkillDeploymentDialog({
                   {result.success ? (
                     <Check size={16} className="shrink-0 text-emerald-600" />
                   ) : (
-                    <CircleAlert size={16} className="shrink-0 text-destructive" />
+                    <CircleAlert size={16} className="shrink-0 text-destructive-icon" />
                   )}
                   <code className="break-all text-xs">{result.path}</code>
                 </div>
@@ -1330,7 +1330,7 @@ export function SkillUsageList({
                   variant="outline"
                   className={
                     ["conflict", "blocked"].includes(sync.sync_state)
-                      ? "border-destructive/40 text-destructive"
+                      ? "border-destructive/40 text-destructive-text"
                       : undefined
                   }
                 >

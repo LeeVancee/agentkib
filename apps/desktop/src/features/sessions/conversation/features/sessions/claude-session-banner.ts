@@ -1,16 +1,20 @@
-import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
+import type { SessionSurface } from "./session-surface-copy";
+import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 import type { SessionController } from "./use-session-controller";
 
 /** Normal ownership is shown in the header; only transitions and safety notices need a banner. */
-export function claudeSessionBanner({
-  locale,
-  live,
-  online,
-  notice,
-  t,
-}: Pick<SessionController, "locale" | "live" | "online" | "notice" | "t">) {
-  const copy = claudeConnectionCopy[locale];
+export function claudeSessionBanner(
+  {
+    locale,
+    live,
+    online,
+    notice,
+    t,
+  }: Pick<SessionController, "locale" | "live" | "online" | "notice" | "t">,
+  surface: SessionSurface = "desktop",
+) {
+  const copy = claudeConnectionCopyForSurface(locale, surface);
   const continuation = sessionContinuationCopy(locale);
   if (
     notice === "uncertain" ||
@@ -41,7 +45,7 @@ export function claudeSessionBanner({
     )
       return {
         title: copy.connected,
-        body: claudeConnectionReason(locale, live.reason) ?? copy.connectionUnconfirmed,
+        body: claudeConnectionReason(locale, live.reason, surface) ?? copy.connectionUnconfirmed,
       };
     // Approvals, questions and a terminal that cannot take messages are explained in place.
     if (
@@ -51,7 +55,7 @@ export function claudeSessionBanner({
         "claude-follower-send-unverified",
       ].includes(live.reason ?? "")
     ) {
-      const reason = claudeConnectionReason(locale, live.reason);
+      const reason = claudeConnectionReason(locale, live.reason, surface);
       if (reason) return { title: copy.connected, body: reason };
     }
   }

@@ -253,7 +253,7 @@ function ContextPageContent({
           )}
         </div>
         {error && (
-          <div className="mx-4 mt-4 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <div className="mx-4 mt-4 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive-text">
             {error}
           </div>
         )}
@@ -306,7 +306,7 @@ function ContextPageContent({
                     </Badge>
                   </header>
                   <Collapsible>
-                    <CollapsibleTrigger className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+                    <CollapsibleTrigger className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary-text hover:underline">
                       {tr("context.showContent")}
                       <ChevronDown size={14} />
                     </CollapsibleTrigger>

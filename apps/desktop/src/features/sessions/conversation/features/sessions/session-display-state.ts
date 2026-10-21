@@ -1,9 +1,10 @@
-import { claudeConnectionCopy, claudeConnectionReason } from "./claude-connection-copy";
+import type { SessionSurface } from "./session-surface-copy";
+import { claudeConnectionCopyForSurface, claudeConnectionReason } from "./claude-connection-copy";
 import type { SessionController } from "./use-session-controller";
 import { codexReason } from "./codex-copy";
-import { contextUsageCopy } from "./context-usage-copy";
+import { contextUsageCopyForSurface } from "./context-usage-copy";
 import { webLayoutCopy } from "./web-layout-copy";
-import { managedControlCopy } from "./managed-control-copy";
+import { managedControlCopyForSurface } from "./managed-control-copy";
 import { sessionContinuationCopy } from "@agentkib/session-ui";
 
 type State = Pick<
@@ -43,7 +44,10 @@ export function sessionNextAction(_state: State): SessionNextAction | undefined 
   return undefined;
 }
 /** Presentation only: never grants capabilities or changes dispatch eligibility. */
-export function sessionDisplayState(state: State): DisplayState {
+export function sessionDisplayState(
+  state: State,
+  surface: SessionSurface = "desktop",
+): DisplayState {
   const { live, online, controlReady, busy, canSend, access, capabilities, locale } = state;
   const c = webLayoutCopy[locale];
   const reason =
@@ -61,7 +65,7 @@ export function sessionDisplayState(state: State): DisplayState {
   )
     return {
       label: c.uncertain,
-      reason: codexReason(locale, "control-outcome-unconfirmed").text,
+      reason: codexReason(locale, "control-outcome-unconfirmed", surface).text,
       tone: "warning",
     };
   if (
@@ -83,23 +87,27 @@ export function sessionDisplayState(state: State): DisplayState {
   if (state.current?.agent === "codex") {
     const copy = sessionContinuationCopy(locale);
     if (access?.status !== "approved")
-      return { label: c.accessRequired, reason: managedControlCopy[locale].access, tone: "muted" };
+      return {
+        label: c.accessRequired,
+        reason: managedControlCopyForSurface(locale, surface).access,
+        tone: "muted",
+      };
     if (access.protocolVersion !== 2)
       return {
         label: c.controlUnavailable,
-        reason: managedControlCopy[locale].protocol,
+        reason: managedControlCopyForSurface(locale, surface).protocol,
         tone: "muted",
       };
     if (!access.experimentalEnabled)
       return {
         label: c.controlDisabled,
-        reason: codexReason(locale, "control-disabled").text,
+        reason: codexReason(locale, "control-disabled", surface).text,
         tone: "muted",
       };
     if (!access.device?.send)
       return {
         label: c.permissionRequired,
-        reason: managedControlCopy[locale].send,
+        reason: managedControlCopyForSurface(locale, surface).send,
         tone: "muted",
       };
     // Only the selected session's authoritative projection can describe its owner.
@@ -131,7 +139,7 @@ export function sessionDisplayState(state: State): DisplayState {
       return { label: "", reason: "", tone: "muted", continuation: "idle" };
     return {
       label: copy.viewOnly,
-      reason: codexReason(locale, reason).text,
+      reason: codexReason(locale, reason, surface).text,
       tone: "muted",
       continuation: "view-only",
     };
@@ -139,23 +147,27 @@ export function sessionDisplayState(state: State): DisplayState {
   if (state.current?.agent === "claude-code") {
     const copy = sessionContinuationCopy(locale);
     if (access?.status !== "approved")
-      return { label: c.accessRequired, reason: managedControlCopy[locale].access, tone: "muted" };
+      return {
+        label: c.accessRequired,
+        reason: managedControlCopyForSurface(locale, surface).access,
+        tone: "muted",
+      };
     if (access.protocolVersion !== 2)
       return {
         label: c.controlUnavailable,
-        reason: managedControlCopy[locale].protocol,
+        reason: managedControlCopyForSurface(locale, surface).protocol,
         tone: "muted",
       };
     if (!access.experimentalEnabled)
       return {
         label: c.controlDisabled,
-        reason: codexReason(locale, "control-disabled").text,
+        reason: codexReason(locale, "control-disabled", surface).text,
         tone: "muted",
       };
     if (!access.device?.send)
       return {
         label: c.permissionRequired,
-        reason: managedControlCopy[locale].send,
+        reason: managedControlCopyForSurface(locale, surface).send,
         tone: "muted",
       };
     // A late projection from the previous selection must never describe this owner.
@@ -203,7 +215,8 @@ export function sessionDisplayState(state: State): DisplayState {
       reason:
         reason === "platform-unsupported"
           ? copy.claudeWindowsUnsupported
-          : (claudeConnectionReason(locale, reason) ?? codexReason(locale, reason).text),
+          : (claudeConnectionReason(locale, reason, surface) ??
+            codexReason(locale, reason, surface).text),
       tone: "muted",
       continuation: "view-only",
     };
@@ -214,7 +227,7 @@ export function sessionDisplayState(state: State): DisplayState {
   )
     return {
       label: live.reason === "claude-terminal-question" ? c.question : c.approval,
-      reason: codexReason(locale, live.reason).text,
+      reason: codexReason(locale, live.reason, surface).text,
       tone: "warning",
     };
   if (live?.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
@@ -226,8 +239,8 @@ export function sessionDisplayState(state: State): DisplayState {
     return { label: c.approval, reason: c.approval, tone: "warning" };
   if (live?.activity === "compacting")
     return {
-      label: contextUsageCopy[locale].compacting,
-      reason: contextUsageCopy[locale].compactingDetail,
+      label: contextUsageCopyForSurface(locale, surface).compacting,
+      reason: contextUsageCopyForSurface(locale, surface).compactingDetail,
       tone: "active",
     };
   if (
@@ -236,40 +249,58 @@ export function sessionDisplayState(state: State): DisplayState {
       live.reason ?? "",
     )
   )
-    return { label: c.running, reason: codexReason(locale, live.reason).text, tone: "warning" };
+    return {
+      label: c.running,
+      reason: codexReason(locale, live.reason, surface).text,
+      tone: "warning",
+    };
   if (live?.executionMode === "claude-follower" && live.reason === "claude-bridge-event-gap")
-    return { label: c.verifying, reason: claudeConnectionCopy[locale].gap, tone: "warning" };
+    return {
+      label: c.verifying,
+      reason: claudeConnectionCopyForSurface(locale, surface).gap,
+      tone: "warning",
+    };
   if (
     live?.executionMode === "claude-follower" &&
     (live.status === "unsupported" || live.reason === "claude-bridge-disconnected")
   )
     return {
-      label: claudeConnectionCopy[locale].lostTitle,
-      reason: claudeConnectionCopy[locale].lost,
+      label: claudeConnectionCopyForSurface(locale, surface).lostTitle,
+      reason: claudeConnectionCopyForSurface(locale, surface).lost,
       tone: "warning",
     };
   if (live?.status === "running") return { label: c.running, reason: c.running, tone: "active" };
   if (busy) return { label: c.busy, reason: c.busy, tone: "active", loading: true };
   if (access?.status !== "approved")
-    return { label: c.accessRequired, reason: managedControlCopy[locale].access, tone: "muted" };
+    return {
+      label: c.accessRequired,
+      reason: managedControlCopyForSurface(locale, surface).access,
+      tone: "muted",
+    };
   if (access.protocolVersion !== 2)
     return {
       label: c.controlUnavailable,
-      reason: managedControlCopy[locale].protocol,
+      reason: managedControlCopyForSurface(locale, surface).protocol,
       tone: "muted",
     };
   if (!access.experimentalEnabled)
     return {
       label: c.controlDisabled,
-      reason: codexReason(locale, "control-disabled").text,
+      reason: codexReason(locale, "control-disabled", surface).text,
       tone: "muted",
     };
   if (!access.device?.send)
-    return { label: c.permissionRequired, reason: managedControlCopy[locale].send, tone: "muted" };
+    return {
+      label: c.permissionRequired,
+      reason: managedControlCopyForSurface(locale, surface).send,
+      tone: "muted",
+    };
   if (live?.executionMode === "claude-follower" && live.status === "idle")
     return {
-      label: claudeConnectionCopy[locale].connected,
-      reason: claudeConnectionReason(locale, reason) ?? claudeConnectionCopy[locale].info,
+      label: claudeConnectionCopyForSurface(locale, surface).connected,
+      reason:
+        claudeConnectionReason(locale, reason, surface) ??
+        claudeConnectionCopyForSurface(locale, surface).info,
       tone: "active",
     };
   if (
@@ -291,13 +322,13 @@ export function sessionDisplayState(state: State): DisplayState {
   )
     return {
       label: c.permissionRequired,
-      reason: managedControlCopy[locale].management,
+      reason: managedControlCopyForSurface(locale, surface).management,
       tone: "muted",
     };
   if (reason)
     return {
       label: reason === "unverified-installation" ? c.unverified : c.readonly,
-      reason: codexReason(locale, reason).text,
+      reason: codexReason(locale, reason, surface).text,
       tone: "muted",
     };
   if (!controlReady || !live)

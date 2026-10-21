@@ -18,7 +18,7 @@ import {
 import { RouterProvider } from "@tanstack/react-router";
 import { WebApplication, makeRouter } from "@/router";
 import { dictionaries, type Locale } from "@/features/conversation/i18n";
-import { catalogCopy } from "@/features/conversation/features/catalog/catalog-copy";
+import { catalogCopyForSurface } from "@/features/conversation/features/catalog/catalog-copy";
 import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
 
 class CatalogEventSource {
@@ -155,7 +155,9 @@ describe("catalog loading through the real Web application and session provider"
       await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
       expect(screen.getByRole("status")).toHaveTextContent(t.loading);
       expect(screen.queryByText(t.empty)).not.toBeInTheDocument();
-      expect(screen.queryByText(catalogCopy[locale].missing)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(catalogCopyForSurface(locale, "web").missing),
+      ).not.toBeInTheDocument();
 
       await act(async () => host.first.resolve(Response.json(emptyCatalog)));
       expect(await screen.findByText(t.empty)).toBeVisible();
@@ -167,11 +169,15 @@ describe("catalog loading through the real Web application and session provider"
   it("shows a legacy-host upgrade notice only after the completed response omits workspaces", async () => {
     const host = fixture();
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
-    expect(screen.queryByText(catalogCopy["zh-CN"].missing)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(catalogCopyForSurface("zh-CN", "web").missing),
+    ).not.toBeInTheDocument();
     await act(async () =>
       host.first.resolve(Response.json({ indexEnabled: true, sessions: catalog.sessions })),
     );
-    expect(await screen.findByRole("status")).toHaveTextContent(catalogCopy["zh-CN"].missing);
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      catalogCopyForSurface("zh-CN", "web").missing,
+    );
     expect(screen.queryByText(dictionaries["zh-CN"].empty)).not.toBeInTheDocument();
   });
 
@@ -183,14 +189,18 @@ describe("catalog loading through the real Web application and session provider"
     );
     expect(await screen.findByText(dictionaries["zh-CN"].indexDisabled)).toBeVisible();
     expect(screen.queryByText(dictionaries["zh-CN"].empty)).not.toBeInTheDocument();
-    expect(screen.queryByText(catalogCopy["zh-CN"].missing)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(catalogCopyForSurface("zh-CN", "web").missing),
+    ).not.toBeInTheDocument();
   });
 
   it("waits for a delayed first catalog before opening a readable session deep link", async () => {
     const host = fixture("zh-CN", "/sessions/first");
     await waitFor(() => expect(host.readCatalog).toHaveBeenCalledOnce());
     expect(screen.queryByText(dictionaries["zh-CN"].empty)).not.toBeInTheDocument();
-    expect(screen.queryByText(catalogCopy["zh-CN"].missing)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(catalogCopyForSurface("zh-CN", "web").missing),
+    ).not.toBeInTheDocument();
     expect(host.fetcher.mock.calls.some(([input]) => String(input).includes("/events?"))).toBe(
       false,
     );
@@ -212,7 +222,9 @@ describe("catalog loading through the real Web application and session provider"
     expect(await screen.findByRole("alert")).toHaveTextContent(t.error);
     expect(screen.queryByText(t.loading)).not.toBeInTheDocument();
     expect(screen.queryByText(t.empty)).not.toBeInTheDocument();
-    expect(screen.queryByText(catalogCopy["zh-CN"].missing)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(catalogCopyForSurface("zh-CN", "web").missing),
+    ).not.toBeInTheDocument();
 
     const retry = deferred<Response>();
     host.readCatalog.mockReturnValue(retry.promise);
@@ -297,7 +309,9 @@ describe("catalog loading through the real Web application and session provider"
     expect(screen.getByRole("button", { name: /First session/ })).toBe(first);
     expect(first).toHaveAttribute("aria-current", "page");
     expect(screen.queryByText(t.empty)).not.toBeInTheDocument();
-    expect(screen.queryByText(catalogCopy["zh-CN"].missing)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(catalogCopyForSurface("zh-CN", "web").missing),
+    ).not.toBeInTheDocument();
     expect(host.fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 

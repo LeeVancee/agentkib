@@ -127,7 +127,7 @@ function AchievementWallCard({ item, onOpen }: { item: AchievementWallItem; onOp
         variant="bare"
         size="content"
         className={cn(
-          "group relative grid min-h-[156px] min-w-0 grid-cols-[38px_minmax(0,1fr)] grid-rows-[auto_auto_1fr_auto] gap-x-3 gap-y-1.5 rounded-[11px] border border-border bg-card p-4 text-left text-muted-foreground transition hover:-translate-y-px hover:border-foreground/20 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+          "group relative grid min-h-[156px] min-w-0 grid-cols-[38px_minmax(0,1fr)] grid-rows-[auto_auto_1fr_auto] gap-x-3 gap-y-1.5 rounded-[11px] border border-border bg-card p-4 text-left text-muted-foreground transition hover:-translate-y-px hover:border-foreground/20 hover:bg-accent hover:text-muted-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
           item.unlocked &&
             "border-[color-mix(in_srgb,var(--green)_30%,var(--border))] bg-[color-mix(in_srgb,var(--green)_7%,transparent)]",
         )}
@@ -155,7 +155,8 @@ function AchievementWallCard({ item, onOpen }: { item: AchievementWallItem; onOp
         <span
           className={cn(
             "col-span-full flex min-w-0 items-center justify-between gap-2 border-t border-border pt-2 text-xs",
-            item.unlocked && "text-[var(--green)]",
+            item.unlocked &&
+              "text-[var(--green)] group-hover:text-achievement-status-hover-foreground",
           )}
         >
           <span className="truncate">
@@ -185,7 +186,7 @@ function AchievementWallCard({ item, onOpen }: { item: AchievementWallItem; onOp
       variant="bare"
       size="content"
       className={cn(
-        "group relative grid min-h-[156px] min-w-0 grid-cols-[38px_minmax(0,1fr)] grid-rows-[auto_auto_1fr_auto] gap-x-3 gap-y-1.5 rounded-[11px] border border-border bg-card p-4 text-left text-muted-foreground transition hover:-translate-y-px hover:border-foreground/20 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        "group relative grid min-h-[156px] min-w-0 grid-cols-[38px_minmax(0,1fr)] grid-rows-[auto_auto_1fr_auto] gap-x-3 gap-y-1.5 rounded-[11px] border border-border bg-card p-4 text-left text-muted-foreground transition hover:-translate-y-px hover:border-foreground/20 hover:bg-accent hover:text-muted-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
         unlocked &&
           "border-[color-mix(in_srgb,var(--green)_30%,var(--border))] bg-[color-mix(in_srgb,var(--green)_7%,transparent)]",
       )}
@@ -207,7 +208,7 @@ function AchievementWallCard({ item, onOpen }: { item: AchievementWallItem; onOp
       <span
         className={cn(
           "col-span-full flex min-w-0 items-center justify-between gap-2 border-t border-border pt-2 text-xs",
-          unlocked && "text-[var(--green)]",
+          unlocked && "text-[var(--green)] group-hover:text-achievement-status-hover-foreground",
         )}
       >
         <span className="truncate">

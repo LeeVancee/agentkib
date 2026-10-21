@@ -542,13 +542,13 @@ describe("host identity isolation", () => {
     fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "private draft" } });
 
     fireEvent.click(screen.getByRole("button", { name: "更换连接 / 清空内容" }));
-    await screen.findByRole("button", { name: "连接桌面 AgentKib" });
+    await screen.findByRole("button", { name: "连接电脑上的 AgentKib" });
     expect(screen.queryByText("Host A secret")).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("private draft")).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("电脑的局域网地址"), { target: { value: hostB } });
     fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "连接桌面 AgentKib" }));
+    fireEvent.click(screen.getByRole("button", { name: "连接电脑上的 AgentKib" }));
     fireEvent.click(await screen.findByRole("button", { name: /Host B session/ }));
     await screen.findByText("Host B history");
 

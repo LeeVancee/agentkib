@@ -31,6 +31,10 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
+  --color-muted-accent-foreground: var(--muted-accent-foreground);
+  --color-home-metric-hover-foreground: var(--home-metric-hover-foreground);
+  --color-achievement-status-hover-foreground: var(--achievement-status-hover-foreground);
+  --color-quota-active-foreground: var(--quota-active-foreground);
   --color-muted: var(--muted);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
@@ -71,6 +75,10 @@
   --primary-selected-bg: var(--accent);
   --activity-icon: var(--sidebar-accent-foreground);
   --tab-inactive-foreground: color-mix(in srgb, var(--foreground) 60%, transparent);
+  --muted-accent-foreground: var(--muted-foreground);
+  --home-metric-hover-foreground: var(--muted-foreground);
+  --achievement-status-hover-foreground: var(--green);
+  --quota-active-foreground: color-mix(in srgb, var(--foreground) 70%, transparent);
   --destructive-text: var(--destructive);
   --destructive-icon: var(--destructive);
   --destructive-hover: color-mix(in srgb, var(--destructive) 90%, transparent);
@@ -210,6 +218,7 @@
 }
 
 :root[data-theme="light"][data-accent-theme="minimal-neutral"] {
+  --home-metric-hover-foreground: color-mix(in srgb, #666666 97%, black);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(0.995 0 0);
@@ -250,6 +259,7 @@
 }
 
 :root[data-theme="dark"][data-accent-theme="minimal-neutral"] {
+  --muted-accent-foreground: oklch(0.743 0 0);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.165 0 0);
@@ -290,6 +300,7 @@
 }
 
 :root[data-theme="light"][data-accent-theme="claude"] {
+  --achievement-status-hover-foreground: oklch(0.5 0.1049 165.61);
   --tab-inactive-foreground: var(--muted-foreground);
   --background: oklch(0.9818 0.0054 95.0986);
   --foreground: oklch(0.3438 0.0269 95.7226);
@@ -369,6 +380,10 @@
 }
 
 :root[data-theme="light"][data-accent-theme="sakura"] {
+  --home-metric-hover-foreground: color-mix(in srgb, #a18e84 74%, black);
+  --muted-accent-foreground: color-mix(in srgb, #a18e84 69%, black);
+  --achievement-status-hover-foreground: oklch(0.495 0.1049 165.61);
+  --quota-active-foreground: var(--muted-foreground);
   --tab-inactive-foreground: var(--muted-foreground);
   --activity-icon: #b33e5d;
   --background: #fff9f6;
@@ -411,6 +426,8 @@
 }
 
 :root[data-theme="dark"][data-accent-theme="sakura"] {
+  --home-metric-hover-foreground: color-mix(in srgb, var(--muted-foreground) 99%, white);
+  --muted-accent-foreground: color-mix(in srgb, var(--muted-foreground) 99%, white);
   --background: #1a1412;
   --foreground: #eae0dc;
   --card: #241d1a;
@@ -451,6 +468,8 @@
 }
 
 :root[data-theme="light"][data-accent-theme="ocean-breeze"] {
+  --home-metric-hover-foreground: color-mix(in srgb, #6b7280 94%, black);
+  --quota-active-foreground: var(--muted-foreground);
   --tab-inactive-foreground: var(--muted-foreground);
   --background: #f0f8ff;
   --foreground: #374151;
@@ -492,6 +511,7 @@
 }
 
 :root[data-theme="dark"][data-accent-theme="ocean-breeze"] {
+  --muted-accent-foreground: color-mix(in srgb, #6b7280 58%, white);
   --activity-icon: #a1a1aa;
   --background: #0f172a;
   --foreground: #d1d5db;

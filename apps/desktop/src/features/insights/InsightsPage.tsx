@@ -16,7 +16,6 @@ import type { AgentKind, HeatmapPoint, InsightsQuery, WorkspaceSummary } from "@
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
-import { cn } from "cn";
 import { useInsightsRefreshJob, useInsightsView } from "./insights-query";
 import { InsightsFilters } from "./InsightsFilters";
 import {
@@ -138,13 +137,7 @@ export function InsightsPage({
   }
 
   return (
-    <div
-      className={cn(
-        "relative grid gap-5",
-        stale && "[&>*:not(:first-child)]:opacity-60 [&>*:not(:first-child)]:transition-opacity",
-      )}
-      aria-busy={stale || undefined}
-    >
+    <div className="relative grid gap-5" aria-busy={stale || undefined}>
       <section className="grid gap-3">
         {(stale || error) && (
           <div className="flex flex-wrap items-center justify-end gap-2">

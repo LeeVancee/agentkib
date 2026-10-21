@@ -1,14 +1,53 @@
 // Pass this self-contained function to Playwright's page.evaluate. It observes
 // actual Chromium styles without adding elements or changing application state.
-export function collectV15ColorEvidence() {
+export function collectV15ColorEvidence({ selector, maxNodes = 12 } = {}) {
   const canvas = document.createElement("canvas");
   canvas.width = 1;
   canvas.height = 1;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
+  const context = canvas.getContext("2d", {
+    willReadFrequently: true,
+    colorSpace: "srgb",
+    colorType: "float16",
+  });
+  const precision = new Set();
   function rgba(value) {
+    const rgb = /^rgba?\((.*)\)$/i.exec(value);
+    if (rgb) {
+      const parts = rgb[1].replaceAll(",", " ").replaceAll("/", " ").trim().split(/\s+/);
+      precision.add("computed-rgb-float");
+      return [
+        ...parts
+          .slice(0, 3)
+          .map((part) =>
+            part.endsWith("%") ? (Number.parseFloat(part) / 100) * 255 : Number(part),
+          ),
+        parts[3]
+          ? parts[3].endsWith("%")
+            ? Number.parseFloat(parts[3]) / 100
+            : Number(parts[3])
+          : 1,
+      ];
+    }
     context.clearRect(0, 0, 1, 1);
     context.fillStyle = value;
     context.fillRect(0, 0, 1, 1);
+    try {
+      const pixels = context.getImageData(0, 0, 1, 1, {
+        colorSpace: "srgb",
+        pixelFormat: "rgba-float16",
+      }).data;
+      if (pixels.BYTES_PER_ELEMENT === 2) {
+        precision.add(
+          context.getContextAttributes().colorType === "float16"
+            ? "chromium-canvas-float16"
+            : "chromium-canvas-unorm8-to-float16",
+        );
+        return Array.from(pixels).map(
+          (part, index) => Math.max(0, Math.min(1, part)) * (index < 3 ? 255 : 1),
+        );
+      }
+    } catch {}
+    precision.add("chromium-canvas-8bit-fallback");
     const pixel = context.getImageData(0, 0, 1, 1).data;
     return [pixel[0], pixel[1], pixel[2], pixel[3] / 255];
   }
@@ -39,10 +78,40 @@ export function collectV15ColorEvidence() {
     let text = color;
     let base = [0, 0, 0, 0];
     const opacityLayers = [];
+    const backgroundLayers = [];
     // Opacity applies to the whole element group, including its background.
     // Composite each group into its parent rather than treating text as opaque.
     for (let current = node; current; current = current.parentElement) {
       const style = getComputedStyle(current);
+      // The desktop's wide shell paints the content surface with ::after,
+      // underneath its z-index:1 main. Ancestor backgrounds alone would read
+      // the sidebar through that surface. Handle this known production layer;
+      // this probe does not attempt to infer arbitrary CSS paint order.
+      if (current.matches(".app-shell") && node.closest(".app-shell-main")) {
+        const pseudo = getComputedStyle(current, "::after");
+        const shell = current.getBoundingClientRect();
+        const bounds = node.getBoundingClientRect();
+        const point = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+        const left = shell.left + Number.parseFloat(pseudo.left);
+        const top = shell.top + Number.parseFloat(pseudo.top);
+        const right = left + Number.parseFloat(pseudo.width);
+        const bottom = top + Number.parseFloat(pseudo.height);
+        if (
+          pseudo.content !== "none" &&
+          pseudo.position === "absolute" &&
+          pseudo.zIndex === "0" &&
+          point.x > left + 16 &&
+          point.x < right - 16 &&
+          point.y > top + 16 &&
+          point.y < bottom
+        ) {
+          const surface = rgba(pseudo.backgroundColor);
+          surface[3] *= Number(pseudo.opacity);
+          text = over(text, surface);
+          base = over(base, surface);
+          backgroundLayers.push({ selector: ".app-shell::after", color: pseudo.backgroundColor });
+        }
+      }
       const ownBackground = rgba(style.backgroundColor);
       text = over(text, ownBackground);
       base = over(base, ownBackground);
@@ -52,7 +121,12 @@ export function collectV15ColorEvidence() {
       if (opacity !== 1) opacityLayers.push(opacity);
     }
     const white = [255, 255, 255, 1];
-    return { foreground: over(text, white), base: over(base, white), opacityLayers };
+    return {
+      foreground: over(text, white),
+      base: over(base, white),
+      opacityLayers,
+      backgroundLayers,
+    };
   }
   const root = document.documentElement;
   const rootStyle = getComputedStyle(root);
@@ -78,14 +152,17 @@ export function collectV15ColorEvidence() {
     readableMetadata: 'small,time,[role="tab"],[class*="opacity-"]',
   };
   const samples = [];
-  for (const [kind, selector] of Object.entries(selectors)) {
-    const nodes = [...document.querySelectorAll(selector)].filter((node) => {
+  for (const [kind, query] of Object.entries(selector ? { requested: selector } : selectors)) {
+    const nodes = [...document.querySelectorAll(query)].filter((node) => {
       const bounds = node.getBoundingClientRect();
       return bounds.width && bounds.height && getComputedStyle(node).visibility !== "hidden";
     });
-    for (const node of nodes.slice(0, 12)) {
+    for (const node of nodes.slice(0, maxNodes)) {
       const style = getComputedStyle(node);
-      const { base, foreground, opacityLayers } = renderedPixels(node, rgba(style.color));
+      const { base, foreground, opacityLayers, backgroundLayers } = renderedPixels(
+        node,
+        rgba(style.color),
+      );
       const [lighter, darker] = [luminance(foreground), luminance(base)].sort((a, b) => b - a);
       samples.push({
         kind,
@@ -100,6 +177,7 @@ export function collectV15ColorEvidence() {
         fontSize: style.fontSize,
         opacity: style.opacity,
         opacityLayers,
+        backgroundLayers,
       });
     }
   }
@@ -109,6 +187,7 @@ export function collectV15ColorEvidence() {
     theme: root.dataset.theme,
     accent: root.dataset.accentTheme ?? root.dataset.accent,
     variables,
+    precision: [...precision],
     samples,
   };
 }

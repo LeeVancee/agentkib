@@ -426,7 +426,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "recovery-required": "暂时无法继续这条会话，请刷新状态后重试。",
     "native-session-unconfirmed": "无法确认这条会话的身份，请刷新状态后重试。",
     "follower-operation-unverified": "当前原客户端尚未验证此操作，请在原客户端完成。",
-    "control-disabled": "桌面尚未开启执行控制。",
+    "control-disabled": "这台电脑上的 AgentKib 尚未开启执行控制。",
     "session-state-unavailable": "暂时无法读取会话状态，请刷新后重试。",
     "unsupported-codex-cli-version": "当前 Codex 版本未经兼容验证，此能力保持只读。",
     "native-operation-not-integrated": "尚不支持通过远程访问执行此原客户端操作。",
@@ -489,7 +489,7 @@ const reasons: Record<Locale, Record<string, string>> = {
     "recovery-required": "暫時無法繼續這段對話，請重新整理狀態後重試。",
     "native-session-unconfirmed": "無法確認這段對話的身分，請重新整理狀態後重試。",
     "follower-operation-unverified": "目前原客戶端尚未驗證此操作，請在原客戶端完成。",
-    "control-disabled": "桌面尚未啟用執行控制。",
+    "control-disabled": "這台電腦上的 AgentKib 尚未啟用執行控制。",
     "session-state-unavailable": "暫時無法讀取對話狀態，請重新整理後重試。",
     "unsupported-codex-cli-version": "目前 Codex 版本未經相容驗證，此能力保持唯讀。",
     "native-operation-not-integrated": "尚不支援透過遠端存取執行此原客戶端操作。",
@@ -559,7 +559,7 @@ const reasons: Record<Locale, Record<string, string>> = {
       "This session's identity could not be confirmed. Refresh its state and retry.",
     "follower-operation-unverified":
       "This operation has not been verified with the original client. Use that client instead.",
-    "control-disabled": "Execution control is not enabled on desktop.",
+    "control-disabled": "Execution control is not enabled in AgentKib on this computer.",
     "session-state-unavailable": "Session state is unavailable. Refresh and retry.",
     "unsupported-codex-cli-version":
       "This Codex version has not passed compatibility verification. This capability remains read-only.",
@@ -633,7 +633,7 @@ const reasons: Record<Locale, Record<string, string>> = {
       "この会話の識別情報を確認できません。状態を更新して再試行してください。",
     "follower-operation-unverified":
       "元のクライアントでこの操作は未検証です。元のクライアントで操作してください。",
-    "control-disabled": "デスクトップで実行操作が有効になっていません。",
+    "control-disabled": "このコンピューター上の AgentKib で実行操作が有効になっていません。",
     "session-state-unavailable": "会話の状態を取得できません。更新して再試行してください。",
     "unsupported-codex-cli-version":
       "この Codex バージョンは互換性が未検証のため、この機能は読み取り専用です。",

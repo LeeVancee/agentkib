@@ -499,7 +499,7 @@ export function SessionHandoffDialog({
             )}
             {reasoningExcluded && (
               <div className="flex items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-sm text-foreground">
-                <ShieldCheck className="mt-0.5 shrink-0 text-primary-text" size={14} />
+                <ShieldCheck className="mt-0.5 shrink-0 text-blue-600" size={14} />
                 {tr("handoff.reasoningPrivacy", { count: reasoningExcluded.count })}
               </div>
             )}

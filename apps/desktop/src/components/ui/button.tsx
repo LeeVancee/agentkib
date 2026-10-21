@@ -64,7 +64,14 @@ function Button({
     ? "icon"
     : size;
   const cleanedClassName = legacyClasses
-    .replace(/\b(primary|ghost|approve|reject|icon-button|icon-danger|link)\b/g, "")
+    .split(/\s+/)
+    .filter(
+      (token) =>
+        !["primary", "ghost", "approve", "reject", "icon-button", "icon-danger", "link"].includes(
+          token,
+        ),
+    )
+    .join(" ")
     .trim();
 
   return (

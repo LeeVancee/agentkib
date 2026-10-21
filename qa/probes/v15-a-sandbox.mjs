@@ -15,7 +15,7 @@ const desktop = path.join(repository, "apps/desktop");
 const command = process.argv[2];
 const options = {};
 for (let index = 3; index < process.argv.length; index += 2) {
-  assert.ok(["--root", "--cdp-port"].includes(process.argv[index]));
+  assert.ok(["--root", "--cdp-port", "--review-colors"].includes(process.argv[index]));
   assert.ok(process.argv[index + 1] && !process.argv[index + 1].startsWith("--"));
   options[process.argv[index].slice(2)] = process.argv[index + 1];
 }
@@ -450,6 +450,8 @@ if (command === "prepare") {
       await access(path.join(desktop, file));
     const cdpPort = Number(options["cdp-port"] ?? config.cdpPort);
     assert.ok(Number.isInteger(cdpPort) && cdpPort > 1024 && cdpPort < 65536);
+    assert.ok(options["review-colors"] === undefined || options["review-colors"] === "1");
+    await put(configFile, { ...config, reviewColors: options["review-colors"] === "1" });
     const log = await open(path.join(root, "electron.stderr.log"), "a", 0o600);
     const child = spawn(
       "/usr/bin/sandbox-exec",

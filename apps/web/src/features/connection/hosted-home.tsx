@@ -25,14 +25,14 @@ export const hostedCopy: Record<
     accountNote: "查看账号下的电脑。新浏览器首次连接仍需电脑上的八位远控授权码。",
     intro: "从电脑上的 AgentKib 开始，在手机上继续查看会话、处理请求和浏览产物。",
     steps: [
-      "在电脑设置中打开「允许手机访问这台电脑」，开启远程访问。",
-      "连接就绪后，用手机扫描桌面显示的配对二维码。",
-      "输入桌面显示的一次性授权码，即可使用全部工作区和已支持的远控功能。",
+      "在电脑上的 AgentKib 设置中打开“允许手机访问这台电脑”，开启远程访问。",
+      "连接就绪后，用手机扫描电脑上的 AgentKib 显示的配对二维码。",
+      "输入电脑上的 AgentKib 显示的一次性授权码，即可使用全部工作区和已支持的远控功能。",
     ],
     note: "电脑需要保持开机且 AgentKib 正在运行。连接地址由电脑提供，此页面不接收配对码。",
     other: "其他连接方式",
     lan: "局域网连接",
-    lanNote: "已在桌面开启局域网访问？同一网络下可使用此入口。",
+    lanNote: "已在电脑上的 AgentKib 启用“局域网直连”？同一网络下可使用此入口。",
   },
   "zh-TW": {
     title: "連接你的電腦",
@@ -40,14 +40,14 @@ export const hostedCopy: Record<
     accountNote: "查看帳號下的電腦。新瀏覽器首次連線仍需電腦上的八位遠端授權碼。",
     intro: "從電腦上的 AgentKib 開始，在手機上繼續查看對話、處理請求和瀏覽產物。",
     steps: [
-      "在電腦設定中開啟「允許手機存取這台電腦」，啟用遠端存取。",
-      "連線就緒後，用手機掃描桌面顯示的配對 QR 碼。",
-      "輸入桌面顯示的一次性授權碼，即可使用全部工作區和已支援的遠端功能。",
+      "在電腦上的 AgentKib 設定中開啟「允許手機存取這台電腦」，啟用遠端存取。",
+      "連線就緒後，用手機掃描電腦上的 AgentKib 顯示的配對 QR 碼。",
+      "輸入電腦上的 AgentKib 顯示的一次性授權碼，即可使用全部工作區和已支援的遠端功能。",
     ],
     note: "電腦需要保持開機且 AgentKib 正在執行。連線位址由電腦提供，此頁面不接收配對碼。",
     other: "其他連線方式",
     lan: "區域網路連線",
-    lanNote: "已在桌面啟用區域網路存取？同一網路下可使用此入口。",
+    lanNote: "已在電腦上的 AgentKib 啟用「區域網路直連」？同一網路下可使用此入口。",
   },
   "en-US": {
     title: "Connect your computer",
@@ -57,14 +57,15 @@ export const hostedCopy: Record<
     intro:
       "Start in AgentKib on your computer, then use your phone to read conversations, handle requests and view artifacts.",
     steps: [
-      "Open “Allow phone access to this computer” in desktop settings and enable remote access.",
-      "When the connection is ready, scan the pairing QR code on desktop with your phone.",
-      "Enter the one-time access code shown on desktop to access all workspaces and supported remote features.",
+      "Open “Allow phone access to this computer” in AgentKib on your computer and enable remote access.",
+      "When the connection is ready, scan the pairing QR code in AgentKib on your computer with your phone.",
+      "Enter the one-time access code shown in AgentKib on your computer to access all workspaces and supported remote features.",
     ],
     note: "Keep your computer on and AgentKib running. Your computer provides the connection link; this page does not accept pairing codes.",
     other: "Other connection methods",
     lan: "Local network connection",
-    lanNote: "Already enabled LAN access on desktop? Use this option on the same network.",
+    lanNote:
+      "Already enabled LAN direct connection in AgentKib on your computer? Use this option on the same network.",
   },
   "ja-JP": {
     title: "パソコンに接続",
@@ -74,14 +75,15 @@ export const hostedCopy: Record<
     intro:
       "パソコンの AgentKib から始めて、スマートフォンで会話の確認、リクエストの処理、成果物の閲覧を続けられます。",
     steps: [
-      "デスクトップ設定の「このパソコンへのスマートフォンアクセスを許可」でリモートアクセスを有効にします。",
-      "接続の準備ができたら、スマートフォンで表示されたペアリング QR コードを読み取ります。",
-      "デスクトップに表示された使い捨ての認証コードを入力すると、すべてのワークスペースと対応するリモート機能を利用できます。",
+      "コンピューター上の AgentKib の設定で「このパソコンへのスマートフォンアクセスを許可」を開き、リモートアクセスを有効にします。",
+      "接続の準備ができたら、コンピューター上の AgentKib に表示されたペアリング QR コードをスマートフォンで読み取ります。",
+      "コンピューター上の AgentKib に表示された使い捨ての認証コードを入力すると、すべてのワークスペースと対応するリモート機能を利用できます。",
     ],
     note: "パソコンの電源を入れ、AgentKib を起動しておく必要があります。接続先はパソコンから取得します。このページではペアリングコードを入力できません。",
     other: "その他の接続方法",
     lan: "LAN 接続",
-    lanNote: "デスクトップで LAN アクセスを有効にした場合、同じネットワーク内で利用できます。",
+    lanNote:
+      "コンピューター上の AgentKib で「LAN 直接接続」を有効にした場合、同じネットワーク内で利用できます。",
   },
 };
 

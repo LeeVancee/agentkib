@@ -50,6 +50,48 @@ for (const name of [
 const originalHandle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, handler) =>
   originalHandle(channel, async (event, ...args) => {
+    // Optional visual regression fixtures exercise production components, not
+    // real provider accounts. No production service or persisted data is changed.
+    if (config.reviewColors && channel === "agentkib:home:quota-snapshot") {
+      return {
+        schema_version: 1,
+        backend: "codex-bar-cli",
+        generated_at: "2026-10-21T01:00:00Z",
+        fetched_at: "2026-10-21T01:00:00Z",
+        stale_after_seconds: 300,
+        freshness: "stale",
+        providers: [
+          {
+            id: "codex",
+            name: "Codex",
+            enabled: true,
+            accounts: [],
+            windows: [{ kind: "weekly", label: "Weekly", remaining_percent: 80, used_percent: 20 }],
+          },
+          {
+            id: "claude",
+            name: "Claude",
+            enabled: true,
+            identity: { account_email: "reader@example.invalid" },
+            accounts: [],
+            windows: [],
+          },
+        ],
+      };
+    }
+    if (config.reviewColors && channel === "agentkib:home:insights-view") {
+      const result = await handler(event, ...args);
+      // Keep the previous-filter state observable for a short fixed QA interval.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      return {
+        ...result,
+        achievements: result.achievements?.map((item, index) =>
+          index === 0
+            ? { ...item, progress: item.threshold, unlocked_at: "2026-10-21T01:00:00Z" }
+            : item,
+        ),
+      };
+    }
     if (channel === "agentkib:account:request") {
       if (args[0]?.operation !== "status")
         throw new Error("QA sandbox does not perform account actions");

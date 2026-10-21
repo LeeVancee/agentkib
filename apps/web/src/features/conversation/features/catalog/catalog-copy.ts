@@ -1,4 +1,6 @@
 import type { Locale } from "../../i18n";
+import { surfaceCopy, type SessionSurface } from "../sessions/session-surface-copy";
+
 export const catalogCopy = {
   "zh-CN": {
     options: "目录选项",
@@ -11,7 +13,7 @@ export const catalogCopy = {
     all: "全部",
     excludedSession: "此记录不属于普通会话，已返回会话目录。",
     excludedPending: "非普通会话的待确认请求",
-    missing: "项目信息不可用，请升级桌面端",
+    missing: "项目信息不可用，请更新这台电脑上的 AgentKib。",
     noResults: "没有匹配的会话",
     sourceFile: "来源文件",
     clientVersion: "客户端版本",
@@ -46,7 +48,7 @@ export const catalogCopy = {
     all: "全部",
     excludedSession: "此記錄不屬於一般對話，已返回對話目錄。",
     excludedPending: "非一般對話的待確認請求",
-    missing: "專案資訊不可用，請升級桌面端",
+    missing: "專案資訊不可用，請更新這台電腦上的 AgentKib。",
     noResults: "沒有符合的對話",
     sourceFile: "來源檔案",
     clientVersion: "客戶端版本",
@@ -81,7 +83,7 @@ export const catalogCopy = {
     all: "All",
     excludedSession: "This record is not a regular session. Returned to the session directory.",
     excludedPending: "Pending request outside regular sessions",
-    missing: "Project information unavailable. Upgrade the desktop app.",
+    missing: "Project information unavailable. Update AgentKib on this computer.",
     noResults: "No matching sessions",
     sourceFile: "Source file",
     clientVersion: "Client version",
@@ -116,7 +118,8 @@ export const catalogCopy = {
     all: "すべて",
     excludedSession: "この記録は通常の会話ではないため、会話一覧に戻りました。",
     excludedPending: "通常の会話以外の未確認リクエスト",
-    missing: "プロジェクト情報を取得できません。デスクトップを更新してください。",
+    missing:
+      "プロジェクト情報を取得できません。このコンピューター上の AgentKib を更新してください。",
     noResults: "該当する会話はありません",
     sourceFile: "ソースファイル",
     clientVersion: "クライアントのバージョン",
@@ -141,3 +144,7 @@ export const catalogCopy = {
     auxiliarySource: "補助会話",
   },
 } satisfies Record<Locale, Record<string, string>>;
+
+export function catalogCopyForSurface(locale: Locale, surface: SessionSurface = "desktop") {
+  return surfaceCopy(catalogCopy[locale], surface, locale);
+}

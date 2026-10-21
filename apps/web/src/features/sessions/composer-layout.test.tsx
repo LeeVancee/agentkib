@@ -95,6 +95,32 @@ afterEach(() => {
 });
 describe("responsive composer behavior", () => {
   it.each([
+    ["zh-CN", "电脑上的 AgentKib 尚未开启执行控制。"],
+    ["zh-TW", "電腦上的 AgentKib 尚未啟用執行控制。"],
+    ["en-US", "Execution control is not enabled in AgentKib on your computer."],
+    ["ja-JP", "コンピューター上の AgentKib で実行操作が有効になっていません。"],
+  ] as const)(
+    "identifies the computer application when execution control is off in %s",
+    async (locale, notice) => {
+      state.locale = locale;
+      state.t = dictionaries[locale];
+      state.access = { ...state.access!, experimentalEnabled: false };
+      state.canSend = false;
+      state.controlReady = false;
+      state.message = "Keep this draft";
+      render(<CodexComposer />);
+      expect(await screen.findByText(notice)).toBeVisible();
+      const send = screen.getByRole("button", { name: state.t.send });
+      expect(send).toBeDisabled();
+      fireEvent.click(send);
+      expect(state.control).not.toHaveBeenCalled();
+      expect(state.codexAction).not.toHaveBeenCalled();
+      expect(state.setMessage).not.toHaveBeenCalled();
+      expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
+    },
+  );
+
+  it.each([
     ["zh-CN", "连接协议不兼容。请更新电脑上的 AgentKib 并重新连接。"],
     ["zh-TW", "連線協定不相容。請更新電腦上的 AgentKib 並重新連線。"],
     [

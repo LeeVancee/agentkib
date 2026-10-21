@@ -26,6 +26,9 @@ const root = desktopBlocks.find((block) => block.selector === ":root")!.values;
 const desktopPalettes = ["vtron", "minimal-neutral", "claude", "sakura", "ocean-breeze"].flatMap(
   (accent) =>
     ["light", "dark"].map((mode) => {
+      const modeColors = desktopBlocks.find(
+        (block) => block.values["--green"] && block.selector.includes(`data-theme="${mode}"`),
+      )!.values;
       const base = desktopBlocks.find(
         (block) =>
           block.values["--background"] &&
@@ -35,7 +38,10 @@ const desktopPalettes = ["vtron", "minimal-neutral", "claude", "sakura", "ocean-
       const own = desktopBlocks.find((block) =>
         block.selector.endsWith(`[data-theme="${mode}"][data-accent-theme="${accent}"]`),
       )?.values;
-      return { name: `desktop/${accent}/${mode}`, palette: { ...root, ...base, ...own } };
+      return {
+        name: `desktop/${accent}/${mode}`,
+        palette: { ...root, ...modeColors, ...base, ...own },
+      };
     }),
 );
 
@@ -202,6 +208,87 @@ for (const { name, palette } of [...desktopPalettes, ...webPalettes]) {
     });
   });
 }
+
+describe.each(desktopPalettes)("$name achievement cards", ({ palette }) => {
+  const get = (token: string) => color(palette[token], palette);
+  // The wall uses bg-muted/20 over its card; unlocked cards replace bg-card
+  // with a translucent green surface. Focus adds a ring without changing it.
+  const wall = over(mix(get("--muted"), [0, 0, 0, 0], 0.2), get("--card"));
+  const unlocked = over(mix(get("--green"), [0, 0, 0, 0], 0.07), wall);
+  const hoverForeground = get("--muted-accent-foreground");
+
+  it("keeps metadata readable on locked and unlocked cards, including focus and hover", () => {
+    for (const [state, foreground, background] of [
+      ["locked/rest-or-focus", get("--muted-foreground"), get("--card")],
+      ["unlocked/rest-or-focus", get("--muted-foreground"), unlocked],
+      ["locked-or-unlocked/hover", hoverForeground, get("--accent")],
+    ] as const) {
+      expect(contrast(foreground, background), state).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(get("--foreground"), background), `${state} title`).toBeGreaterThanOrEqual(
+        4.5,
+      );
+    }
+  });
+
+  it("keeps unlocked status text readable on its actual tinted and hovered surfaces", () => {
+    expect(contrast(get("--green"), unlocked)).toBeGreaterThanOrEqual(4.5);
+    expect(
+      contrast(get("--achievement-status-hover-foreground"), get("--accent")),
+    ).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+it.each(desktopPalettes)("$name keeps active quota metadata readable", ({ palette }) => {
+  const actual = color(palette["--quota-active-foreground"], palette);
+  expect(contrast(actual, color(palette["--background"], palette))).toBeGreaterThanOrEqual(4.5);
+});
+
+it.each(desktopPalettes)("$name keeps home metric labels readable on hover", ({ palette }) => {
+  const get = (token: string) => color(palette[token], palette);
+  // The desktop shell's ::after paints --background beneath main (above its
+  // --sidebar surface); narrow windows use the root background directly.
+  const summary = over(mix(get("--muted"), [0, 0, 0, 0], 0.55), get("--background"));
+  const hover = over(mix(get("--primary"), [0, 0, 0, 0], 0.1), summary);
+  expect(contrast(get("--muted-foreground"), summary)).toBeGreaterThanOrEqual(4.5);
+  expect(contrast(get("--home-metric-hover-foreground"), hover)).toBeGreaterThanOrEqual(4.5);
+});
+
+it.each(desktopPalettes)(
+  "$name retains compliant home metric hover labels",
+  ({ name, palette }) => {
+    const get = (token: string) => color(palette[token], palette);
+    if (
+      ![
+        "desktop/minimal-neutral/light",
+        "desktop/sakura/light",
+        "desktop/sakura/dark",
+        "desktop/ocean-breeze/light",
+      ].includes(name)
+    ) {
+      expect(get("--home-metric-hover-foreground")).toEqual(get("--muted-foreground"));
+    }
+  },
+);
+
+it.each(desktopPalettes)("$name retains already compliant component roles", ({ name, palette }) => {
+  const get = (token: string) => color(palette[token], palette);
+  if (
+    ![
+      "desktop/minimal-neutral/dark",
+      "desktop/sakura/light",
+      "desktop/sakura/dark",
+      "desktop/ocean-breeze/dark",
+    ].includes(name)
+  ) {
+    expect(get("--muted-accent-foreground")).toEqual(get("--muted-foreground"));
+  }
+  if (!["desktop/claude/light", "desktop/sakura/light"].includes(name)) {
+    expect(get("--achievement-status-hover-foreground")).toEqual(get("--green"));
+  }
+  if (!["desktop/sakura/light", "desktop/ocean-breeze/light"].includes(name)) {
+    expect(get("--quota-active-foreground")).toEqual(mix(get("--foreground"), [0, 0, 0, 0], 0.7));
+  }
+});
 
 it.each(["vtron", "minimal-neutral"])(
   "preserves the compliant original 60%% inactive tab foreground in light %s",

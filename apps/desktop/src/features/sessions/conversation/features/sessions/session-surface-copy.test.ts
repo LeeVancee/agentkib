@@ -5,6 +5,7 @@ import { managedControlCopyForSurface } from "./managed-control-copy";
 import { claudeConnectionCopyForSurface } from "./claude-connection-copy";
 import { surfaceText } from "./session-surface-copy";
 import { managedText } from "./managed-copy";
+import { artifactCopy } from "./artifact-copy";
 
 const locales = ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const;
 
@@ -47,6 +48,11 @@ describe("session copy identifies the computer and application", () => {
       }
       expect(codexReason(locale, "permission_denied").text).toContain(desktopApp);
       expect(codexReason(locale, "permission_denied", "web").text).toContain(webApp);
+      expect(codexReason(locale, "control-disabled").text).toContain(desktopApp);
+      expect(codexReason(locale, "control-disabled", "web").text).toContain(webApp);
+      expect(artifactCopy(locale).authorize).toContain(desktopApp);
+      expect(artifactCopy(locale, "web").authorize).toContain(webApp);
+      expect(artifactCopy(locale, "web")).toBe(artifactCopy(locale, "web"));
       expect(
         managedText(
           locale,
@@ -134,6 +140,8 @@ describe("session copy identifies the computer and application", () => {
       "managed-copy.ts",
       "managed-error-copy.ts",
       "context-usage-copy.ts",
+      "artifact-copy.ts",
+      "../catalog/catalog-copy.ts",
       "claude-handoff.ts",
     ]) {
       const desktop = new URL(filename, import.meta.url);

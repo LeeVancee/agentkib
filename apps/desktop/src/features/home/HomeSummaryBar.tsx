@@ -50,7 +50,9 @@ export function HomeSummaryBar({
             onClick={onClick}
           >
             <strong className="tabular-nums">{pending ? "…" : value}</strong>
-            <span className="text-muted-foreground">{label}</span>
+            <span className="text-muted-foreground group-hover/button:text-home-metric-hover-foreground">
+              {label}
+            </span>
           </Button>
         ))}
         <span className="ml-auto text-xs text-muted-foreground">

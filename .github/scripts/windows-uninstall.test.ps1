@@ -8,17 +8,42 @@ $temporary = Join-Path $root "temporary copies"
 $executable = Join-Path $installation "AgentKib.exe"
 $source = Join-Path $installation "Uninstall AgentKib.exe"
 $sentinel = Join-Path $root "user-data-sentinel"
-$script:state = @{ now = 0; killed = $false; disposed = $false; launches = @(); snapshots = @(); probes = 0 }
+$script:state = @{ now = 0; killed = $false; disposed = $false; launches = @(); probes = 0; returned = $false }
 $diagnostics = [ordered]@{}
 
 function Assert-True($Condition, [string] $Message) {
   if (-not $Condition) { throw $Message }
 }
-function Get-Date { return [DateTime]::UnixEpoch.AddMilliseconds($script:state.now) }
+function Get-Date { throw "The uninstall budget must not depend on wall-clock changes" }
+function Start-AgentKibUninstallTimer {
+  $timer = [pscustomobject]@{}
+  $timer | Add-Member -MemberType ScriptProperty -Name ElapsedMilliseconds -Value { return $script:state.now }
+  return $timer
+}
 function Start-Sleep { param([int] $Milliseconds) $script:state.now += $Milliseconds }
+function Copy-Item {
+  [CmdletBinding()]
+  param([string] $LiteralPath, [string] $Destination)
+  Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -ErrorAction Stop
+  if ($Scenario -eq "slow-preparation") { $script:state.now = 120000 }
+}
+function Test-Path {
+  param([string] $LiteralPath)
+  if ($script:state.returned -and
+      (($Scenario -eq "slow-executable-observation" -and $LiteralPath -eq $executable) -or
+       ($Scenario -eq "slow-sentinel-observation" -and $LiteralPath -eq $sentinel))) {
+    $script:state.now = 120001
+  }
+  return Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath
+}
 function Get-AgentKibFileRemovalDiagnostic {
   param([string] $Path)
   $script:state.probes++
+  if ($Scenario -eq "diagnostic-after-termination") {
+    Assert-True $script:state.killed "A slow diagnostic ran before terminating the owned hanging process"
+    Assert-True $script:state.disposed "A slow diagnostic ran before disposing the process handle"
+    $script:state.now += 30000
+  }
   Assert-True ($Path -eq $executable) "The diagnostic must target only the application executable"
   if ($Scenario -eq "diagnostic-failure") { throw "synthetic diagnostic failure" }
   return @{ exists = (Test-Path -LiteralPath $Path); deleteAccessProbe = @{ win32ErrorCode = 32 } }
@@ -29,11 +54,12 @@ function Start-Process {
   Assert-True (Test-Path -LiteralPath $FilePath) "The copied uninstaller must exist before launch"
   Assert-True ((Get-Content -LiteralPath $FilePath -Raw).Trim() -eq "fixture-uninstaller") "Copy bytes changed"
   $script:state.launches += @{ file = $FilePath; arguments = $ArgumentList; cwd = $WorkingDirectory }
+  if ($Scenario -eq "slow-start") { $script:state.now = 120001 }
   $process = [pscustomobject]@{ Id = 321; ExitCode = $(if ($Scenario -eq "actual-failure") { 23 } else { 0 }) }
   $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {
     param([int] $Timeout)
     if ($script:state.killed) { return $true }
-    if ($Scenario -in @("running-timeout", "removed-before-exit", "delayed-termination")) {
+    if ($Scenario -in @("running-timeout", "removed-before-exit", "delayed-termination", "diagnostic-after-termination")) {
       if ($Scenario -eq "removed-before-exit" -and (Test-Path -LiteralPath $executable)) {
         Remove-Item -LiteralPath $executable
       }
@@ -44,11 +70,13 @@ function Start-Process {
       Remove-Item -LiteralPath $executable -ErrorAction SilentlyContinue
     }
     if ($Scenario -eq "user-data-loss") { Remove-Item -LiteralPath $sentinel }
+    $script:state.returned = $true
+    if ($Scenario -eq "slow-exit-query") { $script:state.now = 120001 }
     return $true
   }
   $process | Add-Member -MemberType ScriptProperty -Name HasExited -Value {
     if ($Scenario -eq "delayed-termination") { return $false }
-    return $script:state.killed -or ($script:state.now -ge 1000 -and $Scenario -notin @("running-timeout", "removed-before-exit"))
+    return $script:state.killed -or ($script:state.now -ge 1000 -and $Scenario -notin @("running-timeout", "removed-before-exit", "diagnostic-after-termination"))
   }
   $process | Add-Member -MemberType ScriptMethod -Name Kill -Value { $script:state.killed = $true }
   $process | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $script:state.disposed = $true }
@@ -66,7 +94,7 @@ try {
   try {
     Invoke-AgentKibUninstall -UninstallerPath $source -InstallationRoot $installation `
       -ExecutablePath $executable -SentinelPath $sentinel -TemporaryRoot $temporary `
-      -Diagnostics $diagnostics -OnSnapshot { param($Stage) $script:state.snapshots += $Stage }
+      -Diagnostics $diagnostics
   } catch { $failure = $_.Exception.Message }
 
   switch ($Scenario) {
@@ -96,6 +124,19 @@ try {
       Assert-True ($script:state.now -eq 120000) "The process budget changed"
       Assert-True $script:state.killed "An owned hanging uninstaller was not terminated"
       Assert-True (-not $diagnostics.Contains("uninstallExitCode")) "A running process has no confirmed exit result"
+    }
+    "diagnostic-after-termination" {
+      Assert-True ($failure -match "two-minute budget") "A slow diagnostic replaced the timeout: $failure"
+      Assert-True ($diagnostics.uninstallElapsedMilliseconds -eq 120000) "Diagnostics consumed the supervision budget"
+    }
+    { $_ -in @("slow-start", "slow-exit-query", "slow-executable-observation", "slow-sentinel-observation") } {
+      Assert-True ($failure -match "two-minute budget") "Late success escaped the original budget: $failure"
+      Assert-True ($diagnostics.uninstallElapsedMilliseconds -eq 120001) "Late observation was not recorded"
+    }
+    "slow-preparation" {
+      Assert-True ($failure -match "two-minute budget") "Preparation escaped the original budget: $failure"
+      Assert-True ($script:state.launches.Count -eq 0) "An uninstaller was started after the budget expired"
+      Assert-True ($diagnostics.uninstallElapsedMilliseconds -eq 120000) "Preparation changed the original budget"
     }
     "user-data-loss" { Assert-True ($failure -eq "Uninstall unexpectedly removed user data") "User data loss was accepted: $failure" }
     { $_ -in @("copy-failure", "unsafe-copy-location") } {

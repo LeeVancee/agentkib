@@ -18,6 +18,12 @@ for (const scenario of [
   "copy-failure",
   "unsafe-copy-location",
   "diagnostic-failure",
+  "slow-preparation",
+  "slow-start",
+  "slow-exit-query",
+  "slow-executable-observation",
+  "slow-sentinel-observation",
+  "diagnostic-after-termination",
 ]) {
   test(
     `real NSIS uninstall observation: ${scenario}`,

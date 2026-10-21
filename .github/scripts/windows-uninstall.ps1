@@ -1,4 +1,8 @@
 # Execute the real NSIS uninstaller, rather than its self-copying launcher.
+function Start-AgentKibUninstallTimer {
+  return [Diagnostics.Stopwatch]::StartNew()
+}
+
 function Invoke-AgentKibUninstall {
   param(
     [Parameter(Mandatory = $true)] [string] $UninstallerPath,
@@ -6,15 +10,17 @@ function Invoke-AgentKibUninstall {
     [Parameter(Mandatory = $true)] [string] $ExecutablePath,
     [Parameter(Mandatory = $true)] [string] $SentinelPath,
     [Parameter(Mandatory = $true)] [string] $TemporaryRoot,
-    [Parameter(Mandatory = $true)] [System.Collections.IDictionary] $Diagnostics,
-    [scriptblock] $OnSnapshot = { param($Stage) }
+    [Parameter(Mandatory = $true)] [System.Collections.IDictionary] $Diagnostics
   )
 
   $uninstall = $null
   $scratch = $null
   $stage = "prepare-uninstaller"
-  # The original two-minute budget now covers both execution and observation.
-  $deadline = (Get-Date).AddMinutes(2)
+  # A monotonic clock covers preparation, execution and observation. Expensive
+  # diagnostic snapshots run outside this supervised operation.
+  $timer = Start-AgentKibUninstallTimer
+  $budgetMilliseconds = 120000
+  $failed = $false
   try {
     $installationPath = [IO.Path]::GetFullPath($InstallationRoot)
     $temporaryPath = [IO.Path]::GetFullPath($TemporaryRoot)
@@ -28,6 +34,9 @@ function Invoke-AgentKibUninstall {
     $copy = Join-Path $scratch "uninstall.exe"
     Copy-Item -LiteralPath $UninstallerPath -Destination $copy -ErrorAction Stop
     $Diagnostics.uninstallerCopy = $copy
+    if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+      throw "AgentKib uninstaller exceeded the two-minute budget"
+    }
     $Diagnostics.uninstallStartedAt = [DateTime]::UtcNow.ToString("o")
     $stage = "execute-uninstaller"
     # NSIS consumes everything after _?= as the install path. It must be last,
@@ -35,41 +44,43 @@ function Invoke-AgentKibUninstall {
     $uninstall = Start-Process -FilePath $copy -ArgumentList @("/S", "_?=$installationPath") `
       -WorkingDirectory $scratch -PassThru -ErrorAction Stop
     $Diagnostics.uninstallPid = $uninstall.Id
-    & $OnSnapshot "uninstaller-started" | Out-Null
-    while (-not $uninstall.WaitForExit(0)) {
-      if ((Get-Date) -ge $deadline) {
+    while ($true) {
+      if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
         throw "AgentKib uninstaller exceeded the two-minute budget"
       }
-      Start-Sleep -Milliseconds 500
+      $exited = $uninstall.WaitForExit(0)
+      if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+        throw "AgentKib uninstaller exceeded the two-minute budget"
+      }
+      if ($exited) { break }
+      Start-Sleep -Milliseconds ([Math]::Max(0, [Math]::Min(500, $budgetMilliseconds - $timer.ElapsedMilliseconds)))
     }
     $Diagnostics.uninstallExitCode = $uninstall.ExitCode
     $Diagnostics.uninstallReturnedAt = [DateTime]::UtcNow.ToString("o")
-    & $OnSnapshot "uninstaller-returned" | Out-Null
     if ($uninstall.ExitCode -ne 0) {
       throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
     }
 
     $stage = "verify-executable-removed"
-    while ((Test-Path -LiteralPath $ExecutablePath) -and (Get-Date) -lt $deadline) {
-      Start-Sleep -Milliseconds 500
-    }
-    if (Test-Path -LiteralPath $ExecutablePath) {
-      throw "AgentKib.exe remained after uninstall"
+    while ($true) {
+      $exists = Test-Path -LiteralPath $ExecutablePath
+      if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+        if ($exists) { throw "AgentKib.exe remained after uninstall" }
+        throw "AgentKib uninstaller exceeded the two-minute budget"
+      }
+      if (-not $exists) { break }
+      Start-Sleep -Milliseconds ([Math]::Max(0, [Math]::Min(500, $budgetMilliseconds - $timer.ElapsedMilliseconds)))
     }
     $stage = "verify-user-data-preserved"
     if (-not (Test-Path -LiteralPath $SentinelPath)) {
       throw "Uninstall unexpectedly removed user data"
     }
-  } catch {
-    $Diagnostics.failureStage = $stage
-    # This probe is read-only: retain the original failure, even if collecting
-    # file attributes or the exact file's lock owners is unavailable.
-    try {
-      $Diagnostics.fileRemoval = Get-AgentKibFileRemovalDiagnostic -Path $ExecutablePath
-    } catch {
-      $Diagnostics.fileRemovalCollectionFailed = $true
+    if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+      throw "AgentKib uninstaller exceeded the two-minute budget"
     }
-    & $OnSnapshot "uninstaller-failed" | Out-Null
+  } catch {
+    $failed = $true
+    $Diagnostics.failureStage = $stage
     throw
   } finally {
     try {
@@ -90,5 +101,15 @@ function Invoke-AgentKibUninstall {
       $Diagnostics.uninstallerCleanupFailed = $true
     }
     if ($uninstall) { $uninstall.Dispose() }
+    $Diagnostics.uninstallElapsedMilliseconds = $timer.ElapsedMilliseconds
+    # Cleanup must precede potentially slow, read-only failure diagnostics.
+    # Diagnostic failures must never replace the original operation failure.
+    if ($failed) {
+      try {
+        $Diagnostics.fileRemoval = Get-AgentKibFileRemovalDiagnostic -Path $ExecutablePath
+      } catch {
+        $Diagnostics.fileRemovalCollectionFailed = $true
+      }
+    }
   }
 }

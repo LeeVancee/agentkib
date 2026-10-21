@@ -80,3 +80,26 @@ helper 的 7 项跳过对应 NSIS 编译器/执行门禁，PR 结果不能代替
 - ARM64 保留既有 preview 的 `-SkipQuota`，不覆盖 quota sidecar；AgentKib 安装包以 `--arm64` 构建并在 Windows ARM64 runner 上执行。NSIS 工具本身可通过系统仿真运行，不将其称为 ARM64 原生编译器，也不等同于代表性物理硬件验收。
 - 对源提交的 PR 五项检查全部成功。后续证据提交只修改文档/QA；安装器、helper、工作流和回归测试代码与上述原生验收提交相同，最终 PR 检查另核对最新文档提交。
 - 首次 v0.20.1 具体锁拥有者仍无法从旧快照追溯；本次证实了处理链修复在真实 Windows 临时/持续锁和实际安装包上的行为，不把 CI 成功推断为历史 Win32 拒绝者已查明。
+
+
+## PR #135 独立审查与修复（2026-10-21）
+
+固定审查基线为 `edd282035b9f62f8355dded67770721d41ddce37`，初始 PR HEAD 为 `9aa2e9aa47cce699905e9c3d69400bf54042c162`。按 code-review 的 Standards / Spec 两轴及安全边界独立复核，确认并修复以下问题；原始首次失败的具体锁拥有者仍不可追溯。
+
+1. **持续锁失败留下不可用的卸载入口**：原 `RMDir /r` 可先删除安装目录里的卸载器，再因锁住的 EXE 失败，保留下来的注册项因而指向已删除文件。普通卸载现在先将原卸载器精确路径备份到本次 NSIS 私有临时目录；备份失败时在删除前中止。删除持续失败则恢复原路径，不覆盖仍存在的入口，再退出 2；若系统另行拒绝恢复写入，记录 Win32 错误且仍不删除注册项、不伪报成功。新增真实源卸载器字节、模拟注册标记、持续锁后从原入口重试成功、备份失败不删除文件的回归。
+2. **目录枚举拒绝被当作删除成功**：移除 wildcard 存在性作为成功依据；尊重 `RMDir` 错误，且只接受 `GetFileAttributesW` 的 file/path-not-found（2/3）证明目录确实已删除。新增只对私有安装根、非继承的 `ListDirectory` deny ACL 用例，先证实枚举确实被拒绝且精确文件仍可读，卸载必须失败并保留原入口及用户数据；finally 恢复该测试目录原 ACL。没有绕过 ACL 或降低权限保护。
+3. **慢快照/延迟观察绕过两分钟截止**：卸载预算改用单调 Stopwatch，原值仍为 120000ms，准备、启动、等待以及 EXE/用户数据检查返回后都核对同一预算。快照移到监督操作外；失败时先处理自有进程、临时副本和句柄，再作只读诊断。新增慢准备、慢启动、迟到的退出结果、EXE/用户数据观察、诊断在终止之后执行的回归。监督之后的清理与取证可能另耗时，但不能让超预算操作取得成功结果。
+4. **新策略门禁阻断不可变旧标签重试**：只为显式 workflow_dispatch、preflight 已核实稳定 tag/SHA、版本不晚于 v0.20.1 且该源码确实没有产品 hook 的历史发布重试跳过不可用的新产品策略测试。存在 hook、当前分支、新版本、非规范或不一致上下文全部继续失败或强制原生验证；实际安装器冒烟、EXE 删除和用户数据断言始终执行。preflight 将解析限定为 `refs/tags/`，防止同名分支冒充标签。新增条件矩阵、真实 runner 子进程及同名分支负向测试。
+
+### 本轮验证
+
+- 本机 PowerShell 卸载控制回归 16 通过、0 失败、0 跳过；原始真实非零退出、EXE 残留、运行超时、异步终止未确认和用户数据丢失用例全部保留。
+- 使用同版 NSIS 3.0.4.1 `/WX` 在 macOS 编译普通/原子升级/在位上游 fixture；产品四语失败提示保留。真实 Windows ACL、持续锁原入口重试、备份失败及升级回滚需由下列双架构 CI 补验，不能以本机编译代替。
+- 本地最初 typecheck 因 node_modules 缺少锁文件已声明的 `react-resizable-panels` 失败。pnpm 10 无法读取当前双文档格式锁文件；使用已有、项目声明的 pnpm 12.10.1 原生可执行文件（临时 PATH 与 `manage-package-manager-versions=false` userconfig）执行 `pnpm install --frozen-lockfile`，仅补齐现有依赖后 typecheck 通过，依赖声明和锁文件无修改。
+- 本轮没有修改应用业务代码、跨 Agent 继续、Codex follower、用户凭据配置或 designs。保留原 5000ms 产品删除重试、120000ms 冒烟预算、只读诊断、安全断言和原子升级回滚/在位回退。
+
+- 完整相关组合：`AGENTKIB_PWSH=<临时 pwsh> AGENTKIB_NSIS_COMPILER=<同版 makensis> NSISDIR=<同版 NSIS 目录> node --test --test-concurrency=1 .github/scripts/*.test.mjs`：**60 项，51 通过、0 失败、9 跳过，97.44 秒**。跳过仅为 1 项 Win32 原生诊断和 8 项 Windows NSIS 门禁/执行；本机 PowerShell 16 项和 NSIS 编译已实际执行。
+- `pnpm typecheck`、`pnpm lint`、`pnpm format:check` 通过（lint 有既有警告）；四个改动 JavaScript 文件的 `oxfmt --check`、相关 PowerShell AST、YAML 解析及 `git diff --check` 通过。
+- Standards 与 Spec 新一轮独立审查均为 **no finding**；另一次 Spec 复核发现并修复上述同名分支/tag 歧义后，再审查为 no finding。独立 runner 回归 6/6 通过。某只读审查进程在缺少临时工具的首次全 helper 中遇到两项未修改启动探针超时，按名称隔离两项均通过；主代理有完整工具的组合结果另列。
+
+Windows x64/ARM64 CI 结果在执行后追加。不会将尚未执行的 Windows 用例标为已通过；不合并、不发布，不在本机下载安装包。

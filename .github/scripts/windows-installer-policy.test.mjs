@@ -237,11 +237,13 @@ async function compileFixture(t, { updated = false, inPlace = false, baseline = 
   });
   const installation = path.join(directory, "installed application");
   const creator = path.join(directory, "create-uninstaller.exe");
+  const registeredUninstaller = path.join(installation, "Uninstall AgentKib.exe");
   const uninstaller = path.join(
     inPlace ? installation : directory,
     inPlace ? "Uninstall AgentKib.exe" : "uninstall.exe",
   );
   const completed = path.join(directory, "uninstall-completed");
+  const registration = path.join(directory, "uninstall-registration");
   const sentinel = path.join(directory, "user-data-sentinel");
   await mkdir(installation);
   const executable = path.join(installation, "AgentKib.exe");
@@ -270,21 +272,26 @@ async function compileFixture(t, { updated = false, inPlace = false, baseline = 
     String.raw`Unicode true
 !include "LogicLib.nsh"
 !define BUILD_UNINSTALLER
-!define UNINSTALL_FILENAME "Uninstall AgentKib.exe"
+!define PRODUCT_FILENAME "AgentKib"
 !define isUpdated '${updated ? "1 == 1" : "0 == 1"}'
 ${baseline ? "" : `!include "${nsisCompilerString(includePath)}"`}
+!define UNINSTALL_FILENAME "Uninstall AgentKib.exe"
 Name "AgentKib uninstall policy fixture"
 OutFile "${nsisCompilerString(creator)}"
+InstallDir "${nsisString(installation)}"
 RequestExecutionLevel user
 SilentInstall silent
 ${loadLanguages}
 Section
   WriteUninstaller "${nsisString(uninstaller)}"
+  ${inPlace ? "" : `WriteUninstaller "${nsisString(registeredUninstaller)}"`}
 SectionEnd
 ${atomicFunctions}
 Section "Uninstall"
   InitPluginsDir
   ${baseline ? defaultRemoval : "!insertmacro customRemoveFiles"}
+  StrCpy $0 "${nsisString(registration)}"
+  Delete "$0"
   FileOpen $0 "${nsisString(completed)}" w
   FileWrite $0 "completed"
   FileClose $0
@@ -308,12 +315,17 @@ SectionEnd
     directory,
     installation,
     executable,
+    registeredUninstaller,
+    registration,
     completed,
     sentinel,
     cleanup,
     async initialize() {
       await runFile(creator, ["/S"], { cwd: directory });
       assert.equal(await exists(uninstaller), true);
+      assert.equal(await exists(registeredUninstaller), true);
+      // Model the code after customRemoveFiles without touching a real registry.
+      await writeFile(registration, registeredUninstaller);
     },
     async uninstall() {
       // NSIS's _?= must be last, with its path extending unquoted to the end.
@@ -332,6 +344,16 @@ SectionEnd
           else resolve(code);
         });
       });
+    },
+    async uninstallFromRegisteredEntry() {
+      // Exercise the restored entry's normal self-copying launcher, as Windows
+      // Installed Apps would. The completion marker observes its real child.
+      await runFile(registeredUninstaller, ["/S"], { cwd: directory });
+      const deadline = Date.now() + 10_000;
+      while (!(await exists(completed))) {
+        assert.ok(Date.now() < deadline, "The restored uninstall entry did not complete");
+        await delay(25);
+      }
     },
   };
 }
@@ -389,7 +411,70 @@ try {
     assert.ok(Date.now() < deadline, "Windows file-lock fixture did not become ready");
     await delay(25);
   }
-  return () => writeFile(release, "release");
+  return async () => {
+    await writeFile(release, "release");
+    await closed;
+  };
+}
+
+async function denyDirectoryListing(app) {
+  const savedAcl = path.join(app.directory, "installation-acl.sddl");
+  const runAclScript = (source) =>
+    runFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(source, "utf16le").toString("base64"),
+      ],
+      {
+        env: {
+          ...process.env,
+          AGENTKIB_NSIS_ACL_ROOT: app.installation,
+          AGENTKIB_NSIS_ACL_FILE: app.registeredUninstaller,
+          AGENTKIB_NSIS_ACL_BACKUP: savedAcl,
+        },
+      },
+    );
+  let restored = false;
+  const restore = async () => {
+    if (restored) return;
+    if ((await exists(savedAcl)) && (await exists(app.installation))) {
+      await runAclScript(`
+$ErrorActionPreference = 'Stop'
+$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl.SetSecurityDescriptorSddlForm([IO.File]::ReadAllText($env:AGENTKIB_NSIS_ACL_BACKUP))
+Set-Acl -LiteralPath $env:AGENTKIB_NSIS_ACL_ROOT -AclObject $acl
+`);
+    }
+    restored = true;
+  };
+  // Register restoration before applying a rule, including when setup fails.
+  app.cleanup.push(restore);
+  const { stdout } = await runAclScript(`
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath $env:AGENTKIB_NSIS_ACL_ROOT
+[IO.File]::WriteAllText($env:AGENTKIB_NSIS_ACL_BACKUP, $acl.Sddl)
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$rule = New-Object Security.AccessControl.FileSystemAccessRule(
+  $identity, [Security.AccessControl.FileSystemRights]::ListDirectory,
+  [Security.AccessControl.InheritanceFlags]::None,
+  [Security.AccessControl.PropagationFlags]::None,
+  [Security.AccessControl.AccessControlType]::Deny)
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $env:AGENTKIB_NSIS_ACL_ROOT -AclObject $acl
+$denied = $false
+try { $null = [IO.Directory]::GetFileSystemEntries($env:AGENTKIB_NSIS_ACL_ROOT) }
+catch [UnauthorizedAccessException] { $denied = $true }
+if (-not $denied) { throw 'The private installation directory can still be listed' }
+if ([IO.File]::ReadAllBytes($env:AGENTKIB_NSIS_ACL_FILE).Length -eq 0) {
+  throw 'The non-inherited listing rule prevented direct file access'
+}
+[Console]::WriteLine('listing-denied; direct-file-readable')
+`);
+  assert.match(stdout, /listing-denied; direct-file-readable/);
+  return restore;
 }
 
 test(
@@ -415,18 +500,70 @@ test(
 );
 
 test(
-  "NSIS fails a persistent Windows file lock within its five-second retry budget",
+  "NSIS preserves a retryable registered uninstaller after a persistent Windows file lock",
   { skip: !canExecuteNsis },
   async (t) => {
     const app = await compileFixture(t);
     await app.initialize();
-    await lockFile(app, 15_000);
+    const originalUninstaller = await readFile(app.registeredUninstaller);
+    const release = await lockFile(app, 20_000);
     const started = performance.now();
     assert.equal(await app.uninstall(), 2);
     const elapsed = performance.now() - started;
     assert.ok(elapsed >= 4_500 && elapsed < 6_500, `Removal took ${elapsed} ms`);
     assert.equal(await exists(app.executable), true);
     assert.equal(await exists(app.completed), false);
+    assert.equal(await readFile(app.registration, "utf8"), app.registeredUninstaller);
+    assert.deepEqual(await readFile(app.registeredUninstaller), originalUninstaller);
+    assert.equal(await readFile(app.sentinel, "utf8"), "preserve user data");
+    await release();
+    await app.uninstallFromRegisteredEntry();
+    assert.equal(await exists(app.installation), false);
+    assert.equal(await exists(app.registration), false);
+    assert.equal(await readFile(app.sentinel, "utf8"), "preserve user data");
+  },
+);
+
+test(
+  "NSIS aborts before deleting files if the registered uninstaller cannot be backed up",
+  { skip: !canExecuteNsis },
+  async (t) => {
+    const app = await compileFixture(t);
+    await app.initialize();
+    await rm(app.registeredUninstaller);
+    assert.equal(await app.uninstall(), 2);
+    assert.equal(await exists(app.completed), false);
+    assert.equal(await exists(app.registration), true);
+    assert.equal(await exists(app.executable), true);
+    assert.equal(
+      await readFile(path.join(app.installation, "before.txt"), "utf8"),
+      "original installation file",
+    );
+    assert.equal(await readFile(app.sentinel, "utf8"), "preserve user data");
+  },
+);
+
+test(
+  "NSIS rejects a directory-listing denial and leaves the registered entry retryable",
+  { skip: !canExecuteNsis },
+  async (t) => {
+    const app = await compileFixture(t);
+    await app.initialize();
+    const originalUninstaller = await readFile(app.registeredUninstaller);
+    const restore = await denyDirectoryListing(app);
+    try {
+      assert.equal(await app.uninstall(), 2);
+      assert.equal(await exists(app.completed), false);
+      assert.equal(await readFile(app.registration, "utf8"), app.registeredUninstaller);
+      assert.equal(await exists(app.executable), true);
+      assert.deepEqual(await readFile(app.registeredUninstaller), originalUninstaller);
+      assert.equal(await readFile(app.sentinel, "utf8"), "preserve user data");
+    } finally {
+      await restore();
+    }
+    await app.uninstallFromRegisteredEntry();
+    assert.equal(await exists(app.installation), false);
+    assert.equal(await exists(app.registration), false);
     assert.equal(await readFile(app.sentinel, "utf8"), "preserve user data");
   },
 );

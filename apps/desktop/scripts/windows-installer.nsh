@@ -48,12 +48,31 @@
     System::Call 'kernel32::GetTickCount() i .r0'
     StrCpy $2 $0
     SetOutPath "$TEMP"
+    InitPluginsDir
+
+    # RMDir can remove the registered uninstaller before reaching a locked
+    # application file. Keep its exact bytes so a failed uninstall can be retried.
+    # common.nsh defines UNINSTALL_FILENAME only after this include is loaded.
+    System::Call 'kernel32::CopyFileW(w "$INSTDIR\Uninstall ${PRODUCT_FILENAME}.exe", w "$PLUGINSDIR\agentkib-uninstaller-backup.exe", i 0) i .r0'
+    StrCmp $0 0 agentkib_remove_abort
 
     agentkib_remove_retry:
       ClearErrors
       RMDir /r "$INSTDIR"
-      IfFileExists "$INSTDIR\*.*" 0 agentkib_remove_done
+      IfErrors agentkib_remove_wait
 
+      # A failed wildcard enumeration is not proof that the directory is gone.
+      # Accept only Win32's exact file/path-not-found results, never access denial.
+      System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR") i .r0 ?e'
+      Pop $1
+      ${If} $0 == -1
+        ${If} $1 == 2
+        ${OrIf} $1 == 3
+          Goto agentkib_remove_done
+        ${EndIf}
+      ${EndIf}
+
+    agentkib_remove_wait:
       # RMDir only sets NSIS's error flag. Without an explicit failure, its
       # caller would continue removing the uninstall registration and exit 0.
       System::Call 'kernel32::GetTickCount() i .r0'
@@ -74,6 +93,16 @@
       Goto agentkib_remove_retry
 
     agentkib_remove_failed:
+      # Do not overwrite a still-present source (including an in-place launch).
+      # CopyFile's exact paths also work when listing the directory is denied.
+      System::Call 'kernel32::CopyFileW(w "$PLUGINSDIR\agentkib-uninstaller-backup.exe", w "$INSTDIR\Uninstall ${PRODUCT_FILENAME}.exe", i 1) i .r0 ?e'
+      Pop $1
+      ${If} $0 == 0
+      ${AndIf} $1 != 80
+        DetailPrint "Could not restore the uninstall entry (Win32 error $1)."
+      ${EndIf}
+
+    agentkib_remove_abort:
       Pop $2
       Pop $1
       Pop $0

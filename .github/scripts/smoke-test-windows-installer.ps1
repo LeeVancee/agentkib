@@ -188,7 +188,8 @@ $diagnostics.uninstaller = $uninstaller.FullName
 Save-UninstallSnapshot "before-uninstall"
 Invoke-AgentKibUninstall -UninstallerPath $uninstaller.FullName -InstallationRoot $installationRoot `
   -ExecutablePath $executable.FullName -SentinelPath $sentinel -TemporaryRoot $temporaryRoot `
-  -Diagnostics $diagnostics -OnSnapshot { param($Stage) Save-UninstallSnapshot $Stage }
+  -Diagnostics $diagnostics
+Save-UninstallSnapshot "uninstaller-returned"
 Remove-Item -LiteralPath $sentinel -Force
 Write-Output "AgentKib installer smoke test passed."
 $diagnostics.outcome = "passed"

@@ -31,7 +31,9 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Test release helpers and Windows uninstall observation
-        run: node --test .github/scripts/*.test.mjs
+        # These files launch independent PowerShell/.NET and process-tree fixtures.
+        # Keep cold native compilation out of cross-file startup contention.
+        run: node --test --test-concurrency=1 .github/scripts/*.test.mjs
       - name: Test native Windows uninstall policy
         run: node .github/scripts/run-windows-installer-policy-tests.mjs
       - run: pnpm typecheck
@@ -60,7 +62,8 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Test release helpers and Windows uninstall observation
-        run: node --test .github/scripts/*.test.mjs
+        # Preserve each fixture's deadline while avoiding competing cold runtimes.
+        run: node --test --test-concurrency=1 .github/scripts/*.test.mjs
       - name: Test native Windows uninstall policy
         run: node .github/scripts/run-windows-installer-policy-tests.mjs
       - run: pnpm typecheck

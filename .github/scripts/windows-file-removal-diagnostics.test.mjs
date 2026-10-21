@@ -71,24 +71,94 @@ function runMocked(source) {
   return runPowerShell(`${mockedNative}\n${source}`);
 }
 
+const initializationPhases = [
+  "entered",
+  "parse",
+  "load",
+  "compile",
+  "reinitialize",
+  "marshal",
+  "complete",
+];
+
+function summarizeInitializationProgress(source) {
+  const lines = source.trim().split(/\r?\n/);
+  if (lines.length > initializationPhases.length) return "phase progress unavailable";
+  const progress = [];
+  let previous = 0;
+  for (const [index, line] of lines.entries()) {
+    const match = /^(\w+)=(\d{1,9})$/.exec(line);
+    if (!match || match[1] !== initializationPhases[index] || Number(match[2]) < previous) {
+      return "phase progress unavailable";
+    }
+    previous = Number(match[2]);
+    progress.push(`${match[1]}=${previous}ms`);
+  }
+  return progress.join(" -> ");
+}
+
+test("initialization progress emits only ordered phase names and numeric elapsed times", () => {
+  assert.equal(
+    summarizeInitializationProgress("entered=0\r\nparse=1\r\nload=4\r\ncompile=5\r\n"),
+    "entered=0ms -> parse=1ms -> load=4ms -> compile=5ms",
+  );
+  for (const source of [
+    "",
+    "entered=0\nsecret exception text",
+    "entered=0\nparse=1\nload=0",
+    "entered=0\nparse=-1",
+    "unknown=0",
+    "entered=0\nparse=1\nload=2\ncompile=3\nreinitialize=4\nmarshal=5\ncomplete=6\nentered=7",
+  ]) {
+    assert.equal(summarizeInitializationProgress(source), "phase progress unavailable");
+  }
+});
+
 test(
   "PowerShell parses and compiles the native declarations without loading or invoking Win32 APIs",
   { skip },
-  () => {
-    const result = runPowerShell(`
+  async (t) => {
+    const directory = await mkdtemp(path.join(tmpdir(), "agentkib-diagnostic-initialization-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const progressFile = path.join(directory, "progress");
+    let result;
+    try {
+      result = runPowerShell(
+        `
 $ErrorActionPreference = "Stop"
+$clock = [Diagnostics.Stopwatch]::StartNew()
+function Write-InitializationProgress([string] $phase) {
+  [IO.File]::AppendAllText($env:AGENTKIB_DIAGNOSTIC_PROGRESS,
+    $phase + '=' + $clock.ElapsedMilliseconds + [Environment]::NewLine)
+}
+Write-InitializationProgress 'entered'
 $tokens = $null
 $parseErrors = $null
+Write-InitializationProgress 'parse'
 $null = [Management.Automation.Language.Parser]::ParseFile($env:AGENTKIB_DIAGNOSTIC_HELPER, [ref] $tokens, [ref] $parseErrors)
 if ($parseErrors.Count -ne 0) { throw "Diagnostic script did not parse" }
+Write-InitializationProgress 'load'
 . $env:AGENTKIB_DIAGNOSTIC_HELPER
 $before = $null -ne ("AgentKib.FileRemovalDiagnosticNative" -as [type])
+Write-InitializationProgress 'compile'
 Initialize-AgentKibFileRemovalNative
+Write-InitializationProgress 'reinitialize'
 Initialize-AgentKibFileRemovalNative
+Write-InitializationProgress 'marshal'
+$uniqueProcessSize = [Runtime.InteropServices.Marshal]::SizeOf([type] [AgentKib.RemovalUniqueProcess])
+$processInfoSize = [Runtime.InteropServices.Marshal]::SizeOf([type] [AgentKib.RemovalProcessInfo])
+Write-InitializationProgress 'complete'
 @{ before = $before; after = $null -ne ("AgentKib.FileRemovalDiagnosticNative" -as [type]);
-  uniqueProcessSize = [Runtime.InteropServices.Marshal]::SizeOf([type] [AgentKib.RemovalUniqueProcess]);
-  processInfoSize = [Runtime.InteropServices.Marshal]::SizeOf([type] [AgentKib.RemovalProcessInfo]) } | ConvertTo-Json -Compress
-`);
+  uniqueProcessSize = $uniqueProcessSize; processInfoSize = $processInfoSize } | ConvertTo-Json -Compress
+`,
+        { AGENTKIB_DIAGNOSTIC_PROGRESS: progressFile },
+      );
+    } finally {
+      // Never print raw trace content: even a failed or replaced fixture may
+      // contain arbitrary exception text. Only fixed stages and numbers escape.
+      const progress = await readFile(progressFile, "utf8").catch(() => "");
+      t.diagnostic(summarizeInitializationProgress(progress));
+    }
     assert.equal(result.before, false);
     assert.equal(result.after, true);
     assert.equal(result.uniqueProcessSize, 12);

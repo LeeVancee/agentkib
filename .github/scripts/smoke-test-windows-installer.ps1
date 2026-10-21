@@ -7,6 +7,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "windows-uninstall.ps1")
+. (Join-Path $PSScriptRoot "windows-file-removal-diagnostics.ps1")
 $diagnostics = [ordered]@{
   startedAt = [DateTime]::UtcNow.ToString("o")
   outcome = "running"
@@ -28,7 +30,7 @@ function Save-UninstallSnapshot {
     $snapshot.processes = @(Get-CimInstance Win32_Process | Where-Object {
       ($installationRoot -and $_.ExecutablePath -and
         $_.ExecutablePath.StartsWith($installationRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) -or
-      ($uninstall -and ($_.ProcessId -eq $uninstall.Id -or $_.ParentProcessId -eq $uninstall.Id))
+      ($diagnostics.uninstallPid -and ($_.ProcessId -eq $diagnostics.uninstallPid -or $_.ParentProcessId -eq $diagnostics.uninstallPid))
     } | Select-Object -First 50 -Property ProcessId, ParentProcessId, Name, ExecutablePath)
   } catch { $snapshot.processCollectionFailed = $true }
   try {
@@ -37,7 +39,10 @@ function Save-UninstallSnapshot {
       "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
       "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
     ) | ForEach-Object { Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue } |
-      Where-Object { $_.DisplayName -eq "AgentKib" } |
+      Where-Object {
+        $_.InstallLocation -and $installationRoot -and
+        $_.InstallLocation.Trim().Trim('"').TrimEnd('\') -eq $installationRoot.TrimEnd('\')
+      } |
       Select-Object -First 20 -Property DisplayName, DisplayVersion, InstallLocation)
   } catch { $snapshot.registryCollectionFailed = $true }
   $diagnostics.snapshots += $snapshot
@@ -181,27 +186,10 @@ if (-not $uninstaller) {
 }
 $diagnostics.uninstaller = $uninstaller.FullName
 Save-UninstallSnapshot "before-uninstall"
-$diagnostics.uninstallStartedAt = [DateTime]::UtcNow.ToString("o")
-$uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -Wait -PassThru
-$diagnostics.uninstallPid = $uninstall.Id
-$diagnostics.uninstallExitCode = $uninstall.ExitCode
-$diagnostics.uninstallReturnedAt = [DateTime]::UtcNow.ToString("o")
-if ($uninstall.ExitCode -ne 0) {
-  throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
-}
-# NSIS performs the final removal from a detached cleanup process after the
-# launcher exits. Keep the bounded wait; a timeout requires diagnostics rather
-# than assuming antivirus scanning or increasing the timeout again.
-$uninstallDeadline = (Get-Date).AddMinutes(2)
-while ((Test-Path -LiteralPath $executable.FullName) -and (Get-Date) -lt $uninstallDeadline) {
-  Start-Sleep -Milliseconds 500
-}
-if (Test-Path -LiteralPath $executable.FullName) {
-  throw "AgentKib.exe remained after uninstall"
-}
-if (-not (Test-Path -LiteralPath $sentinel)) {
-  throw "Uninstall unexpectedly removed user data"
-}
+Invoke-AgentKibUninstall -UninstallerPath $uninstaller.FullName -InstallationRoot $installationRoot `
+  -ExecutablePath $executable.FullName -SentinelPath $sentinel -TemporaryRoot $temporaryRoot `
+  -Diagnostics $diagnostics
+Save-UninstallSnapshot "uninstaller-returned"
 Remove-Item -LiteralPath $sentinel -Force
 Write-Output "AgentKib installer smoke test passed."
 $diagnostics.outcome = "passed"

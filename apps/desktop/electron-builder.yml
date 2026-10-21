@@ -67,6 +67,7 @@ win:
 nsis:
   oneClick: false
   perMachine: false
+  include: scripts/windows-installer.nsh
 linux:
   extraResources:
     - from: resources/quota/resources/linux

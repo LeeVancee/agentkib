@@ -98,7 +98,7 @@ jobs:
               exit 1
             fi
 
-            tag_sha=$(git rev-list -n 1 "$release_tag")
+            tag_sha=$(git rev-list -n 1 "refs/tags/$release_tag")
             if [[ "$tag_sha" != "$release_sha" ]]; then
               echo "Release tag $release_tag resolves to $tag_sha, but checkout resolved to $release_sha" >&2
               exit 1
@@ -343,6 +343,14 @@ jobs:
           test -n "$package"
           sudo apt-get install -y "$package"
           .github/scripts/smoke-test-linux-installed.sh
+
+      - name: Test native Windows uninstall policy
+        if: runner.os == 'Windows'
+        env:
+          AGENTKIB_REQUESTED_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          AGENTKIB_VALIDATED_RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+          AGENTKIB_VALIDATED_RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
+        run: node ./.release-helpers/.github/scripts/run-windows-installer-policy-tests.mjs
 
       - name: Smoke test Windows x64 installer
         if: runner.os == 'Windows' && matrix.arch == 'x64'

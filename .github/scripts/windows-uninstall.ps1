@@ -1,0 +1,115 @@
+# Execute the real NSIS uninstaller, rather than its self-copying launcher.
+function Start-AgentKibUninstallTimer {
+  return [Diagnostics.Stopwatch]::StartNew()
+}
+
+function Invoke-AgentKibUninstall {
+  param(
+    [Parameter(Mandatory = $true)] [string] $UninstallerPath,
+    [Parameter(Mandatory = $true)] [string] $InstallationRoot,
+    [Parameter(Mandatory = $true)] [string] $ExecutablePath,
+    [Parameter(Mandatory = $true)] [string] $SentinelPath,
+    [Parameter(Mandatory = $true)] [string] $TemporaryRoot,
+    [Parameter(Mandatory = $true)] [System.Collections.IDictionary] $Diagnostics
+  )
+
+  $uninstall = $null
+  $scratch = $null
+  $stage = "prepare-uninstaller"
+  # A monotonic clock covers preparation, execution and observation. Expensive
+  # diagnostic snapshots run outside this supervised operation.
+  $timer = Start-AgentKibUninstallTimer
+  $budgetMilliseconds = 120000
+  $failed = $false
+  try {
+    $installationPath = [IO.Path]::GetFullPath($InstallationRoot)
+    $temporaryPath = [IO.Path]::GetFullPath($TemporaryRoot)
+    $prefix = $installationPath.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if ($temporaryPath.Equals($installationPath, [StringComparison]::OrdinalIgnoreCase) -or
+        $temporaryPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "The uninstaller copy must be outside the installation directory"
+    }
+    $scratch = Join-Path $temporaryPath ("agentkib-uninstaller-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $scratch -ErrorAction Stop | Out-Null
+    $copy = Join-Path $scratch "uninstall.exe"
+    Copy-Item -LiteralPath $UninstallerPath -Destination $copy -ErrorAction Stop
+    $Diagnostics.uninstallerCopy = $copy
+    if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+      throw "AgentKib uninstaller exceeded the two-minute budget"
+    }
+    $Diagnostics.uninstallStartedAt = [DateTime]::UtcNow.ToString("o")
+    $stage = "execute-uninstaller"
+    # NSIS consumes everything after _?= as the install path. It must be last,
+    # without nested quotes, including when that path contains spaces.
+    $uninstall = Start-Process -FilePath $copy -ArgumentList @("/S", "_?=$installationPath") `
+      -WorkingDirectory $scratch -PassThru -ErrorAction Stop
+    $Diagnostics.uninstallPid = $uninstall.Id
+    while ($true) {
+      if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+        throw "AgentKib uninstaller exceeded the two-minute budget"
+      }
+      $exited = $uninstall.WaitForExit(0)
+      if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+        throw "AgentKib uninstaller exceeded the two-minute budget"
+      }
+      if ($exited) { break }
+      Start-Sleep -Milliseconds ([Math]::Max(0, [Math]::Min(500, $budgetMilliseconds - $timer.ElapsedMilliseconds)))
+    }
+    $Diagnostics.uninstallExitCode = $uninstall.ExitCode
+    $Diagnostics.uninstallReturnedAt = [DateTime]::UtcNow.ToString("o")
+    if ($uninstall.ExitCode -ne 0) {
+      throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
+    }
+
+    $stage = "verify-executable-removed"
+    while ($true) {
+      $exists = Test-Path -LiteralPath $ExecutablePath
+      if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+        if ($exists) { throw "AgentKib.exe remained after uninstall" }
+        throw "AgentKib uninstaller exceeded the two-minute budget"
+      }
+      if (-not $exists) { break }
+      Start-Sleep -Milliseconds ([Math]::Max(0, [Math]::Min(500, $budgetMilliseconds - $timer.ElapsedMilliseconds)))
+    }
+    $stage = "verify-user-data-preserved"
+    if (-not (Test-Path -LiteralPath $SentinelPath)) {
+      throw "Uninstall unexpectedly removed user data"
+    }
+    if ($timer.ElapsedMilliseconds -ge $budgetMilliseconds) {
+      throw "AgentKib uninstaller exceeded the two-minute budget"
+    }
+  } catch {
+    $failed = $true
+    $Diagnostics.failureStage = $stage
+    throw
+  } finally {
+    try {
+      if ($uninstall -and -not $uninstall.HasExited) {
+        # This is our temporary copy's process, never an unrelated application.
+        $uninstall.Kill()
+        $Diagnostics.uninstallerTerminated = $true
+      }
+      if ($scratch -and (-not $uninstall -or $uninstall.HasExited)) {
+        Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction Stop
+      } elseif ($scratch) {
+        # Kill is asynchronous. Do not mistake a sent termination signal for
+        # confirmed cleanup, or spend another wait budget after the timeout.
+        $Diagnostics.uninstallerCleanupPending = $true
+        $Diagnostics.uninstallerCleanupFailed = $true
+      }
+    } catch {
+      $Diagnostics.uninstallerCleanupFailed = $true
+    }
+    if ($uninstall) { $uninstall.Dispose() }
+    $Diagnostics.uninstallElapsedMilliseconds = $timer.ElapsedMilliseconds
+    # Cleanup must precede potentially slow, read-only failure diagnostics.
+    # Diagnostic failures must never replace the original operation failure.
+    if ($failed) {
+      try {
+        $Diagnostics.fileRemoval = Get-AgentKibFileRemovalDiagnostic -Path $ExecutablePath
+      } catch {
+        $Diagnostics.fileRemovalCollectionFailed = $true
+      }
+    }
+  }
+}

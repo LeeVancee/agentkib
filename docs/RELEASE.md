@@ -72,6 +72,52 @@ already public. A product-code fix requires a new version and tag rather than
 moving an existing tag. Workflow artifacts remain available for diagnosing
 failed builds.
 
+### Windows uninstall failures
+
+The installer smoke copies the NSIS uninstaller into a private temporary
+directory outside the installation, then runs that copy with `/S` and a final,
+unquoted `_?=<installation path>` argument. This follows the
+[NSIS exit-code contract](https://nsis.sourceforge.io/Docs/AppendixD.html):
+the original self-copying launcher's exit code does not report the real
+uninstall result. Preparation, execution and the executable-removal check share
+the existing two-minute budget, measured with a monotonic clock. Diagnostic
+snapshots run outside that supervised operation; failures terminate the owned
+uninstaller before collecting read-only diagnostics. A nonzero real exit, a residual `AgentKib.exe`, or missing
+user data still fails the smoke.
+
+The tracked NSIS include preserves electron-builder's atomic upgrade and
+rollback behavior, including its in-place uninstaller fallback. Ordinary
+uninstall checks actual installation-directory removal and retries failed
+removal for at most five seconds, within the smoke budget. Persistent failure
+aborts with exit code 2 before uninstall registration is removed. Before deletion,
+it backs up the registered uninstaller and restores a removed copy on failure
+so the retained entry remains usable. Backup failure aborts before deletion.
+Directory enumeration failures, including access denial, cannot count as proof
+of removal. It does not defer deletion to a reboot or remove application data.
+
+On failure, the diagnostics artifact includes the real process result, failure
+stage, file attributes, a read-only DELETE-access probe's Win32 error code, and
+Restart Manager owners of that one executable. The probe does not delete,
+change attributes, terminate owners, or collect command lines or credentials.
+A failed collection is explicitly marked incomplete; an empty owner list
+does not prove that another process never held the file earlier.
+
+Windows platform checks run the PowerShell control and diagnostic regressions,
+then require the native NSIS policy suite on both architectures using the same
+checksum-pinned compiler. Its fixtures use PowerShell 7, matching the Actions
+shell, so inherited module paths cannot load incompatible Windows PowerShell
+5.1 security modules. See Microsoft's
+[PSModulePath inheritance documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath).
+After packaging, both Windows release jobs require native NSIS tests for
+temporary/persistent file locks and atomic upgrade rollback; these tests cannot
+silently skip for a missing compiler. The sole legacy exception is an explicitly
+requested, preflight-verified immutable stable tag at or before v0.20.1 whose
+source predates the tracked hook. That retry skips only the unavailable product
+policy tests; the real installer smoke and uninstall/user-data assertions still
+run. A missing hook in branch builds or newer tags remains a failure. See the
+[v0.20.1 failure investigation](../qa/windows-uninstall-2026-10-21.md) for the
+original evidence and Windows CI verification.
+
 ## Build artifacts without publishing
 
 To create packages for a branch without creating a GitHub Release, open

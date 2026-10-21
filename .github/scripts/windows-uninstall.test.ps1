@@ -1,0 +1,166 @@
+param([Parameter(Mandatory = $true)] [string] $Scenario)
+
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "windows-uninstall.ps1")
+$root = Join-Path ([IO.Path]::GetTempPath()) ("agentkib uninstall test " + [Guid]::NewGuid().ToString("N"))
+$installation = Join-Path $root "installed app"
+$temporary = Join-Path $root "temporary copies"
+$executable = Join-Path $installation "AgentKib.exe"
+$source = Join-Path $installation "Uninstall AgentKib.exe"
+$sentinel = Join-Path $root "user-data-sentinel"
+$script:state = @{ now = 0; killed = $false; disposed = $false; launches = @(); probes = 0; returned = $false }
+$diagnostics = [ordered]@{}
+
+function Assert-True($Condition, [string] $Message) {
+  if (-not $Condition) { throw $Message }
+}
+function Get-Date { throw "The uninstall budget must not depend on wall-clock changes" }
+function Start-AgentKibUninstallTimer {
+  $timer = [pscustomobject]@{}
+  $timer | Add-Member -MemberType ScriptProperty -Name ElapsedMilliseconds -Value { return $script:state.now }
+  return $timer
+}
+function Start-Sleep { param([int] $Milliseconds) $script:state.now += $Milliseconds }
+function Copy-Item {
+  [CmdletBinding()]
+  param([string] $LiteralPath, [string] $Destination)
+  Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -ErrorAction Stop
+  if ($Scenario -eq "slow-preparation") { $script:state.now = 120000 }
+}
+function Test-Path {
+  param([string] $LiteralPath)
+  if ($script:state.returned -and
+      (($Scenario -eq "slow-executable-observation" -and $LiteralPath -eq $executable) -or
+       ($Scenario -eq "slow-sentinel-observation" -and $LiteralPath -eq $sentinel))) {
+    $script:state.now = 120001
+  }
+  return Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath
+}
+function Get-AgentKibFileRemovalDiagnostic {
+  param([string] $Path)
+  $script:state.probes++
+  if ($Scenario -eq "diagnostic-after-termination") {
+    Assert-True $script:state.killed "A slow diagnostic ran before terminating the owned hanging process"
+    Assert-True $script:state.disposed "A slow diagnostic ran before disposing the process handle"
+    $script:state.now += 30000
+  }
+  Assert-True ($Path -eq $executable) "The diagnostic must target only the application executable"
+  if ($Scenario -eq "diagnostic-failure") { throw "synthetic diagnostic failure" }
+  return @{ exists = (Test-Path -LiteralPath $Path); deleteAccessProbe = @{ win32ErrorCode = 32 } }
+}
+function Start-Process {
+  [CmdletBinding()]
+  param([string] $FilePath, [string[]] $ArgumentList, [string] $WorkingDirectory, [switch] $PassThru)
+  Assert-True (Test-Path -LiteralPath $FilePath) "The copied uninstaller must exist before launch"
+  Assert-True ((Get-Content -LiteralPath $FilePath -Raw).Trim() -eq "fixture-uninstaller") "Copy bytes changed"
+  $script:state.launches += @{ file = $FilePath; arguments = $ArgumentList; cwd = $WorkingDirectory }
+  if ($Scenario -eq "slow-start") { $script:state.now = 120001 }
+  $process = [pscustomobject]@{ Id = 321; ExitCode = $(if ($Scenario -eq "actual-failure") { 23 } else { 0 }) }
+  $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {
+    param([int] $Timeout)
+    if ($script:state.killed) { return $true }
+    if ($Scenario -in @("running-timeout", "removed-before-exit", "delayed-termination", "diagnostic-after-termination")) {
+      if ($Scenario -eq "removed-before-exit" -and (Test-Path -LiteralPath $executable)) {
+        Remove-Item -LiteralPath $executable
+      }
+      return $false
+    }
+    if ($script:state.now -lt 1000) { return $false }
+    if ($Scenario -notin @("residual", "actual-failure", "diagnostic-failure")) {
+      Remove-Item -LiteralPath $executable -ErrorAction SilentlyContinue
+    }
+    if ($Scenario -eq "user-data-loss") { Remove-Item -LiteralPath $sentinel }
+    $script:state.returned = $true
+    if ($Scenario -eq "slow-exit-query") { $script:state.now = 120001 }
+    return $true
+  }
+  $process | Add-Member -MemberType ScriptProperty -Name HasExited -Value {
+    if ($Scenario -eq "delayed-termination") { return $false }
+    return $script:state.killed -or ($script:state.now -ge 1000 -and $Scenario -notin @("running-timeout", "removed-before-exit", "diagnostic-after-termination"))
+  }
+  $process | Add-Member -MemberType ScriptMethod -Name Kill -Value { $script:state.killed = $true }
+  $process | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $script:state.disposed = $true }
+  return $process
+}
+
+try {
+  New-Item -ItemType Directory -Path $installation, $temporary | Out-Null
+  Set-Content -LiteralPath $source -Value "fixture-uninstaller"
+  Set-Content -LiteralPath $executable -Value "fixture-application"
+  Set-Content -LiteralPath $sentinel -Value "preserve"
+  if ($Scenario -eq "copy-failure") { Remove-Item -LiteralPath $source }
+  if ($Scenario -eq "unsafe-copy-location") { $temporary = $installation }
+  $failure = $null
+  try {
+    Invoke-AgentKibUninstall -UninstallerPath $source -InstallationRoot $installation `
+      -ExecutablePath $executable -SentinelPath $sentinel -TemporaryRoot $temporary `
+      -Diagnostics $diagnostics
+  } catch { $failure = $_.Exception.Message }
+
+  switch ($Scenario) {
+    "success" {
+      Assert-True (-not $failure) "Successful real uninstaller was rejected: $failure"
+      Assert-True (-not (Test-Path -LiteralPath $executable)) "Executable was not removed by the fixture uninstaller"
+      Assert-True ((Get-Content -LiteralPath $sentinel).Trim() -eq "preserve") "User data changed"
+      Assert-True ($diagnostics.uninstallExitCode -eq 0) "Real exit code was not recorded"
+      Assert-True ($script:state.now -eq 1000) "Successful exit should not consume the remaining budget"
+      Assert-True ($script:state.probes -eq 0) "A successful uninstall does not require a failure probe"
+    }
+    "actual-failure" {
+      Assert-True ($failure -match "exit code 23") "The actual nonzero exit code was lost: $failure"
+      Assert-True ($diagnostics.uninstallExitCode -eq 23) "Exit code must be the real uninstaller's"
+      Assert-True ($script:state.now -eq 1000) "A known failure must not wait for file disappearance"
+    }
+    { $_ -in @("residual", "diagnostic-failure") } {
+      Assert-True ($failure -eq "AgentKib.exe remained after uninstall") "The residual executable must still fail: $failure"
+      Assert-True ($script:state.now -eq 120000) "The original two-minute budget changed"
+      Assert-True (Test-Path -LiteralPath $executable) "The probe must not delete the residual executable to pass"
+      if ($Scenario -eq "diagnostic-failure") {
+        Assert-True $diagnostics.fileRemovalCollectionFailed "Missing explicit diagnostic failure"
+      }
+    }
+    { $_ -in @("running-timeout", "removed-before-exit", "delayed-termination") } {
+      Assert-True ($failure -match "two-minute budget") "The real process must finish within the budget: $failure"
+      Assert-True ($script:state.now -eq 120000) "The process budget changed"
+      Assert-True $script:state.killed "An owned hanging uninstaller was not terminated"
+      Assert-True (-not $diagnostics.Contains("uninstallExitCode")) "A running process has no confirmed exit result"
+    }
+    "diagnostic-after-termination" {
+      Assert-True ($failure -match "two-minute budget") "A slow diagnostic replaced the timeout: $failure"
+      Assert-True ($diagnostics.uninstallElapsedMilliseconds -eq 120000) "Diagnostics consumed the supervision budget"
+    }
+    { $_ -in @("slow-start", "slow-exit-query", "slow-executable-observation", "slow-sentinel-observation") } {
+      Assert-True ($failure -match "two-minute budget") "Late success escaped the original budget: $failure"
+      Assert-True ($diagnostics.uninstallElapsedMilliseconds -eq 120001) "Late observation was not recorded"
+    }
+    "slow-preparation" {
+      Assert-True ($failure -match "two-minute budget") "Preparation escaped the original budget: $failure"
+      Assert-True ($script:state.launches.Count -eq 0) "An uninstaller was started after the budget expired"
+      Assert-True ($diagnostics.uninstallElapsedMilliseconds -eq 120000) "Preparation changed the original budget"
+    }
+    "user-data-loss" { Assert-True ($failure -eq "Uninstall unexpectedly removed user data") "User data loss was accepted: $failure" }
+    { $_ -in @("copy-failure", "unsafe-copy-location") } {
+      Assert-True ($null -ne $failure) "Invalid preparation was accepted"
+      Assert-True ($script:state.launches.Count -eq 0) "Unsafe or absent copy was launched"
+    }
+    default { throw "Unknown test scenario" }
+  }
+  if ($script:state.launches.Count -gt 0) {
+    $launch = $script:state.launches[0]
+    Assert-True ($script:state.launches.Count -eq 1) "The launcher was executed more than once"
+    Assert-True ($launch.file -ne $source) "The self-copying launcher was used"
+    Assert-True ($launch.cwd -eq (Split-Path -Parent $launch.file)) "The uninstaller cwd is not the external scratch directory"
+    Assert-True ($launch.arguments.Count -eq 2 -and $launch.arguments[0] -eq "/S" -and $launch.arguments[1] -ceq "_?=$installation") "The final NSIS argument was quoted, split or reordered"
+    if ($Scenario -eq "delayed-termination") {
+      Assert-True $diagnostics.uninstallerCleanupPending "Asynchronous termination was reported as confirmed cleanup"
+      Assert-True $diagnostics.uninstallerCleanupFailed "Unconfirmed cleanup was not marked incomplete"
+      Assert-True (Test-Path -LiteralPath $launch.cwd) "An unconfirmed executable was removed before exit"
+    } else {
+      Assert-True (-not (Test-Path -LiteralPath $launch.cwd)) "Owned temporary copy was not cleaned"
+    }
+    Assert-True $script:state.disposed "The actual process handle was not disposed"
+  }
+  Write-Output "passed: $Scenario"
+} finally {
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
